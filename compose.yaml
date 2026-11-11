@@ -1,0 +1,24 @@
+services:
+  app:
+    build: .
+    restart: unless-stopped
+    init: true
+    user: "1000:1000"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 128
+    mem_limit: 1g
+    cpus: 2
+    ports:
+      - "127.0.0.1:8787:8787"
+    environment:
+      BRIDGE_DATA_DIR: /data
+      BRIDGE_HOST: 0.0.0.0
+      BRIDGE_EXECUTION: disabled
+      BRIDGE_PUBLIC_ORIGIN: ${BRIDGE_PUBLIC_ORIGIN:?Set HTTPS origin in .env}
+    volumes:
+      - ./data:/data
+      - ./projects:/projects
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m

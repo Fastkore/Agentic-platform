@@ -1,0 +1,173 @@
+import Fastify, { type FastifyRequest } from 'fastify';
+import fastifyStatic from '@fastify/static';
+import multipart from '@fastify/multipart';
+import { networkInterfaces } from 'node:os';
+import { readFile } from 'node:fs/promises';
+import path from 'node:path';
+import { Workspace } from './workspace.js';
+import { BridgeError } from './store.js';
+import { Access, publicUser, type Principal } from './access.js';
+import { uploadAttachment } from './documents.js';
+import type { AgentProfile, Dataset, Settings, User, WorkRole } from '../shared/types.js';
+import { operationIds } from './corporate.js';
+
+export function addresses(port: number, lan: boolean) {
+  const urls = [`http://127.0.0.1:${port}`];
+  if (lan) {
+    const ips: string[] = [];
+    for (const net of Object.values(networkInterfaces())) for (const nic of net ?? [])
+      if (nic.family === 'IPv4' && !nic.internal && !nic.address.startsWith('169.254.')) ips.push(nic.address);
+    const score = (ip: string) => ip.startsWith('192.168.') ? 0 : ip.startsWith('10.') ? 1 : /^172\.(1[6-9]|2\d|3[01])\./.test(ip) ? 2 : 3;
+    for (const ip of [...new Set(ips)].sort((a, b) => score(a) - score(b))) urls.push(`http://${ip}:${port}`);
+  }
+  return urls;
+}
+const string = (maxLength = 1000) => ({ type: 'string', minLength: 1, maxLength });
+const password = { type: 'string', minLength: 12, maxLength: 200 };
+const modelSchema = { type: 'string', maxLength: 128, pattern: '^$|^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,127}$' };
+const identifier = { type: 'string', pattern: '^[a-z][a-z0-9_-]{1,63}$' };
+const identifiers = { type: 'array', items: string(100), maxItems: 100, uniqueItems: true };
+const object = (properties: Record<string, unknown>, required: string[] = []) => ({ type: 'object', properties, required, additionalProperties: false });
+const loopback = (ip: string) => ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1';
+export interface AppOptions { clientRoot?: string; port?: number; lan?: boolean }
+export async function createApp(workspace: Workspace, options: AppOptions = {}) {
+  const port = options.port ?? 8787, lan = options.lan ?? false;
+  const publicOrigin = process.env.BRIDGE_PUBLIC_ORIGIN;
+  if (publicOrigin && (new URL(publicOrigin).origin !== publicOrigin || !publicOrigin.startsWith('https://'))) throw new Error('BRIDGE_PUBLIC_ORIGIN должен содержать HTTPS origin без пути и завершающего слеша.');
+  const access = new Access(workspace); await workspace.store.save();
+  const principals = new WeakMap<FastifyRequest, Principal>();
+  const principal = (r: FastifyRequest) => {
+    const p = principals.get(r); if (!p) throw new BridgeError('Войдите под своей учётной записью.', 401);
+    // Recheck credential after awaited operations (account/key may have been revoked).
+    return access.authenticate((r.headers.authorization ?? '').slice(7));
+  };
+  const user = (r: FastifyRequest) => principal(r).user;
+  const admin = (r: FastifyRequest) => { const u = user(r); access.admin(u); return u; };
+  const attempts = new Map<string, { count: number; until: number }>(); let logins = 0;
+  const rateLimit = (r: FastifyRequest) => {
+    const now = Date.now(); for (const [ip, entry] of attempts) if (entry.until <= now) attempts.delete(ip);
+    let entry = attempts.get(r.ip);
+    if (!entry) { if (attempts.size >= 5000) throw new BridgeError('Попробуйте войти позже.', 429); entry = { count: 0, until: now + 10 * 60_000 }; attempts.set(r.ip, entry); }
+    if (++entry.count > 10 || logins >= 8) throw new BridgeError('Слишком много попыток входа. Повторите через 10 минут.', 429);
+  };
+  const app = Fastify({ logger: false, bodyLimit: 128_000, requestTimeout: 60_000,
+    ajv: { customOptions: { removeAdditional: false, coerceTypes: false } } });
+  app.addHook('onRequest', async (request, reply) => {
+    reply.header('X-Content-Type-Options', 'nosniff').header('Referrer-Policy', 'no-referrer').header('X-Frame-Options', 'DENY')
+      .header('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'");
+    if (!request.url.startsWith('/api/')) return;
+    reply.header('Cache-Control', 'no-store');
+    if (request.headers.origin && request.headers.origin !== (publicOrigin ?? `${request.protocol}://${request.headers.host}`)) throw new BridgeError('Запрос с другого сайта запрещён.', 403);
+    const route = request.url.split('?')[0];
+    if (route === '/api/health') return;
+    if (route === '/api/auth/login') { rateLimit(request); return; }
+    if (route === '/api/local-login') {
+      const host = request.headers.host ?? '';
+      if (!loopback(request.ip) || !/^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/.test(host) || request.headers['x-bridge-local'] !== '1') throw new BridgeError('Первичная настройка доступна только на серверном компьютере.', 403);
+      rateLimit(request); return;
+    }
+    const authorization = request.headers.authorization ?? '';
+    if (!authorization.startsWith('Bearer ') || authorization.length > 200) throw new BridgeError('Войдите под своей учётной записью.', 401);
+    principals.set(request, access.authenticate(authorization.slice(7)));
+    if (access.setupRequired && !['/api/auth/me', '/api/auth/setup', '/api/auth/logout'].includes(route)) throw new BridgeError('Сначала задайте логин и пароль руководителя.', 403);
+  });
+  app.setErrorHandler((error, _request, reply) => {
+    const err = error as Error & { statusCode?: number; validation?: unknown };
+    const code = err.statusCode && err.statusCode >= 400 && err.statusCode < 600 ? err.statusCode : 500;
+    const message = err.validation ? 'Некорректные поля запроса.' : code >= 500 && !(error instanceof BridgeError) ? 'Внутренняя ошибка сервера. Проверьте папку данных и настройки.' : err.message;
+    reply.code(code).send({ error: message });
+  });
+  await app.register(multipart, { limits: { fileSize: 20 * 1024 * 1024, files: 1, fields: 0, parts: 1 } });
+  app.get('/api/health', async () => ({ name: 'Codex Chat Bridge', version: '0.5.0', ok: true }));
+  app.post('/api/local-login', async () => access.bootstrap());
+  app.post<{ Body: { username: string; password: string } }>('/api/auth/login', { schema: { body: object({ username: string(48), password: { type: 'string', maxLength: 200 } }, ['username', 'password']) } }, async request => {
+    logins++; try { return await access.login(request.body.username, request.body.password); } finally { logins--; }
+  });
+  app.get('/api/auth/me', async request => ({ user: publicUser(user(request)), setupRequired: access.setupRequired }));
+  app.post<{ Body: { username: string; name: string; password: string } }>('/api/auth/setup', { schema: { body: object({ username: string(48), name: string(100), password }, ['username', 'name', 'password']) } }, async request => access.setup(user(request), request.body.username, request.body.name, request.body.password));
+  app.post('/api/auth/logout', async request => access.logout(principal(request)));
+  app.post<{ Body: { currentPassword: string; password: string } }>('/api/auth/password', { schema: { body: object({ currentPassword: string(200), password }, ['currentPassword', 'password']) } }, async request => access.changePassword(principal(request), request.body.currentPassword, request.body.password));
+  app.get('/api/auth/keys', async request => access.keys(principal(request)));
+  app.post<{ Body: { name: string } }>('/api/auth/keys', { schema: { body: object({ name: string(100) }, ['name']) } }, async (request, reply) => reply.code(201).send(await access.createKey(principal(request), request.body.name)));
+  app.delete<{ Params: { keyId: string } }>('/api/auth/keys/:keyId', async request => access.revokeKey(principal(request), request.params.keyId));
+  app.get('/api/users', async request => access.users(user(request)));
+  app.post<{ Body: { username: string; name: string; password: string; role: User['role']; roleId?: string } }>('/api/users', { schema: { body: object({ username: string(48), name: string(100), password, role: { enum: ['admin', 'employee'] }, roleId: identifier }, ['username', 'name', 'password', 'role']) } }, async (request, reply) => reply.code(201).send(await access.createUser(user(request), request.body)));
+  app.patch<{ Params: { userId: string }; Body: { disabled?: boolean; password?: string; name?: string; roleId?: string; role?: User['role'] } }>('/api/users/:userId', { schema: { body: object({ disabled: { type: 'boolean' }, password, name: string(100), roleId: identifier, role: { enum: ['admin', 'employee'] } }) } }, async request => access.updateUser(user(request), request.params.userId, request.body));
+  app.get('/api/audit', async request => { admin(request); return access.data.audit; });
+  app.get('/api/agents', async request => workspace.corporate.list(user(request)));
+  app.get('/api/admin/roles', async request => { admin(request); return workspace.corporate.data.roles; });
+  app.get('/api/admin/profiles', async request => { admin(request); return workspace.corporate.data.profiles.map(p => ({ ...p, unavailableReason: workspace.corporate.unavailable(p) })); });
+  app.get('/api/admin/datasets', async request => { admin(request); return workspace.corporate.data.datasets; });
+  app.get('/api/admin/operations', async request => { admin(request); return operationIds; });
+  const revision = { type: 'integer', minimum: 1, maximum: 2147483647 };
+  app.put<{ Params: { id: string }; Body: Omit<WorkRole, 'id' | 'revision'> & { revision?: number } }>('/api/admin/roles/:id', { schema: { params: object({ id: identifier }, ['id']), body: object({ name: string(100), enabled: { type: 'boolean' }, profileIds: identifiers, operationIds: identifiers, readDatasetIds: identifiers, instructions: { type: 'string', maxLength: 20000 }, revision }, ['name', 'enabled', 'profileIds', 'operationIds', 'readDatasetIds', 'instructions']) } }, async request => workspace.corporate.saveRole(admin(request), { ...request.body, id: request.params.id }));
+  app.put<{ Params: { id: string }; Body: Omit<AgentProfile, 'id' | 'revision'> & { revision?: number } }>('/api/admin/profiles/:id', { schema: { params: object({ id: identifier }, ['id']), body: object({ name: string(100), description: { type: 'string', maxLength: 1000 }, instructions: { type: 'string', maxLength: 20000 }, enabled: { type: 'boolean' }, model: modelSchema, reasoningEffort: { enum: ['low', 'medium', 'high', 'xhigh'] }, operationIds: identifiers, datasetIds: identifiers, skillIds: identifiers, allowWrite: { type: 'boolean' }, outputMode: { enum: ['chat', 'restricted'] }, revision }, ['name', 'description', 'instructions', 'enabled', 'model', 'reasoningEffort', 'operationIds', 'datasetIds', 'skillIds', 'allowWrite', 'outputMode']) } }, async request => workspace.corporate.saveProfile(admin(request), { ...request.body, id: request.params.id }));
+  app.put<{ Params: { id: string }; Body: Omit<Dataset, 'id' | 'revision'> & { revision?: number } }>('/api/admin/datasets/:id', { schema: { params: object({ id: identifier }, ['id']), body: object({ name: string(100), directory: string(2000), projectIds: identifiers, classification: { enum: ['shared', 'restricted'] }, revision }, ['name', 'directory', 'projectIds', 'classification']) } }, async request => workspace.corporate.saveDataset(admin(request), { ...request.body, id: request.params.id }));
+  app.get('/api/status', async request => {
+    const u = user(request); let activeRun = workspace.activeRun;
+    if (activeRun) { try { access.run(u, activeRun.id); } catch { activeRun = null; } }
+    const queuedRuns = workspace.queuedRuns.filter(r => { try { access.run(u, r.id); return true; } catch { return false; } });
+    return { version: '0.5.0', activeRun, queuedRuns, busy: workspace.busy, user: publicUser(u), setupRequired: access.setupRequired,
+      cli: u.role === 'admin' ? workspace.cli : workspace.cli && { ...workspace.cli, path: '', status: '' },
+      settings: u.role === 'admin' ? workspace.store.state.settings : { ...workspace.store.state.settings, cliPath: '' },
+      addresses: publicOrigin ? [publicOrigin] : addresses(port, lan), port, lan, executionDisabled: process.env.BRIDGE_EXECUTION === 'disabled', storageWarning: u.role === 'admin' ? workspace.store.warning : undefined };
+  });
+  app.get('/api/models', async () => workspace.models());
+  app.post('/api/models/refresh', async () => workspace.models(true));
+  app.post('/api/cli/check', async request => { admin(request); return workspace.inspect(); });
+  app.post('/api/subscription/check', async (request, reply) => { admin(request); const run = await workspace.subscription(); return reply.code(202).header('Location', `/api/runs/${run.id}`).send(run); });
+  app.patch<{ Body: Partial<Settings> }>('/api/settings', { schema: { body: object({ cliPath: { type: 'string', maxLength: 2000 }, allowWrite: { type: 'boolean' }, includePreviews: { type: 'boolean' }, model: modelSchema }) } }, async request => { admin(request); return workspace.settings(request.body); });
+  app.get('/api/diagnostics', async request => { admin(request); return { text: (await readFile(path.join(workspace.store.root, 'diagnostics.log'), 'utf8').catch(() => '')).slice(-12_000) }; });
+  app.get('/api/projects', async request => {
+    const u = user(request); return workspace.store.state.projects.filter(p => u.role === 'admin' || p.memberIds?.includes(u.id)).map(p => ({ id: p.id, name: p.name, directory: p.directory, chatCount: p.chats.filter(c => access.canChat(u, c)).length }));
+  });
+  app.post('/api/migrations/desktop', async request => { admin(request); const result = await workspace.importDesktop(); access.migrate(); await workspace.store.save(); return result; });
+  app.post<{ Body: { directory: string; name?: string } }>('/api/projects', { schema: { body: object({ directory: string(2000), name: string(100) }, ['directory']) } }, async (request, reply) => {
+    admin(request); const p = await workspace.addProject(request.body.directory, request.body.name); access.migrate(); await workspace.store.save(); return reply.code(201).send({ id: p.id, name: p.name, directory: p.directory, chatCount: p.chats.length });
+  });
+  app.get<{ Params: { projectId: string } }>('/api/projects/:projectId/members', async request => { admin(request); return { memberIds: workspace.project(request.params.projectId).memberIds ?? [] }; });
+  app.patch<{ Params: { projectId: string }; Body: { memberIds: string[] } }>('/api/projects/:projectId/members', { schema: { body: object({ memberIds: { type: 'array', maxItems: 1000, uniqueItems: true, items: string(100) } }, ['memberIds']) } }, async request => access.members(user(request), request.params.projectId, request.body.memberIds));
+  app.get<{ Params: { projectId: string } }>('/api/projects/:projectId/chats', async request => {
+    const u = user(request); return access.project(u, request.params.projectId).chats.filter(c => access.canChat(u, c)).map(c => ({ id: c.id, title: c.title, updatedAt: c.updatedAt, messageCount: c.messages.length, ownerId: c.ownerId, ownerName: access.viewChat(c).ownerName, visibility: c.visibility }));
+  });
+  app.post<{ Params: { projectId: string }; Body: { title?: string; model?: string; agentProfileId?: string } }>('/api/projects/:projectId/chats', { schema: { body: object({ title: string(120), model: modelSchema, agentProfileId: identifier }) } }, async (request, reply) => {
+    const check = () => access.project(user(request), request.params.projectId); check();
+    const c = await workspace.addChat(request.params.projectId, request.body.title, request.body.model, user(request).id, check, request.body.agentProfileId); return reply.code(201).send(access.viewChat(c));
+  });
+  type ChatParams = { projectId: string; chatId: string };
+  const chatPath = '/api/projects/:projectId/chats/:chatId';
+  app.get<{ Params: ChatParams }>(chatPath, async request => access.viewChat(access.chat(user(request), request.params.projectId, request.params.chatId)));
+  app.patch<{ Params: ChatParams; Body: { model: string } }>(chatPath, { schema: { body: object({ model: modelSchema }, ['model']) } }, async request => {
+    const check = () => access.editChat(user(request), request.params.projectId, request.params.chatId); check();
+    return access.viewChat(await workspace.changeChatModel(request.params.projectId, request.params.chatId, request.body.model, check));
+  });
+  app.patch<{ Params: ChatParams; Body: { visibility: 'private' | 'project' } }>(chatPath + '/visibility', { schema: { body: object({ visibility: { enum: ['private', 'project'] } }, ['visibility']) } }, async request => access.visibility(user(request), request.params.projectId, request.params.chatId, request.body.visibility));
+  app.get<{ Params: ChatParams }>(chatPath + '/messages', async request => access.chat(user(request), request.params.projectId, request.params.chatId).messages);
+  app.post<{ Params: ChatParams; Body: { text: string; attachmentIds?: string[]; clientRequestId?: string; model?: string } }>(chatPath + '/messages', { schema: { body: object({ text: string(60_000), attachmentIds: { type: 'array', items: string(100), maxItems: 8, uniqueItems: true }, clientRequestId: string(100), model: modelSchema }, ['text']) } }, async (request, reply) => {
+    const check = () => {
+      const u = user(request); access.editChat(u, request.params.projectId, request.params.chatId);
+      const p = access.project(u, request.params.projectId);
+      for (const id of request.body.attachmentIds ?? []) if (!p.attachments.some(a => a.id === id && (u.role === 'admin' || a.ownerId === u.id))) throw new BridgeError('Вложение не найдено.', 404);
+    }; check();
+    const text = request.body.text.trim(); if (!text) throw new BridgeError('Напишите вопрос.');
+    const run = await workspace.send(request.params.projectId, request.params.chatId, text, request.body.attachmentIds ?? [], request.body.clientRequestId ? `${user(request).id}:${request.body.clientRequestId}` : undefined, request.body.model, check, { id: user(request).id, name: user(request).name, credentialId: principal(request).credential.id });
+    return reply.code(202).header('Location', `/api/runs/${run.id}`).send(run);
+  });
+  app.post<{ Params: { projectId: string } }>('/api/projects/:projectId/attachments', async (request, reply) => {
+    const p = access.project(user(request), request.params.projectId);
+    const file = await request.file(); if (!file) throw new BridgeError('Прикрепите один файл.');
+    const buffer = await file.toBuffer(); access.project(user(request), p.id);
+    const attachment = await uploadAttachment(p.directory, file.filename, buffer); attachment.ownerId = user(request).id;
+    p.attachments.push(attachment); await workspace.store.save(); return reply.code(201).send(attachment);
+  });
+  app.get<{ Params: { runId: string } }>('/api/runs/:runId', async request => access.run(user(request), request.params.runId));
+  app.post<{ Params: { runId: string } }>('/api/runs/:runId/cancel', async request => {
+    const u = user(request), run = access.run(u, request.params.runId);
+    if (run.projectId && run.chatId) access.editChat(u, run.projectId, run.chatId); return workspace.cancel(run.id);
+  });
+  if (options.clientRoot) await app.register(fastifyStatic, { root: path.resolve(options.clientRoot), prefix: '/', index: ['index.html'], wildcard: false });
+  app.setNotFoundHandler((_request, reply) => reply.code(404).send({ error: 'Адрес не найден.' }));
+  app.addHook('onClose', async () => { await workspace.shutdown(); });
+  workspace.start();
+  return app;
+}
