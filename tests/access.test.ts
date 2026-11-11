@@ -39,6 +39,21 @@ test('migration keeps session IDs, assigns private legacy chats to boss and reti
     const stored = await readFile(f.store.file, 'utf8'); assert.ok(!stored.includes(password)); assert.ok(!stored.includes(f.admin));
   } finally { await f.app.close(); }
 });
+test('employees can create a managed project without opening access to server folders or other employees', async () => {
+  const f = await fixture();
+  try {
+    const creator = await f.employee('creator'), colleague = await f.employee('colleague');
+    const response = await f.req('POST', '/api/projects', creator.token, { name: 'Новый проект' });
+    assert.equal(response.statusCode, 201);
+    const project = response.json();
+    assert.equal(project.directory, path.join(f.store.root, 'projects', project.id));
+    assert.deepEqual(f.workspace.project(project.id).memberIds, [creator.id]);
+    assert.deepEqual((await f.req('GET', '/api/projects', creator.token)).json().map((item: { id: string }) => item.id), [project.id]);
+    assert.equal((await f.req('POST', '/api/projects/' + project.id + '/chats', creator.token, {})).statusCode, 201);
+    assert.equal((await f.req('GET', '/api/projects/' + project.id + '/chats', colleague.token)).statusCode, 404);
+    assert.equal((await f.req('POST', '/api/projects', creator.token, { name: 'Существующая папка', directory: f.root })).statusCode, 403);
+  } finally { await f.app.close(); }
+});
 test('three employees share library but private chat metadata, messages, jobs and writes are protected', async () => {
   const f = await fixture(); try {
     const a = await f.employee('alice'), b = await f.employee('boris'), c = await f.employee('clara');

@@ -4,11 +4,27 @@ import { readdir, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { createInterface } from 'node:readline';
 import { BridgeError, redact } from './store.js';
-import type { CliInfo, ModelCatalog, ModelOption, Usage } from '../shared/types.js';
+import type { CliInfo, CodexLimits, LimitWindow, ModelCatalog, ModelOption, Usage } from '../shared/types.js';
 
 export interface CodexEvent { kind: 'session' | 'message' | 'progress' | 'usage'; text?: string; usage?: Usage }
 export interface CodexRequest { cliPath: string; workspace: string; prompt: string; sessionId?: string; allowWrite: boolean; ephemeral?: boolean; model?: string; reasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh' }
-export interface CodexRunner { inspect(cliPath: string, signal?: AbortSignal): Promise<CliInfo>; listModels?(cliPath: string): Promise<ModelCatalog>; run(request: CodexRequest, onEvent: (event: CodexEvent) => Promise<void>, signal: AbortSignal): Promise<{ sessionId?: string; response: string; usage?: Usage }> }
+export interface CodexRunner { inspect(cliPath: string, signal?: AbortSignal): Promise<CliInfo>; listModels?(cliPath: string): Promise<ModelCatalog>; readLimits?(cliPath: string): Promise<CodexLimits | null>; run(request: CodexRequest, onEvent: (event: CodexEvent) => Promise<void>, signal: AbortSignal): Promise<{ sessionId?: string; response: string; usage?: Usage }> }
+type RateWindow = { usedPercent?: number; windowDurationMins?: number | null; resetsAt?: number | null };
+type RateBucket = { limitId?: string | null; limitName?: string | null; primary?: RateWindow | null; secondary?: RateWindow | null };
+type RateResponse = {
+  rateLimits?: RateBucket;
+  rateLimitsByLimitId?: Record<string, RateBucket> | null;
+  rateLimitResetCredits?: { availableCount?: number } | null;
+};
+
+function rateWindow(window?: RateWindow | null): LimitWindow[] {
+  if (typeof window?.usedPercent !== 'number' || !Number.isFinite(window.usedPercent)) return [];
+  return [{
+    usedPercent: Math.max(0, Math.min(100, window.usedPercent)),
+    windowDurationMins: window.windowDurationMins ?? null,
+    resetsAt: window.resetsAt ?? null,
+  }];
+}
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 export function buildArguments(r: CodexRequest) {
   const args = ['-a', 'never', '-c', 'model_provider="openai"', 'exec', '--sandbox', r.allowWrite ? 'workspace-write' : 'read-only', '--cd', path.resolve(r.workspace), '--skip-git-repo-check', '--json', '--color', 'never'];
@@ -79,20 +95,33 @@ export class CodexClient implements CodexRunner {
     const status = await this.capture(cliPath, ['login', 'status'], signal);
     return { path: cliPath, version: version.text.trim(), authentication: authentication(status.text, status.code), status: status.text.trim() };
   }
-  async listModels(cliPath: string): Promise<ModelCatalog> {
-    // Metadata only. Inference still uses codex exec; no OAuth tokens or API keys are read.
+  private appServer(cliPath: string) {
     const child = this.start(cliPath, ['-c', 'model_provider="openai"', 'app-server', '--listen', 'stdio://']);
-    const models = new Map<string, ModelOption>();
-    let timedOut = false, page = 0, finished = false;
+    let timedOut = false;
     const closed = new Promise<void>((resolve, reject) => { child.once('error', reject); child.once('close', () => resolve()); });
     void closed.catch(() => {});
-    child.stderr.on('data', () => {}); child.stdin.on('error', () => {});
+    child.stderr.on('data', () => {});
+    child.stdin.on('error', () => {});
     const send = (message: unknown) => child.stdin.write(JSON.stringify(message) + '\n');
     const timer = setTimeout(() => { timedOut = true; void killTree(child); }, 25_000);
     send({ id: 1, method: 'initialize', params: { clientInfo: { name: 'codex_chat_bridge', version: '0.5.0' }, capabilities: { experimentalApi: false } } });
+    return {
+      lines: createInterface({ input: child.stdout, crlfDelay: Infinity }),
+      send,
+      closed,
+      timedOut: () => timedOut,
+      close: async () => { clearTimeout(timer); child.stdin.end(); await killTree(child); },
+    };
+  }
+  async listModels(cliPath: string): Promise<ModelCatalog> {
+    // Metadata only. Inference still uses codex exec; no OAuth tokens or API keys are read.
+    const server = this.appServer(cliPath);
+    const models = new Map<string, ModelOption>();
+    let page = 0, finished = false;
+    const { send } = server;
     const requestPage = (cursor?: string) => { page++; send({ id: 100 + page, method: 'model/list', params: { limit: 100, includeHidden: false, ...(cursor ? { cursor } : {}) } }); };
     try {
-      for await (const line of createInterface({ input: child.stdout, crlfDelay: Infinity })) {
+      for await (const line of server.lines) {
         if (line.length > 4_000_000) throw new BridgeError('Слишком большой каталог моделей Codex.', 502);
         let message: any; try { message = JSON.parse(line); } catch { continue; }
         if (message.id !== 1 && message.id !== 100 + page) continue;
@@ -109,9 +138,38 @@ export class CodexClient implements CodexRunner {
           requestPage(message.result.nextCursor);
         } else { finished = true; break; }
       }
-      if (!finished || !models.size) { await closed; throw new BridgeError(timedOut ? 'Codex не ответил на запрос списка моделей за 25 секунд.' : 'Каталог моделей Codex недоступен. Проверьте подключение.', 502); }
+      if (!finished || !models.size) { await server.closed; throw new BridgeError(server.timedOut() ? 'Codex не ответил на запрос списка моделей за 25 секунд.' : 'Каталог моделей Codex недоступен. Проверьте подключение.', 502); }
       return { models: [...models.values()], fetchedAt: new Date().toISOString(), source: 'codex' };
-    } finally { clearTimeout(timer); child.stdin.end(); await killTree(child); }
+    } finally { await server.close(); }
+  }
+  async readLimits(cliPath: string): Promise<CodexLimits | null> {
+    const server = this.appServer(cliPath);
+    try {
+      for await (const line of server.lines) {
+        if (line.length > 4_000_000) return null;
+        let message: { id?: number; error?: unknown; result?: RateResponse };
+        try { message = JSON.parse(line); } catch { continue; }
+        if (message.id !== 1 && message.id !== 2) continue;
+        if (message.error) return null;
+        if (message.id === 1) {
+          server.send({ method: 'initialized' });
+          server.send({ id: 2, method: 'account/rateLimits/read' });
+          continue;
+        }
+        const result = message.result;
+        if (!result) return null;
+        const sources = Object.entries(result.rateLimitsByLimitId ?? {});
+        if (!sources.length && result.rateLimits) sources.push(['codex', result.rateLimits]);
+        const buckets = sources.flatMap(([id, bucket]) => {
+          const windows = [...rateWindow(bucket?.primary), ...rateWindow(bucket?.secondary)];
+          return windows.length ? [{ name: bucket?.limitName || (id === 'codex' ? 'Codex' : id), windows }] : [];
+        });
+        const resetsAvailable = result.rateLimitResetCredits?.availableCount ?? null;
+        return buckets.length || resetsAvailable !== null ? { buckets, resetsAvailable } : null;
+      }
+      await server.closed;
+      return null;
+    } finally { await server.close(); }
   }
   async run(request: CodexRequest, onEvent: (event: CodexEvent) => Promise<void>, signal: AbortSignal) {
     signal.throwIfAborted();

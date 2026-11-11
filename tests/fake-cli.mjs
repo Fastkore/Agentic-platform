@@ -8,6 +8,10 @@ if (args.includes('app-server')) {
   for await (const line of createInterface({ input: process.stdin })) {
     const request = JSON.parse(line);
     if (request.method === 'initialize') console.log(JSON.stringify({ id: request.id, result: { userAgent: 'fake' } }));
+    if (request.method === 'account/rateLimits/read') console.log(JSON.stringify({ id: request.id, result: {
+      rateLimitsByLimitId: { codex: { primary: { usedPercent: 25, windowDurationMins: 300, resetsAt: 1794397200 }, secondary: null } },
+      rateLimitResetCredits: { availableCount: 2 }
+    } }));
     if (request.method === 'model/list') console.log(JSON.stringify({ id: request.id, result: request.params.cursor ? {
       data: [{ id: 'test-b', model: 'test-b', displayName: 'Test Model B' }], nextCursor: null
     } : {

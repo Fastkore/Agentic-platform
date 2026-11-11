@@ -40,7 +40,7 @@ export class CorporateAccess {
     if (profile.skillIds.length) return 'Профиль ожидает установки и проверки утверждённых Skills в среде исполнения.';
     return undefined;
   }
-  list(user: User): AgentSummary[] { return this.data.profiles.filter(p => this.canUse(user, p)).map(p => ({ id: p.id, name: p.name, description: p.description, model: p.model, available: !this.unavailable(p), unavailableReason: this.unavailable(p) })); }
+  list(user: User): AgentSummary[] { return this.data.profiles.filter(p => this.canUse(user, p)).map(p => ({ id: p.id, name: p.name, description: p.description, model: p.model, allowWrite: p.allowWrite, available: !this.unavailable(p), unavailableReason: this.unavailable(p) })); }
   scope(user: User | undefined, profile: AgentProfile, projectId: string) {
     const role = user && this.role(user);
     return createHash('sha256').update(JSON.stringify({ profile: profile.id, revision: profile.revision, projectId, role: role?.id, roleRevision: role?.revision, actor: user?.id })).digest('hex');

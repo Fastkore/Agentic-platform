@@ -177,17 +177,19 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
   app.put<{ Params: { id: string }; Body: Omit<WorkRole, 'id' | 'revision'> & { revision?: number } }>('/api/admin/roles/:id', { schema: { params: object({ id: identifier }, ['id']), body: object({ name: string(100), enabled: { type: 'boolean' }, profileIds: identifiers, operationIds: identifiers, readDatasetIds: identifiers, instructions: { type: 'string', maxLength: 20000 }, revision }, ['name', 'enabled', 'profileIds', 'operationIds', 'readDatasetIds', 'instructions']) } }, async request => workspace.corporate.saveRole(admin(request), { ...request.body, id: request.params.id }));
   app.put<{ Params: { id: string }; Body: Omit<AgentProfile, 'id' | 'revision'> & { revision?: number } }>('/api/admin/profiles/:id', { schema: { params: object({ id: identifier }, ['id']), body: object({ name: string(100), description: { type: 'string', maxLength: 1000 }, instructions: { type: 'string', maxLength: 20000 }, enabled: { type: 'boolean' }, model: modelSchema, reasoningEffort: { enum: ['low', 'medium', 'high', 'xhigh'] }, operationIds: identifiers, datasetIds: identifiers, skillIds: identifiers, allowWrite: { type: 'boolean' }, outputMode: { enum: ['chat', 'restricted'] }, revision }, ['name', 'description', 'instructions', 'enabled', 'model', 'reasoningEffort', 'operationIds', 'datasetIds', 'skillIds', 'allowWrite', 'outputMode']) } }, async request => workspace.corporate.saveProfile(admin(request), { ...request.body, id: request.params.id }));
   app.put<{ Params: { id: string }; Body: Omit<Dataset, 'id' | 'revision'> & { revision?: number } }>('/api/admin/datasets/:id', { schema: { params: object({ id: identifier }, ['id']), body: object({ name: string(100), directory: string(2000), projectIds: identifiers, classification: { enum: ['shared', 'restricted'] }, revision }, ['name', 'directory', 'projectIds', 'classification']) } }, async request => workspace.corporate.saveDataset(admin(request), { ...request.body, id: request.params.id }));
+  const canCreateProject = (u: User) => u.role === 'admin' || workspace.corporate.role(u)?.operationIds.includes('chat') === true;
   app.get('/api/status', async request => {
     const u = user(request); let activeRun = workspace.activeRun;
     if (activeRun) { try { access.run(u, activeRun.id); } catch { activeRun = null; } }
     const queuedRuns = workspace.queuedRuns.filter(r => { try { access.run(u, r.id); return true; } catch { return false; } });
-    return { version: '0.6.0', activeRun, queuedRuns, busy: workspace.busy, user: publicUser(u), setupRequired: access.setupRequired,
+    return { version: '0.6.0', activeRun, queuedRuns, busy: workspace.busy, user: publicUser(u), setupRequired: access.setupRequired, canCreateProject: canCreateProject(u),
       cli: u.role === 'admin' ? workspace.cli : workspace.cli && { ...workspace.cli, path: '', status: '' },
       settings: u.role === 'admin' ? workspace.store.state.settings : { ...workspace.store.state.settings, cliPath: '' },
       addresses: publicOrigin ? [publicOrigin] : addresses(port, lan), port, lan, executionDisabled: process.env.BRIDGE_EXECUTION === 'disabled', storageWarning: u.role === 'admin' ? workspace.store.warning : undefined };
   });
   app.get('/api/models', async () => workspace.models());
   app.post('/api/models/refresh', async () => workspace.models(true));
+  app.get('/api/codex/limits', async () => ({ limits: await workspace.limits() }));
   app.post('/api/cli/check', async request => { admin(request); return workspace.inspect(); });
   app.post('/api/subscription/check', async (request, reply) => { admin(request); const run = await workspace.subscription(); return reply.code(202).header('Location', `/api/runs/${run.id}`).send(run); });
   app.patch<{ Body: Partial<Settings> }>('/api/settings', { schema: { body: object({ cliPath: { type: 'string', maxLength: 2000 }, allowWrite: { type: 'boolean' }, includePreviews: { type: 'boolean' }, model: modelSchema }) } }, async request => { admin(request); return workspace.settings(request.body); });
@@ -196,8 +198,18 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
     const u = user(request); return workspace.store.state.projects.filter(p => u.role === 'admin' || p.memberIds?.includes(u.id)).map(p => ({ id: p.id, name: p.name, directory: p.directory, chatCount: p.chats.filter(c => access.canChat(u, c)).length }));
   });
   app.post('/api/migrations/desktop', async request => { admin(request); const result = await workspace.importDesktop(); access.migrate(); await workspace.store.save(); return result; });
-  app.post<{ Body: { directory: string; name?: string } }>('/api/projects', { schema: { body: object({ directory: string(2000), name: string(100) }, ['directory']) } }, async (request, reply) => {
-    admin(request); const p = await workspace.addProject(request.body.directory, request.body.name); access.migrate(); await workspace.store.save(); return reply.code(201).send({ id: p.id, name: p.name, directory: p.directory, chatCount: p.chats.length });
+  app.post<{ Body: { directory?: string; name?: string } }>('/api/projects', { schema: { body: object({ directory: string(2000), name: string(100) }) } }, async (request, reply) => {
+    const { directory, name } = request.body;
+    if (directory !== undefined) admin(request);
+    const project = directory === undefined
+      ? await workspace.createProject(name ?? '', () => {
+        const u = user(request);
+        if (!canCreateProject(u)) throw new BridgeError('Рабочая роль не позволяет создавать проекты.', 403);
+        return u.id;
+      })
+      : await workspace.addProject(directory, name);
+    if (directory !== undefined) { access.migrate(); await workspace.store.save(); }
+    return reply.code(201).send({ id: project.id, name: project.name, directory: project.directory, chatCount: project.chats.length });
   });
   app.get<{ Params: { projectId: string } }>('/api/projects/:projectId/members', async request => { admin(request); return { memberIds: workspace.project(request.params.projectId).memberIds ?? [] }; });
   app.patch<{ Params: { projectId: string }; Body: { memberIds: string[] } }>('/api/projects/:projectId/members', { schema: { body: object({ memberIds: { type: 'array', maxItems: 1000, uniqueItems: true, items: string(100) } }, ['memberIds']) } }, async request => access.members(user(request), request.params.projectId, request.body.memberIds));

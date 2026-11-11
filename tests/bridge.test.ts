@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile, readFile, copyFile, symlink } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, copyFile, realpath, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
@@ -46,6 +46,13 @@ test('model arguments are explicit on first run and resume, and reject flag inje
 test('Codex model catalog follows stdio handshake, pagination and hides invisible entries', async () => {
   const client = new CodexClient([fakeFile]); const catalog = await client.listModels(process.execPath);
   assert.deepEqual(catalog.models.map(m => m.id), ['test-a', 'test-b']); assert.equal(catalog.models[0].name, 'Test Model A'); assert.equal(catalog.models[0].isDefault, true);
+});
+test('Codex quota windows and reset count come from app-server', async () => {
+  const client = new CodexClient([fakeFile]);
+  assert.deepEqual(await client.readLimits(process.execPath), {
+    buckets: [{ name: 'Codex', windows: [{ usedPercent: 25, windowDurationMins: 300, resetsAt: 1794397200 }] }],
+    resetsAvailable: 2
+  });
 });
 test('per-chat and default models reach the process, persist after reload and preserve session on model switch', async () => {
   const { workspace, store, project, chat, folder } = await fixture();
@@ -176,7 +183,7 @@ test('XLSX, CSV and PDF preview; limits; upload path isolation; symlink refused'
   let content = '%PDF-1.4\n'; const objects = ['<< /Type /Catalog /Pages 2 0 R >>', '<< /Type /Pages /Kids [3 0 R] /Count 1 >>', '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>', '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>', '<< /Length 37 >>\nstream\nBT /F1 12 Tf 10 100 Td (Coffee 42) Tj ET\nendstream'];
   const offsets = [0]; for (let i = 0; i < objects.length; i++) { offsets.push(Buffer.byteLength(content)); content += `${i + 1} 0 obj\n${objects[i]}\nendobj\n`; } const xref = Buffer.byteLength(content);
   content += `xref\n0 6\n0000000000 65535 f \n${offsets.slice(1).map(o => String(o).padStart(10, '0') + ' 00000 n \n').join('')}trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF`; await writeFile(pdf, content); assert.match(await documentText(pdf), /Coffee 42/);
-  const a = await uploadAttachment(root, '../../report.csv', Buffer.from('x,42')); const b = await uploadAttachment(root, '../../report.csv', Buffer.from('x,17')); assert.notEqual(a.path, b.path); assert.ok(a.path.startsWith(path.join(root, '.bridge'))); assert.equal(a.name, 'report.csv');
+  const a = await uploadAttachment(root, '../../report.csv', Buffer.from('x,42')); const b = await uploadAttachment(root, '../../report.csv', Buffer.from('x,17')); assert.notEqual(a.path, b.path); assert.ok(a.path.startsWith(path.join(await realpath(root), '.bridge') + path.sep)); assert.equal(a.name, 'report.csv');
   const context = await buildContext(root, [a], true, new AbortController().signal); assert.ok(context.length <= 24_000); assert.match(context, /Продажи.xlsx/);
   const linked = await temp(), outside = await temp(); await symlink(outside, path.join(linked, '.bridge'), 'junction'); await assert.rejects(uploadAttachment(linked, 'test.txt', Buffer.from('test')));
 });

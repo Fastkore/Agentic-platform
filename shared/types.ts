@@ -1,6 +1,8 @@
 export interface Settings { cliPath: string; allowWrite: boolean; includePreviews: boolean; model: string }
 export interface ModelOption { id: string; name: string; description: string; isDefault: boolean }
 export interface ModelCatalog { models: ModelOption[]; fetchedAt: string; source: 'codex' }
+export interface LimitWindow { usedPercent: number; windowDurationMins: number | null; resetsAt: number | null }
+export interface CodexLimits { buckets: { name: string; windows: LimitWindow[] }[]; resetsAvailable: number | null }
 export interface Usage { inputTokens: number; cachedInputTokens: number; outputTokens: number }
 export type RunStatus = 'queued' | 'running' | 'complete' | 'cancelled' | 'error' | 'interrupted';
 export interface Attachment { id: string; name: string; path: string; size: number; ownerId?: string }
@@ -17,7 +19,7 @@ export interface WorkRole { id: string; name: string; enabled: boolean; profileI
 export interface AgentProfile { id: string; name: string; description: string; instructions: string; enabled: boolean; model: string; reasoningEffort: 'low' | 'medium' | 'high' | 'xhigh'; operationIds: string[]; datasetIds: string[]; skillIds: string[]; allowWrite: boolean; outputMode: 'chat' | 'restricted'; revision: number }
 export interface Dataset { id: string; name: string; directory: string; projectIds: string[]; classification: 'shared' | 'restricted'; revision: number }
 export interface Corporate { roles: WorkRole[]; profiles: AgentProfile[]; datasets: Dataset[] }
-export interface AgentSummary { id: string; name: string; description: string; available: boolean; unavailableReason?: string; model: string }
+export interface AgentSummary { id: string; name: string; description: string; available: boolean; unavailableReason?: string; model: string; allowWrite?: boolean }
 export interface UserRecord extends User { passwordHash: string; createdAt: string }
 export interface Credential { id: string; userId: string; kind: 'session' | 'api'; hash: string; name: string; createdAt: string; expiresAt?: string; source?: 'local' | 'fastkore'; installationId?: string; externalUserId?: string }
 export interface ApiKeyInfo { id: string; name: string; createdAt: string }
@@ -27,4 +29,4 @@ export interface State { schemaVersion: 1; settings: Settings; projects: Project
 export interface CliInfo { path: string; version: string; authentication: 'chatgpt' | 'api-key' | 'signed-out' | 'unknown'; status: string }
 export interface ProjectSummary { id: string; name: string; directory: string; chatCount: number }
 export interface ChatSummary { id: string; title: string; updatedAt: string; messageCount: number; ownerId?: string; ownerName?: string; visibility?: 'private' | 'project' }
-export interface Status { version: string; activeRun: Run | null; queuedRuns: Run[]; busy: boolean; executionDisabled?: boolean; user: User; setupRequired: boolean; cli: CliInfo | null; settings: Settings; addresses: string[]; port: number; lan: boolean; storageWarning?: string }
+export interface Status { version: string; activeRun: Run | null; queuedRuns: Run[]; busy: boolean; executionDisabled?: boolean; user: User; setupRequired: boolean; canCreateProject?: boolean; cli: CliInfo | null; settings: Settings; addresses: string[]; port: number; lan: boolean; storageWarning?: string }

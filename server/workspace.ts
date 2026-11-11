@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
-import { readFile, realpath, stat } from 'node:fs/promises';
-import type { Attachment, Chat, CliInfo, ErpContext, Job, ModelCatalog, Project, Run, Settings } from '../shared/types.js';
+import { mkdir, readFile, realpath, rmdir, stat } from 'node:fs/promises';
+import type { Attachment, Chat, CliInfo, CodexLimits, ErpContext, Job, ModelCatalog, Project, Run, Settings } from '../shared/types.js';
 import { Store, BridgeError, redact } from './store.js';
 import { type CodexRunner, discoverCli } from './codex.js';
 import { buildContext } from './documents.js';
@@ -17,6 +17,7 @@ export class Workspace {
   private authorizer?: (job: Job, run: Run) => void;
   private catalog?: { path: string; value: ModelCatalog };
   private catalogPending?: { path: string; promise: Promise<ModelCatalog> };
+  private limitsCache?: { path: string; expires: number; promise: Promise<CodexLimits | null> };
   constructor(readonly store: Store, private readonly codex: CodexRunner) { this.corporate = new CorporateAccess(store); }
   get activeRun() { return this.active?.run ?? null; }
   get queuedRuns() { return this.store.state.runs.filter(r => r.status === 'queued'); }
@@ -28,6 +29,30 @@ export class Workspace {
   chat(projectId: string, chatId: string): Chat { const c = this.project(projectId).chats.find(c => c.id === chatId); if (!c) throw new BridgeError('Диалог не найден в этом проекте.', 404); return c; }
   listProjects() { return this.store.state.projects.map(p => ({ id: p.id, name: p.name, directory: p.directory, chatCount: p.chats.length })); }
   listChats(projectId: string) { return this.project(projectId).chats.map(c => ({ id: c.id, title: c.title, updatedAt: c.updatedAt, messageCount: c.messages.length })); }
+  async createProject(name: string, authorize: () => string) {
+    this.writable();
+    name = name.trim();
+    if (!name) throw new BridgeError('Укажите название проекта.');
+    const root = path.resolve(process.env.BRIDGE_PROJECTS_DIR || path.join(this.store.root, 'projects'));
+    await mkdir(root, { recursive: true });
+    const id = randomUUID();
+    const directory = path.join(root, id);
+    await mkdir(directory);
+    try {
+      this.writable();
+      const project: Project = { id, name, directory, chats: [], attachments: [], memberIds: [authorize()] };
+      this.store.state.projects.push(project);
+      try { await this.store.save(); }
+      catch (error) {
+        this.store.state.projects = this.store.state.projects.filter(item => item.id !== id);
+        throw error;
+      }
+      return project;
+    } catch (error) {
+      await rmdir(directory).catch(() => {});
+      throw error;
+    }
+  }
   async addProject(directory: string, name?: string) {
     this.writable();
     if (!path.isAbsolute(directory)) throw new BridgeError('Укажите абсолютный путь к папке на сервере.');
@@ -64,6 +89,15 @@ export class Workspace {
     })();
     this.catalogPending = { path: cliPath, promise };
     try { return await promise; } finally { if (this.catalogPending?.promise === promise) this.catalogPending = undefined; }
+  }
+  async limits(): Promise<CodexLimits | null> {
+    if (process.env.BRIDGE_EXECUTION === 'disabled' || !this.codex.readLimits) return null;
+    const cliPath = this.store.state.settings.cliPath || await discoverCli();
+    if (!cliPath) return null;
+    if (this.limitsCache?.path === cliPath && Date.now() < this.limitsCache.expires) return this.limitsCache.promise;
+    const promise = this.codex.readLimits(cliPath).catch(() => null);
+    this.limitsCache = { path: cliPath, expires: Date.now() + 30_000, promise };
+    return promise;
   }
   private async validateModel(model: string) {
     if (model === '') return;
@@ -105,7 +139,7 @@ export class Workspace {
     }
     const pathChanged = settings.cliPath !== undefined && settings.cliPath !== this.store.state.settings.cliPath;
     this.store.state.settings = { ...this.store.state.settings, ...settings };
-    if (pathChanged) { this.cli = null; this.catalog = undefined; }
+    if (pathChanged) { this.cli = null; this.catalog = undefined; this.limitsCache = undefined; }
     await this.store.save(); return this.store.state.settings;
   }
   async inspect(signal?: AbortSignal) {

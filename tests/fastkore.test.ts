@@ -9,7 +9,7 @@ import { Store } from '../server/store.js';
 import { Workspace } from '../server/workspace.js';
 import { createApp } from '../server/app.js';
 import { audience, csrfFor, validateSsoConfig, validateTicketHttps, type TrustedInstallation } from '../server/fastkore.js';
-import { parseHostContext } from '../client/fastkore.js';
+import { parseHostContext, parseHostTheme } from '../client/fastkore.js';
 import { testCertificate } from './test-certificate.js';
 
 process.env.BRIDGE_EXECUTION = 'disabled'; // SSO pilot must never execute under the shared server OS identity.
@@ -50,6 +50,7 @@ test('SSO first entry uses exact external identity, grants nothing, and stores o
     const s = await f.login(); assert.match(s.header, /Secure; HttpOnly; SameSite=Lax; Max-Age=1800/); assert.match(s.header, /^__Host-/); assert.ok(!s.header.includes('Domain='));
     assert.notEqual(s.user.id, f.adminId); assert.equal(s.user.role, 'employee'); assert.equal(s.user.roleId, '');
     assert.deepEqual((await f.asCookie(s, 'GET', '/api/projects')).json(), []);
+    assert.equal((await f.asCookie(s, 'POST', '/api/projects', { name: 'Без назначенной роли' })).statusCode, 403);
     assert.deepEqual((await f.asCookie(s, 'GET', '/api/agents')).json(), []);
     assert.equal((await f.asCookie(s, 'GET', '/api/users')).statusCode, 403);
     assert.equal((await f.asCookie(s, 'POST', `/api/projects/${f.project.id}/chats`, {})).statusCode, 404);
@@ -193,6 +194,9 @@ test('unconfigured SSO and unsafe configuration stay closed; native messages are
     try { assert.equal((await app.inject({ method: 'POST', url: '/auth/fastkore/exchange' })).statusCode, 503); assert.equal((await app.inject({ url: '/api/auth/browser-session' })).json().authenticated, false); } finally { await app.close(); }
     const message = { type: 'fastkore.context', version: 1, entityType: 'ProductionOrder', entityId: '1677', suggestedAgent: 'estimator' };
     assert.deepEqual(parseHostContext(message), message); for (const value of [null, JSON.stringify(message), { ...message, version: 2 }, { ...message, entityId: '../secret\n' }, { ...message, script: 'alert(1)' }, { ...message, suggestedAgent: '--admin' }]) assert.equal(parseHostContext(value), null);
+    assert.equal(parseHostTheme({ type: 'fastkore.ui', version: 1, theme: 'dark' }), 'dark');
+    assert.equal(parseHostTheme({ type: 'fastkore.ui', version: 1, theme: 'system' }), null);
+    assert.equal(parseHostTheme({ type: 'fastkore.ui', version: 2, theme: 'light' }), null);
   } finally { await f.app.close(); }
 });
 
