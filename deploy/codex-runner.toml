@@ -1,0 +1,21 @@
+approval_policy = "never"
+default_permissions = "bridge-chat"
+web_search = "disabled"
+forced_login_method = "chatgpt"
+cli_auth_credentials_store = "file"
+
+[features]
+shell_tool = false
+shell_snapshot = false
+apps = false
+plugins = false
+multi_agent = false
+goals = false
+
+[permissions.bridge-chat.filesystem]
+":minimal" = "read"
+"/run/bridge-codex" = "deny"
+"/home/node/.codex" = "deny"
+
+[permissions.bridge-chat.network]
+enabled = false

@@ -1,0 +1,44 @@
+# The only shared filesystem is the Unix socket used by the platform.
+services:
+  app:
+    environment:
+      BRIDGE_EXECUTION: isolated
+      BRIDGE_CODEX_SOCKET: /run/bridge-codex/worker.sock
+    volumes:
+      - codex_socket:/run/bridge-codex:ro
+    depends_on:
+      codex:
+        condition: service_healthy
+  codex:
+    build:
+      context: .
+      dockerfile: Dockerfile.codex
+    restart: unless-stopped
+    init: true
+    read_only: true
+    user: "1000:1000"
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+      - seccomp=./deploy/codex-seccomp.json
+    pids_limit: 128
+    mem_limit: 1g
+    cpus: 2
+    environment:
+      HTTPS_PROXY: ${BRIDGE_CODEX_HTTPS_PROXY:-}
+    volumes:
+      - codex_socket:/run/bridge-codex
+      - codex_auth:/home/node/.codex
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    networks: [codex_egress]
+    healthcheck:
+      test: ["CMD", "node", "-e", "const r=require('node:http').get({socketPath:'/run/bridge-codex/worker.sock',path:'/health'},s=>{s.resume();process.exit(s.statusCode===200?0:1)});r.on('error',()=>process.exit(1))"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+volumes:
+  codex_socket:
+  codex_auth:
+networks:
+  codex_egress:

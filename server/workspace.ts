@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { mkdir, readFile, realpath, rmdir, stat } from 'node:fs/promises';
-import type { Attachment, Chat, CliInfo, CodexLimits, ErpContext, Job, ModelCatalog, Project, Run, Settings } from '../shared/types.js';
+import type { Attachment, Chat, CliInfo, CodexLimits, Job, ModelCatalog, Project, Run, Settings } from '../shared/types.js';
 import { Store, BridgeError, redact } from './store.js';
 import { type CodexRunner, discoverCli } from './codex.js';
 import { buildContext } from './documents.js';
@@ -12,19 +12,27 @@ export class Workspace {
   cli: CliInfo | null = null;
   private active: { run: Run; cancel: AbortController; task?: Promise<void> } | null = null;
   private stopping = false;
+  private cliLockedForSso = false;
+  lockCliForSso() { this.cliLockedForSso = true; }
   private started = false;
   private admissions: Promise<unknown> = Promise.resolve();
   private authorizer?: (job: Job, run: Run) => void;
   private catalog?: { path: string; value: ModelCatalog };
   private catalogPending?: { path: string; promise: Promise<ModelCatalog> };
   private limitsCache?: { path: string; expires: number; promise: Promise<CodexLimits | null> };
+  private limitsRevision = 0;
+  private connectionProbe?: { expires: number; promise: Promise<CliInfo> };
   constructor(readonly store: Store, private readonly codex: CodexRunner) { this.corporate = new CorporateAccess(store); }
+  get isolatedCodex() { return this.codex.isolated === true; }
+  get codexLimitsRevision() { return this.limitsRevision; }
+  get executionDisabled() { return this.cliLockedForSso || process.env.BRIDGE_EXECUTION === 'disabled' || process.env.BRIDGE_EXECUTION === 'isolated' && !this.isolatedCodex; }
   get activeRun() { return this.active?.run ?? null; }
   get queuedRuns() { return this.store.state.runs.filter(r => r.status === 'queued'); }
   get busy() { return !!this.active || this.queuedRuns.length > 0; }
   start(authorizer?: (job: Job, run: Run) => void) { this.authorizer ??= authorizer; this.started = true; this.pump(); }
   private writable() { if (this.stopping) throw new BridgeError('Сервер останавливается.', 503); }
-  private executionAllowed() { if (process.env.BRIDGE_EXECUTION === 'disabled') throw new BridgeError('Выполнение заданий выключено до проверки среды. Настройки и история доступны.', 503); }
+  private executionAllowed() { if (this.executionDisabled) throw new BridgeError('Выполнение заданий выключено до проверки среды. Настройки и история доступны.', 503); }
+  private async cliPath() { return this.isolatedCodex ? 'codex-worker' : this.store.state.settings.cliPath || await discoverCli(); }
   project(id: string): Project { const p = this.store.state.projects.find(p => p.id === id); if (!p) throw new BridgeError('Проект не найден.', 404); return p; }
   chat(projectId: string, chatId: string): Chat { const c = this.project(projectId).chats.find(c => c.id === chatId); if (!c) throw new BridgeError('Диалог не найден в этом проекте.', 404); return c; }
   listProjects() { return this.store.state.projects.map(p => ({ id: p.id, name: p.name, directory: p.directory, chatCount: p.chats.length })); }
@@ -62,12 +70,12 @@ export class Workspace {
     const project: Project = { id: randomUUID(), name: name?.trim() || path.basename(resolved) || resolved, directory: resolved, chats: [], attachments: [] };
     this.store.state.projects.push(project); await this.store.save(); return project;
   }
-  async addChat(projectId: string, title?: string, model = '', ownerId?: string, authorize?: () => void, agentProfileId = 'universal', erpContext?: ErpContext) {
+  async addChat(projectId: string, title?: string, model = '', ownerId?: string, authorize?: () => void, agentProfileId = 'universal') {
     this.writable();
     await this.validateModel(model);
     authorize?.();
     this.corporate.profile(this.store.state.security?.users.find(u => u.id === ownerId), agentProfileId);
-    const chat: Chat = { id: randomUUID(), title: title?.trim() || 'Новый диалог', updatedAt: new Date().toISOString(), messages: [], model, agentProfileId, ownerId, visibility: 'private', ...(erpContext ? { erpContext: { ...erpContext } } : {}) };
+    const chat: Chat = { id: randomUUID(), title: title?.trim() || 'Новый диалог', updatedAt: new Date().toISOString(), messages: [], model, agentProfileId, ownerId, visibility: 'private' };
     this.project(projectId).chats.unshift(chat); await this.store.save(); return chat;
   }
   async changeChatModel(projectId: string, chatId: string, model: string, authorize?: () => void) {
@@ -77,7 +85,8 @@ export class Workspace {
     authorize?.(); const chat = this.chat(projectId, chatId); chat.model = model; await this.store.save(); return chat;
   }
   async models(force = false): Promise<ModelCatalog> {
-    const cliPath = this.store.state.settings.cliPath || await discoverCli();
+    if (this.cliLockedForSso) this.executionAllowed();
+    const cliPath = await this.cliPath();
     if (!cliPath) throw new BridgeError('Codex CLI не найден. Укажите путь к codex.exe в настройках.');
     if (!force && this.catalog?.path === cliPath && Date.now() - Date.parse(this.catalog.value.fetchedAt) < 300_000) return this.catalog.value;
     if (this.catalogPending?.path === cliPath) return this.catalogPending.promise;
@@ -91,12 +100,16 @@ export class Workspace {
     try { return await promise; } finally { if (this.catalogPending?.promise === promise) this.catalogPending = undefined; }
   }
   async limits(): Promise<CodexLimits | null> {
-    if (process.env.BRIDGE_EXECUTION === 'disabled' || !this.codex.readLimits) return null;
-    const cliPath = this.store.state.settings.cliPath || await discoverCli();
+    if (this.executionDisabled || !this.codex.readLimits) return null;
+    if (this.isolatedCodex && (await this.codexConnection())?.authentication !== 'chatgpt') return null;
+    const cliPath = await this.cliPath();
     if (!cliPath) return null;
     if (this.limitsCache?.path === cliPath && Date.now() < this.limitsCache.expires) return this.limitsCache.promise;
-    const promise = this.codex.readLimits(cliPath).catch(() => null);
-    this.limitsCache = { path: cliPath, expires: Date.now() + 30_000, promise };
+    const promise = this.codex.readLimits(cliPath).catch(() => null).then(limits => {
+      if (this.limitsCache?.promise === promise) this.limitsCache.expires = Date.now() + 15_000;
+      return limits;
+    });
+    this.limitsCache = { path: cliPath, expires: Infinity, promise };
     return promise;
   }
   private async validateModel(model: string) {
@@ -143,17 +156,39 @@ export class Workspace {
     await this.store.save(); return this.store.state.settings;
   }
   async inspect(signal?: AbortSignal) {
-    const cliPath = this.store.state.settings.cliPath || await discoverCli();
+    if (this.cliLockedForSso) this.executionAllowed();
+    const cliPath = await this.cliPath();
     if (!cliPath) throw new BridgeError('Codex CLI не найден. Укажите путь к codex.exe в настройках.');
     const info = await this.codex.inspect(cliPath, signal); this.cli = info; return info;
+  }
+  async codexConnection(refresh = false) {
+    if (!this.isolatedCodex || this.executionDisabled) return this.cli;
+    if (this.connectionProbe && (this.connectionProbe.expires === Infinity || !refresh && Date.now() < this.connectionProbe.expires)) return this.connectionProbe.promise;
+    const previous = this.cli?.authentication;
+    const promise = this.inspect().catch((): CliInfo => ({ path: '', version: '', authentication: 'unknown', status: 'Исполнитель Codex недоступен.' }))
+      .then(info => {
+        if (previous !== info.authentication || info.authentication !== 'chatgpt') {
+          this.catalog = undefined;
+          this.limitsCache = undefined;
+        }
+        this.cli = info;
+        if (this.connectionProbe?.promise === promise) this.connectionProbe.expires = Date.now() + 5_000;
+        return info;
+      });
+    this.connectionProbe = { expires: Infinity, promise };
+    return promise;
   }
   private async requireChatGPT(signal: AbortSignal) {
     const info = await this.inspect(signal);
     if (info.authentication !== 'chatgpt') throw new BridgeError(info.authentication === 'api-key' ? 'Обнаружен API-ключ. Запрос заблокирован: выполните вход Codex через ChatGPT.' : 'Нужен подтверждённый вход Codex через ChatGPT.');
-    return info.path;
+    return this.isolatedCodex ? 'codex-worker' : info.path;
   }
   async send(projectId: string, chatId: string, text: string, attachmentIds: string[], clientRequestId?: string, model?: string, authorize?: () => void, author?: { id: string; name: string; credentialId?: string }) {
     this.executionAllowed();
+    if (this.isolatedCodex) {
+      if (attachmentIds.length) throw new BridgeError('Исполнитель Codex принимает только текст сообщений.', 400);
+      if ((await this.codexConnection())?.authentication !== 'chatgpt') throw new BridgeError('На исполнителе требуется вход в ChatGPT.', 503);
+    }
     this.writable(); if (model !== undefined) await this.validateModel(model);
     const hash = createHash('sha256').update(JSON.stringify({ projectId, chatId, text, attachmentIds: [...attachmentIds].sort(), model: model ?? null })).digest('hex');
     return this.admit(async () => {
@@ -182,6 +217,7 @@ export class Workspace {
   }
   async subscription() {
     this.executionAllowed();
+    if (this.isolatedCodex && (await this.codexConnection())?.authentication !== 'chatgpt') throw new BridgeError('На исполнителе требуется вход в ChatGPT.', 503);
     return this.admit(async () => {
       this.writable(); if (this.busy) throw new BridgeError('Дождитесь завершения заданий.', 409);
       const block = this.corporate.unavailable(this.corporate.data.profiles.find(p => p.id === 'universal')!);
@@ -192,7 +228,7 @@ export class Workspace {
     });
   }
   private pump() {
-    if (!this.started || this.stopping || this.active || process.env.BRIDGE_EXECUTION === 'disabled') return;
+    if (!this.started || this.stopping || this.active || this.executionDisabled) return;
     const run = this.queuedRuns[0]; if (!run) return;
     const active = { run, cancel: new AbortController(), task: undefined as Promise<void> | undefined };
     this.active = active;
@@ -249,6 +285,8 @@ export class Workspace {
         if (message.runId === run.id && message.role === 'assistant') { message.status = run.status; message.text = run.error ?? ''; }
     } finally {
       clearInterval(revocation); run.completedAt = new Date().toISOString();
+      this.limitsCache = undefined;
+      this.limitsRevision++;
       try { await this.store.save(); await this.store.log('run', `id=${run.id}; status=${run.status}`); }
       catch { run.status = 'error'; run.response = undefined; run.error = 'Не удалось сохранить результат на диске.'; this.stopping = true; }
       finally { if (this.active === active) this.active = null; this.pump(); }
@@ -258,11 +296,11 @@ export class Workspace {
     const project = this.project(run.projectId!), chat = this.chat(project.id, run.chatId!);
     const actor = this.store.state.security?.users.find(u => u.id === job.authorId);
     const profile = this.corporate.profile(actor, run.agentProfileId ?? 'universal');
-    const scope = this.corporate.scope(actor, profile, project.id);
+    const scope = (this.isolatedCodex ? 'isolated:' : '') + this.corporate.scope(actor, profile, project.id);
     const instructions = this.corporate.instructions(actor, profile);
-    if (chat.sessionScope !== scope && (chat.sessionScope || profile.id !== 'universal' || profile.revision !== 1 || instructions)) chat.sessionId = undefined;
+    if (chat.sessionScope !== scope && (this.isolatedCodex || chat.sessionScope || profile.id !== 'universal' || profile.revision !== 1 || instructions)) chat.sessionId = undefined;
     chat.sessionScope = scope;
-    if (!(await stat(project.directory)).isDirectory()) throw new BridgeError('Папка проекта недоступна.');
+    if (!this.isolatedCodex && !(await stat(project.directory)).isDirectory()) throw new BridgeError('Папка проекта недоступна.');
     const attachments = job.attachmentIds.map(id => project.attachments.find(a => a.id === id)!);
     // Admission is durable before execution; messages appear only after Codex auth has been checked.
     chat.messages.push({ id: randomUUID(), role: 'user', text: job.text, status: 'complete', createdAt: run.createdAt, attachments, runId: run.id, authorId: job.authorId });
@@ -272,8 +310,8 @@ export class Workspace {
     await this.store.save();
     run.progress = 'Подготовка документов…';
     const settings = { ...this.store.state.settings };
-    const context = settings.includePreviews ? await buildContext(project.directory, attachments, true, signal) : attachments.map(a => a.path).join('\n');
-    const result = await this.codex.run({ cliPath, workspace: project.directory, prompt: (instructions ? '<workspace_instructions>\n' + instructions + '\n</workspace_instructions>\n\n' : '') + job.text + (context ? '\n\n<local_document_context>\n' + context + '\n</local_document_context>' : ''), sessionId: chat.sessionId, allowWrite: settings.allowWrite && profile.allowWrite, model: run.model, reasoningEffort: profile.reasoningEffort }, async event => {
+    const context = this.isolatedCodex ? '' : settings.includePreviews ? await buildContext(project.directory, attachments, true, signal) : attachments.map(a => a.path).join('\n');
+    const result = await this.codex.run({ cliPath, workspace: project.directory, prompt: (instructions ? '<workspace_instructions>\n' + instructions + '\n</workspace_instructions>\n\n' : '') + job.text + (context ? '\n\n<local_document_context>\n' + context + '\n</local_document_context>' : ''), sessionId: chat.sessionId, allowWrite: !this.isolatedCodex && settings.allowWrite && profile.allowWrite, model: run.model, reasoningEffort: profile.reasoningEffort }, async event => {
       this.checkJob(job, run); signal.throwIfAborted();
       if (event.kind === 'session') {
         if (chat.sessionId && chat.sessionId !== event.text) throw new BridgeError('Неожиданная замена сессии Codex.');

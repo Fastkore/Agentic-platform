@@ -3,6 +3,7 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { Store } from './store.js';
 import { CodexClient } from './codex.js';
+import { RemoteCodexRunner } from './codex-remote.js';
 import { Workspace } from './workspace.js';
 import { addresses, createApp } from './app.js';
 
@@ -28,7 +29,9 @@ const cleanup = async () => { if (!cleaned) { cleaned = true; await unlink(lock)
 try {
   const store = new Store(root);
   await store.save();
-  const workspace = new Workspace(store, new CodexClient());
+  const socket = process.env.BRIDGE_CODEX_SOCKET;
+  if (process.env.BRIDGE_EXECUTION === 'isolated' && (!socket || !path.isAbsolute(socket))) throw new Error('Для BRIDGE_EXECUTION=isolated нужен абсолютный BRIDGE_CODEX_SOCKET.');
+  const workspace = new Workspace(store, socket ? new RemoteCodexRunner(socket) : new CodexClient());
   const app = await createApp(workspace, { port, lan, clientRoot: path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../client') });
   let stopping = false;
   const stop = async () => { if (stopping) return; stopping = true; await workspace.shutdown(); await app.close(); await cleanup(); };

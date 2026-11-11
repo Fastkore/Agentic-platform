@@ -22,11 +22,24 @@ export interface Corporate { roles: WorkRole[]; profiles: AgentProfile[]; datase
 export interface AgentSummary { id: string; name: string; description: string; available: boolean; unavailableReason?: string; model: string; allowWrite?: boolean }
 export interface UserRecord extends User { passwordHash: string; createdAt: string }
 export interface Credential { id: string; userId: string; kind: 'session' | 'api'; hash: string; name: string; createdAt: string; expiresAt?: string; source?: 'local' | 'fastkore'; installationId?: string; externalUserId?: string }
-export interface ApiKeyInfo { id: string; name: string; createdAt: string }
 export interface AuditEvent { id: string; actorId: string; action: string; targetId: string; createdAt: string }
 export interface Security { users: UserRecord[]; credentials: Credential[]; audit: AuditEvent[] }
-export interface State { schemaVersion: 1; settings: Settings; projects: Project[]; runs: Run[]; jobs?: Job[]; externalIdentities?: ExternalIdentity[]; sso?: { disabledInstallationIds: string[] }; security?: Security; corporate?: Corporate }
+export interface FastkoreTlsInfo { origin: string; fingerprint: string; subject: string; expiresAt: string }
+export interface FastkoreTlsTrust extends FastkoreTlsInfo { pem: string }
+export interface FastkoreInstallation { id: string; name: string; validateTicketUrl: string; enabled: boolean; autoProvision: true; defaultRoleId: 'sso_pending'; sessionTtlSeconds: 1800; pairingStatus: 'manual' | 'unpaired' | 'pending' | 'paired'; pairedAt?: string; pairingRotationPending?: boolean; tlsFingerprint?: string; tlsConfirmationRequired?: boolean }
+export interface FastkoreKeyIssue { installationId: string; connectionKey: string; erpKeyVerifier: string }
+export interface FastkoreAuthentication { source: 'fastkore'; installationId: string; externalUserId: string; expiresAt: string; csrfToken: string; canChangePassword: false }
+export interface FastkorePairingAttempt {
+  codeHash: string; origin: string; revision: string; expiresAt: number; rotate: boolean;
+  encryptedKey?: string; completed?: true;
+}
+export interface StoredFastkoreInstallation extends Omit<FastkoreInstallation, 'pairingStatus' | 'pairedAt' | 'pairingRotationPending' | 'tlsFingerprint' | 'tlsConfirmationRequired'> {
+  revision: string; encryptedKey: string;
+  pairing?: { required: boolean; binding?: { origin: string; pairedAt: string }; attempt?: FastkorePairingAttempt };
+  tls?: { trust?: FastkoreTlsTrust };
+}
+export interface State { schemaVersion: 1; settings: Settings; projects: Project[]; runs: Run[]; jobs?: Job[]; externalIdentities?: ExternalIdentity[]; sso?: { installations?: StoredFastkoreInstallation[] }; security?: Security; corporate?: Corporate }
 export interface CliInfo { path: string; version: string; authentication: 'chatgpt' | 'api-key' | 'signed-out' | 'unknown'; status: string }
 export interface ProjectSummary { id: string; name: string; directory: string; chatCount: number }
 export interface ChatSummary { id: string; title: string; updatedAt: string; messageCount: number; ownerId?: string; ownerName?: string; visibility?: 'private' | 'project' }
-export interface Status { version: string; activeRun: Run | null; queuedRuns: Run[]; busy: boolean; executionDisabled?: boolean; user: User; setupRequired: boolean; canCreateProject?: boolean; cli: CliInfo | null; settings: Settings; addresses: string[]; port: number; lan: boolean; storageWarning?: string }
+export interface Status { version: string; activeRun: Run | null; queuedRuns: Run[]; busy: boolean; executionDisabled?: boolean; isolatedCodex?: boolean; codexLimitsRevision?: number; user: User; setupRequired: boolean; canCreateProject?: boolean; cli: CliInfo | null; settings: Settings; addresses: string[]; port: number; lan: boolean; storageWarning?: string }

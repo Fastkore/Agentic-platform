@@ -8,7 +8,8 @@ import type { CliInfo, CodexLimits, LimitWindow, ModelCatalog, ModelOption, Usag
 
 export interface CodexEvent { kind: 'session' | 'message' | 'progress' | 'usage'; text?: string; usage?: Usage }
 export interface CodexRequest { cliPath: string; workspace: string; prompt: string; sessionId?: string; allowWrite: boolean; ephemeral?: boolean; model?: string; reasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh' }
-export interface CodexRunner { inspect(cliPath: string, signal?: AbortSignal): Promise<CliInfo>; listModels?(cliPath: string): Promise<ModelCatalog>; readLimits?(cliPath: string): Promise<CodexLimits | null>; run(request: CodexRequest, onEvent: (event: CodexEvent) => Promise<void>, signal: AbortSignal): Promise<{ sessionId?: string; response: string; usage?: Usage }> }
+export interface CodexResult { sessionId?: string; response: string; usage?: Usage }
+export interface CodexRunner { readonly isolated?: boolean; inspect(cliPath: string, signal?: AbortSignal): Promise<CliInfo>; listModels?(cliPath: string): Promise<ModelCatalog>; readLimits?(cliPath: string): Promise<CodexLimits | null>; run(request: CodexRequest, onEvent: (event: CodexEvent) => Promise<void>, signal: AbortSignal): Promise<CodexResult> }
 type RateWindow = { usedPercent?: number; windowDurationMins?: number | null; resetsAt?: number | null };
 type RateBucket = { limitId?: string | null; limitName?: string | null; primary?: RateWindow | null; secondary?: RateWindow | null };
 type RateResponse = {
@@ -26,8 +27,11 @@ function rateWindow(window?: RateWindow | null): LimitWindow[] {
   }];
 }
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-export function buildArguments(r: CodexRequest) {
-  const args = ['-a', 'never', '-c', 'model_provider="openai"', 'exec', '--sandbox', r.allowWrite ? 'workspace-write' : 'read-only', '--cd', path.resolve(r.workspace), '--skip-git-repo-check', '--json', '--color', 'never'];
+export function buildArguments(r: CodexRequest, mode: 'local' | 'worker' = 'local') {
+  const sandbox = mode === 'worker'
+    ? ['--ignore-user-config', '--ignore-rules']
+    : ['--sandbox', r.allowWrite ? 'workspace-write' : 'read-only'];
+  const args = ['-a', 'never', '-c', 'model_provider="openai"', 'exec', ...sandbox, '--cd', path.resolve(r.workspace), '--skip-git-repo-check', '--json', '--color', 'never'];
   if (r.model) { if (!/^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,127}$/.test(r.model)) throw new BridgeError('Некорректный идентификатор модели.'); args.push('--model', r.model); }
   if (r.reasoningEffort) { if (!['low', 'medium', 'high', 'xhigh'].includes(r.reasoningEffort)) throw new BridgeError('Некорректный уровень рассуждения.'); args.push('-c', `model_reasoning_effort="${r.reasoningEffort}"`); }
   if (r.ephemeral) args.push('--ephemeral');
@@ -71,10 +75,14 @@ async function killTree(child: ChildProcess) {
 }
 export class CodexClient implements CodexRunner {
   // Prefix is injected by process integration tests only. No HTTP route can change it.
-  constructor(private readonly testPrefix: string[] = []) {}
+  constructor(private readonly testPrefix: string[] = [], private readonly mode: 'local' | 'worker' = 'local') {}
   private start(exe: string, args: string[], cwd?: string) {
     if (!existsSync(exe) || (process.platform === 'win32' && path.extname(exe).toLowerCase() !== '.exe')) throw new BridgeError('Укажите существующий исполняемый файл Codex CLI.');
-    return spawn(exe, [...this.testPrefix, ...args], { cwd, detached: process.platform !== 'win32', windowsHide: true, shell: false, stdio: ['pipe', 'pipe', 'pipe'] });
+    const env = this.mode === 'worker' ? {
+      PATH: process.env.PATH, HOME: process.env.HOME, CODEX_HOME: process.env.CODEX_HOME, LANG: process.env.LANG,
+      HTTPS_PROXY: process.env.HTTPS_PROXY,
+    } : process.env;
+    return spawn(exe, [...this.testPrefix, ...args], { cwd, env, detached: process.platform !== 'win32', windowsHide: true, shell: false, stdio: ['pipe', 'pipe', 'pipe'] });
   }
   private async capture(exe: string, args: string[], signal?: AbortSignal) {
     signal?.throwIfAborted();
@@ -173,7 +181,7 @@ export class CodexClient implements CodexRunner {
   }
   async run(request: CodexRequest, onEvent: (event: CodexEvent) => Promise<void>, signal: AbortSignal) {
     signal.throwIfAborted();
-    const child = this.start(request.cliPath, buildArguments(request), request.workspace);
+    const child = this.start(request.cliPath, buildArguments(request, this.mode), request.workspace);
     let stderr = '', response = '', sessionId = request.sessionId, usage: Usage | undefined, completed = false, failed = false, error = '';
     const seen = new Set<string>();
     const closed = new Promise<number | null>((resolve, reject) => { child.on('error', reject); child.on('close', resolve); });

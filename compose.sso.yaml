@@ -4,12 +4,13 @@ services:
   app:
     environment:
       BRIDGE_TRUST_PROXY: ${BRIDGE_TRUST_PROXY:?Set exact proxy address seen by the app}
-      BRIDGE_SSO_CONFIG: /run/bridge-config/fastkore-sso.json
+      BRIDGE_SSO_KEY_FILE: /run/secrets/fastkore-sso-key
+      NODE_EXTRA_CA_CERTS: ${BRIDGE_FASTKORE_CA_FILE:-}
     volumes:
-      - ./private/fastkore-sso.json:/run/bridge-config/fastkore-sso.json:ro
+      - ./private/fastkore-ca:/run/fastkore-ca:ro
     secrets:
-      - source: fastkore_validation
-        target: fastkore-validation
+      - source: fastkore_sso_key
+        target: fastkore-sso-key
 secrets:
-  fastkore_validation:
-    file: ./private/fastkore-validation
+  fastkore_sso_key:
+    file: ./private/fastkore-sso.key

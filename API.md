@@ -2,24 +2,21 @@
 
 Базовый адрес: `http://<IP-сервера>:8787`. На том же адресе `/` открывает веб-чат.
 
-Запросы автоматизации требуют `Authorization: Bearer <личный ключ Bridge>`. Веб-вход Fastkore использует отдельную cookie-сессию с CSRF; правила описаны ниже. Создайте ключ в разделе «API» после входа по своему логину и паролю. Ключ OpenAI не нужен. Секрет показывается один раз; API хранит только хеш. Права ключа — текущие права пользователя; отзыв ключа, отключение пользователя и смена пароля прекращают доступ. Старый общий ключ версии 0.3 отвергается.
+HTTP-маршруты обслуживают веб-интерфейс. Для локального администратора интерфейс передаёт временный токен сеанса через `Authorization: Bearer`. Сотрудники используют cookie-сессию Fastkore с CSRF. Персональные ключи для внешних клиентов отозваны, маршруты их выпуска удалены.
 
 Руководитель видит все проекты и чаты. Сотрудник — назначенные проекты, свои чаты и общие чаты проекта. Общие чаты других авторов доступны сотруднику только для чтения. Новые чаты личные; видимость меняет руководитель. Автор и руководители могут продолжать чат, менять модель и отменять его задания. Для недоступного проекта/чата/задания возвращается 404; административная операция сотрудника — 403. Проекты и количество чатов также отфильтрованы.
 
-## Учётные записи и ключи
+## Учётные записи и сеансы
 
 | Метод | Путь | Тело / назначение |
 | --- | --- | --- |
-| POST | /api/auth/login | {username, password}; без токена. Возвращает token (сеанс 12 часов) и user |
+| POST | /api/auth/login | {username, password}; локальный вход администратора. Возвращает token (сеанс 12 часов) и user |
 | GET | /api/auth/me | {user, setupRequired}; без хешей паролей |
-| POST | /api/auth/logout | Отзывает текущий сеанс/ключ |
-| POST | /api/auth/password | {currentPassword, password}; только сеанс браузера. Возвращает новый сеанс, отзывает остальные сеансы и все ключи пользователя |
-| GET | /api/auth/keys | Личные ключи: [{id, name, createdAt}]; без секретов |
-| POST | /api/auth/keys | {name}; только сеанс браузера. 201: {id, name, createdAt, token}; секрет один раз |
-| DELETE | /api/auth/keys/{keyId} | Отозвать свой ключ |
+| POST | /api/auth/logout | Отзывает текущий сеанс |
+| POST | /api/auth/password | {currentPassword, password}; локальный вход администратора. Возвращает новый сеанс и отзывает остальные сеансы пользователя |
 | GET | /api/users | Только руководитель: публичные данные учётных записей |
-| POST | /api/users | Только руководитель: {username, name, password, role: employee или admin} |
-| PATCH | /api/users/{userId} | Только руководитель: {disabled? , password?}; отключение/пароль отзывают сеансы и ключи |
+| POST | /api/users | Локальный администратор может добавить администратора `{username, name, password, role:"admin"}`. Профили сотрудников создаются при входе из ERP |
+| PATCH | /api/users/{userId} | Только руководитель. Отключение учётной записи или смена пароля администратора отзывает её сеансы |
 | GET | /api/projects/{projectId}/members | Только руководитель: {memberIds} |
 | PATCH | /api/projects/{projectId}/members | Только руководитель: {memberIds: [userId, ...]} |
 | PATCH | /api/projects/{projectId}/chats/{chatId}/visibility | Только руководитель: {visibility: private или project} |
@@ -97,54 +94,9 @@ GET /api/models возвращает `{models: [{id, name, description, isDefaul
 
 Сохраните cliPath отдельно, прежде чем менять модель: API не принимает в одном PATCH одновременную смену пути к CLI и непустой модели.
 
-## Пример PowerShell
-
-```powershell
-$base = 'http://192.168.2.88:8787'
-$key = Read-Host 'Личный ключ API Bridge'
-$headers = @{ Authorization = 'Bearer ' + $key }
-$projects = @(Invoke-RestMethod "$base/api/projects" -Headers $headers)
-$projectId = $projects[0].id
-$chats = @(Invoke-RestMethod "$base/api/projects/$projectId/chats" -Headers $headers)
-# Если список пуст, создайте чат:
-if ($chats.Count -eq 0) {
-    $chat = Invoke-RestMethod "$base/api/projects/$projectId/chats" `
-        -Method Post -Headers $headers -ContentType 'application/json' -Body '{}'
-    $chatId = $chat.id
-} else { $chatId = $chats[0].id }
-$body = @{ text = 'Что находится в проекте?'; clientRequestId = [guid]::NewGuid().ToString() } | ConvertTo-Json
-$run = Invoke-RestMethod "$base/api/projects/$projectId/chats/$chatId/messages" `
-    -Method Post -Headers $headers -ContentType 'application/json' `
-    -Body ([Text.Encoding]::UTF8.GetBytes($body))
-do {
-    Start-Sleep -Seconds 1
-    $result = Invoke-RestMethod "$base/api/runs/$($run.id)" -Headers $headers
-} while ($result.status -in @('queued','running'))
-$result | Select-Object status,response,error,usage
-```
-
-Если список проектов пуст, руководитель должен подключить папку и назначить пользователя участником проекта. Адрес выше — пример; используйте адрес, показанный вашим сервером.
-
-## Пример JavaScript / TypeScript
-
-```typescript
-const base = 'http://192.168.2.88:8787';
-const key = process.env.BRIDGE_ACCESS_KEY!;
-const headers = { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' };
-const response = await fetch(`${base}/api/projects/${projectId}/chats/${chatId}/messages`, {
-  method: 'POST', headers,
-  body: JSON.stringify({ text: 'Проанализируй таблицу', clientRequestId: crypto.randomUUID() })
-});
-if (!response.ok) throw new Error(await response.text());
-const job = await response.json();
-// Далее опрашивайте GET `${base}/api/runs/${job.id}` с тем же Authorization.
-```
-
-Это пример серверной интеграции. Браузерные запросы с других сайтов блокируются Origin-проверкой. Встроенный веб-чат работает на том же origin.
-
 ## Ошибки
 
-Тело ошибки: `{ "error": "Описание" }`. Основные коды: 400 — неверные поля/путь, 401 — отсутствует/неверен ключ, 403 — недостаточно прав, чужой Origin или удалённый local-login, 404 — неизвестный/недоступный объект, 409 — конфликт идентификатора/ревизии/настроек или закрытый пока профиль, 413 — превышен размер файла, 429 — ограничение входов/очереди, 503 — остановка сервера или выключенное исполнение. Ошибки выполнения модели приходят в состоянии уже принятого задания; не рассчитывайте получить их в исходном HTTP-запросе.
+Тело ошибки: `{ "error": "Описание" }`. Основные коды: 400 — неверные поля/путь, 401 — сеанс отсутствует или недействителен, 403 — недостаточно прав, чужой Origin или удалённый local-login, 404 — неизвестный/недоступный объект, 409 — конфликт идентификатора/ревизии/настроек или закрытый пока профиль, 413 — превышен размер файла, 429 — ограничение входов/очереди, 503 — остановка сервера или выключенное исполнение. Ошибки выполнения модели приходят в состоянии уже принятого задания; не рассчитывайте получить их в исходном HTTP-запросе.
 
 Прототип предназначен для доверенной офисной команды. Очередь устойчивая, с одним исполнителем. Рабочий Windows-сервер пока использует HTTP; Linux/HTTPS и изолированное выполнение не прошли целевую проверку. Файлы обычных проектов общие независимо от видимости чатов. Для LAN используйте START-LAN.cmd. Ограничение входов: 10 на IP за 10 минут.
 
@@ -174,26 +126,31 @@ POST /api/users дополнительно принимает roleId; PATCH /api
 
 Регистрация любого restricted-источника закрывает ВСЕ запуски Codex в этой версии до проверки изоляции. Ограничение нельзя обойти выбором universal или проверкой подписки. Хранение записи источника само по себе не создаёт изоляцию файлов.
 
-Маршруты /api/tasks ещё не реализованы. /auth/fastkore/exchange реализован как выключенный по умолчанию кандидат SSO; совместная приёмка с ERP остаётся открытой.
+Маршруты /api/tasks ещё не реализованы. Fastkore SSO по ТЗ 1.1 включается отдельной конфигурацией. Совместная приёмка с ERP остаётся открытой.
 
-## Веб-вход Fastkore · пилот v1
+## Веб-вход Fastkore · ТЗ 1.1
 
-Полная настройка и ограничения: [FASTKORE-SSO-PILOT.md](docs/FASTKORE-SSO-PILOT.md). Нужны HTTPS, конкретный доверенный proxy, BRIDGE_SSO_CONFIG и BRIDGE_EXECUTION=disabled. В обычном офисном режиме SSO выключен. Персональные API-ключи продолжают работать независимо от cookie транспорта.
+Нужны HTTPS, конкретный доверенный proxy, `BRIDGE_SSO_KEY_FILE` и изолированный исполнитель Codex либо `BRIDGE_EXECUTION=disabled`. Сотрудник входит через SSO. Профиль создаётся при первом успешном обмене по паре `installation_id` и GUID сотрудника и используется при последующих входах. [Настройка пилота](docs/FASTKORE-SSO-PILOT.md).
 
 | Метод | Путь | Назначение |
 | --- | --- | --- |
-| POST | /auth/fastkore/exchange | Только form-urlencoded `{installation_id,ticket}`, до 8 КБ. Проверяет билет на сервере ERP, устанавливает HttpOnly cookie, 303 на `/`. Другие поля и query string запрещены |
-| GET | /api/auth/browser-session | Без cookie: `{authenticated:false,fastkoreEnabled}`. С действующей SSO-cookie: `{authenticated:true,user,setupRequired:false,csrfToken,source:"fastkore"}`. Authorization намеренно не выбирает личность этого маршрута |
-| GET | /api/auth/me | Текущий пользователь, setupRequired и source (local/fastkore) |
-| POST | /api/auth/logout | Отзывает текущий сеанс; при SSO также удаляет cookie |
-| POST | /api/fastkore/context/validate | Только SSO-cookie: `{entityType,entityId,suggestedAgent?}` → `{context,suggestedAgent?,suggestionUnavailable}`. Установка берётся из сеанса, разрешения не выдаются |
-| GET | /api/admin/fastkore/installations | Администратор: ID, имя, типы объектов, enabled и configuredEnabled. Без секретов, URL и серверных путей |
-| PATCH | /api/admin/fastkore/installations/{id} | Администратор: `{enabled}`. Выключение отзывает все SSO-сеансы и выпущенные через них ключи установки. Включение не переопределяет выключенный серверный файл |
-| GET | /api/admin/fastkore/identities | Администратор: связи `{installationId,externalUserId,userId}` |
-| PUT | /api/admin/fastkore/identities | Администратор: те же три поля. Явная привязка к существующей активной учётной записи, отзыв старых SSO-сеансов и ключей этой внешней личности |
+| GET | /auth/fastkore/start?theme=light или dark | Ставит cookie подготовки на 120 секунд. Страница отправляет `fastkore.sso.challenge` в WebView2 |
+| POST | /auth/fastkore/exchange | Только form-urlencoded `{version,installation_id,ticket,login_challenge}`, до 4 КиБ. Удаляет cookie подготовки, ставит cookie сеанса и отвечает 303 на `/?embedded=fastkore&theme=…` |
+| GET | /api/auth/me | Для SSO возвращает `user`, `setupRequired`, `source` и `authentication` с ID установки и пользователя ERP, сроком сеанса, `csrfToken` и `canChangePassword:false` |
+| GET | /api/auth/browser-session | Для обычной загрузки сайта без Bearer. Без cookie возвращает `{authenticated:false,fastkoreEnabled}`. С SSO-cookie также возвращает `user`, `setupRequired:false` и `authentication` |
+| POST | /api/auth/logout | Отзывает текущий сеанс. При SSO также удаляет cookie |
+| GET | /api/admin/fastkore/installations | Локальный администратор получает метаданные установок без ключей |
+| POST | /api/admin/fastkore/tls/check | HTTPS и локальный администратор. `{validateTicketUrl}` запрашивает публичный CA ERP и возвращает `{origin,fingerprint,subject,expiresAt}` для сверки |
+| POST | /api/admin/fastkore/installations | HTTPS и локальный администратор. `{name,validateTicketUrl,setup:"pairing",tlsFingerprint}` повторно проверяет отпечаток и TLS, затем создаёт выключенную установку. Для прежних установок с системным доверием `tlsFingerprint` можно опустить. При `setup:"manual"` или запросе без `setup` ответ `{installationId,connectionKey,erpKeyVerifier}` выдаётся один раз |
+| POST | /api/admin/fastkore/installations/{id}/tls | HTTPS и локальный администратор. `{fingerprint}` подтверждает CA для сохранённого адреса установки. При смене подтверждённого CA прежние сеансы отзываются |
+| PATCH | /api/admin/fastkore/installations/{id} | Локальный администратор. Поля `name`, `enabled`, `validateTicketUrl`, `confirmValidateTicketUrl`. Для нового URL сначала отключите установку и подтвердите адрес |
+| POST | /api/admin/fastkore/installations/{id}/pair | HTTPS и локальный администратор. Принимает `{pairingCode}` и включает вход после подтверждения ERP. Возвращает метаданные установки |
+| POST | /api/admin/fastkore/installations/{id}/pair/rotate-key | HTTPS и локальный администратор. Принимает `{pairingCode}` и подтверждает новый ключ в ERP. После подтверждения отзывает сеансы и начатые обмены установки |
+| POST | /api/admin/fastkore/installations/{id}/rotate-key | HTTPS и локальный администратор. Ротация для ручного подключения. Однократно возвращает новый ключ и отзывает сеансы и начатые обмены установки |
+| GET, PUT | /api/admin/fastkore/identities | Локальный администратор просматривает или задаёт явные связи `{installationId,externalUserId,userId}` |
 
-Для изменяющих запросов с cookie обязательны `Origin: <BRIDGE_PUBLIC_ORIGIN>` и `X-Bridge-CSRF: <csrfToken>`. Заголовок выдаётся авторизованной странице через browser-session, не заменяет cookie и не сохраняется в localStorage. Смешанные cookie и Authorization получают 409; SSO-сессионный токен через Bearer не принимается. Персональный API-ключ по-прежнему передаётся только как Bearer. Ключ, созданный в SSO-сеансе, дополнительно привязан к его установке и внешней личности.
+ERP открывает `/?settings=fastkore` на публичном адресе платформы. Сервер платформы отправляет `{version:1,pairing_code,platform_origin,installation_id,erp_key_verifier}` на `/api/ai/pair` на origin из сохранённого адреса проверки билетов. Подтверждение ERP имеет формат `{version:1,paired:true,installation_id}`. При потере ответа повтор с тем же кодом использует тот же ключ. Поля `pairingStatus`, `pairedAt` и `pairingRotationPending` показывают состояние в метаданных установки.
 
-Первый SSO-вход создаёт пользователя без пароля, проектов и рабочей роли. Объединения по имени/логину нет. Новая cookie имеет срок 30 минут; этот срок ещё нужно согласовать с ERP. Отзыв только в ERP не прекращает старую cookie немедленно без дополнительного канала.
+Для изменяющих запросов с cookie обязательны `Origin: <BRIDGE_PUBLIC_ORIGIN>` и `X-CSRF-Token: <csrfToken>`, включая multipart и выход. Смешанные cookie и Authorization получают 409. SSO-сессионный токен через Bearer не принимается.
 
-Создание чата через `POST /api/projects/{projectId}/chats` дополнительно принимает `erpContext:{entityType,entityId}` в SSO-cookie-сеансе. installationId берётся из подтверждённой личности. Контекст сохраняется вместе с новым чатом; менять его PATCH-запросом нельзя. Новый объект означает явное создание отдельного диалога. Передача контекста сама по себе не читает ERP и не запускает Codex.
+Первый SSO-вход создаёт пользователя без пароля и проектов с ролью `sso_pending` без рабочих прав. Сеанс действует до 30 минут. Блокировка только в ERP учитывается при следующей выдаче или погашении билета. Контекст ERP-объекта не передаётся в этом протоколе.

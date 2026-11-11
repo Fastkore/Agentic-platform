@@ -5,7 +5,8 @@ import path from 'node:path';
 import type { State } from '../shared/types.js';
 
 export class BridgeError extends Error { constructor(message: string, public statusCode = 400) { super(message); } }
-export function redact(text: string) { return text.replace(/\b(?:sk-|ccb_[ks]_)[A-Za-z0-9_-]{8,}\b/g, '[REDACTED]').replace(/(Bearer\s+)[^\s"']+/gi, '$1[REDACTED]').replace(/((?:access_token|refresh_token|api_key|authorization|password)["'\s:=]+)[^\s,"'}]+/gi, '$1[REDACTED]'); }
+export function redact(text: string) { return text.replace(/\bfkap1\.[a-f0-9-]{36}\.[A-Za-z0-9_-]+\b/gi, '[REDACTED]').replace(/\b(?:sk-|ccb_[ks]_)[A-Za-z0-9_-]{8,}\b/g, '[REDACTED]').replace(/(Bearer\s+)[^\s"']+/gi, '$1[REDACTED]').replace(/((?:access_token|refresh_token|api_key|authorization|password|login_challenge|ticket|pairing_code|pairingCode|connectionKey|erp_key_verifier|erpKeyVerifier|__Host-bridge_sso_start|__Host-bridge_session)["'\s:=]+)[^\s,"';}&]+/gi, '$1[REDACTED]'); }
+type AccessState = Pick<State, 'security' | 'externalIdentities' | 'sso'>;
 const empty = (): State => ({ schemaVersion: 1, settings: { cliPath: '', allowWrite: false, includePreviews: true, model: '' }, projects: [], runs: [], jobs: [] });
 type Row = { id: string; parent: string; payload: string };
 const tables = ['projects', 'chats', 'messages', 'attachments', 'runs', 'jobs'] as const;
@@ -107,7 +108,28 @@ export class Store {
   save(): Promise<void> {
     if (this.closed) return Promise.reject(new BridgeError('Хранилище закрыто.', 503));
     const snapshot = JSON.parse(JSON.stringify(this.state)) as State;
-    const save = this.queue.then(() => this.commit(snapshot)); this.queue = save.catch(() => {}); return save;
+    // Access transactions queued ahead of this write may have published new credentials.
+    const save = this.queue.then(() => this.commit({ ...snapshot, ...this.accessState() }));
+    this.queue = save.catch(() => {}); return save;
+  }
+  private accessState(): AccessState {
+    const { security, externalIdentities, sso } = this.state;
+    return { security, externalIdentities, sso };
+  }
+  changeAccess<T>(change: (draft: AccessState) => T): Promise<T> {
+    if (this.closed) return Promise.reject(new BridgeError('Хранилище закрыто.', 503));
+    const save = this.queue.then(() => {
+      const draft = structuredClone(this.accessState());
+      const result = change(draft);
+      this.commit({ ...this.state, ...draft });
+      if (this.state.security && draft.security) Object.assign(this.state.security, draft.security);
+      else this.state.security = draft.security;
+      this.state.externalIdentities = draft.externalIdentities;
+      this.state.sso = draft.sso;
+      return result;
+    });
+    this.queue = save.then(() => {}, () => {});
+    return save;
   }
   /** Claim before the network call: an uncertain exchange requires a fresh ERP ticket. */
   claimLaunchTicket(hash: string) {

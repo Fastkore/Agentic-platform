@@ -21,6 +21,15 @@ export function initializeCorporate(state: State): Corporate {
 export class CorporateAccess {
   readonly data: Corporate;
   constructor(readonly store: Store) { this.data = initializeCorporate(store.state); }
+  ensureSsoPendingRole() {
+    const existing = this.data.roles.find(role => role.id === 'sso_pending');
+    if (existing?.enabled && !existing.profileIds.length && !existing.operationIds.length && !existing.readDatasetIds.length && !existing.instructions) return;
+    const pending: WorkRole = {
+      id: 'sso_pending', name: 'Fastkore · ожидает назначения', enabled: true,
+      profileIds: [], operationIds: [], readDatasetIds: [], instructions: '', revision: (existing?.revision ?? 0) + 1,
+    };
+    if (existing) Object.assign(existing, pending); else this.data.roles.push(pending);
+  }
   role(user: User) { return this.data.roles.find(r => r.id === (user.roleId ?? 'employee') && r.enabled); }
   canUse(user: User, profile: AgentProfile) {
     const role = this.role(user);
@@ -49,6 +58,7 @@ export class CorporateAccess {
   private admin(actor: User) { if (actor.role !== 'admin' || actor.disabled) throw new BridgeError('Доступно только руководителю.', 403); }
   private audit(actor: User, action: string, id: string) { this.store.state.security?.audit.unshift({ id: randomUUID(), actorId: actor.id, action, targetId: id, createdAt: new Date().toISOString() }); this.store.state.security?.audit.splice(1000); }
   async saveRole(actor: User, input: Omit<WorkRole, 'revision'> & { revision?: number }) {
+    if (input.id === 'sso_pending') throw new BridgeError('Служебная роль Fastkore не редактируется.');
     this.admin(actor);
     if (input.profileIds.some(id => !this.data.profiles.some(p => p.id === id)) || input.operationIds.some(id => !operationIds.includes(id as typeof operationIds[number])) || input.readDatasetIds.some(id => !this.data.datasets.some(d => d.id === id))) throw new BridgeError('Выберите существующие профили, операции и источники.');
     const old = this.data.roles.find(r => r.id === input.id); if (old && old.revision !== input.revision) throw new BridgeError('Роль изменена. Обновите настройки.', 409);

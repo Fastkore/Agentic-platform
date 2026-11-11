@@ -1,6 +1,6 @@
 import { randomBytes, randomUUID, createHash, scrypt, timingSafeEqual } from 'node:crypto';
 import { promisify } from 'node:util';
-import type { ApiKeyInfo, Chat, Credential, Security, User, UserRecord } from '../shared/types.js';
+import type { Chat, Credential, Security, State, StoredFastkoreInstallation, User, UserRecord } from '../shared/types.js';
 import { BridgeError } from './store.js';
 import type { Workspace } from './workspace.js';
 import type { TicketIdentity } from './fastkore.js';
@@ -24,7 +24,13 @@ export class Access {
   }
   get setupRequired() { return !this.data.users.some(u => u.role === 'admin' && u.passwordHash); }
   migrate() {
-    for (const user of this.data.users) user.roleId ??= 'employee';
+    const admins = new Set(this.data.users.filter(user => user.role === 'admin' && !user.disabled).map(user => user.id));
+    this.data.credentials = this.data.credentials.filter(credential => credential.kind === 'session' &&
+      (credential.source === 'fastkore' || admins.has(credential.userId)));
+    for (const user of this.data.users) {
+      user.roleId ??= 'employee';
+      if (user.role !== 'admin') user.passwordHash = '';
+    }
     const admin = this.data.users.find(u => u.role === 'admin')!;
     for (const project of this.workspace.store.state.projects) {
       project.memberIds ??= [];
@@ -36,8 +42,12 @@ export class Access {
     const result = this.queue.then(async () => { const value = await work(); await this.workspace.store.save(); return value; });
     this.queue = result.catch(() => {}); return result;
   }
-  private audit(actorId: string, action: string, targetId: string) {
-    this.data.audit.unshift({ id: randomUUID(), actorId, action, targetId, createdAt: new Date().toISOString() }); this.data.audit.splice(1000);
+  private changeSso<T>(work: (draft: Pick<State, 'security' | 'sso' | 'externalIdentities'>) => T) {
+    const result = this.queue.then(() => this.workspace.store.changeAccess(work));
+    this.queue = result.catch(() => {}); return result;
+  }
+  private audit(actorId: string, action: string, targetId: string, data = this.data) {
+    data.audit.unshift({ id: randomUUID(), actorId, action, targetId, createdAt: new Date().toISOString() }); data.audit.splice(1000);
   }
   private username(value: string) { const name = value.trim().toLowerCase(); if (!/^[a-z0-9][a-z0-9._-]{2,47}$/.test(name)) throw new BridgeError('Логин: 3–48 латинских букв, цифр, точек, дефисов или подчёркиваний.'); return name; }
   private async password(value: string) {
@@ -50,12 +60,14 @@ export class Access {
     const candidate = await derive(value, salt, 64) as Buffer, expected = Buffer.from(hash, 'hex');
     return candidate.length === expected.length && timingSafeEqual(candidate, expected);
   }
-  private issue(user: UserRecord, kind: Credential['kind'], name: string, external?: Pick<Credential, 'source' | 'installationId' | 'externalUserId'>) {
-    const token = `ccb_${kind === 'api' ? 'k' : 's'}_${randomBytes(32).toString('hex')}`;
-    const record: Credential = { id: randomUUID(), userId: user.id, kind, hash: digest(token), name, createdAt: new Date().toISOString(), ...external, ...(kind === 'session' ? { expiresAt: new Date(Date.now() + (external?.source === 'fastkore' ? 1800_000 : 12 * 3600_000)).toISOString() } : {}) };
-    this.data.credentials = this.data.credentials.filter(c => !c.expiresAt || Date.parse(c.expiresAt) > Date.now());
-    if (kind === 'session') { const old = this.data.credentials.filter(c => c.userId === user.id && c.kind === kind); for (const c of old.slice(0, Math.max(0, old.length - 19))) this.data.credentials.splice(this.data.credentials.indexOf(c), 1); }
-    this.data.credentials.push(record); return { token, user: publicUser(user), key: { id: record.id, name, createdAt: record.createdAt } };
+  private issueSession(user: UserRecord, name: string, external?: Pick<Credential, 'source' | 'installationId' | 'externalUserId'>, data = this.data) {
+    const token = 'ccb_s_' + randomBytes(32).toString('hex');
+    const expiresAt = new Date(Date.now() + (external?.source === 'fastkore' ? 1800_000 : 12 * 3600_000)).toISOString();
+    const record: Credential = { id: randomUUID(), userId: user.id, kind: 'session', hash: digest(token), name, createdAt: new Date().toISOString(), expiresAt, ...external };
+    data.credentials = data.credentials.filter(c => !c.expiresAt || Date.parse(c.expiresAt) > Date.now());
+    const old = data.credentials.filter(c => c.userId === user.id);
+    for (const c of old.slice(0, Math.max(0, old.length - 19))) data.credentials.splice(data.credentials.indexOf(c), 1);
+    data.credentials.push(record); return { token, user: publicUser(user), expiresAt };
   }
   authenticate(token: string): Principal {
     const hash = digest(token), credential = this.data.credentials.find(c => c.hash === hash);
@@ -64,61 +76,68 @@ export class Access {
   authenticateCredential(id: string): Principal {
     const credential = this.data.credentials.find(c => c.id === id);
     const user = credential && this.data.users.find(u => u.id === credential.userId && !u.disabled);
-    if (!credential || !user || (credential.expiresAt && Date.parse(credential.expiresAt) <= Date.now()) || (credential.source === 'fastkore' && !this.externalCredentialValid?.(credential))) throw new BridgeError('Войдите под своей учётной записью.', 401);
+    if (!credential || credential.kind !== 'session' || !user || (credential.expiresAt && Date.parse(credential.expiresAt) <= Date.now())
+      || (credential.source === 'fastkore' ? !this.externalCredentialValid?.(credential) : user.role !== 'admin')) throw new BridgeError('Войдите под своей учётной записью.', 401);
     return { user, credential };
   }
-  bootstrap() { return this.change(() => { if (!this.setupRequired) throw new BridgeError('Первичная настройка завершена. Войдите по логину и паролю.', 403); return this.issue(this.data.users.find(u => u.role === 'admin')!, 'session', 'Первичная настройка'); }); }
+  bootstrap() { return this.change(() => { if (!this.setupRequired) throw new BridgeError('Первичная настройка завершена. Войдите по логину и паролю.', 403); return this.issueSession(this.data.users.find(u => u.role === 'admin')!, 'Первичная настройка'); }); }
   setup(actor: UserRecord, username: string, name: string, password: string) {
     return this.change(async () => {
       if (!this.setupRequired || actor.role !== 'admin') throw new BridgeError('Первичная настройка уже завершена.', 403);
       const login = this.username(username), hash = await this.password(password); actor.username = login; actor.name = name.trim() || 'Руководитель'; actor.passwordHash = hash;
-      this.data.credentials = []; this.audit(actor.id, 'setup', actor.id); return this.issue(actor, 'session', 'Браузер');
+      this.data.credentials = []; this.audit(actor.id, 'setup', actor.id); return this.issueSession(actor, 'Браузер');
     });
   }
   async login(username: string, password: string) {
-    const user = this.data.users.find(u => u.username === username.trim().toLowerCase() && !u.disabled);
+    const user = this.data.users.find(u => u.username === username.trim().toLowerCase() && u.role === 'admin' && !u.disabled);
     // Run the same expensive derivation for an unknown login as for a known one.
     const previousHash = user?.passwordHash;
     const ok = await this.matches(password, previousHash || `${'0'.repeat(32)}:${'0'.repeat(128)}`);
-    return this.change(() => { if (!user || user.disabled || user.passwordHash !== previousHash || !ok || this.setupRequired) throw new BridgeError('Неверный логин или пароль.', 401); return this.issue(user, 'session', 'Браузер'); });
+    return this.change(() => {
+      const current = this.data.users.find(u => u.id === user?.id && !u.disabled);
+      if (!current || current.role !== 'admin' || current.passwordHash !== previousHash || !ok || this.setupRequired) throw new BridgeError('Неверный логин или пароль.', 401);
+      return this.issueSession(current, 'Браузер');
+    });
   }
   logout(principal: Principal) { return this.change(() => { this.data.credentials = this.data.credentials.filter(c => c.id !== principal.credential.id); return { ok: true }; }); }
   fastkoreLogin(identity: TicketIdentity, previousToken = '', recheck: () => void = () => {}) {
-    return this.change(() => {
+    return this.changeSso(draft => {
       recheck();
       if (this.setupRequired) throw new BridgeError('Сначала администратор должен настроить платформу.', 403);
-      const identities = this.workspace.store.state.externalIdentities ??= [];
-      let link = identities.find(i => i.installationId === identity.installationId && i.externalUserId === identity.externalUserId);
-      const linkedUserId = link?.userId;
-      let user = linkedUserId ? this.data.users.find(u => u.id === linkedUserId) : undefined;
+      const data = draft.security!, identities = draft.externalIdentities ??= [];
+      const link = identities.find(i => i.installationId === identity.installationId && i.externalUserId === identity.externalUserId);
+      let user = link && data.users.find(u => u.id === link.userId);
       if (link && (!user || user.disabled)) throw new BridgeError('Учётная запись отключена администратором платформы.', 403);
-      if (!link) {
+      if (!user) {
         const id = randomUUID();
-        user = { id, username: `sso-${id}`, name: identity.displayName, role: 'employee', roleId: '', disabled: false, passwordHash: '', createdAt: new Date().toISOString() };
-        link = { installationId: identity.installationId, externalUserId: identity.externalUserId, userId: id };
-        this.data.users.push(user); identities.push(link); this.audit(user.id, 'sso.user.create', user.id);
+        user = { id, username: `sso-${id}`, name: identity.displayName, role: 'employee', roleId: 'sso_pending', disabled: false, passwordHash: '', createdAt: new Date().toISOString() };
+        data.users.push(user); identities.push({ installationId: identity.installationId, externalUserId: identity.externalUserId, userId: id });
+        this.audit(user.id, 'sso.user.create', user.id, data);
       }
-      if (previousToken) this.data.credentials = this.data.credentials.filter(c => c.source !== 'fastkore' || c.kind !== 'session' || c.hash !== digest(previousToken));
-      this.audit(user!.id, 'sso.login', identity.installationId);
-      return this.issue(user!, 'session', 'Fastkore', { source: 'fastkore', installationId: identity.installationId, externalUserId: identity.externalUserId });
+      if (previousToken) data.credentials = data.credentials.filter(c => c.source !== 'fastkore' || c.hash !== digest(previousToken));
+      this.audit(user.id, 'sso.login', identity.installationId, data);
+      return this.issueSession(user, 'Fastkore', { source: 'fastkore', installationId: identity.installationId, externalUserId: identity.externalUserId }, data);
     });
   }
-  linkExternal(actor: User, installationId: string, externalUserId: string, userId: string) {
-    this.admin(actor); return this.change(() => {
-      if (!this.data.users.some(u => u.id === userId && !u.disabled)) throw new BridgeError('Пользователь не найден.', 404);
-      const identities = this.workspace.store.state.externalIdentities ??= [];
+  linkExternal(authorize: () => User, installationId: string, externalUserId: string, userId: string) {
+    return this.changeSso(draft => {
+      const actor = authorize(), data = draft.security!;
+      if (!data.users.some(u => u.id === userId && !u.disabled)) throw new BridgeError('Пользователь не найден.', 404);
+      const identities = draft.externalIdentities ??= [];
       const link = identities.find(i => i.installationId === installationId && i.externalUserId === externalUserId);
-      this.data.credentials = this.data.credentials.filter(c => c.installationId !== installationId || c.externalUserId !== externalUserId);
+      data.credentials = data.credentials.filter(c => c.installationId !== installationId || c.externalUserId !== externalUserId);
       if (link) link.userId = userId; else identities.push({ installationId, externalUserId, userId });
-      this.audit(actor.id, 'sso.identity.link', userId); return { ok: true };
+      this.audit(actor.id, 'sso.identity.link', userId, data); return { ok: true };
     });
   }
-  setInstallationEnabled(actor: User, id: string, enabled: boolean) {
-    this.admin(actor); return this.change(() => {
-      const settings = this.workspace.store.state.sso ??= { disabledInstallationIds: [] };
-      settings.disabledInstallationIds = settings.disabledInstallationIds.filter(v => v !== id);
-      if (!enabled) { settings.disabledInstallationIds.push(id); this.data.credentials = this.data.credentials.filter(c => c.source !== 'fastkore' || c.installationId !== id); }
-      this.audit(actor.id, enabled ? 'sso.installation.enable' : 'sso.installation.disable', id); return { ok: true };
+  changeInstallation<T>(authorize: () => User, action: string, work: (items: StoredFastkoreInstallation[]) => { id: string; result: T; revoke?: boolean }) {
+    return this.changeSso(draft => {
+      const actor = authorize(), data = draft.security!;
+      const items = (draft.sso ??= {}).installations ??= [];
+      const { id, result, revoke } = work(items);
+      if (revoke) data.credentials = data.credentials.filter(c => c.source !== 'fastkore' || c.installationId !== id);
+      this.audit(actor.id, action, id, data);
+      return result;
     });
   }
   admin(user: User) { if (user.role !== 'admin') throw new BridgeError('Доступно только руководителю.', 403); }
@@ -141,7 +160,9 @@ export class Access {
   viewChat(chat: Chat) { return { ...chat, ownerName: this.data.users.find(u => u.id === chat.ownerId)?.name ?? 'Пользователь', messages: chat.messages.map(m => m.role === 'user' ? { ...m, authorId: m.authorId ?? chat.ownerId, authorName: this.data.users.find(u => u.id === (m.authorId ?? chat.ownerId))?.name ?? 'Пользователь' } : m) }; }
   users(user: User) { this.admin(user); return this.data.users.map(publicUser); }
   createUser(actor: User, input: { username: string; name: string; password: string; role: User['role']; roleId?: string }) {
-    this.admin(actor); return this.change(async () => {
+    this.admin(actor);
+    if (input.role !== 'admin') throw new BridgeError('Профили сотрудников создаются при входе из Fastkore.', 403);
+    return this.change(async () => {
       const username = this.username(input.username); if (this.data.users.some(u => u.username === username)) throw new BridgeError('Этот логин уже занят.', 409);
       const roleId = input.roleId ?? 'employee'; if (!this.workspace.corporate.data.roles.some(r => r.id === roleId && r.enabled)) throw new BridgeError('Роль недоступна.');
       const user: UserRecord = { id: randomUUID(), username, name: input.name.trim() || username, role: input.role, roleId, disabled: false, passwordHash: await this.password(input.password), createdAt: new Date().toISOString() };
@@ -155,20 +176,26 @@ export class Access {
       if (input.disabled && user.role === 'admin' && this.data.users.filter(u => u.role === 'admin' && !u.disabled).length <= 1) throw new BridgeError('Должен остаться хотя бы один руководитель.');
       if (input.role && input.role !== 'admin' && user.role === 'admin' && this.data.users.filter(u => u.role === 'admin' && !u.disabled).length <= 1) throw new BridgeError('Должен остаться хотя бы один руководитель.');
       if (input.roleId !== undefined && !this.workspace.corporate.data.roles.some(r => r.id === input.roleId && r.enabled)) throw new BridgeError('Роль недоступна.');
+      if (input.password !== undefined && (input.role ?? user.role) !== 'admin') throw new BridgeError('Сотрудники входят через Fastkore.', 403);
       const hash = input.password === undefined ? undefined : await this.password(input.password);
       if (input.disabled !== undefined) user.disabled = input.disabled; if (hash) user.passwordHash = hash;
       if (input.name !== undefined) user.name = input.name.trim() || user.username;
       if (input.roleId !== undefined) user.roleId = input.roleId;
       if (input.role !== undefined) user.role = input.role;
       if (input.disabled || hash) this.data.credentials = this.data.credentials.filter(c => c.userId !== id);
+      if (user.role !== 'admin') {
+        user.passwordHash = '';
+        this.data.credentials = this.data.credentials.filter(c => c.userId !== id || c.source === 'fastkore');
+      }
       this.audit(actor.id, 'user.update', id); return publicUser(user);
     });
   }
   changePassword(principal: Principal, current: string, password: string) {
     return this.change(async () => {
-      if (principal.credential.kind !== 'session' || !await this.matches(current, principal.user.passwordHash)) throw new BridgeError('Неверный текущий пароль.', 403);
-      principal.user.passwordHash = await this.password(password); this.data.credentials = this.data.credentials.filter(c => c.userId !== principal.user.id);
-      this.audit(principal.user.id, 'password.change', principal.user.id); return this.issue(principal.user, 'session', 'Браузер');
+      const { credential, user } = this.authenticateCredential(principal.credential.id);
+      if (credential.source === 'fastkore' || !await this.matches(current, user.passwordHash)) throw new BridgeError('Смена пароля доступна при локальном входе.', 403);
+      user.passwordHash = await this.password(password); this.data.credentials = this.data.credentials.filter(c => c.userId !== user.id);
+      this.audit(user.id, 'password.change', user.id); return this.issueSession(user, 'Браузер');
     });
   }
   members(actor: User, projectId: string, memberIds: string[]) {
@@ -181,21 +208,6 @@ export class Access {
   visibility(actor: User, projectId: string, chatId: string, visibility: 'private' | 'project') {
     this.admin(actor); return this.change(() => {
       const chat = this.workspace.chat(projectId, chatId); chat.visibility = visibility; this.audit(actor.id, `chat.${visibility}`, chatId); return this.viewChat(chat);
-    });
-  }
-  keys(principal: Principal): ApiKeyInfo[] { return this.data.credentials.filter(c => c.userId === principal.user.id && c.kind === 'api').map(({ id, name, createdAt }) => ({ id, name, createdAt })); }
-  createKey(principal: Principal, name: string) {
-    return this.change(() => {
-      if (principal.credential.kind !== 'session') throw new BridgeError('Для выпуска ключа войдите по логину и паролю.', 403);
-      if (this.keys(principal).length >= 10) throw new BridgeError('Можно создать до 10 ключей. Отзовите ненужные.');
-      this.audit(principal.user.id, 'key.create', principal.user.id); const c = principal.credential;
-      const issued = this.issue(principal.user, 'api', name.trim() || 'Интеграция', c.source === 'fastkore' ? { source: c.source, installationId: c.installationId, externalUserId: c.externalUserId } : undefined); return { ...issued.key, token: issued.token };
-    });
-  }
-  revokeKey(principal: Principal, id: string) {
-    return this.change(() => {
-      const key = this.data.credentials.find(c => c.id === id && c.kind === 'api' && c.userId === principal.user.id); if (!key) throw new BridgeError('Ключ не найден.', 404);
-      this.data.credentials = this.data.credentials.filter(c => c.id !== id); this.audit(principal.user.id, 'key.revoke', id); return { ok: true };
     });
   }
 }

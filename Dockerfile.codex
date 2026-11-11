@@ -1,0 +1,24 @@
+FROM node:24.19.0-bookworm-slim AS cli
+RUN npm install -g @openai/codex@0.167.1 --no-audit --no-fund \
+    && mkdir -p /etc/codex /home/node/.codex /run/bridge-codex /runner \
+    && chown node:node /home/node/.codex /run/bridge-codex
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+COPY deploy/codex-runner.toml /etc/codex/config.toml
+ENV HOME=/home/node CODEX_HOME=/home/node/.codex
+
+FROM node:24.19.0-bookworm-slim AS build
+WORKDIR /app
+COPY package.json package-lock.json ./
+RUN npm ci --no-audit --no-fund
+COPY server ./server
+COPY shared ./shared
+RUN npx --no-install tsc -p server/tsconfig.json && npm prune --omit=dev --no-audit --no-fund
+
+FROM cli
+WORKDIR /app
+COPY --from=build /app/package.json ./
+COPY --from=build /app/node_modules ./node_modules
+COPY --from=build /app/dist ./dist
+USER node
+CMD ["node", "dist/server/codex-worker.js"]

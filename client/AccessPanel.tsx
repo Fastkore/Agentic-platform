@@ -1,37 +1,183 @@
-import { Select } from './Select';
 import { useEffect, useState } from 'react';
 import { CorporatePanel } from './CorporatePanel';
-import { FastkorePanel } from './FastkorePanel';
-import type { ApiKeyInfo, AuditEvent, User, WorkRole } from '../shared/types';
+import { Select } from './Select';
+import { WorkspaceDialog } from './WorkspaceDialog';
+import type { AuditEvent, User, WorkRole } from '../shared/types';
 
 type Request = <T>(url: string, init?: RequestInit) => Promise<T>;
 const json = (method: string, body: unknown): RequestInit => ({ method, body: JSON.stringify(body) });
 
-export function AccountPanel({ request, copy, renewed, fastkore = false }: { request: Request; copy: (text: string) => Promise<void>; renewed: (token: string) => void; fastkore?: boolean }) {
-  const [keys, setKeys] = useState<ApiKeyInfo[]>([]), [name, setName] = useState('Рабочая интеграция'), [secret, setSecret] = useState('');
-  const [current, setCurrent] = useState(''), [password, setPassword] = useState(''), [error, setError] = useState(''), [notice, setNotice] = useState(''), [busy, setBusy] = useState(false);
-  async function run(work: () => Promise<void>) { setBusy(true); setError(''); setNotice(''); try { await work(); } catch (e) { setError((e as Error).message); } finally { setBusy(false); } }
-  useEffect(() => { let alive = true; request<ApiKeyInfo[]>('/api/auth/keys').then(v => { if (alive) setKeys(v); }).catch(e => { if (alive) setError(e.message); }); return () => { alive = false; }; }, []);
-  return <><div className="setting-section"><h3>Ваши ключи API</h3>
-    <form onSubmit={e => { e.preventDefault(); void run(async () => { const key = await request<ApiKeyInfo & { token: string }>('/api/auth/keys', json('POST', { name })); setSecret(key.token); setKeys(await request('/api/auth/keys')); }); }}><label htmlFor="key-name">Название интеграции</label><input id="key-name" maxLength={100} value={name} onChange={e => setName(e.target.value)} required /><button className="secondary w-full" disabled={busy}>Создать отдельный ключ API</button></form>
-    {secret && <div className="secret-box" role="status"><b>Сохраните ключ: он показан один раз</b><code>{secret}</code><button className="secondary w-full" onClick={() => void run(async () => { await copy(secret); setNotice('Ключ скопирован.'); })}>Скопировать новый ключ</button><button className="secondary w-full" onClick={() => setSecret('')}>Скрыть ключ</button></div>}
-    <div className="access-list">{keys.map(k => <div className="access-row" key={k.id}><span><b>{k.name}</b><small>{new Date(k.createdAt).toLocaleDateString('ru-RU')}</small></span><button className="secondary" disabled={busy} onClick={() => void run(async () => { await request(`/api/auth/keys/${k.id}`, { method: 'DELETE' }); setKeys(await request('/api/auth/keys')); setSecret(''); })}>Отозвать</button></div>)}</div>
-    </div>{fastkore ? <div className="panel-callout"><p>Вы вошли через Fastkore. Управляйте паролем в ERP; при смене сотрудника закройте это окно и откройте помощника заново.</p></div> : <div className="setting-section"><h3>Сменить свой пароль</h3><form onSubmit={e => { e.preventDefault(); void run(async () => { const result = await request<{ token: string }>('/api/auth/password', json('POST', { currentPassword: current, password })); renewed(result.token); setCurrent(''); setPassword(''); setSecret(''); setKeys([]); setNotice('Пароль изменён. Остальные сеансы и ключи отозваны.'); }); }}><label htmlFor="current-password">Текущий пароль</label><input id="current-password" type="password" autoComplete="current-password" value={current} onChange={e => setCurrent(e.target.value)} required /><label htmlFor="new-password">Новый пароль · минимум 12 символов</label><input id="new-password" type="password" autoComplete="new-password" minLength={12} maxLength={200} value={password} onChange={e => setPassword(e.target.value)} required /><button className="secondary w-full" disabled={busy}>Сменить пароль</button></form></div>}{error && <div className="inline-error" role="alert">{error}</div>}{notice && <p role="status">{notice}</p>}</>;
+export function AccountPanel({ request, renewed, fastkore }: { request: Request; renewed: (token: string) => void; fastkore: boolean }) {
+  const [open, setOpen] = useState(false);
+  const [current, setCurrent] = useState(''), [password, setPassword] = useState('');
+  const [error, setError] = useState(''), [notice, setNotice] = useState(''), [busy, setBusy] = useState(false);
+
+  function closeDialog() {
+    setOpen(false);
+    setCurrent('');
+    setPassword('');
+    setError('');
+  }
+
+  async function changePassword() {
+    if (busy) return;
+    setBusy(true);
+    setError('');
+    try {
+      const result = await request<{ token: string }>('/api/auth/password', json('POST', { currentPassword: current, password }));
+      renewed(result.token);
+      closeDialog();
+      setNotice('Пароль изменён. Остальные сеансы завершены.');
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (fastkore) return <p>Пароль и вход управляются в Fastkore ERP.</p>;
+
+  return <>
+    <button type="button" className="secondary" onClick={() => { setNotice(''); setOpen(true); }}>Сменить пароль</button>
+    {notice && <p role="status">{notice}</p>}
+    {open && <WorkspaceDialog title="Сменить пароль" className="settings-action-dialog" close={() => { if (!busy) closeDialog(); }}>
+      <form className="panel-body" onSubmit={e => { e.preventDefault(); void changePassword(); }}>
+        <label htmlFor="current-password">Текущий пароль</label>
+        <input id="current-password" data-dialog-focus type="password" autoComplete="current-password" value={current} onChange={e => setCurrent(e.target.value)} required />
+        <label htmlFor="new-password">Новый пароль · минимум 12 символов</label>
+        <input id="new-password" type="password" autoComplete="new-password" minLength={12} maxLength={200} value={password} onChange={e => setPassword(e.target.value)} required />
+        <div className="settings-dialog-actions">
+          <button type="button" className="secondary" disabled={busy} onClick={closeDialog}>Отмена</button>
+          <button className="primary" disabled={busy}>Сменить пароль</button>
+        </div>
+        {error && <div className="inline-error" role="alert">{error}</div>}
+      </form>
+    </WorkspaceDialog>}
+  </>;
 }
 
+type TeamDialog = { type: 'members' | 'roles' | 'audit' } | { type: 'disable'; user: User };
+
+const auditLabels: Record<string, string> = {
+  setup: 'Настройка руководителя',
+  'user.create': 'Создан пользователь',
+  'user.update': 'Изменён пользователь',
+  'project.members': 'Изменены участники',
+  'chat.private': 'Чат сделан личным',
+  'chat.project': 'Чат открыт проекту',
+  'key.create': 'Создан ключ API',
+  'key.revoke': 'Отозван ключ API',
+  'password.change': 'Изменён пароль',
+};
+
 export function TeamPanel({ request, projectId, projectName, self }: { request: Request; projectId: string; projectName: string; self: User }) {
-  const [roles, setRoles] = useState<WorkRole[]>([]), [roleId, setRoleId] = useState('employee');
+  const [roles, setRoles] = useState<WorkRole[]>([]);
   const [users, setUsers] = useState<User[]>([]), [members, setMembers] = useState<string[]>([]), [audit, setAudit] = useState<AuditEvent[]>([]);
-  const [username, setUsername] = useState(''), [name, setName] = useState(''), [password, setPassword] = useState(''), [role, setRole] = useState<User['role']>('employee');
-  const [resetId, setResetId] = useState(''), [reset, setReset] = useState(''), [error, setError] = useState(''), [busy, setBusy] = useState(false), [notice, setNotice] = useState('');
-  async function load() { const [u, a, r] = await Promise.all([request<User[]>('/api/users'), request<AuditEvent[]>('/api/audit'), request<WorkRole[]>('/api/admin/roles')]); setUsers(u); setAudit(a); setRoles(r); }
-  async function run(work: () => Promise<void>) { setBusy(true); setError(''); setNotice(''); try { await work(); await load(); } catch (e) { setError((e as Error).message); } finally { setBusy(false); } }
+  const [dialog, setDialog] = useState<TeamDialog | null>(null);
+  const [error, setError] = useState(''), [busy, setBusy] = useState(false), [notice, setNotice] = useState('');
+  const title = dialog?.type === 'members' ? 'Участники проекта' : dialog?.type === 'roles' ? 'Роли, специалисты и библиотеки'
+    : dialog?.type === 'audit' ? 'Журнал доступа' : 'Отключить доступ';
+
+  async function load() {
+    const [accounts, events, workRoles] = await Promise.all([
+      request<User[]>('/api/users'), request<AuditEvent[]>('/api/audit'), request<WorkRole[]>('/api/admin/roles'),
+    ]);
+    setUsers(accounts);
+    setAudit(events);
+    setRoles(workRoles);
+  }
+
+  async function run(work: () => Promise<void>) {
+    if (busy) return;
+    setBusy(true);
+    setError('');
+    setNotice('');
+    try { await work(); }
+    catch (e) { setError((e as Error).message); }
+    finally { setBusy(false); }
+  }
+
+  function openDialog(value: TeamDialog) {
+    setError('');
+    setNotice('');
+    setDialog(value);
+  }
+
+  function closeDialog() {
+    setDialog(null);
+    setError('');
+  }
+
+  async function updateUser(user: User, changes: { disabled: boolean } | { roleId: string }) {
+    await request(`/api/users/${user.id}`, json('PATCH', changes));
+    if (dialog?.type === 'disable') closeDialog();
+    await load();
+  }
+
   useEffect(() => { void load().catch(e => setError(e.message)); }, []);
-  useEffect(() => { setMembers([]); let alive = true; if (projectId) request<{ memberIds: string[] }>(`/api/projects/${projectId}/members`).then(v => { if (alive) setMembers(v.memberIds); }).catch(e => { if (alive) setError(e.message); }); return () => { alive = false; }; }, [projectId]);
-  return <><FastkorePanel request={request} users={users} />
-    <div className="setting-section"><h3>Добавить сотрудника</h3><form onSubmit={e => { e.preventDefault(); void run(async () => { await request('/api/users', json('POST', { username, name, password, role, roleId })); setUsername(''); setName(''); setPassword(''); setNotice('Учётная запись создана. Добавьте сотрудника в проект ниже.'); }); }}><label htmlFor="staff-name">Имя</label><input id="staff-name" maxLength={100} value={name} onChange={e => setName(e.target.value)} required /><label htmlFor="staff-login">Логин · латиница</label><input id="staff-login" minLength={3} maxLength={48} autoComplete="off" value={username} onChange={e => setUsername(e.target.value)} required /><label htmlFor="staff-password">Пароль · минимум 12 символов</label><input id="staff-password" type="password" minLength={12} maxLength={200} autoComplete="new-password" value={password} onChange={e => setPassword(e.target.value)} required /><label htmlFor="staff-work-role">Рабочая роль</label><Select id="staff-work-role" className="settings-select" value={roleId} onChange={setRoleId} options={roles.filter(r => r.enabled).map(r => ({ value: r.id, label: r.name }))} /><label htmlFor="staff-role">Административный доступ</label><Select id="staff-role" className="settings-select" value={role} onChange={value => setRole(value as User['role'])} options={[{ value: 'employee', label: 'Сотрудник' }, { value: 'admin', label: 'Руководитель · доступ ко всем чатам' }]} /><button className="primary w-full" disabled={busy}>Создать учётную запись</button></form></div>
-    {projectId && <div className="setting-section"><h3>Участники: {projectName}</h3><div className="member-list">{users.filter(u => u.role === 'employee' && !u.disabled).map(u => <label key={u.id}><input type="checkbox" checked={members.includes(u.id)} onChange={e => setMembers(old => e.target.checked ? [...old, u.id] : old.filter(id => id !== u.id))} /><span>{u.name}<small>{u.username}</small></span></label>)}</div><button className="secondary w-full" disabled={busy} onClick={() => void run(async () => { await request(`/api/projects/${projectId}/members`, json('PATCH', { memberIds: members.filter(id => users.some(u => u.id === id && !u.disabled)) })); setNotice('Доступ к проекту сохранён.'); })}>Сохранить участников проекта</button></div>}
-    <div className="setting-section"><h3>Учётные записи</h3><div className="access-list">{users.map(u => <div className="access-user" key={u.id}><b>{u.name} {u.id === self.id ? '(вы)' : ''}</b><small>{u.username} · {u.role === 'admin' ? 'Руководитель' : 'Сотрудник'} · {u.disabled ? 'Отключён' : 'Активен'}</small><label htmlFor={`role-${u.id}`}>Рабочая роль</label><Select id={`role-${u.id}`} className="settings-select" value={u.roleId ?? 'employee'} disabled={busy} onChange={roleId => void run(async () => { await request(`/api/users/${u.id}`, json('PATCH', { roleId })); })} options={roles.map(r => ({ value: r.id, label: r.name + (!r.enabled ? ' · выключена' : ''), disabled: !r.enabled }))} />{u.id !== self.id && <div className="button-pair"><button className="secondary" disabled={busy} onClick={() => void run(async () => { await request(`/api/users/${u.id}`, json('PATCH', { disabled: !u.disabled })); })}>{u.disabled ? 'Включить' : 'Отключить'}</button><button className="secondary" disabled={busy} onClick={() => { setResetId(u.id); setReset(''); }}>Сбросить пароль</button></div>}{resetId === u.id && <form onSubmit={e => { e.preventDefault(); void run(async () => { await request(`/api/users/${u.id}`, json('PATCH', { password: reset })); setReset(''); setResetId(''); setNotice('Пароль изменён. Сеансы и ключи пользователя отозваны.'); }); }}><label htmlFor="reset-password">Новый пароль · минимум 12 символов</label><input id="reset-password" type="password" minLength={12} maxLength={200} value={reset} onChange={e => setReset(e.target.value)} required /><button className="secondary w-full" disabled={busy}>Сохранить новый пароль</button></form>}</div>)}</div></div>
-    <div className="setting-section"><h3>Роли, специалисты и библиотеки</h3><CorporatePanel request={request} onSaved={() => void load().catch(e => setError(e.message))} /></div><div className="setting-section"><h3>Журнал доступа</h3><div className="audit-list">{audit.slice(0, 30).map(a => <div key={a.id}><b>{({ setup: 'Настройка руководителя', 'user.create': 'Создан пользователь', 'user.update': 'Изменён пользователь', 'project.members': 'Изменены участники', 'chat.private': 'Чат сделан личным', 'chat.project': 'Чат открыт проекту', 'key.create': 'Создан ключ API', 'key.revoke': 'Отозван ключ API', 'password.change': 'Изменён пароль' } as Record<string, string>)[a.action] ?? a.action}</b><small>{users.find(u => u.id === a.actorId)?.name ?? a.actorId} · {new Date(a.createdAt).toLocaleString('ru-RU')}</small></div>)}</div></div>
-    {error && <div className="inline-error" role="alert">{error}</div>}{notice && <p role="status">{notice}</p>}</>;
+
+  return <>
+    <section className="setting-section">
+      <div className="settings-section-heading">
+        <h3>Учётные записи</h3>
+        {projectId && <button type="button" className="secondary" disabled={busy} onClick={() => void run(async () => {
+          const result = await request<{ memberIds: string[] }>(`/api/projects/${projectId}/members`);
+          setMembers(result.memberIds);
+          openDialog({ type: 'members' });
+        })}>Участники проекта</button>}
+      </div>
+      <table className="team-table">
+        <thead><tr><th scope="col">Имя</th><th scope="col">Рабочая роль</th><th scope="col">Доступ</th></tr></thead>
+        <tbody>{users.map(user => <tr key={user.id}>
+          <th scope="row"><b>{user.name}{user.id === self.id && ' (вы)'}</b><small>{user.role === 'admin' ? 'Руководитель' : user.username}</small></th>
+          <td><Select className="settings-select" label={`Рабочая роль · ${user.name}`} value={user.roleId ?? 'employee'} disabled={busy}
+            onChange={roleId => void run(() => updateUser(user, { roleId }))}
+            options={roles.map(role => ({ value: role.id, label: role.name + (role.enabled ? '' : ' · выключена'), disabled: !role.enabled }))} /></td>
+          <td><span>{user.disabled ? 'Отключён' : 'Активен'}</span>{user.id !== self.id && <button type="button" className="secondary" disabled={busy} onClick={() => {
+            if (user.disabled) void run(() => updateUser(user, { disabled: false }));
+            else openDialog({ type: 'disable', user });
+          }}>{user.disabled ? 'Включить' : 'Отключить'}</button>}</td>
+        </tr>)}</tbody>
+      </table>
+    </section>
+    <div className="settings-actions">
+      <button type="button" className="secondary" disabled={busy} onClick={() => openDialog({ type: 'roles' })}>Роли, специалисты и библиотеки</button>
+      <button type="button" className="secondary" disabled={busy} onClick={() => openDialog({ type: 'audit' })}>Журнал доступа</button>
+    </div>
+    {!dialog && error && <div className="inline-error" role="alert">{error}</div>}
+    {notice && <p role="status">{notice}</p>}
+
+    {dialog && <WorkspaceDialog title={title} className={dialog.type === 'roles' ? 'settings-action-dialog wide' : 'settings-action-dialog'} close={() => { if (!busy) closeDialog(); }}>
+      <div className="panel-body">
+        {dialog.type === 'members' && <>
+          <p>{projectName}</p>
+          <div className="member-list">{users.filter(user => user.role === 'employee' && !user.disabled).map(user => <label key={user.id}>
+            <input type="checkbox" checked={members.includes(user.id)} onChange={e => setMembers(items => e.target.checked ? [...items, user.id] : items.filter(id => id !== user.id))} />
+            <span>{user.name}<small>{user.username}</small></span>
+          </label>)}</div>
+          <div className="settings-dialog-actions">
+            <button type="button" className="secondary" disabled={busy} onClick={closeDialog}>Отмена</button>
+            <button type="button" className="primary" disabled={busy} onClick={() => void run(async () => {
+              await request(`/api/projects/${projectId}/members`, json('PATCH', { memberIds: members.filter(id => users.some(user => user.id === id && !user.disabled)) }));
+              closeDialog();
+              setNotice('Доступ к проекту сохранён.');
+            })}>Сохранить</button>
+          </div>
+        </>}
+        {dialog.type === 'disable' && <>
+          <p>{dialog.user.name} потеряет доступ к платформе. Активные сеансы будут закрыты.</p>
+          <div className="settings-dialog-actions">
+            <button type="button" className="secondary" data-dialog-focus disabled={busy} onClick={closeDialog}>Отмена</button>
+            <button type="button" className="primary" disabled={busy} onClick={() => void run(() => updateUser(dialog.user, { disabled: true }))}>Отключить доступ</button>
+          </div>
+        </>}
+        {dialog.type === 'roles' && <CorporatePanel request={request} onSaved={() => void load().catch(e => setError(e.message))} />}
+        {dialog.type === 'audit' && <div className="audit-list">{audit.slice(0, 30).map(event => <div key={event.id}>
+          <b>{auditLabels[event.action] ?? event.action}</b>
+          <small>{users.find(user => user.id === event.actorId)?.name ?? event.actorId} · {new Date(event.createdAt).toLocaleString('ru-RU')}</small>
+        </div>)}</div>}
+        {error && <div className="inline-error" role="alert">{error}</div>}
+      </div>
+    </WorkspaceDialog>}
+  </>;
 }

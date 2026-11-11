@@ -1,14 +1,16 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { ArrowUp, Check, ChevronDown, ChevronRight, Circle, Copy, FileText, Folder, LoaderCircle, LockKeyhole, LogOut, Menu, Moon, Network, Plus, RefreshCw, Search, Settings2, ShieldCheck, Square, SquarePen, Sun, Terminal, Users, X } from 'lucide-react';
-import type { AgentSummary, Attachment, Chat, ChatSummary, CodexLimits, ErpContext, ModelCatalog, ProjectSummary, Run, Settings, Status, User } from '../shared/types';
+import { ArrowUp, Check, ChevronDown, ChevronRight, Copy, FileText, Folder, LoaderCircle, LockKeyhole, LogOut, Menu, Moon, Network, Plus, RefreshCw, Search, Settings2, ShieldCheck, Square, SquarePen, Sun, Terminal, Users, X } from 'lucide-react';
+import type { AgentSummary, Attachment, Chat, ChatSummary, CodexLimits, FastkoreAuthentication, ModelCatalog, ProjectSummary, Run, Settings, Status, User } from '../shared/types';
 import './style.css';
 import './workspace.css';
 import { AccountPanel, TeamPanel } from './AccessPanel';
-import { parseHostContext, parseHostTheme, webViewHost, type Theme } from './fastkore';
+import { FastkorePanel } from './FastkorePanel';
+import { parseHostTheme, webViewHost, type Theme } from './fastkore';
 import { Select } from './Select';
+import { WorkspaceDialog } from './WorkspaceDialog';
 
 let accessKey = sessionStorage.getItem('bridge-key') ?? '';
 let browserSession = false, csrfToken = '', sessionUserId = '', authEpoch = 0;
@@ -16,7 +18,7 @@ class ApiError extends Error { constructor(message: string, readonly status: num
 async function api<T>(url: string, init: RequestInit = {}): Promise<T> {
   const epoch = authEpoch;
   const headers = new Headers(init.headers);
-  if (browserSession && !['GET', 'HEAD'].includes(init.method ?? 'GET')) headers.set('X-Bridge-CSRF', csrfToken);
+  if (browserSession && !['GET', 'HEAD'].includes(init.method ?? 'GET')) headers.set('X-CSRF-Token', csrfToken);
   if (!browserSession && accessKey) headers.set('Authorization', `Bearer ${accessKey}`);
   if (init.body && !(init.body instanceof FormData)) headers.set('Content-Type', 'application/json');
   const response = await fetch(url, { ...init, headers });
@@ -40,9 +42,10 @@ function App() {
   const [browserTheme, setBrowserTheme] = useState<Theme>(() => localStorage.getItem('bridge-theme') === 'light' ? 'light' : 'dark');
   const [initialErpTheme] = useState<Theme>(() => new URLSearchParams(location.search).get('theme') === 'dark' ? 'dark' : 'light');
   const [erpTheme, setErpTheme] = useState<{ theme: Theme } | null>(null);
-  const [loggedIn, setLoggedIn] = useState(false), [keyInput, setKeyInput] = useState(''), [loginInput, setLoginInput] = useState('');
+  const [loggedIn, setLoggedIn] = useState(false), [passwordInput, setPasswordInput] = useState(''), [loginInput, setLoginInput] = useState('');
   const [checkingSession, setCheckingSession] = useState(true), [authSource, setAuthSource] = useState<'local' | 'fastkore'>('local');
-  const [erpContext, setErpContext] = useState<ErpContext | null>(null), [contextNotice, setContextNotice] = useState('');
+  const [erpAuth, setErpAuth] = useState<FastkoreAuthentication | null>(null);
+  const readySession = useRef<FastkoreAuthentication | null>(null);
   const [user, setUser] = useState<User | null>(null), [setupRequired, setSetupRequired] = useState(false), [setupName, setSetupName] = useState('Руководитель');
   const [status, setStatus] = useState<Status | null>(null), [projects, setProjects] = useState<ProjectSummary[]>([]), [chat, setChat] = useState<Chat | null>(null);
   const [chatLists, setChatLists] = useState<Record<string, ChatSummary[]>>({});
@@ -51,7 +54,8 @@ function App() {
   const [projectId, setProjectId] = useState(localStorage.getItem('bridge-project') ?? ''), [chatId, setChatId] = useState(localStorage.getItem('bridge-chat') ?? '');
   const [drafts, setDrafts] = useState<Record<string, string>>({}), [files, setFiles] = useState<Record<string, Attachment[]>>({});
   const [panel, setPanel] = useState<'settings' | 'project' | 'search' | null>(null);
-  const [settingsSection, setSettingsSection] = useState<'account' | 'team' | 'server'>('account');
+  const [settingsSection, setSettingsSection] = useState<'account' | 'team' | 'fastkore' | 'server'>('account');
+  const openedFastkoreSettings = useRef(false);
   const [sidebarOpen, setSidebarOpen] = useState(false), [searchQuery, setSearchQuery] = useState(''), [searchLoading, setSearchLoading] = useState(false);
   const accountMenu = useRef<HTMLDetailsElement>(null);
   const [error, setError] = useState(''), [pending, setPending] = useState(false), [copied, setCopied] = useState(''), [folderPath, setFolderPath] = useState(''), [projectName, setProjectName] = useState('');
@@ -60,11 +64,29 @@ function App() {
   const [cliPath, setCliPath] = useState(''), [diagnostics, setDiagnostics] = useState(''), [subscription, setSubscription] = useState<Run | null>(null);
   const input = useRef<HTMLTextAreaElement>(null), fileInput = useRef<HTMLInputElement>(null), end = useRef<HTMLDivElement>(null);
   const scroll = useRef<HTMLDivElement>(null), stick = useRef(true), loadingSettings = useRef(false);
+  const sending = useRef(false);
+  const sendAttempt = useRef<{ chatId: string; content: string; requestId: string } | null>(null);
   const selectedProject = projects.find(p => p.id === projectId), draft = drafts[chatId] ?? '', attachments = files[chatId] ?? [];
   const active = status?.activeRun, busy = status?.busy ?? !!active;
-  const isAdmin = user?.role === 'admin', canEdit = !status?.executionDisabled && (isAdmin || (!!chat && chat.ownerId === user?.id));
+  const isAdmin = user?.role === 'admin';
+  const canEdit = !!chat && (isAdmin || chat.ownerId === user?.id);
+  const codexUnavailable = status?.isolatedCodex && status.cli?.authentication !== 'chatgpt';
+  const codexNotice = status?.executionDisabled ? 'Выполнение Codex отключено на сервере.' : codexUnavailable
+    ? status.cli?.authentication === 'signed-out' ? 'Требуется вход в ChatGPT на исполнителе.' : 'Исполнитель Codex недоступен.'
+    : '';
   const canCreateProject = isAdmin || status?.canCreateProject === true;
+  const canStartWithoutProject = !projectId && projects.length === 0 && canCreateProject;
+  const canStartChat = !chatId && agents.some(agent => agent.id === newAgent && agent.available)
+    && (!!selectedProject || canStartWithoutProject);
+  const canSend = !!status && !status.executionDisabled && !codexUnavailable && (chatId ? canEdit : canStartChat);
   const inFastkore = embedded || (authSource === 'fastkore' && !!webViewHost());
+  useEffect(() => {
+    if (!loggedIn || !isAdmin || authSource !== 'local' || inFastkore || setupRequired || openedFastkoreSettings.current) return;
+    if (new URLSearchParams(location.search).get('settings') !== 'fastkore') return;
+    openedFastkoreSettings.current = true;
+    setSettingsSection('fastkore');
+    setPanel('settings');
+  }, [loggedIn, isAdmin, authSource, inFastkore, setupRequired]);
   const theme = inFastkore ? erpTheme?.theme ?? initialErpTheme : browserTheme;
   const modelName = (id?: string) => id ? (catalog?.models.find(m => m.id === id)?.name ?? id) : 'Автовыбор Codex';
   const selected = useRef({ projectId, chatId }); selected.current = { projectId, chatId };
@@ -75,7 +97,8 @@ function App() {
   }
   useEffect(() => {
     document.querySelector('meta[name="theme-color"]')?.setAttribute('content', theme === 'light' ? '#f2f4f7' : '#171717');
-  }, [theme]);
+    if (inFastkore) document.documentElement.dataset.fastkoreTheme = theme;
+  }, [theme, inFastkore]);
   const fail = (e: unknown) => {
     const err = e as Error;
     if (err.name === 'AbortError') return;
@@ -87,35 +110,38 @@ function App() {
   };
   async function action(work: () => Promise<void>) { setPending(true); setError(''); try { await work(); } catch (e) { fail(e); } finally { setPending(false); } }
   function saveToken(token: string) { accessKey = token; sessionStorage.setItem('bridge-key', token); }
-  function clearLogin() { authEpoch++; browserSession = false; csrfToken = ''; sessionUserId = ''; setErpContext(null); setContextNotice(''); setAgents([]); setCatalog(null); setModelError(''); accessKey = ''; sessionStorage.removeItem('bridge-key'); localStorage.removeItem('bridge-project'); localStorage.removeItem('bridge-chat'); setLoggedIn(false); setUser(null); setStatus(null); setProjects([]); setChatLists({}); setOpenProjects({}); setShowAll({}); setSidebarOpen(false); setChat(null); setDrafts({}); setFiles({}); setSubscription(null); setPanel(null); setProjectId(''); setChatId(''); setDiagnostics(''); setKeyInput(''); }
+  function clearLogin() { authEpoch++; browserSession = false; csrfToken = ''; sessionUserId = ''; sendAttempt.current = null; setErpAuth(null); readySession.current = null; setAgents([]); setCatalog(null); setModelError(''); accessKey = ''; sessionStorage.removeItem('bridge-key'); localStorage.removeItem('bridge-project'); localStorage.removeItem('bridge-chat'); setLoggedIn(false); setUser(null); setStatus(null); setProjects([]); setChatLists({}); setOpenProjects({}); setShowAll({}); setSidebarOpen(false); setChat(null); setDrafts({}); setFiles({}); setSubscription(null); setPanel(null); setProjectId(''); setChatId(''); setDiagnostics(''); setPasswordInput(''); }
   function logout() { void action(async () => { await post('/api/auth/logout'); clearLogin(); }); }
   useEffect(() => {
     let alive = true;
-    void fetch('/api/auth/browser-session', { credentials: 'same-origin' }).then(async response => {
+    const endpoint = embedded ? '/api/auth/me' : '/api/auth/browser-session';
+    void fetch(endpoint, { credentials: 'same-origin' }).then(async response => {
       const value = await response.json();
       if (!alive) return;
-      if (!response.ok) { clearLogin(); throw new Error('Сеанс Fastkore завершён. Откройте помощника из ERP заново.'); }
-      if (value.authenticated) {
-        authEpoch++;
-        accessKey = ''; sessionStorage.removeItem('bridge-key'); localStorage.removeItem('bridge-project'); localStorage.removeItem('bridge-chat');
-        browserSession = true; csrfToken = value.csrfToken; sessionUserId = value.user.id;
-        setProjectId(''); setChatId(''); setAuthSource('fastkore'); setUser(value.user); setSetupRequired(false); setLoggedIn(true);
+      if (!response.ok) {
+        if (embedded && response.status === 401) webViewHost()?.postMessage({ type: 'fastkore.sso.required', version: 1, reason: 'session_expired' });
+        clearLogin(); throw new Error('Сеанс Fastkore завершён. Откройте помощника из ERP заново.');
+      }
+      if (value.authentication?.source === 'fastkore') {
+        clearLogin();
+        browserSession = true; csrfToken = value.authentication.csrfToken; sessionUserId = value.user.id;
+        setErpAuth(value.authentication); setAuthSource('fastkore'); setUser(value.user); setSetupRequired(false); setLoggedIn(true);
       } else if (!embedded) setLoggedIn(!!accessKey);
     }).catch(e => { if (alive) setError(e.message); }).finally(() => { if (alive) setCheckingSession(false); });
     return () => { alive = false; };
   }, []);
   async function login(local = false) {
     await action(async () => {
-      const result = local ? await api<{ token: string; user: User }>('/api/local-login', { method: 'POST', headers: { 'X-Bridge-Local': '1' } }) : await post<{ token: string; user: User }>('/api/auth/login', { username: loginInput, password: keyInput });
-      saveToken(result.token); setAuthSource('local'); const me = await api<{ user: User; setupRequired: boolean }>('/api/auth/me'); setUser(me.user); setSetupRequired(me.setupRequired); setLoggedIn(true); setKeyInput('');
+      const result = local ? await api<{ token: string; user: User }>('/api/local-login', { method: 'POST', headers: { 'X-Bridge-Local': '1' } }) : await post<{ token: string; user: User }>('/api/auth/login', { username: loginInput, password: passwordInput });
+      saveToken(result.token); setAuthSource('local'); const me = await api<{ user: User; setupRequired: boolean }>('/api/auth/me'); setUser(me.user); setSetupRequired(me.setupRequired); setLoggedIn(true); setPasswordInput('');
     });
   }
   useEffect(() => {
-    if (!loggedIn) return;
+    if (!loggedIn || authSource === 'fastkore') return;
     let alive = true;
     api<{ user: User; setupRequired: boolean }>('/api/auth/me').then(me => { if (alive) { setUser(me.user); setSetupRequired(me.setupRequired); } }).catch(e => { if (alive) fail(e); });
     return () => { alive = false; };
-  }, [loggedIn]);
+  }, [loggedIn, authSource]);
   useEffect(() => {
     const host = inFastkore ? webViewHost() : undefined;
     if (!host) return;
@@ -130,23 +156,13 @@ function App() {
     if (inFastkore && erpTheme) webViewHost()?.postMessage({ type: 'fastkore.ui.applied', version: 1, theme: erpTheme.theme });
   }, [inFastkore, erpTheme]);
   useEffect(() => {
-    const host = authSource === 'fastkore' && loggedIn && user ? webViewHost() : undefined;
-    if (!host) return;
-    let alive = true, sequence = 0;
-    const receive = (event: { data: unknown }) => {
-      const message = parseHostContext(event.data);
-      if (!message || embedded) return;
-      const current = ++sequence;
-      void post<{ context: ErpContext; suggestedAgent?: string; suggestionUnavailable: boolean }>('/api/fastkore/context/validate', { entityType: message.entityType, entityId: message.entityId, ...(message.suggestedAgent ? { suggestedAgent: message.suggestedAgent } : {}) }).then(result => {
-        if (!alive || current !== sequence) return;
-        setErpContext(result.context);
-        if (result.suggestedAgent) setNewAgent(result.suggestedAgent);
-        setContextNotice(result.suggestionUnavailable ? 'Предложенный специалист недоступен' : '');
-      }).catch(e => { if (alive && current === sequence) { setErpContext(null); setContextNotice(e.message); } });
-    };
-    host.addEventListener('message', receive); host.postMessage({ type: 'fastkore.ready', version: 1 });
-    return () => { alive = false; host.removeEventListener('message', receive); };
-  }, [authSource, loggedIn, !!user, embedded]);
+    if (!erpAuth || !loggedIn || !user || readySession.current === erpAuth) return;
+    readySession.current = erpAuth;
+    webViewHost()?.postMessage({
+      type: 'fastkore.ready', version: 1, installation_id: erpAuth.installationId,
+      fastkore_user_id: erpAuth.externalUserId, theme,
+    });
+  }, [erpAuth, loggedIn, user?.id, theme]);
   useEffect(() => { const restored = (event: PageTransitionEvent) => { if (event.persisted && browserSession) location.reload(); }; window.addEventListener('pageshow', restored); return () => window.removeEventListener('pageshow', restored); }, []);
   function navigateTo(project: string, conversation = '') {
     if (selected.current.projectId !== project || selected.current.chatId !== conversation) {
@@ -245,7 +261,10 @@ function App() {
     catch (e) { setModelError((e as Error).message); }
     finally { setModelsLoading(false); }
   }
-  useEffect(() => { if (loggedIn && user && !setupRequired) void loadModels(); }, [loggedIn, !!user, setupRequired]);
+  useEffect(() => {
+    if (loggedIn && user && !setupRequired && status && !codexUnavailable) void loadModels();
+    else if (codexUnavailable) setCatalog(null);
+  }, [loggedIn, !!user, setupRequired, !!status, codexUnavailable]);
   async function changeModel(model: string) {
     const p = projectId, c = chatId;
     await action(async () => {
@@ -254,17 +273,23 @@ function App() {
     });
   }
   useEffect(() => { if (!loggedIn || !user || setupRequired || panel) return; let alive = true; api<AgentSummary[]>('/api/agents').then(list => { if (alive) { setAgents(list); setNewAgent(old => list.some(a => a.id === old && a.available) ? old : list.find(a => a.available)?.id ?? ''); } }).catch(fail); return () => { alive = false; }; }, [loggedIn, !!user, setupRequired, user?.roleId, panel]);
-  async function newChat(project = projectId, context?: ErpContext) {
+  async function createChat(project: string) {
+    const created = await post<Chat>(`/api/projects/${project}/chats`, { agentProfileId: newAgent });
+    const { id, title, updatedAt, ownerId, ownerName, visibility, messages } = created;
+    const summary: ChatSummary = { id, title, updatedAt, ownerId, ownerName, visibility, messageCount: messages.length };
+    setChatLists(old => ({ ...old, [project]: [summary, ...(old[project] ?? []).filter(item => item.id !== id)] }));
+    return created;
+  }
+  async function newChat(project = projectId) {
     if (!project) { if (canCreateProject) setPanel('project'); return; }
     if (!newAgent || pending) return;
     await action(async () => {
-      const created = await post<Chat>(`/api/projects/${project}/chats`, {
-        agentProfileId: newAgent,
-        ...(context ? { title: (context.entityType + ' ' + context.entityId).slice(0, 120), erpContext: { entityType: context.entityType, entityId: context.entityId } } : {}),
-      });
+      const created = await createChat(project);
+      if (!selected.current.chatId) {
+        setDrafts(old => old[''] ? { ...old, [created.id]: old[''], '': '' } : old);
+      }
       navigateTo(project, created.id);
       setChat(created);
-      await loadChats(project);
       input.current?.focus();
     });
   }
@@ -277,13 +302,47 @@ function App() {
     });
   }
   async function send() {
-    if (!draft.trim() || !projectId || !chatId || pending) return;
-    const p = projectId, c = chatId;
-    await action(async () => {
-      const run = await post<Run>(`/api/projects/${p}/chats/${c}/messages`, { text: draft.trim(), attachmentIds: attachments.map(a => a.id), clientRequestId: requestId() });
-      setDrafts(old => ({ ...old, [c]: '' })); setFiles(old => ({ ...old, [c]: [] }));
-      setStatus(old => old ? { ...old, ...(run.status === 'queued' ? { queuedRuns: [...(old.queuedRuns ?? []), run] } : { activeRun: run }) } : old); stick.current = true;
-    });
+    const text = draft.trim();
+    if (!canSend || !text || pending || sending.current) return;
+    const attachmentIds = attachments.map(a => a.id);
+    sending.current = true;
+    try {
+      await action(async () => {
+        let project = projectId, conversation = chatId;
+        if (!project) {
+          const created = await post<ProjectSummary>('/api/projects', { name: 'Личные чаты' });
+          project = created.id;
+          setProjects(old => old.some(p => p.id === project) ? old : [...old, created]);
+          if (!selected.current.projectId) navigateTo(project);
+        }
+        if (!conversation) {
+          const created = await createChat(project);
+          conversation = created.id;
+          const shouldOpen = selected.current.projectId === project && !selected.current.chatId;
+          setDrafts(old => ({
+            ...old,
+            [conversation]: shouldOpen ? old[''] ?? draft : draft,
+            ...(shouldOpen ? { '': '' } : {}),
+          }));
+          if (shouldOpen) {
+            navigateTo(project, conversation);
+            setChat(created);
+          }
+        }
+        const content = JSON.stringify({ text, attachmentIds });
+        const previous = sendAttempt.current;
+        const id = previous?.chatId === conversation && previous.content === content ? previous.requestId : requestId();
+        sendAttempt.current = { chatId: conversation, content, requestId: id };
+        const run = await post<Run>(`/api/projects/${project}/chats/${conversation}/messages`, { text, attachmentIds, clientRequestId: id });
+        sendAttempt.current = null;
+        setDrafts(old => old[conversation]?.trim() === text ? { ...old, [conversation]: '' } : old);
+        setFiles(old => ({ ...old, [conversation]: (old[conversation] ?? []).filter(a => !attachmentIds.includes(a.id)) }));
+        setStatus(old => old ? { ...old, ...(run.status === 'queued' ? { queuedRuns: [...(old.queuedRuns ?? []).filter(r => r.id !== run.id), run] } : run.status === 'running' ? { activeRun: run } : {}) } : old);
+        stick.current = true;
+      });
+    } finally {
+      sending.current = false;
+    }
   }
   async function upload(list: FileList | null) {
     if (!list || !projectId || !chatId) return;
@@ -323,8 +382,8 @@ function App() {
   if (!loggedIn) return <div className="bridge-signin" data-theme={theme}>{themeButton}<main className="login-card">
     <h1>Agentic Platform</h1>
     <form onSubmit={e => { e.preventDefault(); void login(); }}>
-      <label htmlFor="login-name">Логин</label><input id="login-name" autoComplete="username" value={loginInput} onChange={e => setLoginInput(e.target.value)} required />
-      <label htmlFor="access-key">Пароль</label><input id="access-key" type="password" autoComplete="current-password" value={keyInput} onChange={e => setKeyInput(e.target.value)} required />
+      <label htmlFor="login-name">Логин администратора</label><input id="login-name" autoComplete="username" value={loginInput} onChange={e => setLoginInput(e.target.value)} required />
+      <label htmlFor="login-password">Пароль</label><input id="login-password" type="password" autoComplete="current-password" value={passwordInput} onChange={e => setPasswordInput(e.target.value)} required />
       <button className="primary w-full" disabled={pending}>{pending ? <LoaderCircle className="spin" size={17} /> : 'Войти'}</button>
     </form>
     {['localhost', '127.0.0.1', '[::1]'].includes(location.hostname) && <button className="secondary w-full local-setup" onClick={() => void login(true)} disabled={pending}>Первичная настройка руководителя</button>}
@@ -335,12 +394,12 @@ function App() {
   if (setupRequired) return <div className="bridge-signin" data-theme={theme}>{themeButton}<main className="login-card">
     <h1>Настройка руководителя</h1>
     <form onSubmit={e => { e.preventDefault(); void action(async () => {
-      const result = await post<{ token: string; user: User }>('/api/auth/setup', { username: loginInput || 'admin', name: setupName, password: keyInput });
-      saveToken(result.token); setUser(result.user); setSetupRequired(false); setKeyInput('');
+      const result = await post<{ token: string; user: User }>('/api/auth/setup', { username: loginInput || 'admin', name: setupName, password: passwordInput });
+      saveToken(result.token); setUser(result.user); setSetupRequired(false); setPasswordInput('');
     }); }}>
       <label htmlFor="setup-login">Логин</label><input id="setup-login" autoComplete="username" minLength={3} maxLength={48} value={loginInput || 'admin'} onChange={e => setLoginInput(e.target.value)} required />
       <label htmlFor="setup-name">Имя</label><input id="setup-name" maxLength={100} value={setupName} onChange={e => setSetupName(e.target.value)} required />
-      <label htmlFor="setup-password">Пароль от 12 символов</label><input id="setup-password" type="password" autoComplete="new-password" minLength={12} maxLength={200} value={keyInput} onChange={e => setKeyInput(e.target.value)} required />
+      <label htmlFor="setup-password">Пароль от 12 символов</label><input id="setup-password" type="password" autoComplete="new-password" minLength={12} maxLength={200} value={passwordInput} onChange={e => setPasswordInput(e.target.value)} required />
       <button className="primary w-full" disabled={pending}>Сохранить</button>
     </form>
     {error && <div className="inline-error" role="alert">{error}</div>}
@@ -353,10 +412,10 @@ function App() {
     const matchingChats = (chatLists[project.id] ?? []).filter(item => matchesProject || item.title.toLocaleLowerCase('ru-RU').includes(query));
     return matchesProject || matchingChats.length ? [{ project, matchingChats }] : [];
   });
-  const editable = !!chat && canEdit;
+  const draftEditable = !chatId || canEdit;
   const canCreate = !!selectedProject && !!newAgent && !pending;
   const currentAgent = agents.find(agent => agent.id === chat?.agentProfileId);
-  const writeMode = !!status?.settings.allowWrite && !!currentAgent?.allowWrite;
+  const writeMode = !status?.isolatedCodex && !!status?.settings.allowWrite && !!currentAgent?.allowWrite;
   const catalogOptions = catalog?.models.map(model => ({ value: model.id, label: model.name })) ?? [];
   const chatModel = currentAgent?.model ? '' : chat?.model ?? '';
   const defaultChatModel = modelName(currentAgent?.model || status?.settings.model || catalog?.models.find(model => model.isDefault)?.id);
@@ -373,8 +432,11 @@ function App() {
   ];
   const closePanel = () => setPanel(null);
   const composer = <div className="bridge-composer">
-    {status?.executionDisabled && <p className="composer-status" role="status">Выполнение задач отключено</p>}
-    {chat && !canEdit && !status?.executionDisabled && <p className="composer-status">Чат доступен для чтения</p>}
+    {chat && !canEdit && <p className="composer-status">Чат доступен для чтения</p>}
+    {codexNotice && draftEditable && <p className="composer-status" role="status">{codexNotice} Можно подготовить черновик.</p>}
+    {!projectId && status && !canCreateProject && !projects.length && <p className="composer-status">Для отправки администратор должен дать вам доступ к проекту.</p>}
+    {canStartChat && canStartWithoutProject && <p className="composer-status">Первое сообщение создаст проект «Личные чаты».</p>}
+    {!chatId && status && (projectId || canCreateProject) && !canStartChat && !agents.some(agent => agent.available) && <p className="composer-status">Для нового чата нужен доступ к специалисту.</p>}
     {(status?.queuedRuns ?? []).filter(run => run.chatId === chatId).map(run => <div className="bridge-progress" key={run.id}>
       <LoaderCircle size={14} className="spin" /><span>В очереди</span>
       <button onClick={() => void action(async () => { await post('/api/runs/' + run.id + '/cancel'); })}>Отменить</button>
@@ -394,21 +456,21 @@ function App() {
         <FileText size={14} />{attachment.name}<button aria-label={'Убрать ' + attachment.name} onClick={() => setFiles(old => ({ ...old, [chatId]: (old[chatId] ?? []).filter(item => item.id !== attachment.id) }))}><X size={13} /></button>
       </span>)}</div>}
       <textarea ref={input} rows={2} value={draft} onChange={e => setDrafts(old => ({ ...old, [chatId]: e.target.value }))}
-        placeholder={chatId ? (hasMessages ? 'Продолжить разговор…' : 'Напишите сообщение…') : 'Выберите проект и создайте чат'}
-        disabled={!editable} aria-label="Сообщение Codex"
+        placeholder={hasMessages ? 'Продолжить разговор…' : 'Напишите сообщение…'}
+        disabled={!draftEditable} aria-label="Сообщение Codex"
         onKeyDown={e => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); void send(); } }} />
       <div className="bridge-editor-controls">
         <input type="file" multiple ref={fileInput} onChange={e => void upload(e.target.files)} />
-        <button className="workspace-icon" title="Прикрепить файл" aria-label="Прикрепить файл" onClick={() => fileInput.current?.click()} disabled={!editable || pending}><Plus size={19} /></button>
+        <button className="workspace-icon" title={status?.isolatedCodex ? 'Исполнитель принимает текстовые сообщения' : 'Прикрепить файл'} aria-label="Прикрепить файл" onClick={() => fileInput.current?.click()} disabled={status?.isolatedCodex || !canEdit || pending}><Plus size={19} /></button>
         <span className={'access-mode' + (writeMode ? ' write' : '')} title={currentAgent?.name}><ShieldCheck size={16} />{writeMode ? 'Запись разрешена' : 'Только чтение'}</span>
         <div className="composer-actions">
-          <LimitsButton request={api} />
+          <LimitsButton request={api} unavailableReason={codexNotice} revision={status?.codexLimitsRevision} />
           <div className="editor-model">
             <Select label="Модель диалога" value={chatModel} options={chatModels}
               disabled={!!currentAgent?.model || !chat || !(isAdmin || chat.ownerId === user.id) || busy || pending || modelsLoading || (!catalog && !chat.model)}
               onChange={model => void changeModel(model)} title={modelError || undefined} />
           </div>
-          <button className="bridge-send" aria-label="Отправить вопрос" title="Отправить · Ctrl+Enter" onClick={() => void send()} disabled={!editable || !draft.trim() || pending}><ArrowUp size={18} /></button>
+          <button className="bridge-send" aria-label="Отправить вопрос" title={codexNotice || 'Отправить · Ctrl+Enter'} onClick={() => void send()} disabled={!canSend || !draft.trim() || pending}><ArrowUp size={18} /></button>
         </div>
       </div>
     </div>
@@ -477,11 +539,7 @@ function App() {
         </>}
         {themeButton}
       </header>
-      {!embedded && (chat?.erpContext || erpContext || contextNotice) && <div className="workspace-context">
-        {chat?.erpContext && <span>{chat.erpContext.entityType} / {chat.erpContext.entityId}</span>}
-        {erpContext && <button className="workspace-row" disabled={!canCreate} onClick={() => void newChat(projectId, erpContext)}>Новый чат · {erpContext.entityType} / {erpContext.entityId}</button>}
-        {contextNotice && <span role="status">{contextNotice}</span>}
-      </div>}
+      {!embedded && chat?.erpContext && <div className="workspace-context">{chat.erpContext.entityType} / {chat.erpContext.entityId}</div>}
       {error && !panel && <div className="workspace-error" role="alert"><span>{error}</span><button className="workspace-icon" onClick={() => setError('')} aria-label="Закрыть ошибку"><X size={17} /></button></div>}
       {hasMessages && chat ? <>
         <div ref={scroll} className="conversation-scroll" onScroll={() => { const el = scroll.current; if (el) stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 120; }}>
@@ -507,7 +565,7 @@ function App() {
         </div>
         <div className="conversation-lane conversation-footer">{composer}</div>
       </> : <div className="workspace-welcome">
-        <h2>{selectedProject ? 'Новый чат' : 'Выберите проект'}</h2>
+        <h2>{selectedProject || canStartWithoutProject ? 'Новый чат' : 'Выберите проект'}</h2>
         {composer}
       </div>}
     </main>
@@ -540,20 +598,14 @@ function App() {
         <nav aria-label="Разделы настроек" className="settings-nav">
           <button className="workspace-row" aria-pressed={settingsSection === 'account'} onClick={() => setSettingsSection('account')}><LockKeyhole size={16} />Учётная запись</button>
           <button className="workspace-row" aria-pressed={settingsSection === 'team'} onClick={() => setSettingsSection('team')}><Users size={16} />Команда</button>
+          <button className="workspace-row" aria-pressed={settingsSection === 'fastkore'} onClick={() => setSettingsSection('fastkore')}><ShieldCheck size={16} />Вход из Fastkore</button>
           <button className="workspace-row" aria-pressed={settingsSection === 'server'} onClick={() => void showServerSettings()}><Network size={16} />Сервер</button>
         </nav>
-        <div className="panel-body settings-content">
+        <div className={'panel-body settings-content' + (settingsSection === 'server' ? ' settings-server' : '')}>
           {error && <div className="inline-error" role="alert">{error}</div>}
-          {settingsSection === 'account' && <>
-            <AccountPanel request={api} copy={copy} renewed={saveToken} />
-            <section className="setting-section"><h3>API</h3>
-              <button className="copy-row" onClick={() => void copyItem(location.origin, 'base')}><code>{location.origin}</code>{copied === 'base' ? <Check size={14} /> : <Copy size={14} />}</button>
-              <pre className="api-code">Authorization: Bearer &lt;ключ доступа&gt;</pre>
-              {selectedProject && <><label>ID проекта</label><button className="copy-row" onClick={() => void copyItem(projectId, 'pid')}><code>{projectId}</code>{copied === 'pid' ? <Check size={14} /> : <Copy size={14} />}</button></>}
-              {chatId && <><label>ID чата</label><button className="copy-row" onClick={() => void copyItem(chatId, 'cid')}><code>{chatId}</code>{copied === 'cid' ? <Check size={14} /> : <Copy size={14} />}</button></>}
-            </section>
-          </>}
+          {settingsSection === 'account' && <AccountPanel request={api} renewed={saveToken} fastkore={authSource === 'fastkore'} />}
           {settingsSection === 'team' && <TeamPanel request={api} projectId={projectId} projectName={selectedProject?.name ?? ''} self={user} />}
+          {settingsSection === 'fastkore' && <FastkorePanel request={api} />}
           {settingsSection === 'server' && <>
             {!projects.length && <section className="setting-section"><h3>История настольной версии</h3><button className="secondary w-full" disabled={pending || busy} onClick={() => void action(async () => {
               await post('/api/migrations/desktop'); setProjects(await api('/api/projects')); setStatus(await api('/api/status')); closePanel();
@@ -563,25 +615,32 @@ function App() {
             </section>
             <section className="setting-section"><h3>Codex CLI</h3>
               <p className="settings-status">{status?.cli?.authentication === 'chatgpt' ? 'Подключён через ChatGPT' : status?.cli?.authentication === 'api-key' ? 'API-ключ · выполнение отключено' : 'Codex не подключён'}</p>
-              <label htmlFor="cli-path">Путь к Codex CLI</label><input id="cli-path" value={cliPath} onChange={e => setCliPath(e.target.value)} placeholder="Автоопределение" disabled={busy} />
-              <div className="button-pair">
-                <button className="secondary" disabled={pending || busy} onClick={() => void saveSettings({ cliPath: cliPath.trim() })}>Сохранить</button>
+              {status?.isolatedCodex ? <p className="help">Отдельный исполнитель · текстовые чаты</p>
+                : <><label htmlFor="cli-path">Путь к Codex CLI</label><input id="cli-path" value={cliPath} onChange={e => setCliPath(e.target.value)} placeholder="Автоопределение" disabled={busy} /></>}
+              <div className="settings-actions">
+                {!status?.isolatedCodex && <button className="secondary" disabled={pending || busy} onClick={() => void saveSettings({ cliPath: cliPath.trim() })}>Сохранить</button>}
                 <button className="secondary" disabled={pending || busy} onClick={() => void action(async () => { await post('/api/cli/check'); setStatus(await api('/api/status')); })}>Проверить</button>
+                <button className="secondary" disabled={pending || busy || !!codexNotice} onClick={() => void action(async () => { setSubscription(await post<Run>('/api/subscription/check')); })}>Проверить подписку</button>
               </div>
-              <button className="secondary w-full" disabled={pending || busy} onClick={() => void action(async () => { setSubscription(await post<Run>('/api/subscription/check')); })}>Проверить подписку</button>
               {subscription && <p role="status">{subscription.error ?? subscription.response ?? subscription.progress}</p>}
             </section>
-            <section className="setting-section"><h3>Модель по умолчанию</h3>
-              <Select className="settings-select" label="Модель сервера" value={serverModel} options={serverModels}
-                disabled={busy || pending || modelsLoading} onChange={model => void saveSettings({ model })} />
-              <button className="secondary w-full" disabled={modelsLoading} onClick={() => void loadModels(true)}>{modelsLoading ? 'Загрузка…' : 'Обновить список моделей'}</button>
+            <section className="setting-section">
+              <div className="settings-model-row">
+                <label htmlFor="server-model">Модель по умолчанию</label>
+                <Select id="server-model" className="settings-select" value={serverModel} options={serverModels}
+                  disabled={busy || pending || modelsLoading} onChange={model => void saveSettings({ model })} />
+                <button type="button" className="workspace-icon" aria-label="Обновить список моделей" title="Обновить список моделей"
+                  disabled={modelsLoading} onClick={() => void loadModels(true)}>
+                  {modelsLoading ? <LoaderCircle className="spin" size={16} /> : <RefreshCw size={16} />}
+                </button>
+              </div>
               {modelError && <p role="status">{modelError}</p>}
             </section>
-            <section className="setting-section"><h3>Работа с файлами</h3>
+            {!status?.isolatedCodex && <section className="setting-section"><h3>Работа с файлами</h3>
               <Toggle checked={status?.settings.allowWrite ?? false} disabled={busy || pending} title="Разрешить запись в проект" onChange={allowWrite => void saveSettings({ allowWrite })} />
               <Toggle checked={status?.settings.includePreviews ?? true} disabled={busy || pending} title="Добавлять выдержки из документов" onChange={includePreviews => void saveSettings({ includePreviews })} />
-            </section>
-            {(diagnostics || status?.storageWarning) && <section className="setting-section"><h3>Диагностика</h3>{diagnostics && <pre className="diagnostics">{diagnostics}</pre>}{status?.storageWarning && <p role="status">{status.storageWarning}</p>}</section>}
+            </section>}
+            {(diagnostics || status?.storageWarning) && <section className="setting-section"><h3>Диагностика</h3>{diagnostics && <pre className="diagnostics settings-log" tabIndex={0} aria-label="Журнал диагностики">{diagnostics}</pre>}{status?.storageWarning && <p role="status">{status.storageWarning}</p>}</section>}
           </>}
         </div>
       </div>
@@ -597,59 +656,83 @@ function shortDate(value: string) {
     : date.toLocaleDateString('ru-RU', { day: 'numeric', month: 'short' });
 }
 
-function LimitsButton({ request }: { request: typeof api }) {
+const remainingPercent = (used: number) => Math.min(100, Math.max(0, 100 - used));
+const limitPercentFormat = new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 2 });
+
+function LimitsButton({ request, unavailableReason, revision }: { request: typeof api; unavailableReason: string; revision?: number }) {
   const [limits, setLimits] = useState<CodexLimits | null>(null);
   const [loading, setLoading] = useState(false);
-  const busy = useRef(false);
-  async function refresh() {
-    if (busy.current) return;
-    busy.current = true;
+  const inFlight = useRef<AbortController | null>(null);
+  const refresh = useCallback(async () => {
+    if (inFlight.current || unavailableReason || document.hidden) return;
+    const controller = new AbortController();
+    inFlight.current = controller;
     setLoading(true);
-    try { setLimits((await request<{ limits: CodexLimits | null }>('/api/codex/limits')).limits); }
-    catch { setLimits(null); }
-    finally { busy.current = false; setLoading(false); }
-  }
-  return <details className="limits-control" data-available={!!limits}
+    try {
+      const result = await request<{ limits: CodexLimits | null }>('/api/codex/limits', { signal: controller.signal });
+      if (!controller.signal.aborted) setLimits(result.limits);
+    } catch {
+      if (!controller.signal.aborted) setLimits(null);
+    } finally {
+      if (inFlight.current === controller) {
+        inFlight.current = null;
+        setLoading(false);
+      }
+    }
+  }, [request, unavailableReason]);
+  useEffect(() => {
+    if (unavailableReason) {
+      setLimits(null);
+      setLoading(false);
+      return;
+    }
+    const update = () => void refresh();
+    update();
+    const timer = window.setInterval(update, 15_000);
+    document.addEventListener('visibilitychange', update);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener('visibilitychange', update);
+      inFlight.current?.abort();
+      inFlight.current = null;
+    };
+  }, [refresh, revision, unavailableReason]);
+
+  const windows = unavailableReason ? [] : limits?.buckets.flatMap(bucket => bucket.windows) ?? [];
+  const remaining = windows.length ? Math.min(...windows.map(window => remainingPercent(window.usedPercent))) : null;
+  const remainingLabel = remaining === null ? '' : `Осталось ${limitPercentFormat.format(remaining)}%`;
+  const title = remainingLabel ? `Лимиты Codex · ${remainingLabel.toLowerCase()}` : 'Лимиты Codex';
+  return <details className="limits-control"
     onToggle={e => { if (e.currentTarget.open) void refresh(); }}
     onBlur={e => { if (!e.currentTarget.contains(e.relatedTarget)) e.currentTarget.open = false; }}
     onKeyDown={e => { if (e.key === 'Escape') { e.currentTarget.open = false; e.currentTarget.querySelector('summary')?.focus(); } }}>
-    <summary className="workspace-icon" aria-label="Лимиты Codex" title="Лимиты Codex">
-      <Circle className="limit-ring" aria-hidden="true" size={17} strokeWidth={3} />
+    <summary className="workspace-icon" aria-label="Лимиты Codex" aria-description={remainingLabel || unavailableReason || undefined} title={title}>
+      <svg className="limit-ring" viewBox="0 0 20 20" width="20" height="20" aria-hidden="true">
+        <circle className="limit-ring-track" cx="10" cy="10" r="8" />
+        {remaining !== null && remaining > 0 && <circle className="limit-ring-value" cx="10" cy="10" r="8" pathLength="100"
+          strokeDasharray={`${remaining} 100`} transform="rotate(-90 10 10)" />}
+      </svg>
     </summary>
     <div className="limits-popover">
-      <header><h3>Лимиты Codex</h3><button className="workspace-icon" title="Обновить лимиты" aria-label="Обновить лимиты" disabled={loading} onClick={() => void refresh()}><RefreshCw size={14} /></button></header>
-      {loading && <p role="status">Загрузка…</p>}
-      {!loading && !limits && <p role="status">Данные недоступны</p>}
-      {limits?.buckets.map((bucket, index) => <section key={index}>
+      <header><h3>Лимиты Codex</h3><button className="workspace-icon" title="Обновить лимиты" aria-label="Обновить лимиты" disabled={loading || !!unavailableReason} onClick={() => void refresh()}><RefreshCw size={14} /></button></header>
+      {loading && !limits && <p role="status">Загрузка…</p>}
+      {unavailableReason && <p role="status">{unavailableReason}</p>}
+      {!unavailableReason && !loading && !limits && <p role="status">Сервер не получил лимиты от Codex.</p>}
+      {!unavailableReason && limits?.buckets.map((bucket, index) => <section key={index}>
         {limits.buckets.length > 1 && <b>{bucket.name}</b>}
         {bucket.windows.map((window, row) => {
-          const left = Math.max(0, Math.round(100 - window.usedPercent));
+          const left = remainingPercent(window.usedPercent);
           const mins = window.windowDurationMins;
           const label = mins ? (mins % 1440 === 0 ? mins / 1440 + ' дн.' : mins % 60 === 0 ? mins / 60 + ' ч' : mins + ' мин') : 'Лимит';
-          return <div key={row}><div className="limit-window"><span>{label}</span><span>Осталось {left}%</span></div>
+          return <div key={row}><div className="limit-window"><span>{label}</span><span>Осталось {limitPercentFormat.format(left)}%</span></div>
             <progress value={left} max={100} aria-label={'Остаток за ' + label} />
             {!!window.resetsAt && <small>Обновится {new Date(window.resetsAt * 1000).toLocaleString('ru-RU', { dateStyle: 'short', timeStyle: 'short' })}</small>}
           </div>;
         })}
       </section>)}
-      {limits?.resetsAvailable != null && <p>Доступно сбросов: {limits.resetsAvailable}</p>}
+      {!unavailableReason && limits?.resetsAvailable != null && <p>Доступно сбросов: {limits.resetsAvailable}</p>}
     </div>
   </details>;
-}
-
-function WorkspaceDialog({ title, className, close, children }: { title: string; className: string; close: () => void; children: React.ReactNode }) {
-  const ref = useRef<HTMLDialogElement>(null);
-  const heading = React.useId();
-  useEffect(() => { const dialog = ref.current; dialog?.showModal(); return () => dialog?.close(); }, []);
-  return <dialog ref={ref} className={'workspace-dialog ' + className} aria-labelledby={heading} onCancel={e => { e.preventDefault(); close(); }}
-    onClick={e => {
-      if (e.target !== e.currentTarget) return;
-      const rect = e.currentTarget.getBoundingClientRect();
-      if (e.clientX < rect.left || e.clientX > rect.right || e.clientY < rect.top || e.clientY > rect.bottom) close();
-    }}>
-    <header><h2 id={heading}>{title}</h2><button className="workspace-icon" onClick={close} aria-label="Закрыть"><X size={19} /></button></header>
-    {children}
-  </dialog>;
 }
 
 function Toggle({ checked, disabled, title, onChange }: { checked: boolean; disabled: boolean; title: string; onChange: (value: boolean) => void }) { return <label className="toggle-row"><span><b>{title}</b></span><input type="checkbox" checked={checked} disabled={disabled} onChange={e => onChange(e.target.checked)} /><span className="toggle" /></label>; }
