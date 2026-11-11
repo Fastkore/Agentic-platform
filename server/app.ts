@@ -97,8 +97,12 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
     if (route === ssoStart || route === ssoExchange) {
       if (!sso) throw new BridgeError('Вход Fastkore ещё не настроен.', 503);
       if (route === ssoExchange && request.url.includes('?')) throw new BridgeError('Билет передаётся только в теле POST-запроса.');
-      if (request.headers.origin !== undefined && request.headers.origin !== publicOrigin
-        || route === ssoExchange && request.headers['sec-fetch-site'] && !['none', 'same-origin'].includes(request.headers['sec-fetch-site'] as string)) {
+      const origin = request.headers.origin;
+      const fetchSite = request.headers['sec-fetch-site'];
+      // WebView2 sends an opaque origin on a native POST navigation. The exchange still checks the preparation cookie and challenge.
+      const nativeExchange = route === ssoExchange && request.method === 'POST' && origin === 'null' && fetchSite === 'none';
+      if ((origin !== undefined && origin !== publicOrigin && !nativeExchange)
+        || (route === ssoExchange && fetchSite && !['none', 'same-origin'].includes(fetchSite as string))) {
         throw new BridgeError('Откройте помощника штатной кнопкой Fastkore.', 403);
       }
       secureRequest(request); rateLimit(request, route === ssoStart ? starts : exchanges); return;

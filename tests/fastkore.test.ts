@@ -146,9 +146,10 @@ test('exchange rejects missing, foreign and expired preparation and untrusted re
   const f = await fixture();
   try {
     const a = await start(f.app, 'dark'), b = await start(f.app), value = f.ticket(a);
-    assert.equal((await f.exchange(a, value, { cookie: '' })).statusCode, 401);
-    assert.equal((await f.exchange(a, value, { cookie: b.cookie })).statusCode, 401);
-    for (const bad of [{ origin: 'null' }, { origin: 'https://wrong.example.test' }, { host: 'wrong.example.test' }, { 'x-forwarded-proto': 'http' }]) {
+    const nativeNavigation = { origin: 'null', 'sec-fetch-site': 'none' };
+    assert.equal((await f.exchange(a, value, { ...nativeNavigation, cookie: '' })).statusCode, 401);
+    assert.equal((await f.exchange(a, value, { ...nativeNavigation, cookie: b.cookie })).statusCode, 401);
+    for (const bad of [{ origin: 'null' }, { origin: 'null', 'sec-fetch-site': 'cross-site' }, { origin: 'https://wrong.example.test', 'sec-fetch-site': 'none' }, { host: 'wrong.example.test' }, { 'x-forwarded-proto': 'http' }]) {
       assert.equal((await f.exchange(a, value, bad)).statusCode, 403);
     }
     const spoof = await f.app.inject({ method: 'POST', url: exchangePath, remoteAddress: '192.0.2.20', headers: { ...headers, ...formType, cookie: a.cookie }, payload: form(a, f.id, value) });
@@ -170,7 +171,7 @@ test('exchange rejects missing, foreign and expired preparation and untrusted re
       assert.match(expired.body, /color-scheme:dark/);
     } finally { Date.now = realNow; }
     assert.equal(f.calls, 0);
-    assert.equal((await f.exchange(a, value)).statusCode, 303);
+    assert.equal((await f.exchange(a, value, nativeNavigation)).statusCode, 303);
     assert.equal((await f.exchange(a, f.ticket(a))).statusCode, 401);
   } finally { await f.app.close(); }
 });
