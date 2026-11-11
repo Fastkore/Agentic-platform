@@ -1,0 +1,12 @@
+{
+  "installations": [
+    {
+      "id": "office-pilot",
+      "name": "Тестовая установка Fastkore",
+      "validationUrl": "https://erp.example.internal/api/ai/validate-ticket",
+      "secretFile": "/run/secrets/fastkore-validation",
+      "entityTypes": ["ProductionOrder"],
+      "enabled": false
+    }
+  ]
+}

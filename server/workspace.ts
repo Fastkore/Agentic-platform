@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { readFile, realpath, stat } from 'node:fs/promises';
-import type { Attachment, Chat, CliInfo, Job, ModelCatalog, Project, Run, Settings } from '../shared/types.js';
+import type { Attachment, Chat, CliInfo, ErpContext, Job, ModelCatalog, Project, Run, Settings } from '../shared/types.js';
 import { Store, BridgeError, redact } from './store.js';
 import { type CodexRunner, discoverCli } from './codex.js';
 import { buildContext } from './documents.js';
@@ -37,12 +37,12 @@ export class Workspace {
     const project: Project = { id: randomUUID(), name: name?.trim() || path.basename(resolved) || resolved, directory: resolved, chats: [], attachments: [] };
     this.store.state.projects.push(project); await this.store.save(); return project;
   }
-  async addChat(projectId: string, title?: string, model = '', ownerId?: string, authorize?: () => void, agentProfileId = 'universal') {
+  async addChat(projectId: string, title?: string, model = '', ownerId?: string, authorize?: () => void, agentProfileId = 'universal', erpContext?: ErpContext) {
     this.writable();
     await this.validateModel(model);
     authorize?.();
     this.corporate.profile(this.store.state.security?.users.find(u => u.id === ownerId), agentProfileId);
-    const chat: Chat = { id: randomUUID(), title: title?.trim() || 'Новый диалог', updatedAt: new Date().toISOString(), messages: [], model, agentProfileId, ownerId, visibility: 'private' };
+    const chat: Chat = { id: randomUUID(), title: title?.trim() || 'Новый диалог', updatedAt: new Date().toISOString(), messages: [], model, agentProfileId, ownerId, visibility: 'private', ...(erpContext ? { erpContext: { ...erpContext } } : {}) };
     this.project(projectId).chats.unshift(chat); await this.store.save(); return chat;
   }
   async changeChatModel(projectId: string, chatId: string, model: string, authorize?: () => void) {

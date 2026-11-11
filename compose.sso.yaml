@@ -1,0 +1,15 @@
+# Opt-in pilot overlay; the default compose.yaml has no SSO secrets or Codex credentials.
+# docker compose -f compose.yaml -f compose.sso.yaml up -d --build
+services:
+  app:
+    environment:
+      BRIDGE_TRUST_PROXY: ${BRIDGE_TRUST_PROXY:?Set exact proxy address seen by the app}
+      BRIDGE_SSO_CONFIG: /run/bridge-config/fastkore-sso.json
+    volumes:
+      - ./private/fastkore-sso.json:/run/bridge-config/fastkore-sso.json:ro
+    secrets:
+      - source: fastkore_validation
+        target: fastkore-validation
+secrets:
+  fastkore_validation:
+    file: ./private/fastkore-validation

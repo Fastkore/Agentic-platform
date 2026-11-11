@@ -34,7 +34,7 @@ try {
   const stop = async () => { if (stopping) return; stopping = true; await workspace.shutdown(); await app.close(); await cleanup(); };
   process.on('SIGINT', () => { void stop(); }); process.on('SIGTERM', () => { void stop(); });
   await app.listen({ port, host: lan ? '0.0.0.0' : '127.0.0.1' });
-  console.log('Codex Chat Bridge Web · 0.5.0');
+  console.log('Codex Chat Bridge Web · 0.6.0');
   for (const url of addresses(port, lan)) console.log(url);
   console.log(`Данные: ${root}`);
   console.log(lan ? 'Доступ в локальной сети включён. Вход — по личному логину и паролю.' : 'Доступ только с этого компьютера. Для локальной сети: --lan');

@@ -3,6 +3,7 @@ import { promisify } from 'node:util';
 import type { ApiKeyInfo, Chat, Credential, Security, User, UserRecord } from '../shared/types.js';
 import { BridgeError } from './store.js';
 import type { Workspace } from './workspace.js';
+import type { TicketIdentity } from './fastkore.js';
 
 const derive = promisify(scrypt);
 const digest = (value: string) => createHash('sha256').update(value).digest('hex');
@@ -13,6 +14,7 @@ export interface Principal { user: UserRecord; credential: Credential }
 export class Access {
   readonly data: Security;
   private queue: Promise<unknown> = Promise.resolve();
+  externalCredentialValid?: (credential: Credential) => boolean;
   constructor(readonly workspace: Workspace) {
     const state = workspace.store.state;
     if (!state.security) state.security = { users: [{ id: randomUUID(), username: 'admin', name: 'Руководитель', role: 'admin', disabled: false, passwordHash: '', createdAt: new Date().toISOString() }], credentials: [], audit: [] };
@@ -48,17 +50,21 @@ export class Access {
     const candidate = await derive(value, salt, 64) as Buffer, expected = Buffer.from(hash, 'hex');
     return candidate.length === expected.length && timingSafeEqual(candidate, expected);
   }
-  private issue(user: UserRecord, kind: Credential['kind'], name: string) {
+  private issue(user: UserRecord, kind: Credential['kind'], name: string, external?: Pick<Credential, 'source' | 'installationId' | 'externalUserId'>) {
     const token = `ccb_${kind === 'api' ? 'k' : 's'}_${randomBytes(32).toString('hex')}`;
-    const record: Credential = { id: randomUUID(), userId: user.id, kind, hash: digest(token), name, createdAt: new Date().toISOString(), ...(kind === 'session' ? { expiresAt: new Date(Date.now() + 12 * 3600_000).toISOString() } : {}) };
+    const record: Credential = { id: randomUUID(), userId: user.id, kind, hash: digest(token), name, createdAt: new Date().toISOString(), ...external, ...(kind === 'session' ? { expiresAt: new Date(Date.now() + (external?.source === 'fastkore' ? 1800_000 : 12 * 3600_000)).toISOString() } : {}) };
     this.data.credentials = this.data.credentials.filter(c => !c.expiresAt || Date.parse(c.expiresAt) > Date.now());
     if (kind === 'session') { const old = this.data.credentials.filter(c => c.userId === user.id && c.kind === kind); for (const c of old.slice(0, Math.max(0, old.length - 19))) this.data.credentials.splice(this.data.credentials.indexOf(c), 1); }
     this.data.credentials.push(record); return { token, user: publicUser(user), key: { id: record.id, name, createdAt: record.createdAt } };
   }
   authenticate(token: string): Principal {
     const hash = digest(token), credential = this.data.credentials.find(c => c.hash === hash);
+    return this.authenticateCredential(credential?.id ?? '');
+  }
+  authenticateCredential(id: string): Principal {
+    const credential = this.data.credentials.find(c => c.id === id);
     const user = credential && this.data.users.find(u => u.id === credential.userId && !u.disabled);
-    if (!credential || !user || (credential.expiresAt && Date.parse(credential.expiresAt) <= Date.now())) throw new BridgeError('Войдите под своей учётной записью.', 401);
+    if (!credential || !user || (credential.expiresAt && Date.parse(credential.expiresAt) <= Date.now()) || (credential.source === 'fastkore' && !this.externalCredentialValid?.(credential))) throw new BridgeError('Войдите под своей учётной записью.', 401);
     return { user, credential };
   }
   bootstrap() { return this.change(() => { if (!this.setupRequired) throw new BridgeError('Первичная настройка завершена. Войдите по логину и паролю.', 403); return this.issue(this.data.users.find(u => u.role === 'admin')!, 'session', 'Первичная настройка'); }); }
@@ -77,6 +83,44 @@ export class Access {
     return this.change(() => { if (!user || user.disabled || user.passwordHash !== previousHash || !ok || this.setupRequired) throw new BridgeError('Неверный логин или пароль.', 401); return this.issue(user, 'session', 'Браузер'); });
   }
   logout(principal: Principal) { return this.change(() => { this.data.credentials = this.data.credentials.filter(c => c.id !== principal.credential.id); return { ok: true }; }); }
+  fastkoreLogin(identity: TicketIdentity, previousToken = '', recheck: () => void = () => {}) {
+    return this.change(() => {
+      recheck();
+      if (this.setupRequired) throw new BridgeError('Сначала администратор должен настроить платформу.', 403);
+      const identities = this.workspace.store.state.externalIdentities ??= [];
+      let link = identities.find(i => i.installationId === identity.installationId && i.externalUserId === identity.externalUserId);
+      const linkedUserId = link?.userId;
+      let user = linkedUserId ? this.data.users.find(u => u.id === linkedUserId) : undefined;
+      if (link && (!user || user.disabled)) throw new BridgeError('Учётная запись отключена администратором платформы.', 403);
+      if (!link) {
+        const id = randomUUID();
+        user = { id, username: `sso-${id}`, name: identity.displayName, role: 'employee', roleId: '', disabled: false, passwordHash: '', createdAt: new Date().toISOString() };
+        link = { installationId: identity.installationId, externalUserId: identity.externalUserId, userId: id };
+        this.data.users.push(user); identities.push(link); this.audit(user.id, 'sso.user.create', user.id);
+      }
+      if (previousToken) this.data.credentials = this.data.credentials.filter(c => c.source !== 'fastkore' || c.kind !== 'session' || c.hash !== digest(previousToken));
+      this.audit(user!.id, 'sso.login', identity.installationId);
+      return this.issue(user!, 'session', 'Fastkore', { source: 'fastkore', installationId: identity.installationId, externalUserId: identity.externalUserId });
+    });
+  }
+  linkExternal(actor: User, installationId: string, externalUserId: string, userId: string) {
+    this.admin(actor); return this.change(() => {
+      if (!this.data.users.some(u => u.id === userId && !u.disabled)) throw new BridgeError('Пользователь не найден.', 404);
+      const identities = this.workspace.store.state.externalIdentities ??= [];
+      const link = identities.find(i => i.installationId === installationId && i.externalUserId === externalUserId);
+      this.data.credentials = this.data.credentials.filter(c => c.installationId !== installationId || c.externalUserId !== externalUserId);
+      if (link) link.userId = userId; else identities.push({ installationId, externalUserId, userId });
+      this.audit(actor.id, 'sso.identity.link', userId); return { ok: true };
+    });
+  }
+  setInstallationEnabled(actor: User, id: string, enabled: boolean) {
+    this.admin(actor); return this.change(() => {
+      const settings = this.workspace.store.state.sso ??= { disabledInstallationIds: [] };
+      settings.disabledInstallationIds = settings.disabledInstallationIds.filter(v => v !== id);
+      if (!enabled) { settings.disabledInstallationIds.push(id); this.data.credentials = this.data.credentials.filter(c => c.source !== 'fastkore' || c.installationId !== id); }
+      this.audit(actor.id, enabled ? 'sso.installation.enable' : 'sso.installation.disable', id); return { ok: true };
+    });
+  }
   admin(user: User) { if (user.role !== 'admin') throw new BridgeError('Доступно только руководителю.', 403); }
   project(user: User, id: string) {
     const project = this.workspace.project(id);
@@ -144,7 +188,8 @@ export class Access {
     return this.change(() => {
       if (principal.credential.kind !== 'session') throw new BridgeError('Для выпуска ключа войдите по логину и паролю.', 403);
       if (this.keys(principal).length >= 10) throw new BridgeError('Можно создать до 10 ключей. Отзовите ненужные.');
-      this.audit(principal.user.id, 'key.create', principal.user.id); const issued = this.issue(principal.user, 'api', name.trim() || 'Интеграция'); return { ...issued.key, token: issued.token };
+      this.audit(principal.user.id, 'key.create', principal.user.id); const c = principal.credential;
+      const issued = this.issue(principal.user, 'api', name.trim() || 'Интеграция', c.source === 'fastkore' ? { source: c.source, installationId: c.installationId, externalUserId: c.externalUserId } : undefined); return { ...issued.key, token: issued.token };
     });
   }
   revokeKey(principal: Principal, id: string) {

@@ -37,11 +37,12 @@ export class Store {
       chmodSync(this.file, 0o600);
       this.db.exec('PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA busy_timeout=5000;');
       const version = this.db.prepare('PRAGMA user_version').get() as { user_version: number };
-      if (version.user_version > 1) throw new Error('Unsupported database version');
+      if (version.user_version > 2) throw new Error('Unsupported database version');
       this.db.exec('CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);');
       this.db.exec('CREATE TABLE IF NOT EXISTS external_identities (installation_id TEXT NOT NULL, external_user_id TEXT NOT NULL, user_id TEXT NOT NULL, PRIMARY KEY(installation_id,external_user_id));');
+      this.db.exec('CREATE TABLE IF NOT EXISTS launch_ticket_uses (hash TEXT PRIMARY KEY, expires_at INTEGER NOT NULL);');
       for (const table of tables) this.db.exec(`CREATE TABLE IF NOT EXISTS ${table} (id TEXT PRIMARY KEY, parent TEXT NOT NULL, position INTEGER NOT NULL, payload TEXT NOT NULL CHECK(json_valid(payload))); CREATE INDEX IF NOT EXISTS ${table}_parent ON ${table}(parent,position);`);
-      this.db.exec('PRAGMA user_version=1;');
+      this.db.exec('PRAGMA user_version=2;');
       const initialized = this.db.prepare("SELECT value FROM metadata WHERE key='settings'").get();
       if (!initialized && existed && existsSync(this.legacyFile)) {
         try { legacy = this.readLegacy(this.legacyFile); } catch { legacy = this.readLegacy(this.legacyFile + '.bak'); }
@@ -77,7 +78,7 @@ export class Store {
     for (const r of rows('messages')) byChat.get(r.parent)!.messages.push(JSON.parse(r.payload));
     for (const r of rows('attachments')) byProject.get(r.parent)!.attachments.push(JSON.parse(r.payload));
     const externalIdentities = (this.db.prepare('SELECT installation_id,external_user_id,user_id FROM external_identities ORDER BY installation_id,external_user_id').all() as { installation_id: string; external_user_id: string; user_id: string }[]).map(r => ({ installationId: r.installation_id, externalUserId: r.external_user_id, userId: r.user_id }));
-    return { schemaVersion: 1, settings: meta.get('settings'), security: meta.get('security'), corporate: meta.get('corporate'), externalIdentities, projects, runs: rows('runs').map(r => JSON.parse(r.payload)), jobs: rows('jobs').map(r => JSON.parse(r.payload)) };
+    return { schemaVersion: 1, settings: meta.get('settings'), security: meta.get('security'), corporate: meta.get('corporate'), sso: meta.get('sso'), externalIdentities, projects, runs: rows('runs').map(r => JSON.parse(r.payload)), jobs: rows('jobs').map(r => JSON.parse(r.payload)) };
   }
   private commit(snapshot: State) {
     this.db.exec('BEGIN IMMEDIATE');
@@ -86,6 +87,7 @@ export class Store {
       putMeta.run('settings', JSON.stringify(snapshot.settings));
       if (snapshot.security) putMeta.run('security', JSON.stringify(snapshot.security));
       if (snapshot.corporate) putMeta.run('corporate', JSON.stringify(snapshot.corporate));
+      if (snapshot.sso) putMeta.run('sso', JSON.stringify(snapshot.sso));
       this.db.exec('DELETE FROM external_identities');
       const identity = this.db.prepare('INSERT INTO external_identities(installation_id,external_user_id,user_id) VALUES(?,?,?)');
       for (const value of snapshot.externalIdentities ?? []) identity.run(value.installationId, value.externalUserId, value.userId);
@@ -106,6 +108,14 @@ export class Store {
     if (this.closed) return Promise.reject(new BridgeError('Хранилище закрыто.', 503));
     const snapshot = JSON.parse(JSON.stringify(this.state)) as State;
     const save = this.queue.then(() => this.commit(snapshot)); this.queue = save.catch(() => {}); return save;
+  }
+  /** Claim before the network call: an uncertain exchange requires a fresh ERP ticket. */
+  claimLaunchTicket(hash: string) {
+    const now = Date.now();
+    this.db.prepare('DELETE FROM launch_ticket_uses WHERE expires_at <= ?').run(now);
+    const count = this.db.prepare('SELECT count(*) AS count FROM launch_ticket_uses').get() as { count: number };
+    if (count.count >= 10000) throw new BridgeError('Слишком много обменов. Повторите позже.', 429);
+    return this.db.prepare('INSERT OR IGNORE INTO launch_ticket_uses(hash,expires_at) VALUES(?,?)').run(hash, now + 5 * 60_000).changes === 1;
   }
   async close() { if (this.closed) return; await this.queue; this.closed = true; this.db.exec('PRAGMA wal_checkpoint(TRUNCATE)'); this.db.close(); }
   async log(category: string, message: string) {

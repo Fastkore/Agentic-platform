@@ -19,11 +19,11 @@ export interface Dataset { id: string; name: string; directory: string; projectI
 export interface Corporate { roles: WorkRole[]; profiles: AgentProfile[]; datasets: Dataset[] }
 export interface AgentSummary { id: string; name: string; description: string; available: boolean; unavailableReason?: string; model: string }
 export interface UserRecord extends User { passwordHash: string; createdAt: string }
-export interface Credential { id: string; userId: string; kind: 'session' | 'api'; hash: string; name: string; createdAt: string; expiresAt?: string; source?: 'local' | 'fastkore'; installationId?: string }
+export interface Credential { id: string; userId: string; kind: 'session' | 'api'; hash: string; name: string; createdAt: string; expiresAt?: string; source?: 'local' | 'fastkore'; installationId?: string; externalUserId?: string }
 export interface ApiKeyInfo { id: string; name: string; createdAt: string }
 export interface AuditEvent { id: string; actorId: string; action: string; targetId: string; createdAt: string }
 export interface Security { users: UserRecord[]; credentials: Credential[]; audit: AuditEvent[] }
-export interface State { schemaVersion: 1; settings: Settings; projects: Project[]; runs: Run[]; jobs?: Job[]; externalIdentities?: ExternalIdentity[]; security?: Security; corporate?: Corporate }
+export interface State { schemaVersion: 1; settings: Settings; projects: Project[]; runs: Run[]; jobs?: Job[]; externalIdentities?: ExternalIdentity[]; sso?: { disabledInstallationIds: string[] }; security?: Security; corporate?: Corporate }
 export interface CliInfo { path: string; version: string; authentication: 'chatgpt' | 'api-key' | 'signed-out' | 'unknown'; status: string }
 export interface ProjectSummary { id: string; name: string; directory: string; chatCount: number }
 export interface ChatSummary { id: string; title: string; updatedAt: string; messageCount: number; ownerId?: string; ownerName?: string; visibility?: 'private' | 'project' }

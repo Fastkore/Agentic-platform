@@ -11,3 +11,8 @@ state.json*
 server.lock
 runtime
 projects
+private
+*.pem
+*.key
+fastkore-sso.json
+fastkore-validation

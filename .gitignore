@@ -16,3 +16,8 @@ auth.json
 access-key.txt
 *.zip
 *.pdb
+private/
+*.pem
+*.key
+fastkore-sso.json
+fastkore-validation

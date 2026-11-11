@@ -1,0 +1,36 @@
+# Adapt the name and certificate paths on the target host. Never expose the app port publicly.
+# This file is included inside nginx's http context. Do not log query strings or credentials.
+log_format bridge_safe '$remote_addr [$time_local] "$request_method $uri $server_protocol" $status $body_bytes_sent';
+server {
+    listen 443 ssl;
+    server_name agents.example.internal;
+    ssl_certificate /etc/nginx/tls/agents.crt;
+    ssl_certificate_key /etc/nginx/tls/agents.key;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    client_max_body_size 21m;
+    access_log /var/log/nginx/bridge-access.log bridge_safe;
+
+    location = /auth/fastkore/exchange {
+        access_log off;
+        error_log /dev/null crit;
+        proxy_pass http://127.0.0.1:8787;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header X-Forwarded-Host "";
+        proxy_connect_timeout 5s;
+        proxy_read_timeout 10s;
+    }
+
+    location / {
+        proxy_pass http://127.0.0.1:8787;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header X-Forwarded-Host "";
+        proxy_connect_timeout 5s;
+        proxy_read_timeout 65s;
+    }
+}
