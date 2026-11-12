@@ -76,6 +76,29 @@ test('legacy migration keeps original JSON and existing SQLite never falls back 
   assert.equal(await readFile(source, 'utf8'), bytes);
 });
 
+test('access audit expires in SQLite at startup and while the server is idle', async t => {
+  const root = await mkdtemp(path.join(tmpdir(), 'bridge-audit-'));
+  const original = new Store(root), now = Date.now();
+  const event = (id: string, offset: number) => ({ id, action: 'login', actorId: 'admin', targetId: 'admin', createdAt: new Date(now + offset).toISOString() });
+  original.state.security = { users: [], credentials: [], audit: [event('recent', 0), event('next', -1000), event('old', -2000)] };
+  await original.save();
+  await original.close();
+
+  t.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: now + 7 * 86_400_000 - 1001 });
+  const store = new Store(root), db = new DatabaseSync(store.file, { readOnly: true });
+  const persisted = () => {
+    const { value } = db.prepare("SELECT value FROM metadata WHERE key='security'").get() as { value: string };
+    return JSON.parse(value).audit.map(({ id }: { id: string }) => id);
+  };
+  try {
+    assert.deepEqual(persisted(), ['recent', 'next']);
+    t.mock.timers.tick(1);
+    await Promise.resolve();
+    assert.deepEqual(persisted(), ['recent']);
+    assert.deepEqual(store.auditEvents().map(event => event.id), ['recent']);
+  } finally { db.close(); await store.close(); }
+});
+
 test('external identity key is unique per installation and survives reload without granting permissions', async () => {
   const f = await fixture();
   f.store.state.externalIdentities = [{ installationId: 'office-a', externalUserId: '42', userId: 'alice' }, { installationId: 'office-b', externalUserId: '42', userId: 'boris' }];

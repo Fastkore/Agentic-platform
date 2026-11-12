@@ -43,3 +43,13 @@ export function fastkoreContextProblem(context: FastkoreContext): string | undef
   if (context.filter_status === 'unavailable') return 'Фильтр Fastkore недоступен. Откройте список с воспроизводимым фильтром или сохранённую карточку.';
   if (context.view === 'card' && !context.entity_id) return 'Сохраните карточку Fastkore перед отправкой запроса.';
 }
+
+export function fastkoreChatContextKey(context: FastkoreContext): string | undefined {
+  const { view, entity_set_id, entity_id } = context;
+  if (view === 'card') return entity_id ? JSON.stringify([1, view, entity_set_id, entity_id]) : undefined;
+  if (!context.scope_reproducible || context.filter_status === 'unavailable') return;
+  // A selected row does not change the contents of the list.
+  return JSON.stringify([1, view, entity_set_id, context.tile_id, context.control_uid, context.catalog_id,
+    context.folder_id, context.tree_parent_id, context.owner_entity_set_id, context.owner_entity_id, context.link_id,
+    context.deleted, context.filter_status, context.filter_xml?.trim() ?? null]);
+}

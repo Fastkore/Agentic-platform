@@ -5,7 +5,7 @@ import type { CodexEvent, CodexRequest, CodexResult, CodexRunner } from './codex
 import type { CodexToolDefinition, CodexToolResult } from './codex-tools.js';
 import { BridgeError } from './store.js';
 
-export type WorkerRun = Pick<CodexRequest, 'prompt' | 'developerInstructions' | 'sessionId' | 'ephemeral' | 'model' | 'reasoningEffort' | 'workDirectoryId'> & { toolDefinitions?: CodexToolDefinition[] };
+export type WorkerRun = Pick<CodexRequest, 'prompt' | 'developerInstructions' | 'sessionId' | 'ephemeral' | 'consultation' | 'model' | 'reasoningEffort' | 'workDirectoryId'> & { toolDefinitions?: CodexToolDefinition[] };
 export type WorkerToolResult = CodexToolResult & { id: string };
 export type WorkerMessage = { event: CodexEvent } | { result: CodexResult } | { error: string }
   | { toolCall: { id: string; name: string; args: unknown } };
@@ -47,8 +47,8 @@ export class RemoteCodexRunner implements CodexRunner {
   listModels() { return this.read<ModelCatalog>('/models'); }
   async readLimits() { return (await this.read<{ limits: CodexLimits | null }>('/limits')).limits; }
   async run(r: CodexRequest, onEvent: (event: CodexEvent) => Promise<void>, signal: AbortSignal) {
-    const { prompt, developerInstructions, sessionId, ephemeral, model, reasoningEffort, workDirectoryId, tools } = r;
-    const res = await this.request('/run', { prompt, developerInstructions, sessionId, ephemeral, model, reasoningEffort, workDirectoryId, toolDefinitions: tools?.definitions }, signal);
+    const { prompt, developerInstructions, sessionId, ephemeral, consultation, model, reasoningEffort, workDirectoryId, tools } = r;
+    const res = await this.request('/run', { prompt, developerInstructions, sessionId, ephemeral, consultation, model, reasoningEffort, workDirectoryId, toolDefinitions: tools?.definitions }, signal);
     const stream = createInterface({ input: res, crlfDelay: Infinity });
     try {
       for await (const line of stream) {
@@ -58,7 +58,7 @@ export class RemoteCodexRunner implements CodexRunner {
         if ('event' in message) await onEvent(message.event);
         else if ('toolCall' in message) {
           const { id, name, args } = message.toolCall;
-          let result = { success: false, text: 'Инструмент Fastkore недоступен.' };
+          let result = { success: false, text: 'Инструмент недоступен.' };
           if (tools) {
             try { result = await tools.call(name, args, signal); } catch { /* Reply without disclosing the backend exception. */ }
           }

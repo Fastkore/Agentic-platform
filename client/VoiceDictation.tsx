@@ -4,7 +4,7 @@ import { ArrowUp, LoaderCircle, Mic, Square, X } from 'lucide-react';
 type Phase = 'idle' | 'starting' | 'recording' | 'transcribing';
 const recordingLimitMs = 60_000;
 const sampleRate = 16_000;
-const idleLevels = Array<number>(32).fill(0.08);
+const idleLevels = Array<number>(240).fill(0.08);
 
 function monitorAudio(stream: MediaStream, onLevel: (level: number) => void) {
   const context = new AudioContext();
@@ -15,7 +15,7 @@ function monitorAudio(stream: MediaStream, onLevel: (level: number) => void) {
   const samples = new Float32Array(analyser.fftSize);
   let frame = 0, lastSample = 0;
   const measure = (now: number) => {
-    if (now - lastSample >= 60) {
+    if (now - lastSample >= 120) {
       lastSample = now;
       analyser.getFloatTimeDomainData(samples);
       let energy = 0;
@@ -147,9 +147,9 @@ export function VoiceDictation({ transcribe, onText, onError, canSend }: {
       operation.current?.abort();
       setPhase('idle');
     }}><X size={17} /></button>
-    {phase === 'recording' ? <div className="dictation-wave" role="img" aria-label="Идёт запись">
+    {phase === 'recording' ? <div className="dictation-wave" role="img" aria-label="Идёт запись"><div className="dictation-wave-track">
       {levels.map((level, i) => <span key={i} style={{ height: Math.round(level * 25) + 'px' }} />)}
-    </div> : <span className="dictation-status" role="status"><LoaderCircle size={16} className="spin" />Распознаём речь…</span>}
+    </div></div> : <span className="dictation-status" role="status"><LoaderCircle size={16} className="spin" />Распознаём речь…</span>}
     {phase === 'recording' && <>
       <button type="button" className="workspace-icon dictation-stop" aria-label="Остановить запись" title="Остановить запись" onClick={() => finish(false)}><Square size={14} /></button>
       <button type="button" className="bridge-send" aria-label="Отправить диктовку" title="Распознать и отправить" disabled={!canSend} onClick={() => finish(true)}><ArrowUp size={18} /></button>

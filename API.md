@@ -20,7 +20,7 @@ HTTP-маршруты обслуживают веб-интерфейс. Для �
 | GET | /api/projects/{projectId}/members | Только руководитель: {memberIds} |
 | PATCH | /api/projects/{projectId}/members | Только руководитель: {memberIds: [userId, ...]} |
 | PATCH | /api/projects/{projectId}/chats/{chatId}/visibility | Только руководитель: {visibility: private или project} |
-| GET | /api/audit | Только руководитель: до 1000 изменений доступа без содержимого чатов |
+| GET | /api/audit | Только руководитель: до 1000 событий доступа за последние 7 суток |
 
 Пароль: 12–200 символов. Логин: 3–48 латинских букв, цифр, точек, дефисов или подчёркиваний; регистр не учитывается. Максимум 10 ключей на пользователя. Первичная настройка через POST /api/local-login доступна только с loopback, localhost Host и X-Bridge-Local: 1 до задания первого пароля. Этот маршрут выдаёт временный сеанс, которому доступны только /api/auth/me, /api/auth/setup и /api/auth/logout. POST /api/auth/setup принимает {username, name, password}, возвращает новый сеанс и закрывает локальный вход без пароля. Для интеграций эти маршруты не нужны.
 
@@ -31,16 +31,28 @@ HTTP-маршруты обслуживают веб-интерфейс. Для �
 | GET | /api/health | Доступность, имя и версия. Без ключа; без данных проектов |
 | GET | /api/status | Настройки, CLI, активное задание, сетевые адреса |
 | GET | /api/models | Каталог моделей Codex; кэш до 5 минут |
+| GET | /api/codex/activity | Только руководитель. Общий расход токенов по дням: `[{date, tokens}]` |
+| GET | /api/admin/usage | Только руководитель. `{total, users: [{id, name, disabled, days}], unattributed}` |
 | POST | /api/models/refresh | Обновить каталог моделей |
 | POST | /api/cli/check | Версия CLI и login status, без запроса к модели |
 | POST | /api/subscription/check | Пробный запрос через ChatGPT; 202 с заданием |
 | PATCH | /api/settings | cliPath, allowWrite, includePreviews, model |
 | PATCH | /api/settings/file-storage | Локальный администратор выбирает `{provider: "local" \| "s3"}` для новых загрузок и результатов |
 | GET | /api/diagnostics | Краткий обезличенный журнал |
+| GET, PUT | /api/admin/knowledge/{section} | Локальный администратор. Раздел `fastkore` или `company`. GET возвращает памятку, revision и файлы. PUT принимает `{summary, revision}` |
+| POST | /api/admin/knowledge/{section}/files | Загрузить произвольный файл до 20 МБ в multipart-поле file |
+| GET | /api/admin/knowledge/{section}/files/{id} | Скачать оригинал |
+| PUT | /api/admin/knowledge/{section}/files/{id}?revision={revision} | Заменить файл через multipart-поле file с проверкой версии |
+| DELETE | /api/admin/knowledge/{section}/files/{id} | Удалить документ и индекс. Тело `{revision}` |
 | GET | /api/projects | [{id, name, directory, chatCount}] |
 | POST | /api/projects | Подключить папку сервера: {directory, name?} |
 | GET | /api/projects/{projectId}/chats | [{id, title, updatedAt, messageCount}] |
 | POST | /api/projects/{projectId}/chats | Создать чат: {} или {title, model?} |
+| GET | /api/admin/chats/archive | Только руководитель. Архив по всем проектам, от недавно архивированных чатов к более старым |
+| PATCH | /api/projects/{projectId}/chats/{chatId}/archive | Только руководитель. `{archived: true}` переносит чат в архив, `{archived: false}` восстанавливает |
+| DELETE | /api/projects/{projectId}/chats/{chatId} | Только руководитель. Окончательное удаление чата из архива |
+| POST | /api/fastkore/chats/related | Сеанс Fastkore. `{context}` возвращает собственные активные чаты по карточке или списку, начиная с последнего |
+| POST | /api/fastkore/chats | Сеанс Fastkore. `{projectId, context, agentProfileId?, fresh?}` возвращает `{projectId, chat}`. При `fresh: true` создаёт новый чат по тому же контексту |
 | PATCH | /api/projects/{projectId}/chats/{chatId} | Выбрать модель чата: {model} |
 | GET | /api/projects/{projectId}/chats/{chatId} | Чат, messages, sessionId |
 | GET | /api/projects/{projectId}/chats/{chatId}/messages | Сообщения чата |
@@ -55,7 +67,13 @@ HTTP-маршруты обслуживают веб-интерфейс. Для �
 
 POST без полей отправляйте с телом `{}` и Content-Type application/json, кроме multipart-загрузки. Настройки, диагностика, проверка CLI/подписки, импорт истории и подключение папок доступны только руководителю. Список чатов включает ownerId, ownerName и visibility. /api/status включает user, busy и activeRun: чужое личное задание не раскрывается, но busy сообщает общую занятость.
 
-Создание проекта/чата не начинает диалог с моделью. Первый вопрос создаёт Codex Session ID. Последующие вопросы автоматически продолжают именно эту сессию.
+Маршруты статистики принимают `timeZone` (например, `Europe/Moscow`, по умолчанию `UTC`). В `total`, `days` и `unattributed` возвращаются дневные суммы входных и выходных токенов за период до 370 суток. `unattributed` содержит расход заданий, для которых в истории нет известного автора.
+
+Архив исключён из обычных списков и поиска. Руководитель может читать историю и скачивать результаты из архива. Для отправки сообщений чат нужно восстановить. Архивирование чата с заданием в очереди или в работе возвращает 409. При удалении платформа очищает историю чата и его собственные файлы результатов. Загрузки проекта остаются доступны в проекте, а расход токенов остаётся в сводке.
+
+Для связанных чатов `context` — снимок `fastkore.context` версии 1. Карточка определяется GUID справочника и объекта. Для списка учитываются вид, плитка, каталог, папка, родитель, связь, режим удаления, фильтр и UID элемента управления. Выбор строки в списке сохраняет тот же чат. Поиск ограничен текущим пользователем и установкой ERP. Для отправки в связанный чат передайте соответствующий снимок в `fastkoreContext`.
+
+Создание проекта или чата не начинает диалог с моделью. Первый вопрос создаёт сессию Codex. Последующие вопросы продолжают сессию основного профиля, пока действуют те же разрешения и настройки исполнения.
 
 ## Отправка вопроса
 
@@ -67,7 +85,9 @@ POST без полей отправляйте с телом `{}` и Content-Type
 }
 ```
 
-`text` обязателен, до 60 000 символов. `attachmentIds` — до 8 ID файлов, ранее загруженных **в этот проект**. Полные локальные пути вместо ID не принимаются. `clientRequestId` учитывается отдельно для каждого пользователя и необязателен, до 100 символов; используйте уникальное значение на каждый логический вопрос. Повтор идентичного запроса возвращает прежнее задание. Изменение текста, набора вложений, модели или чата при том же ключе даёт 409. Дедупликация сохраняется в SQLite без прежнего ограничения последними 500 заданиями.
+`text` обязателен, до 60 000 символов. `attachmentIds` — до 8 ID файлов, ранее загруженных **в этот проект**. Полные локальные пути вместо ID не принимаются. `recommendedSpecialistId` передаёт рекомендацию для одного вопроса. Основной агент решает, нужна ли консультация, и выбирает среди профилей, доступных пользователю в проекте.
+
+`clientRequestId` учитывается отдельно для каждого пользователя и необязателен, до 100 символов. Используйте уникальное значение на каждый логический вопрос. Повтор идентичного запроса возвращает прежнее задание. Изменение текста, набора вложений, модели, рекомендации специалиста или чата при том же ключе даёт 409. Дедупликация сохраняется в SQLite без прежнего ограничения последними 500 заданиями.
 
 Ответ: HTTP 202, Location: /api/runs/{id}.
 
@@ -115,7 +135,7 @@ GET /api/agents возвращает разрешённые профили: id, 
 | GET | /api/admin/roles | Список рабочих ролей |
 | PUT | /api/admin/roles/{id} | name, enabled, profileIds, operationIds, readDatasetIds, instructions |
 | GET | /api/admin/profiles | Список профилей и причины недоступности |
-| PUT | /api/admin/profiles/{id} | name, description, instructions, enabled, model, reasoningEffort, operationIds, datasetIds, skillIds, allowWrite, outputMode |
+| PUT | /api/admin/profiles/{id} | name, description, instructions, enabled, model, reasoningEffort, operationIds, datasetIds, skillIds, allowWrite, outputMode, необязательные icon и instructionFiles |
 | GET | /api/admin/datasets | Список источников с серверными путями |
 | PUT | /api/admin/datasets/{id} | name, directory, projectIds, classification |
 | GET | /api/admin/operations | Поддерживаемые идентификаторы операций |
@@ -158,3 +178,11 @@ ERP открывает `/?settings=fastkore` на публичном адрес�
 Для изменяющих запросов с cookie обязательны `Origin: <BRIDGE_PUBLIC_ORIGIN>` и `X-CSRF-Token: <csrfToken>`, включая multipart и выход. Смешанные cookie и Authorization получают 409. SSO-сессионный токен через Bearer не принимается.
 
 Первый SSO-вход создаёт пользователя без пароля и проектов с ролью `sso_pending` без рабочих прав. Сеанс действует до 30 минут. Блокировка только в ERP учитывается при следующей выдаче или погашении билета. Контекст ERP-объекта не передаётся в этом протоколе.
+
+В ответе `/api/ai/validate-ticket` Fastkore может вернуть `user.roles`, массив `{ id, name }`. Платформа сохраняет полный снимок в текущем SSO-сеансе и возвращает его в `authentication.roles` в обоих маршрутах чтения сеанса. Пустой массив означает отсутствие ролей, отсутствующее поле означает, что Fastkore не передал набор. Идентификатор роли используется вместе с `authentication.installationId`, название предназначено для отображения. Снимок не влияет на рабочую роль, проекты или права ERP.
+
+Каталог полученных ролей доступен администратору через `GET /api/admin/erp-roles`. Запись содержит GUID роли, installationId, name, installationName, lastSeenAt и userCount. При повторном поступлении того же GUID от той же установки обновляется название. `GET /api/users` включает erpRoles с последними полученными наборами по установкам. Наборы сохраняются после завершения сеансов.
+
+`DELETE /api/admin/erp-roles/{installationId}/{roleId}` удаляет запись из каталога. Следующий успешный вход, в котором ERP снова передаст эту роль, добавит её заново. Удаление и изменения каталога сохраняются транзакционно.
+
+Для HTTPS-ответа `validate-ticket` лимит составляет 64 КиБ в UTF-8 с учётом всего JSON. Превышение лимита или некорректный набор ролей отклоняют обмен целиком.

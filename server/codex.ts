@@ -8,7 +8,7 @@ import type { CliInfo, CodexLimits, LimitWindow, ModelCatalog, ModelOption, Usag
 import type { CodexTools } from './codex-tools.js';
 
 export interface CodexEvent { kind: 'session' | 'message' | 'progress' | 'usage'; text?: string; usage?: Usage }
-export interface CodexRequest { cliPath: string; workspace: string; prompt: string; developerInstructions?: string; tools?: CodexTools; sessionId?: string; allowWrite: boolean; workDirectoryId?: string; ephemeral?: boolean; model?: string; reasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh' }
+export interface CodexRequest { cliPath: string; workspace: string; prompt: string; developerInstructions?: string; tools?: CodexTools; sessionId?: string; allowWrite: boolean; workDirectoryId?: string; ephemeral?: boolean; consultation?: boolean; model?: string; reasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh' }
 export interface CodexResult { sessionId?: string; response: string; usage?: Usage }
 export interface CodexRunner { readonly isolated?: boolean; inspect(cliPath: string, signal?: AbortSignal): Promise<CliInfo>; listModels?(cliPath: string): Promise<ModelCatalog>; readLimits?(cliPath: string): Promise<CodexLimits | null>; run(request: CodexRequest, onEvent: (event: CodexEvent) => Promise<void>, signal: AbortSignal): Promise<CodexResult> }
 type RateWindow = { usedPercent?: number; windowDurationMins?: number | null; resetsAt?: number | null };
@@ -196,8 +196,8 @@ export class CodexClient implements CodexRunner {
   }
   async run(request: CodexRequest, onEvent: (event: CodexEvent) => Promise<void>, signal: AbortSignal) {
     signal.throwIfAborted();
-    if (request.tools) {
-      if (this.mode !== 'worker') throw new BridgeError('Инструменты Fastkore доступны только в изолированном исполнителе.', 403);
+    if (request.tools || request.consultation) {
+      if (this.mode !== 'worker' && request.tools?.definitions.some(tool => tool.name !== 'consult_specialist')) throw new BridgeError('Эти инструменты доступны только в изолированном исполнителе.', 403);
       return this.runWithTools(request, request.tools, onEvent, signal);
     }
     const child = this.start(request.cliPath, buildArguments(request, this.mode), request.workspace);
@@ -239,7 +239,7 @@ export class CodexClient implements CodexRunner {
     } finally { clearTimeout(timer); signal.removeEventListener('abort', abort); await killTree(child); }
   }
 
-  private async runWithTools(request: CodexRequest, tools: CodexTools, onEvent: (event: CodexEvent) => Promise<void>, signal: AbortSignal) {
+  private async runWithTools(request: CodexRequest, tools: CodexTools | undefined, onEvent: (event: CodexEvent) => Promise<void>, signal: AbortSignal) {
     const writableWorker = this.mode === 'worker' && request.allowWrite;
     const server = this.appServer(request.cliPath, true, 15 * 60_000, writableWorker ? workerWriteConfig(request.workspace) : []);
     const abort = () => { void server.close(); };
@@ -262,21 +262,23 @@ export class CodexClient implements CodexRunner {
           if (sessionId && threadId === sessionId && (!turnId || toolTurn === turnId) && typeof callId === 'string'
             && !seenCalls.has(callId) && typeof tool === 'string' && ++toolCalls <= 64) {
             seenCalls.add(callId);
-            await onEvent({ kind: 'progress', text: 'Codex обращается к Fastkore…' });
-            try { result = await tools.call(tool, args, signal); } catch { /* Never forward an upstream exception to the model. */ }
+            await onEvent({ kind: 'progress', text: tool === 'consult_specialist' ? 'Codex обращается к специалисту…' : tool === 'knowledge' ? 'Codex читает базу знаний…' : 'Codex обращается к Fastkore…' });
+            try { if (tools) result = await tools.call(tool, args, signal); } catch { /* Never forward an upstream exception to the model. */ }
           }
           signal.throwIfAborted();
           server.send({ id: message.id, result: { success: result.success, contentItems: [{ type: 'inputText', text: result.text }] } });
           continue;
         }
-        if (message.id !== undefined && message.error) throw new BridgeError('Codex отклонил запуск с инструментами Fastkore.', 502);
+        if (message.id !== undefined && message.error) throw new BridgeError('Codex отклонил запуск через App Server.', 502);
         if (message.id === 1) {
           server.send({ method: 'initialized' });
+          const local = this.mode === 'local';
           const params = { cwd: request.workspace, model: request.model, developerInstructions: request.developerInstructions, approvalPolicy: 'never',
-            config: { features: { shell_tool: writableWorker, shell_snapshot: false, apps: false, plugins: false, multi_agent: false, goals: false }, mcp_servers: {}, web_search: 'disabled' } };
+            sandbox: local ? (request.allowWrite ? 'workspace-write' : 'read-only') : undefined,
+            config: { features: { shell_tool: writableWorker || (local && !request.consultation), shell_snapshot: false, apps: false, plugins: false, multi_agent: false, goals: false }, mcp_servers: {}, web_search: 'disabled' } };
           server.send(request.sessionId
             ? { id: 2, method: 'thread/resume', params: { ...params, threadId: request.sessionId, excludeTurns: true } }
-            : { id: 2, method: 'thread/start', params: { ...params, dynamicTools: tools.definitions } });
+            : { id: 2, method: 'thread/start', params: { ...params, ephemeral: request.ephemeral, dynamicTools: tools?.definitions } });
         } else if (message.id === 2) {
           const id = message.result?.thread?.id;
           if (typeof id !== 'string' || !uuid.test(id) || sessionId && id !== sessionId) throw new BridgeError('Codex вернул неподходящую сессию.', 502);
@@ -298,7 +300,7 @@ export class CodexClient implements CodexRunner {
             await onEvent({ kind: 'usage', usage });
           }
         } else if (message.method === 'turn/completed' && message.params?.threadId === sessionId) {
-          if (message.params.turn?.status !== 'completed') throw new BridgeError('Codex не завершил запрос с инструментами Fastkore.', 502);
+          if (message.params.turn?.status !== 'completed') throw new BridgeError('Codex не завершил запрос через App Server.', 502);
           return { sessionId, response, usage };
         }
       }

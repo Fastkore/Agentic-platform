@@ -40,11 +40,18 @@ test('Fastkore MCP scopes tokens to two SSO sessions, blocks writes and handles 
     const user = req.headers.authorization?.match(/^Bearer fkua1\.(alice|boris)\.\d+$/)?.[1];
     assert.ok(user);
     const rpc = (result: unknown) => send(200, { jsonrpc: '2.0', id: value.id, result });
-    if (value.method === 'initialize') { rpc({ protocolVersion: '2025-06-18' }); return; }
+    if (value.method === 'initialize') {
+      res.writeHead(200, { 'content-type': 'text/event-stream', 'mcp-session-id': 'session-' + user });
+      res.end('event: message\r\ndata: ' + JSON.stringify({ jsonrpc: '2.0', id: value.id, result: { protocolVersion: '2025-06-18' } }) + '\r\n\r\n');
+      return;
+    }
     assert.equal(req.headers['mcp-protocol-version'], '2025-06-18');
-    if (value.method === 'notifications/initialized') { send(204); return; }
+    assert.equal(req.headers['mcp-session-id'], 'session-' + user);
+    if (value.method === 'notifications/initialized') { send(202); return; }
     if (value.method === 'tools/list') {
-      rpc({ tools: ['GetCurrentUserInfo', 'GetOrders', 'CreateTask'].map(name => ({ name, description: 'Test', inputSchema: { type: 'object', properties: {} } })) });
+      const inputSchema = { type: 'object', properties: {} };
+      if (value.params.cursor === 'next') rpc({ tools: [{ name: 'GetOrders', inputSchema }] });
+      else rpc({ tools: [{ name: 'GetCurrentUserInfo', inputSchema }, { name: 'CreateTask', inputSchema }], nextCursor: 'next' });
       return;
     }
     assert.equal(value.method, 'tools/call');
@@ -76,6 +83,7 @@ test('Fastkore MCP scopes tokens to two SSO sessions, blocks writes and handles 
     attach(alice); attach(boris);
     const [a, b] = await Promise.all([prepare(alice), prepare(boris)]);
     assert.ok(a.tools && b.tools);
+    assert.deepEqual(a.tools.definitions.map(tool => tool.name), ['fastkore_GetCurrentUserInfo', 'fastkore_GetOrders']);
     assert.ok(!a.tools.definitions.some(tool => tool.name.includes('CreateTask')));
     assert.equal((await a.tools.call('fastkore_CreateTask', {}, signal)).success, false);
     assert.match((await a.tools.call('fastkore_GetCurrentUserInfo', {}, signal)).text, /user=alice/);
@@ -91,12 +99,15 @@ test('Fastkore MCP scopes tokens to two SSO sessions, blocks writes and handles 
       filter_status: 'included', filter_xml: '<Filter/>', scope_reproducible: true });
     assert.ok(context);
     const scoped = await mcp.prepare(alice, context, () => {}, signal);
-    assert.match(scoped.problem!, /не могут повторить/);
-    assert.deepEqual(scoped.tools?.definitions.map(tool => tool.name), ['fastkore_GetCurrentUserInfo']);
+    assert.match(scoped.problem!, /Текущая выборка/);
+    assert.deepEqual(scoped.tools?.definitions.map(tool => tool.name), ['fastkore_GetCurrentUserInfo', 'fastkore_GetOrders']);
+    assert.equal((await scoped.tools!.call('fastkore_GetOrders', { scope: 'current', arguments: {} }, signal)).success, false);
+    assert.equal((await scoped.tools!.call('fastkore_GetOrders', { scope: 'erp', arguments: {} }, signal)).success, true);
+    assert.equal(calls.at(-1)?.user, 'alice');
     await mcp.revoke(alice);
     assert.ok(revoked.has('alice'));
     assert.equal((await a.tools.call('fastkore_GetOrders', {}, signal)).success, false);
-    assert.equal(calls.length, 4);
+    assert.equal(calls.length, 5);
     const restarted = manager();
     assert.ok((await restarted.prepare(boris, undefined, () => {}, signal)).tools);
     assert.equal(issued.get('boris'), 2, 'restart obtains a fresh token for the same ERP user');

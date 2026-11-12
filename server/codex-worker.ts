@@ -16,15 +16,16 @@ const runSchema = {
   type: 'object', additionalProperties: false, required: ['prompt'],
   properties: {
     prompt: { type: 'string', minLength: 1, maxLength: 128_000 },
-    developerInstructions: { type: 'string', minLength: 1, maxLength: 50_000 },
+    developerInstructions: { type: 'string', minLength: 1, maxLength: 64_000 },
     sessionId: { type: 'string', pattern: '^[0-9a-fA-F-]{36}$' },
     model: { type: 'string', pattern: '^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,127}$' },
     ephemeral: { type: 'boolean' },
+    consultation: { type: 'boolean' },
     workDirectoryId: { type: 'string', pattern: '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' },
     reasoningEffort: { enum: ['low', 'medium', 'high', 'xhigh'] },
     toolDefinitions: { type: 'array', maxItems: 200, items: {
       type: 'object', additionalProperties: false, required: ['type', 'name', 'description', 'inputSchema'],
-      properties: { type: { const: 'function' }, name: { type: 'string', pattern: '^(?:fastkore_[a-zA-Z0-9_-]{1,55}|project_files_(?:list|read))$' },
+      properties: { type: { const: 'function' }, name: { type: 'string', pattern: '^(?:fastkore_[a-zA-Z0-9_-]{1,55}|project_files_(?:list|read)|knowledge|consult_specialist)$' },
         description: { type: 'string', maxLength: 4000 }, inputSchema: { type: 'object' } },
     } },
   },
@@ -33,6 +34,8 @@ const runSchema = {
 export function createCodexWorker(codex: CodexRunner = new CodexClient([], 'worker'), jobsRoot = process.env.BRIDGE_CODEX_JOB_FILES) {
   const app = Fastify({ logger: false, bodyLimit: 800_000, ajv: { customOptions: { removeAdditional: false, coerceTypes: false } } });
   let active: AbortController | undefined;
+  let consulting = false;
+  let consultationCall: AbortSignal | undefined;
   const pendingTools = new Map<string, (result: CodexToolResult) => void>();
   const inspect = async (signal?: AbortSignal) => {
     const info = await codex.inspect(cli, signal);
@@ -63,19 +66,26 @@ export function createCodexWorker(codex: CodexRunner = new CodexClient([], 'work
     return { ok: true };
   });
   app.post<{ Body: WorkerRun }>('/run', { schema: { body: runSchema } }, async (request, reply) => {
-    if (active) throw new BridgeError('Исполнитель занят.', 409);
+    const consultation = request.body.consultation === true;
+    if (consultation) {
+      if (!active || !consultationCall || consultationCall.aborted || consulting ||
+        !request.body.ephemeral || request.body.sessionId || request.body.workDirectoryId ||
+        request.body.toolDefinitions?.some(tool => tool.name === 'consult_specialist')) throw new BridgeError('Консультация недоступна.', 409);
+    } else if (active || consulting) throw new BridgeError('Исполнитель занят.', 409);
     const controller = new AbortController();
-    active = controller;
+    if (consultation) consulting = true;
+    else active = controller;
+    const runSignal = consultation ? AbortSignal.any([controller.signal, consultationCall!]) : controller.signal;
     const { raw } = reply;
     raw.once('close', () => controller.abort());
     reply.hijack();
     raw.writeHead(200, { 'content-type': 'application/x-ndjson; charset=utf-8' });
     async function write(message: WorkerMessage) {
-      controller.signal.throwIfAborted();
-      if (!raw.write(JSON.stringify(message) + '\n')) await once(raw, 'drain', { signal: controller.signal });
+      runSignal.throwIfAborted();
+      if (!raw.write(JSON.stringify(message) + '\n')) await once(raw, 'drain', { signal: runSignal });
     }
     try {
-      await requireLogin(controller.signal);
+      await requireLogin(runSignal);
       const { toolDefinitions, workDirectoryId, ...body } = request.body;
       let directory = workspace;
       if (workDirectoryId) {
@@ -89,25 +99,29 @@ export function createCodexWorker(codex: CodexRunner = new CodexClient([], 'work
         ...(toolDefinitions?.length ? { tools: { definitions: toolDefinitions, async call(name: string, args: unknown, signal: AbortSignal) {
           if (!toolDefinitions.some(tool => tool.name === name)) return { success: false, text: 'Инструмент не разрешён для этого запроса.' };
           const id = randomUUID();
-          const stop = AbortSignal.any([signal, controller.signal, AbortSignal.timeout(45_000)]);
+          const stop = AbortSignal.any([signal, runSignal, AbortSignal.timeout(name === 'consult_specialist' ? 195_000 : 45_000)]);
+          if (name === 'consult_specialist') consultationCall = stop;
           const result = new Promise<CodexToolResult>(resolve => pendingTools.set(id, resolve));
-          const cancel = () => pendingTools.get(id)?.({ success: false, text: 'Вызов Fastkore не завершён. Проверьте результат чтением.' });
+          const cancel = () => pendingTools.get(id)?.({ success: false, text: 'Вызов инструмента не завершён.' });
           stop.addEventListener('abort', cancel, { once: true });
           try {
             stop.throwIfAborted();
             await write({ toolCall: { id, name, args } });
             return await result;
-          } finally { stop.removeEventListener('abort', cancel); pendingTools.delete(id); }
+          } finally {
+            if (consultationCall === stop) consultationCall = undefined;
+            stop.removeEventListener('abort', cancel); pendingTools.delete(id);
+          }
         } } } : {}),
-      }, event => write({ event }), controller.signal);
+      }, event => write({ event }), runSignal);
       await write({ result });
     } catch (error) {
-      if (!controller.signal.aborted) {
+      if (!runSignal.aborted) {
         await write({ error: error instanceof BridgeError && error.statusCode === 503 ? error.message : 'Codex не смог выполнить запрос. Проверьте подключение и лимиты.' }).catch(() => {});
       }
     } finally {
-      pendingTools.clear();
-      active = undefined;
+      if (consultation) consulting = false;
+      else active = undefined;
       raw.end();
     }
   });

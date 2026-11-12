@@ -25,8 +25,23 @@ Codex хранит авторизацию и историю CLI в томе `cod
 Для совместного пилота Fastkore можно добавить `-f compose.sso.yaml` в команду запуска, когда конфигурация ERP готова. [Настройка SSO](FASTKORE-SSO-PILOT.md).
 # Fastkore CLI для Linux
 
-Распакуйте поставку 27.0.48.0 SSO в `private/fastkore-cli-pilot/27.0.48.0-sso` и проверьте `SHA256SUMS`. Скопируйте туда `deploy/fastkore-cli-pilot.Dockerfile` под именем `Dockerfile.pilot` и `deploy/fastkore-cli-pilot.mjs`. Для `Dockerfile.pilot.dockerignore` используйте правила `.dockerignore` пакета с дополнительной строкой `!fastkore-cli-pilot.mjs`. Проверьте адрес gRPC TLS в Compose и CA в `private/fastkore-ca/ca.pem`. Они должны совпадать с доверенной привязкой ERP.
+Распакуйте поставку 27.0.48.0 SSO в `private/fastkore-cli-pilot/27.0.48.0-sso` и проверьте `SHA256SUMS`. Сборка использует каталог поставки и файлы из `deploy` напрямую. Требуется Docker Compose 2.17 или новее с BuildKit. Для другой установки укажите `BRIDGE_FASTKORE_CLI_SERVER=grpc://host:port` в `.env`. Адрес и публичный CA из `private/fastkore-ca/ca.pem` должны совпадать с доверенной привязкой ERP. [Документация Docker Compose](https://docs.docker.com/reference/compose-file/build/#additional_contexts)
 
-Создайте volume `fastkore_cli_ticket_socket` и запустите `docker compose -p fastkore-cli -f deploy/compose.fastkore-cli-pilot.yaml up -d --build cli`. При запуске платформы добавьте `-f compose.fastkore-cli-worker.yaml`. Unix-сокет доступен backend и исполнителю Fastkore CLI. Проверка запуска доступна локальному администратору по `GET /api/admin/fastkore/cli-pilot`. В SSO-чате `fastkore_cli_describe` возвращает офлайн-описания.
+Для доступа по SSO включите «Разрешить доступ к ERP» в привязке Fastkore и задайте `BRIDGE_FASTKORE_CLI_TICKETS=1` в `.env` платформы. Выполните команды из корня репозитория.
 
-После обновления ERP с маршрутом `POST /api/ai/cli-ticket` включите `BRIDGE_FASTKORE_CLI_TICKETS=1` и пересоздайте контейнер приложения. Для каждого вызова `data get` или `data query` backend получает отдельный билет сотрудника. Исполнитель передаёт его через stdin. Запросы CLI к спискам с фильтрами или ограничениями, которые исполнитель не может воспроизвести, не выполняются.
+```sh
+docker volume create fastkore_cli_ticket_socket
+docker compose -p fastkore-cli -f deploy/compose.fastkore-cli-pilot.yaml up -d --build --wait cli
+docker compose -f compose.yaml -f compose.codex.yaml -f compose.sso.yaml -f compose.fastkore-cli-worker.yaml up -d --build --wait
+```
+
+На действующей установке используйте её имя Compose-проекта и добавьте используемые там дополнительные файлы Compose. Исполнитель проверяет каталог команд CLI перед открытием Unix-сокета. Локальный администратор может проверить запуск по `GET /api/admin/fastkore/cli-pilot` через настроенный HTTPS-адрес платформы.
+
+## Сквозная проверка MCP и CLI
+
+1. Укажите HTTPS-адрес `/webapi/mcp` в настройках установки. В проекте включите инструмент Fastkore ERP для нужного профиля агента. Заново откройте помощника из Fastkore после настройки доступа.
+2. Попросите агента вызвать `fastkore_GetCurrentUserInfo` через MCP и `fastkore_cli_auth_info` через CLI. Сверьте обе личности с сотрудником в ERP. Проверка CLI вернёт GUID только после его сверки с текущим SSO-сеансом.
+3. Для известного тестового объекта вызовите подходящий инструмент чтения MCP и `fastkore_cli_data_get` из карточки. Для списка без ограничений проверьте `fastkore_cli_data_query` с небольшим лимитом. Для каждой команды CLI платформа получает отдельный билет у `POST /api/ai/cli-ticket` и передаёт его в stdin.
+4. Повторите проверку под сотрудником с другими правами и убедитесь, что объект вне его прав недоступен. После отзыва делегирования в ERP новый токен MCP или билет CLI должен отклоняться.
+
+В чатах `fastkore_cli_describe` доступен для офлайн-описаний. Команды чтения CLI доступны при действующем делегировании и совпадении адреса и CA. Для вопроса по открытому списку агент использует `scope=current` и сохраняет все его ограничения. Для списка с фильтром нужен MCP-инструмент, схема которого поддерживает этот фильтр. По запросу сотрудника о других объектах агент использует `scope=erp`. Каждый вызов выполняется с правами сотрудника в ERP.

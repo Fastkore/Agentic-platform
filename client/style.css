@@ -4,9 +4,6 @@
 .sidebar-agent label { display: block; color: var(--nav-muted); font-size: 11px; margin-bottom: 7px; }
 .sidebar-agent select { width: 100%; color: #f8fafc; background: #202c42; border: 1px solid #60708b; border-radius: 8px; padding: 10px; font-size: 12px; }
 .profile-caption { padding: 0 42px 10px; color: var(--text-secondary); font-size: 12px; }
-.config-tabs { display: flex; gap: 6px; margin: 20px 0; }
-.config-tabs button { flex: 1; padding: 9px 6px; border: 1px solid var(--border); border-radius: 7px; font-size: 12px; }
-.config-tabs button[aria-selected="true"] { background: var(--accent); color: white; }
 .config-checks { border: 1px solid var(--border); border-radius: 8px; padding: 12px; margin: 18px 0; }
 .config-checks legend { padding: 0 6px; font-size: 12px; }
 .check-setting { display: flex; gap: 9px; align-items: center; margin: 12px 0; font-size: 13px; }

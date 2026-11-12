@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Check, Link2, Plus } from 'lucide-react';
 import { Select } from './Select';
-import { WorkspaceDialog } from './WorkspaceDialog';
+import { SettingsAction } from './SettingsAction';
 import { normalizeFastkoreTicketUrl } from '../shared/fastkore-url';
 import type { ExternalIdentity, FastkoreInstallation, FastkoreTlsInfo, User } from '../shared/types';
 
@@ -160,20 +160,20 @@ export function FastkorePanel({ request }: { request: Request }) {
     return id;
   }
 
+  const actionOpen = registering || editing || checkingInstallation || confirmPause;
   return <section className="setting-section fastkore-settings">
-    <div className="fastkore-heading">
-      <h3>Вход из Fastkore</h3>
-      {available && <button type="button" className="secondary" disabled={busy} onClick={() => { setError(''); setRegistering(true); }}><Plus size={15} /> Добавить установку</button>}
-    </div>
+    {available && !actionOpen && <div className="fastkore-heading">
+      <button type="button" className="secondary" disabled={busy} onClick={() => { setError(''); setRegistering(true); }}><Plus size={15} /> Добавить установку</button>
+    </div>}
     {available === false && <p className="help">Для подключения ERP настройте ключ шифрования Fastkore на сервере.</p>}
     {available === null && !error && <p role="status">Загрузка настроек…</p>}
     {error && !registering && !checkingInstallation && !editing && !confirmPause && <div className="inline-error" role="alert">{error}</div>}
     {notice && <p className="fastkore-notice" role="status">{notice}</p>}
 
     {available && <>
-      {!installations.length && <p>Установок ERP пока нет.</p>}
-      {registering && <WorkspaceDialog title="Добавить установку ERP" className="settings-action-dialog" close={() => { if (!busy) closeRegistration(); }}>
-        <form className="panel-body" onSubmit={e => {
+      {!installations.length && !registering && <p>Установок ERP пока нет.</p>}
+      {registering && <SettingsAction title="Добавить установку ERP">
+        <form onSubmit={e => {
           e.preventDefault();
           if (!certificate) { void checkTls(url); return; }
           void run(async () => {
@@ -187,7 +187,7 @@ export function FastkorePanel({ request }: { request: Request }) {
           });
         }}>
           <label htmlFor="sso-name">Название установки</label>
-          <input id="sso-name" data-dialog-focus value={name} onChange={e => setName(e.target.value)} maxLength={100} required />
+          <input id="sso-name" data-settings-focus value={name} onChange={e => setName(e.target.value)} maxLength={100} required />
           <label htmlFor="sso-url">Адрес ERP</label>
           <input id="sso-url" inputMode="url" autoCapitalize="none" spellCheck={false} disabled={busy} value={url}
             onChange={e => { setUrl(e.target.value); setCertificate(null); setError(''); }} maxLength={2048} placeholder="erp.example.ru" required />
@@ -199,15 +199,15 @@ export function FastkorePanel({ request }: { request: Request }) {
           </div>
           {error && <div className="inline-error" role="alert">{error}</div>}
         </form>
-      </WorkspaceDialog>}
+      </SettingsAction>}
 
-      {!!installations.length && <div>
+      {!actionOpen && !!installations.length && <div>
         <label htmlFor="sso-installation">Установка ERP</label>
         <Select id="sso-installation" className="settings-select" value={installationId} onChange={selectInstallation}
           disabled={busy} options={installations.map(item => ({ value: item.id, label: item.name }))} />
       </div>}
 
-      {installation && <article className="access-user fastkore-card">
+      {!actionOpen && installation && <article className="access-user fastkore-card">
         <div className="fastkore-card-top">
           <div><h4>{installation.name}</h4><small className="fastkore-url">{installation.validateTicketUrl}</small>
             {installation.mcpUrl && <small className="fastkore-url">MCP · {installation.mcpUrl}</small>}</div>
@@ -253,42 +253,43 @@ export function FastkorePanel({ request }: { request: Request }) {
               setRotate(true); setCode(''); setNotice('');
             }}>Ротация ключа</button>}
           </div>
-          {editing?.id === installation.id && <WorkspaceDialog title="Изменить установку ERP" className="settings-action-dialog" close={() => { if (!busy) { setEditing(null); setError(''); } }}>
-            <form className="panel-body" onSubmit={e => {
-              e.preventDefault();
-              void run(async () => {
-                await request(endpoint + '/' + installation.id, json('PATCH', {
-                  name: editing.name.trim(),
-                  validateTicketUrl: editing.validateTicketUrl.trim(),
-                  mcpUrl: editing.mcpUrl?.trim() ?? '',
-                  confirmValidateTicketUrl: confirmUrl,
-                }));
-                setEditing(null);
-                setNotice('Настройки установки сохранены.');
-              });
-            }}>
-              <label htmlFor="sso-edit-name">Название установки</label>
-              <input id="sso-edit-name" data-dialog-focus value={editing.name} onChange={e => setEditing({ ...editing, name: e.target.value })} maxLength={100} required />
-              <label htmlFor="sso-edit-url">Адрес ERP</label>
-              <input id="sso-edit-url" inputMode="url" autoCapitalize="none" spellCheck={false} disabled={installation.enabled} value={editing.validateTicketUrl}
-                onChange={e => { setEditing({ ...editing, validateTicketUrl: e.target.value }); setConfirmUrl(false); }} maxLength={2048} required />
-              {installation.enabled && <p className="help">Чтобы изменить адрес, приостановите вход.</p>}
-              {urlChanged && <label className="check-setting"><input type="checkbox" checked={confirmUrl} onChange={e => setConfirmUrl(e.target.checked)} />Подтверждаю новый HTTPS-адрес ERP</label>}
-              <label htmlFor="sso-mcp-url">HTTPS-адрес MCP</label>
-              <input id="sso-mcp-url" type="url" value={editing.mcpUrl ?? ''} placeholder="https://erp.example.ru/webapi/mcp"
-                onChange={e => setEditing({ ...editing, mcpUrl: e.target.value })} maxLength={2048} />
-              <div className="settings-dialog-actions">
-                <button type="button" className="secondary" disabled={busy} onClick={() => { setEditing(null); setError(''); }}>Отмена</button>
-                <button className="primary" disabled={busy || (urlChanged && !confirmUrl)}>Сохранить</button>
-              </div>
-              {error && <div className="inline-error" role="alert">{error}</div>}
-            </form>
-          </WorkspaceDialog>}
         </details>
       </article>}
 
-      {installation && checkingInstallation && <WorkspaceDialog title="Проверить подключение ERP" className="settings-action-dialog" close={() => { if (!busy) closeTlsCheck(); }}>
-        <div className="panel-body">
+      {installation && editing?.id === installation.id && <SettingsAction title="Изменить установку ERP">
+        <form onSubmit={e => {
+          e.preventDefault();
+          void run(async () => {
+            await request(endpoint + '/' + installation.id, json('PATCH', {
+              name: editing.name.trim(),
+              validateTicketUrl: editing.validateTicketUrl.trim(),
+              mcpUrl: editing.mcpUrl?.trim() ?? '',
+              confirmValidateTicketUrl: confirmUrl,
+            }));
+            setEditing(null);
+            setNotice('Настройки установки сохранены.');
+          });
+        }}>
+          <label htmlFor="sso-edit-name">Название установки</label>
+          <input id="sso-edit-name" data-settings-focus value={editing.name} onChange={e => setEditing({ ...editing, name: e.target.value })} maxLength={100} required />
+          <label htmlFor="sso-edit-url">Адрес ERP</label>
+          <input id="sso-edit-url" inputMode="url" autoCapitalize="none" spellCheck={false} disabled={installation.enabled} value={editing.validateTicketUrl}
+            onChange={e => { setEditing({ ...editing, validateTicketUrl: e.target.value }); setConfirmUrl(false); }} maxLength={2048} required />
+          {installation.enabled && <p className="help">Чтобы изменить адрес, приостановите вход.</p>}
+          {urlChanged && <label className="check-setting"><input type="checkbox" checked={confirmUrl} onChange={e => setConfirmUrl(e.target.checked)} />Подтверждаю новый HTTPS-адрес ERP</label>}
+          <label htmlFor="sso-mcp-url">HTTPS-адрес MCP</label>
+          <input id="sso-mcp-url" type="url" value={editing.mcpUrl ?? ''} placeholder="https://erp.example.ru/webapi/mcp"
+            onChange={e => setEditing({ ...editing, mcpUrl: e.target.value })} maxLength={2048} />
+          <div className="settings-dialog-actions">
+            <button type="button" className="secondary" disabled={busy} onClick={() => { setEditing(null); setError(''); }}>Отмена</button>
+            <button className="primary" disabled={busy || (urlChanged && !confirmUrl)}>Сохранить</button>
+          </div>
+          {error && <div className="inline-error" role="alert">{error}</div>}
+        </form>
+      </SettingsAction>}
+
+      {installation && checkingInstallation && <SettingsAction title="Проверить подключение ERP">
+        <div>
           {certificate ? <TlsFingerprint certificate={certificate} previous={installation.tlsFingerprint} /> : busy && <p role="status">Проверяем TLS…</p>}
           {error && <div className="inline-error" role="alert">{error}</div>}
           <div className="settings-dialog-actions">
@@ -302,20 +303,20 @@ export function FastkorePanel({ request }: { request: Request }) {
             })}>Отпечаток совпадает</button>}
           </div>
         </div>
-      </WorkspaceDialog>}
+      </SettingsAction>}
 
-      {installation && confirmPause && <WorkspaceDialog title="Приостановить вход из ERP" className="settings-action-dialog" close={() => { if (!busy) closeConfirmation(); }}>
-        <div className="panel-body">
+      {installation && confirmPause && <SettingsAction title="Приостановить вход из ERP">
+        <div>
           <p>Сеансы установки «{installation.name}» будут отозваны.</p>
           <div className="settings-dialog-actions">
-            <button type="button" className="secondary" data-dialog-focus disabled={busy} onClick={closeConfirmation}>Отмена</button>
+            <button type="button" className="secondary" data-settings-focus disabled={busy} onClick={closeConfirmation}>Отмена</button>
             <button type="button" className="primary" disabled={busy} onClick={() => void run(() => setEnabled(installation, false))}>Приостановить вход</button>
           </div>
           {error && <div className="inline-error" role="alert">{error}</div>}
         </div>
-      </WorkspaceDialog>}
+      </SettingsAction>}
 
-      {installation && <details className="fastkore-advanced">
+      {!actionOpen && installation && <details className="fastkore-advanced">
         <summary>Связь с учётной записью платформы</summary>
         <form onSubmit={e => { e.preventDefault(); void run(async () => {
           await request(identitiesEndpoint, json('PUT', { installationId, externalUserId, userId }));

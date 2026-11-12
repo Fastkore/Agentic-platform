@@ -28,9 +28,14 @@ test('isolated worker transports login status, limits and chat over a private so
     run: async (request, event) => {
       assert.equal(request.workspace, '/runner');
       assert.equal(request.allowWrite, false);
-      assert.equal(request.prompt, 'Только тестовый текст.');
+      assert.ok(request.prompt.endsWith('Только тестовый текст.'));
       assert.match(request.developerInstructions!, /Общие инструкции агента/);
-      if (request.tools) assert.deepEqual(await request.tools.call('fastkore_GetCurrentUserInfo', {}, new AbortController().signal), { success: true, text: 'Пользователь ERP' });
+      if (request.tools?.definitions.some(tool => tool.name === 'fastkore_GetCurrentUserInfo')) assert.deepEqual(await request.tools.call('fastkore_GetCurrentUserInfo', {}, new AbortController().signal), { success: true, text: 'Пользователь ERP' });
+      if (request.tools?.definitions.some(tool => tool.name === 'knowledge')) {
+        const result = await request.tools.call('knowledge', { action: 'index', section: 'fastkore' }, new AbortController().signal);
+        assert.equal(result.success, true);
+        assert.equal(JSON.parse(result.text).files.length, 4);
+      }
       await event({ kind: 'session', text: sessionId });
       await event({ kind: 'message', text: 'Проверено.' });
       await event({ kind: 'usage', usage });
@@ -77,6 +82,50 @@ test('isolated worker transports login status, limits and chat over a private so
     await rm(root, { recursive: true, force: true });
   }
 });
+test('the worker admits an ephemeral specialist only while its main turn is waiting for a consultation', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'bridge-worker-consultation-'));
+  const socket = process.platform === 'win32' ? '\\\\.\\pipe\\bridge-' + randomUUID() : path.join(root, 'worker.sock');
+  const fake: CodexRunner = {
+    inspect: async () => ({ path: '/fake', version: 'test', authentication: 'chatgpt', status: '' }),
+    async run(request, _event, signal) {
+      if (request.consultation) {
+        assert.equal(request.ephemeral, true);
+        assert.equal(request.sessionId, undefined);
+        assert.equal(request.allowWrite, false);
+        const tool = await request.tools!.call('project_files_list', {}, signal);
+        return { response: tool.text };
+      }
+      const tool = await request.tools!.call('consult_specialist', {}, signal);
+      return { response: tool.text };
+    },
+  };
+  const worker = createCodexWorker(fake);
+  const remote = new RemoteCodexRunner(socket);
+  const signal = new AbortController().signal;
+  const request = { cliPath: '/unused', workspace: '/unused', allowWrite: false, prompt: 'Проверить вопрос' };
+  const toolDefinition = (name: string) => ({ type: 'function' as const, name, description: name, inputSchema: { type: 'object' } });
+  const child = { ...request, consultation: true, ephemeral: true, tools: {
+    definitions: [toolDefinition('project_files_list')],
+    async call() { return { success: true, text: 'Источники проверены.' }; },
+  } };
+  try {
+    await worker.listen({ path: socket });
+    await assert.rejects(remote.run(child, async () => {}, signal), { statusCode: 409 });
+    const parent = await remote.run({ ...request, tools: {
+      definitions: [toolDefinition('consult_specialist')],
+      async call(_name, _args, signal) {
+        await assert.rejects(remote.run({ ...child, sessionId: randomUUID() }, async () => {}, signal), { statusCode: 409 });
+        const result = await remote.run(child, async () => {}, signal);
+        return { success: true, text: result.response };
+      },
+    } }, async () => {}, signal);
+    assert.equal(parent.response, 'Источники проверены.');
+  } finally {
+    await worker.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('CLI tools expose only fixed offline descriptions and recheck the session', async () => {
   const calls: string[] = [];
   let authorized = true;

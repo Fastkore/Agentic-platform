@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { request } from 'node:https';
 import path from 'node:path';
 import { normalizeFastkoreTicketUrl } from '../shared/fastkore-url.js';
-import type { Credential, FastkoreInstallation, FastkoreKeyIssue, FastkorePairingAttempt, FastkoreTlsTrust, StoredFastkoreInstallation, User } from '../shared/types.js';
+import type { Credential, FastkoreInstallation, FastkoreKeyIssue, FastkorePairingAttempt, FastkoreRole, FastkoreTlsTrust, StoredFastkoreInstallation, User } from '../shared/types.js';
 import type { Access } from './access.js';
 import { discoverFastkoreTls, verifyFastkoreTls } from './fastkore-tls.js';
 import { BridgeError, type Store } from './store.js';
@@ -14,9 +14,10 @@ export const audience = 'fastkore-agent-platform';
 const startTtl = 120;
 const pairingTtl = 5 * 60_000;
 const maxAttempts = 5000;
+const maxTicketResponseBytes = 64 * 1024;
 export type Theme = 'light' | 'dark';
 export interface ErpDelegation { grant: string; expiresAt: number }
-export interface TicketIdentity { installationId: string; externalUserId: string; displayName: string; delegation?: ErpDelegation }
+export interface TicketIdentity { installationId: string; externalUserId: string; displayName: string; roles?: FastkoreRole[]; delegation?: ErpDelegation }
 interface ExchangeInput { installation_id: string; ticket: string; login_challenge: string }
 type ErpTlsOptions = { ca: string };
 export type TicketValidator = (url: string, key: string, payload: ExchangeInput, trust?: ErpTlsOptions) => Promise<unknown>;
@@ -27,6 +28,19 @@ export type PairingClient = (url: string, payload: PairingInput, trust?: ErpTlsO
 export type InstallationPatch = { name?: string; validateTicketUrl?: string; confirmValidateTicketUrl?: boolean; enabled?: boolean; mcpUrl?: string };
 
 export const uuid = (v: unknown): v is string => typeof v === 'string' && v.length === 36 && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(v);
+function ticketRoles(value: unknown): FastkoreRole[] | undefined {
+  if (value === undefined) return undefined;
+  const invalid = () => new BridgeError('Fastkore передал некорректный набор ролей.', 502);
+  if (!Array.isArray(value)) throw invalid();
+  const ids = new Set<string>();
+  return value.map(role => {
+    const id = typeof role?.id === 'string' ? role.id.toLowerCase() : undefined;
+    const name = role?.name;
+    if (!uuid(id) || ids.has(id) || typeof name !== 'string' || !name.trim() || /[\x00-\x1f\x7f]/.test(name)) throw invalid();
+    ids.add(id);
+    return { id, name: name.trim() };
+  });
+}
 const opaque = (v: string) => v.length === 43 && /^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$/.test(v);
 const hash = (value: string) => createHash('sha256').update(value, 'utf8').digest('hex');
 export const normalizeTheme = (value: unknown): Theme => value === 'dark' ? 'dark' : 'light';
@@ -67,7 +81,8 @@ function nameOf(value: string) {
   return name;
 }
 /** No redirects, client-supplied destinations, retries or unbounded responses. */
-export function postErpJson(url: string, body: string, options: { ca?: string; key?: string; signal?: AbortSignal }, fail: () => BridgeError) {
+export function postErpJson(url: string, body: string, options: { ca?: string; key?: string; signal?: AbortSignal; maxResponseBytes?: number }, fail: () => BridgeError) {
+  const maxResponseBytes = options.maxResponseBytes ?? 8 * 1024;
   return new Promise<{ status?: number; value?: unknown }>((resolve, reject) => {
     const timeout = AbortSignal.timeout(10_000);
     const req = request(url, {
@@ -81,7 +96,11 @@ export function postErpJson(url: string, body: string, options: { ca?: string; k
         res.destroy(); reject(fail()); return;
       }
       let size = 0; const chunks: Buffer[] = [];
-      res.on('data', (chunk: Buffer) => { size += chunk.length; if (size > 8192) { res.destroy(); reject(fail()); } else chunks.push(chunk); });
+      res.on('data', (chunk: Buffer) => {
+        size += chunk.length;
+        if (size > maxResponseBytes) { res.destroy(); reject(fail()); }
+        else chunks.push(chunk);
+      });
       res.on('end', () => { try { resolve({ status: 200, value: JSON.parse(Buffer.concat(chunks).toString('utf8')) }); } catch { reject(fail()); } });
     });
     req.on('error', (error: NodeJS.ErrnoException) => {
@@ -104,7 +123,8 @@ function normalizeMcpUrl(value: string) {
 
 export async function validateTicketHttps(url: string, key: string, payload: ExchangeInput, trust?: { ca: string }): Promise<unknown> {
   const fail = () => new BridgeError('Fastkore не подтвердил вход. Откройте помощника из ERP заново.', 502);
-  const { status, value } = await postErpJson(url, JSON.stringify({ version: 1, ...payload, audience }), { ...trust, key }, fail);
+  const { status, value } = await postErpJson(url, JSON.stringify({ version: 1, ...payload, audience }),
+    { ...trust, key, maxResponseBytes: maxTicketResponseBytes }, fail);
   if (status !== 200) throw fail();
   return value;
 }
@@ -424,7 +444,8 @@ export class FastkoreSso {
     const delegation = d && typeof d.grant === 'string' && /^fkug1\.[A-Za-z0-9._-]{1,2048}$/.test(d.grant)
       && Number.isInteger(d.expires_in) && d.expires_in > 0 && d.expires_in <= 28_800 && Array.isArray(d.audiences) && d.audiences.includes('fastkore-mcp')
       ? { grant: d.grant, expiresAt: Date.now() + d.expires_in * 1000 } : undefined;
-    const identity: TicketIdentity = { installationId: id, externalUserId: value.user.id, displayName: value.user.display_name.trim(), delegation };
+    const identity: TicketIdentity = { installationId: id, externalUserId: value.user.id, displayName: value.user.display_name.trim(),
+      roles: ticketRoles(value.user.roles), delegation };
     return { identity, theme: attempt.theme, recheck };
   }
 }

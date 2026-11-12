@@ -10,6 +10,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { createApp } from '../server/app.js';
 import { audience, csrfFor, FastkoreSso, pairErpHttps, validateTicketHttps, type PairingClient, type PairingInput, type TicketValidator } from '../server/fastkore.js';
 import { BridgeError, Store, redact } from '../server/store.js';
+import { FastkoreCli } from '../server/fastkore-cli.js';
 import { Workspace } from '../server/workspace.js';
 import { parseHostTheme } from '../client/fastkore.js';
 import type { FastkoreKeyIssue } from '../shared/types.js';
@@ -151,6 +152,81 @@ test('1.1 provisions a cookie-only identity with no automatic platform rights', 
   } finally { await f.app.close(); }
 });
 
+test('Fastkore roles are scoped to the current installation and preserve unknown and empty snapshots', async () => {
+  const f = await fixture();
+  try {
+    const id = randomUUID();
+    let roles: unknown = [{ id: id.toUpperCase(), name: 'Администратор ERP' }];
+    f.setValidator(async (_url, _key, payload) => {
+      const result = identity(payload.installation_id, f.userId);
+      return { ...result, user: { ...result.user, ...(roles === undefined ? {} : { roles }) } };
+    });
+    const first = await f.login();
+    assert.deepEqual(first.authentication.roles, [{ id, name: 'Администратор ERP' }]);
+    assert.equal(first.authentication.installationId, f.id);
+    assert.equal(first.user.role, 'employee');
+    assert.equal(first.user.roleId, 'sso_pending');
+    assert.deepEqual((await f.asCookie(first, 'GET', '/api/agents')).json(), []);
+    assert.deepEqual((await f.asCookie(first, 'GET', '/api/projects')).json(), []);
+    assert.deepEqual((await f.asCookie(first, 'GET', '/api/auth/browser-session')).json().authentication.roles, first.authentication.roles);
+    assert.ok(!Object.hasOwn((await f.req('GET', '/api/users', f.admin)).json().find((user: { id: string }) => user.id === first.user.id), 'roles'));
+
+    const secondInstallation = await f.create('ERP B');
+    await f.patch({ enabled: true }, secondInstallation.installationId);
+    roles = [{ id, name: 'Технолог' }];
+    const other = await f.login(f.userId, secondInstallation.installationId);
+    assert.equal(other.authentication.installationId, secondInstallation.installationId);
+    assert.deepEqual(other.authentication.roles, roles);
+    assert.deepEqual((await f.asCookie(first, 'GET', '/api/auth/me')).json().authentication.roles, first.authentication.roles);
+    const catalogUrl = '/api/admin/erp-roles';
+    const catalog = (await f.req('GET', catalogUrl, f.admin)).json();
+    assert.equal(catalog.length, 2);
+    assert.ok(catalog.every((role: { userCount: number }) => role.userCount === 1));
+    assert.equal(catalog.find((role: { installationId: string }) => role.installationId === f.id).name, 'Администратор ERP');
+    const team = (await f.req('GET', '/api/users', f.admin)).json();
+    assert.deepEqual(team.find((user: { id: string }) => user.id === first.user.id).erpRoles, [
+      { installationId: f.id, roles: first.authentication.roles },
+    ]);
+    const deleteUrl = catalogUrl + '/' + f.id + '/' + id;
+    assert.equal((await f.asCookie(first, 'DELETE', deleteUrl)).statusCode, 403);
+    assert.equal((await f.req('DELETE', deleteUrl, f.admin)).statusCode, 200);
+    assert.equal((await f.req('GET', catalogUrl, f.admin)).json().length, 1);
+    assert.equal((await f.req('DELETE', deleteUrl, f.admin)).statusCode, 404);
+    const roleDb = new DatabaseSync(f.store.file, { readOnly: true });
+    try {
+      const saved = roleDb.prepare("SELECT value FROM metadata WHERE key='sso'").get() as { value: string };
+      assert.equal(JSON.parse(saved.value).roles.length, 1);
+    } finally { roleDb.close(); }
+    roles = [{ id, name: 'Руководитель' }];
+    await f.login();
+    assert.equal((await f.req('GET', catalogUrl, f.admin)).json().find((role: { installationId: string }) => role.installationId === f.id).name, 'Руководитель');
+    assert.equal((await f.req('GET', '/api/users', f.admin)).json().find((user: { id: string }) => user.id === first.user.id).erpRoles[0].roles[0].name, 'Руководитель');
+
+    await f.req('PATCH', '/api/users/' + first.user.id, f.admin, { roleId: 'employee' });
+    roles = [];
+    const empty = await f.login();
+    assert.equal(empty.user.id, first.user.id);
+    assert.equal(empty.user.roleId, 'employee');
+    assert.deepEqual(empty.authentication.roles, []);
+    assert.deepEqual((await f.req('GET', '/api/users', f.admin)).json().find((user: { id: string }) => user.id === first.user.id).erpRoles[0].roles, []);
+    roles = undefined;
+    const legacy = await f.login();
+    assert.equal(legacy.user.id, first.user.id);
+    assert.ok(!Object.hasOwn(legacy.authentication, 'roles'));
+
+    for (const invalid of [null, [{ id: 'invalid', name: 'Роль' }], [{ id, name: ' ' }], [{ id, name: 'A\nB' }],
+      [{ id, name: 'Роль' }, { id: id.toUpperCase(), name: 'Та же роль' }]]) {
+      roles = invalid;
+      const prep = await start(f.app);
+      const credentials = f.store.state.security!.credentials.length;
+      const rejected = await f.exchange(prep, f.ticket(prep));
+      assert.equal(rejected.statusCode, 502);
+      assert.ok(!cookies(rejected).some(cookie => cookie.startsWith('__Host-bridge_session=')));
+      assert.equal(f.store.state.security!.credentials.length, credentials);
+    }
+  } finally { await f.app.close(); }
+});
+
 test('exchange rejects missing, foreign and expired preparation and untrusted request data', async () => {
   const f = await fixture();
   try {
@@ -212,8 +288,9 @@ test('an existing WebView session keeps only its own sealed ERP grant across an 
   try {
     assert.equal((await f.patch({ mcpUrl: 'https://erp.example.test/webapi/mcp' })).statusCode, 200);
     const grant = 'fkug1.' + random();
+    const claims = identity(f.id, f.userId), roles = [{ id: randomUUID(), name: 'Снабжение' }];
     f.setValidator(async () => ({
-      ...identity(f.id, f.userId), delegation: { grant, expires_in: 3600, audiences: ['fastkore-mcp'] },
+      ...claims, user: { ...claims.user, roles }, delegation: { grant, expires_in: 3600, audiences: ['fastkore-mcp'] },
     }));
     const session = await f.login();
     f.setValidator(async () => identity(f.id, randomUUID()));
@@ -227,6 +304,9 @@ test('an existing WebView session keeps only its own sealed ERP grant across an 
       assert.equal(ready.statusCode, 200);
       assert.equal(ready.json().fastkoreToolsStatus, 'ready');
       assert.equal(unavailable.json().fastkoreToolsStatus, 'unavailable');
+      const authentication = (cookie: string) => app.inject({ url: '/api/auth/me', headers: { ...headers, cookie } });
+      assert.deepEqual((await authentication(session.cookie)).json().authentication.roles, roles);
+      assert.ok(!Object.hasOwn((await authentication(denied.cookie)).json().authentication, 'roles'));
       assert.equal(f.calls, 2, 'restored WebView session does not exchange another ticket');
       const saved = store.state.security!.credentials.find(c => c.userId === session.user.id)!;
       const other = store.state.security!.credentials.find(c => c.userId === denied.user.id)!;
@@ -240,6 +320,46 @@ test('an existing WebView session keeps only its own sealed ERP grant across an 
       assert.doesNotMatch(ready.body, /fkug1\.|sealedGrant/);
     } finally { await app.close(); }
   } finally { if (!closed) await f.app.close(); }
+});
+
+test('a valid SSO grant exposes CLI tools without MCP and only with a trusted runner', async t => {
+  const socket = process.env.BRIDGE_FASTKORE_CLI_SOCKET, tickets = process.env.BRIDGE_FASTKORE_CLI_TICKETS;
+  t.after(() => {
+    if (socket === undefined) delete process.env.BRIDGE_FASTKORE_CLI_SOCKET;
+    else process.env.BRIDGE_FASTKORE_CLI_SOCKET = socket;
+    if (tickets === undefined) delete process.env.BRIDGE_FASTKORE_CLI_TICKETS;
+    else process.env.BRIDGE_FASTKORE_CLI_TICKETS = tickets;
+  });
+  process.env.BRIDGE_FASTKORE_CLI_SOCKET = 'test-runner';
+  process.env.BRIDGE_FASTKORE_CLI_TICKETS = '1';
+  let trusted = false;
+  const check = t.mock.method(FastkoreCli.prototype, 'checkTrust', async () => {
+    if (!trusted) throw new BridgeError('Адрес или CA исполнителя не совпадает.', 424);
+    return { authority: 'erp.example.test', caFingerprint: 'test-fingerprint' };
+  });
+  const f = await fixture();
+  try {
+    const grant = 'fkug1.' + random();
+    f.setValidator(async () => ({
+      ...identity(f.id, f.userId), delegation: { grant, expires_in: 3600, audiences: ['fastkore-mcp'] },
+    }));
+    const session = await f.login();
+    const credential = f.store.state.security!.credentials.find(item => item.userId === session.user.id)!;
+    const signal = new AbortController().signal;
+    const prepare = () => f.workspace.prepareFastkoreTools!(credential.id, undefined, () => {}, signal);
+    const blocked = await prepare();
+    assert.match(blocked.problem!, /не совпадает/);
+    assert.deepEqual(blocked.tools?.definitions.map(tool => tool.name), ['fastkore_cli_describe']);
+    trusted = true;
+    const ready = await prepare();
+    assert.equal(ready.problem, undefined);
+    assert.deepEqual(ready.tools?.definitions.map(tool => tool.name), [
+      'fastkore_cli_describe', 'fastkore_cli_auth_info', 'fastkore_cli_data_get', 'fastkore_cli_data_query',
+    ]);
+    assert.equal(check.mock.callCount(), 2);
+    await f.asCookie(session, 'POST', '/api/auth/logout', {});
+    await assert.rejects(prepare());
+  } finally { await f.app.close(); }
 });
 
 test('ERP failures, mismatched claims and failed SQLite writes do not publish a session', async () => {
@@ -531,6 +651,13 @@ test('SSO opt-in requires trusted HTTPS and no agent execution, and theme messag
 test('HTTPS validation uses the exact contract and rejects untrusted TLS, redirects and invalid responses', async () => {
   const tls = testCertificate(), id = randomUUID(), key = 'fkap1.' + id + '.' + random();
   const payload = { installation_id: id, ticket: random(), login_challenge: random() };
+  const claims = identity(id, randomUUID());
+  const roles = Array.from({ length: 200 }, (_, index) => ({ id: randomUUID(), name: 'Менеджер по продажам и снабжению ' + (index + 1) }));
+  const full = { ...claims, user: { ...claims.user, roles }, delegation: { grant: 'fkug1.' + 'a'.repeat(2048), expires_in: 3600, audiences: ['fastkore-mcp'] } };
+  const escaped = JSON.stringify(full).replace(/[\u0080-\uffff]/g, char => '\\u' + char.charCodeAt(0).toString(16).padStart(4, '0'));
+  const size = Buffer.byteLength(escaped);
+  assert.ok(size > 8 * 1024 && size < 64 * 1024);
+  const atLimit = escaped + ' '.repeat(64 * 1024 - size);
   let mode = 'ok', calls = 0;
   const server = createServer(tls, async (req, res) => {
     calls++;
@@ -540,7 +667,7 @@ test('HTTPS validation uses the exact contract and rejects untrusted TLS, redire
     assert.deepEqual(JSON.parse(body), { version: 1, ...payload, audience });
     if (mode === 'redirect') { res.writeHead(302, { location: '/other', 'content-type': 'application/json' }); res.end('{}'); return; }
     res.setHeader('content-type', 'application/json');
-    res.end(mode === 'large' ? ' '.repeat(9000) : mode === 'bad' ? '{bad' : JSON.stringify({ valid: true }));
+    res.end(mode === 'full' ? atLimit : mode === 'large' ? atLimit + ' ' : mode === 'bad' ? '{bad' : JSON.stringify({ valid: true }));
   });
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
   const address = server.address();
@@ -550,8 +677,10 @@ test('HTTPS validation uses the exact contract and rejects untrusted TLS, redire
     await assert.rejects(validateTicketHttps(url, key, payload));
     assert.equal(calls, 0);
     assert.deepEqual(await validateTicketHttps(url, key, payload, { ca: tls.cert }), { valid: true });
+    mode = 'full';
+    assert.deepEqual(await validateTicketHttps(url, key, payload, { ca: tls.cert }), full);
     for (mode of ['redirect', 'large', 'bad']) await assert.rejects(validateTicketHttps(url, key, payload, { ca: tls.cert }));
-    assert.equal(calls, 4);
+    assert.equal(calls, 5);
   } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); }
 });
 
@@ -561,13 +690,13 @@ test('ERP pairing validates TLS and does not forward the code on redirects', asy
     erp_key_verifier: `fkap1.${id}.${createHash('sha256').update(random()).digest('hex')}` };
   const success = { version: 1, paired: true, installation_id: id };
   const requests: { method?: string; url?: string; authorization?: string; body: string }[] = [];
-  let status = 200;
+  let status = 200, oversized = false;
   const server = createServer(tls, async (req, res) => {
     let body = '';
     for await (const chunk of req) body += chunk;
     requests.push({ method: req.method, url: req.url, authorization: req.headers.authorization, body });
     res.writeHead(status, { location: '/other', 'content-type': 'application/json' });
-    res.end(status === 200 ? JSON.stringify(success) : JSON.stringify(payload));
+    res.end(status === 200 ? JSON.stringify(success) + (oversized ? ' '.repeat(8 * 1024) : '') : JSON.stringify(payload));
   });
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
   const address = server.address();
@@ -577,6 +706,8 @@ test('ERP pairing validates TLS and does not forward the code on redirects', asy
     await assert.rejects(pairErpHttps(url, payload), { statusCode: 502 });
     assert.equal(requests.length, 0);
     assert.deepEqual(await pairErpHttps(url, payload, { ca: tls.cert }), success);
+    oversized = true;
+    await assert.rejects(pairErpHttps(url, payload, { ca: tls.cert }), { statusCode: 502 });
     for (const [erpStatus, appStatus] of [[302, 502], [400, 400], [403, 403], [404, 424], [409, 409], [429, 429], [503, 503]]) {
       status = erpStatus;
       await assert.rejects(pairErpHttps(url, payload, { ca: tls.cert }), (error: BridgeError) => {
@@ -586,7 +717,7 @@ test('ERP pairing validates TLS and does not forward the code on redirects', asy
         return true;
       });
     }
-    assert.deepEqual(requests, Array.from({ length: 8 }, () => ({ method: 'POST', url: '/api/ai/pair', authorization: undefined, body: JSON.stringify(payload) })));
+    assert.deepEqual(requests, Array.from({ length: 9 }, () => ({ method: 'POST', url: '/api/ai/pair', authorization: undefined, body: JSON.stringify(payload) })));
   } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); }
 });
 

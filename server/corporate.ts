@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { realpath, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { agentToolIds } from '../shared/agent-tools.js';
+import { specialistFileLimits } from '../shared/types.js';
 import type { AgentProfile, AgentSummary, Corporate, Dataset, Project, ProjectAgentPolicy, State, User, WorkRole } from '../shared/types.js';
 import { BridgeError, Store } from './store.js';
 
@@ -71,6 +72,10 @@ export class CorporateAccess {
           toolIds: this.tools(profile, project), available: !unavailableReason, unavailableReason };
       });
   }
+  specialists(user: User | undefined, project: Project, mainProfileId: string) {
+    return this.data.profiles.filter(profile => user && profile.id !== mainProfileId && this.canUse(user, profile)
+      && (!project.agentPolicy || this.connection(profile, project)) && !this.unavailable(profile, project));
+  }
   defaultProjectPolicy(includeFastkore: boolean): ProjectAgentPolicy {
     return {
       revision: includeFastkore ? 0 : 1,
@@ -107,7 +112,9 @@ export class CorporateAccess {
   instructions(user: User | undefined, profile: AgentProfile) {
     const role = user && this.role(user)?.instructions;
     return [role && 'Инструкции рабочей роли\n' + role,
-      profile.instructions && 'Инструкции специалиста\n' + profile.instructions].filter(Boolean).join('\n\n');
+      profile.instructions && 'Инструкции специалиста\n' + profile.instructions,
+      ...(profile.instructionFiles ?? []).map(file => 'Файл инструкций ' + JSON.stringify(file.name) + '\n' + file.text),
+    ].filter(Boolean).join('\n\n');
   }
   private admin(actor: User) { if (actor.role !== 'admin' || actor.disabled) throw new BridgeError('Доступно только руководителю.', 403); }
   private audit(actor: User, action: string, id: string) { this.store.state.security?.audit.unshift({ id: randomUUID(), actorId: actor.id, action, targetId: id, createdAt: new Date().toISOString() }); this.store.state.security?.audit.splice(1000); }
@@ -127,8 +134,17 @@ export class CorporateAccess {
     if (input.model && !/^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,127}$/.test(input.model)) throw new BridgeError('Некорректная модель.');
     const old = this.data.profiles.find(p => p.id === input.id); if (old && old.revision !== input.revision) throw new BridgeError('Профиль изменён. Обновите настройки.', 409);
     if (this.store.state.runs.some(r => r.agentProfileId === input.id && ['queued', 'running'].includes(r.status))) throw new BridgeError('Дождитесь завершения заданий профиля.', 409);
-    const value: AgentProfile = { ...input, name: input.name.trim(), revision: (old?.revision ?? 0) + 1, toolIds: input.toolIds ?? old?.toolIds };
+    const instructionFiles = input.instructionFiles ?? old?.instructionFiles;
+    if (instructionFiles && (instructionFiles.length > specialistFileLimits.count ||
+      instructionFiles.reduce((size, file) => size + file.text.length, 0) > specialistFileLimits.characters ||
+      instructionFiles.some(file => !/^[^/\\\x00-\x1f]+\.(md|txt)$/i.test(file.name) || !file.text.trim() || file.text.includes('\0')) ||
+      new Set(instructionFiles.map(file => file.name.toLowerCase())).size !== instructionFiles.length)) {
+      throw new BridgeError('Добавьте до пяти разных файлов .md или .txt общим объёмом до 6 000 символов.');
+    }
+    const value: AgentProfile = { ...input, name: input.name.trim(), description: input.description.trim(), revision: (old?.revision ?? 0) + 1,
+      toolIds: input.toolIds ?? old?.toolIds, icon: input.icon ?? old?.icon, instructionFiles };
     if (!value.name || !value.operationIds.length) throw new BridgeError('Укажите название и хотя бы одну операцию.');
+    if (!value.description && old?.description !== '') throw new BridgeError('Кратко опишите, для каких задач подходит специалист.');
     if (old) Object.assign(old, value); else this.data.profiles.push(value);
     this.audit(actor, 'profile.update', value.id); await this.store.save(); return value;
   }

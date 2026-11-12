@@ -8,7 +8,7 @@ import { BridgeError, redact } from './store.js';
 export type FastkoreCliRead =
   | { operation: 'get'; entitySetId: string; entityId: string }
   | { operation: 'query'; entitySetId: string; limit: number };
-type Operation = FastkoreCliRead | { operation: 'auth-info' };
+export type FastkoreCliOperation = FastkoreCliRead | { operation: 'auth-info' };
 type Result = { success: boolean; exitCode: number; data?: unknown };
 const audience = 'fastkore-cli';
 const unavailable = 'Исполнитель Fastkore CLI недоступен.';
@@ -52,16 +52,26 @@ export class FastkoreCli {
     return this.exchange(command ? '/describe/' + command : '/capabilities', undefined, signal);
   }
 
-  async run(operation: Operation, sso: Pick<FastkoreSso, 'delegationBinding' | 'openDelegation'>,
+  async checkTrust(binding: { origin: string; ca?: string }, signal: AbortSignal) {
+    if (!binding.ca) throw new BridgeError('Для Fastkore CLI требуется подтверждённый CA установки ERP.', 424);
+    const authority = new URL(binding.origin).host;
+    const caFingerprint = new X509Certificate(binding.ca).fingerprint256;
+    // Verify the runner's fixed address and CA before sending a ticket.
+    const trust = await this.exchange('/trust', undefined, AbortSignal.any([signal, AbortSignal.timeout(2000)])) as
+      { authority?: string; caFingerprint?: string } | null;
+    if (trust?.authority !== authority || trust.caFingerprint !== caFingerprint) {
+      throw new BridgeError('Адрес или CA исполнителя Fastkore CLI не совпадает с привязкой ERP.', 424);
+    }
+    return { authority, caFingerprint };
+  }
+
+  async run(operation: FastkoreCliOperation, sso: Pick<FastkoreSso, 'delegationBinding' | 'openDelegation'>,
     current: () => Credential, forget: (id: string) => Promise<void>, signal: AbortSignal): Promise<Result> {
     signal.throwIfAborted();
     const credential = current();
     const binding = sso.delegationBinding(credential);
     const grant = binding && sso.openDelegation(credential, binding.revision);
     if (!binding || !grant) throw new BridgeError(reauth, 403);
-    if (!binding.ca) throw new BridgeError('Для Fastkore CLI требуется подтверждённый CA установки ERP.', 424);
-    const authority = new URL(binding.origin).host;
-    const caFingerprint = new X509Certificate(binding.ca).fingerprint256;
     const check = () => {
       signal.throwIfAborted();
       const session = current();
@@ -72,11 +82,7 @@ export class FastkoreCli {
         throw new BridgeError(reauth, 403);
       }
     };
-    // Verify the runner's fixed address and CA before sending a ticket.
-    const trust = await this.exchange('/trust', undefined, signal) as { authority?: string; caFingerprint?: string };
-    if (trust.authority !== authority || trust.caFingerprint !== caFingerprint) {
-      throw new BridgeError('Адрес или CA исполнителя Fastkore CLI не совпадает с привязкой ERP.', 424);
-    }
+    const trust = await this.checkTrust(binding, signal);
     check();
     const started = Date.now();
     const failed = () => new BridgeError('ERP не выдала билет Fastkore CLI.', 502);
@@ -96,7 +102,7 @@ export class FastkoreCli {
       !ticketPattern.test(ticket.ticket) || !Number.isInteger(ticket.expires_in) || ticket.expires_in! < 1 || ticket.expires_in! > 30 ||
       Date.now() >= started + ticket.expires_in! * 1000) throw failed();
     check();
-    const result = await this.exchange('/read', { ...operation, ticket: ticket.ticket, authority, caFingerprint }, signal) as Result;
+    const result = await this.exchange('/read', { ...operation, ticket: ticket.ticket, ...trust }, signal) as Result;
     check();
     if (!result || typeof result.success !== 'boolean' || !Number.isInteger(result.exitCode) ||
       (result.success ? result.exitCode !== 0 || !Object.hasOwn(result, 'data') : result.exitCode === 0)) throw new BridgeError(unavailable, 502);
@@ -106,6 +112,7 @@ export class FastkoreCli {
       if (typeof guid !== 'string' || guid.toLowerCase() !== credential.externalUserId) {
         throw new BridgeError('Пользователь Fastkore CLI не совпал с пользователем SSO.', 502);
       }
+      return { success: true, exitCode: 0, data: { user: { guid: credential.externalUserId } } };
     }
     return result.success
       ? { success: true, exitCode: 0, data: JSON.parse(redact(JSON.stringify(result.data))) }

@@ -3,8 +3,10 @@ services:
     image: fastkore-cli:27.0.48.0-sso
     platform: linux/amd64
     build:
-      context: ../private/fastkore-cli-pilot/27.0.48.0-sso
-      dockerfile: Dockerfile.pilot
+      context: .
+      dockerfile: fastkore-cli-pilot.Dockerfile
+      additional_contexts:
+        cli_package: ../private/fastkore-cli-pilot/27.0.48.0-sso
     init: true
     restart: unless-stopped
     read_only: true
@@ -16,13 +18,23 @@ services:
     tmpfs:
       - /tmp:rw,nosuid,nodev,size=512m,mode=1777
     environment:
-      FASTKORE_SERVER: grpc://mcp.fastkore.ru:17050
+      FASTKORE_SERVER: ${BRIDGE_FASTKORE_CLI_SERVER:-grpc://mcp.fastkore.ru:17050}
       FASTKORE_TLS: "true"
       FASTKORE_CA_FILE: /certs/ca.pem
     volumes:
-      - ../private/fastkore-ca/ca.pem:/certs/ca.pem:ro
+      - type: bind
+        source: ../private/fastkore-ca/ca.pem
+        target: /certs/ca.pem
+        read_only: true
+        bind:
+          create_host_path: false
       - work:/workspace
       - fastkore_cli_ticket_socket:/run/fastkore-cli
+    healthcheck:
+      test: ["CMD", "node", "-e", "const r=require('node:http').get({socketPath:'/run/fastkore-cli/pilot.sock',path:'/health'},s=>{s.resume();process.exitCode=s.statusCode===200?0:1});r.on('error',()=>{process.exitCode=1})"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
 volumes:
   work:
   fastkore_cli_ticket_socket:

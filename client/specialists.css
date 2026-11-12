@@ -1,0 +1,106 @@
+.specialist-page { container-type: inline-size; }
+.specialist-header { display: flex; align-items: center; gap: 16px; margin-bottom: 24px; }
+.specialist-header > div { flex: 1; min-width: 0; }
+.specialist-header h2 { margin: 0; font-size: clamp(21px, 4cqi, 30px); line-height: 1.15; letter-spacing: -.025em; }
+.specialist-header h2:focus { outline: none; }
+.specialist-header p { margin-top: 5px; color: var(--text-muted); }
+.specialist-header .primary, .specialist-file-header .secondary { display: inline-flex; align-items: center; justify-content: center; gap: 7px; flex: none; }
+.specialist-icon {
+  width: 48px; height: 48px; flex: 0 0 48px; display: grid; place-items: center; border-radius: 12px;
+  color: var(--accent-strong); background: color-mix(in srgb, var(--accent) 17%, var(--surface));
+}
+.specialist-header .specialist-icon { width: 54px; height: 54px; flex-basis: 54px; border-radius: 14px; }
+.specialist-header .specialist-icon svg { width: 27px; height: 27px; }
+.specialist-filters { display: grid; grid-template-columns: minmax(0, 1.75fr) repeat(2, minmax(0, 1fr)); gap: 12px; margin-bottom: 20px; }
+.specialist-filters .specialist-search { position: relative; min-width: 0; margin: 0; }
+.specialist-search svg { position: absolute; top: 12px; left: 12px; color: var(--text-muted); pointer-events: none; }
+.workspace-settings .specialist-search input { margin: 0; width: 100%; min-height: 40px; padding-left: 36px; }
+.specialist-filters .settings-select { margin: 0; padding-inline: 10px; }
+.specialist-list { display: grid; gap: 10px; padding: 0; margin: 0; list-style: none; }
+.specialist-list > li {
+  display: flex; align-items: center; gap: 15px; min-width: 0; padding: 16px; border: 1px solid var(--border);
+  border-radius: 13px; background: var(--surface);
+}
+.specialist-summary { flex: 1; min-width: 0; }
+.specialist-name { padding: 0; color: var(--text); text-align: left; font-size: 16px; font-weight: 650; overflow-wrap: anywhere; }
+.specialist-name:hover { color: var(--accent-strong); }
+.specialist-summary > p { margin: 4px 0 0; color: var(--text-secondary); line-height: 1.4; overflow-wrap: anywhere; }
+.specialist-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 5px 12px; margin-top: 8px; color: var(--text-muted); font-size: 12px; }
+.specialist-status, .specialist-tool-summary { display: inline-flex; align-items: center; gap: 6px; }
+.specialist-status::before { content: ''; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+.specialist-status[data-enabled="true"] { color: var(--accent-strong); }
+.specialist-tool-summary { max-width: 100%; overflow-wrap: anywhere; }
+.specialist-tool-summary svg { flex: none; }
+.specialist-summary .specialist-unavailable { color: var(--text-muted); font-size: 12px; }
+.specialist-row-actions { display: flex; align-items: center; gap: 12px; flex: none; }
+.specialist-row-actions .specialist-configure { display: inline-flex; align-items: center; gap: 7px; min-height: 34px; padding: 6px 9px; font-size: 12px; }
+.specialist-toggle {
+  position: relative; appearance: none; display: inline-block; width: 36px; height: 20px; flex: 0 0 36px;
+  padding: 0; margin: 0; border: 1px solid var(--control-border); border-radius: 99px; background: var(--nav-raised); cursor: pointer;
+}
+.specialist-toggle::before {
+  content: ''; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%;
+  background: var(--text-muted); transition: transform .15s ease;
+}
+.specialist-toggle:checked { border-color: var(--accent); background: var(--accent); }
+.specialist-toggle:checked::before { transform: translateX(16px); background: white; }
+.specialist-toggle:disabled { cursor: wait; opacity: .6; }
+.specialist-back { display: inline-flex; align-items: center; gap: 5px; color: var(--text-muted); padding: 4px 5px; margin: 0 0 12px -5px; border-radius: 6px; }
+.specialist-back:hover { color: var(--text); background: var(--hover); }
+.specialist-form { display: grid; gap: 14px; }
+.specialist-card { min-width: 0; padding: 16px; border-radius: 13px; border: 1px solid var(--border); background: var(--surface); }
+.specialist-card h3 { display: flex; align-items: center; gap: 8px; margin: 0 0 12px; font-size: 16px; font-weight: 650; }
+.specialist-card h3 > svg { flex: none; color: var(--text-muted); }
+.specialist-card h3 > label { margin: 0; color: inherit; font: inherit; }
+.specialist-card .help { margin: 5px 0 0; }
+.specialist-columns { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 13px; }
+.specialist-form .specialist-columns :is(input:not([type="checkbox"]), textarea) { margin: 0; }
+.specialist-form .specialist-columns input:not([type="checkbox"]) { width: 100%; }
+.specialist-basics { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 20px; margin-top: 12px; }
+.specialist-basics :is(.specialist-enabled, .specialist-icon-select) { display: inline-flex; align-items: center; gap: 8px; }
+.specialist-basics label, .specialist-icon-select .settings-select { margin: 0; }
+.specialist-icon-select .settings-select { min-height: 32px; min-width: 108px; }
+.specialist-instructions { display: flex; flex-direction: column; }
+.specialist-instructions textarea { flex: 1; min-height: 140px; resize: vertical; }
+.specialist-tool-list { display: grid; gap: 6px; margin-top: 9px; }
+.specialist-tool-list label {
+  display: flex; gap: 9px; align-items: center; padding: 8px 9px; margin: 0; border: 1px solid var(--border);
+  border-radius: 8px; background: var(--control); cursor: pointer;
+}
+.workspace-settings .specialist-tool-list input { flex: none; margin: 0; accent-color: var(--accent); }
+.specialist-tool-list svg { flex: none; color: var(--text-muted); }
+.specialist-tool-list strong { display: block; color: var(--text); font-weight: 600; }
+.specialist-tool-list small { display: block; margin-top: 2px; color: var(--text-muted); line-height: 1.35; }
+.specialist-file-header { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.specialist-file-header h3 { margin: 0; }
+.specialist-file-header input[hidden] { display: none; }
+.specialist-files ul { display: grid; gap: 5px; margin: 10px 0 0; padding: 0; list-style: none; }
+.specialist-files li { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; padding: 6px 8px; background: var(--control); border-radius: 7px; }
+.specialist-files li details { min-width: 0; flex: 1; }
+.specialist-files li summary { cursor: pointer; overflow-wrap: anywhere; padding-block: 6px; }
+.specialist-card pre { max-height: 240px; overflow: auto; margin: 10px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text-secondary); font: inherit; }
+.specialist-disclosure { padding-block: 0; }
+.specialist-disclosure > summary { display: flex; align-items: center; gap: 8px; padding-block: 12px; cursor: pointer; font-weight: 600; list-style: none; }
+.specialist-disclosure > summary::-webkit-details-marker { display: none; }
+.specialist-disclosure > summary svg { transform: rotate(-90deg); color: var(--text-muted); }
+.specialist-disclosure[open] > summary svg { transform: none; }
+.specialist-disclosure > :is(pre, .specialist-advanced) { margin: 0 0 14px; }
+.specialist-form .settings-dialog-actions { margin-top: 2px; }
+.message-specialists { color: var(--text-muted); margin-top: 8px; font-size: 12px; }
+@container (max-width: 620px) {
+  .specialist-filters { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+  .specialist-search { grid-column: 1 / -1; }
+  .specialist-columns { grid-template-columns: minmax(0, 1fr); }
+  .specialist-list > li { gap: 10px; padding: 12px; }
+  .specialist-row-actions { gap: 7px; }
+  .specialist-row-actions .specialist-configure span { display: none; }
+}
+@container (max-width: 400px) {
+  .specialist-header { flex-wrap: wrap; gap: 10px; margin-bottom: 16px; }
+  .specialist-header .primary { margin-left: 0; }
+  .specialist-list > li { align-items: flex-start; }
+  .specialist-list .specialist-icon { width: 36px; height: 36px; flex-basis: 36px; border-radius: 9px; }
+  .specialist-row-actions { flex-direction: column; }
+  .specialist-row-actions .specialist-toggle { flex-basis: 20px; }
+  .specialist-file-header { align-items: flex-start; flex-direction: column; }
+}

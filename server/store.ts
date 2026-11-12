@@ -2,7 +2,7 @@ import { readFile, writeFile } from 'node:fs/promises';
 import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 import path from 'node:path';
-import type { ProjectAgentPolicy, State } from '../shared/types.js';
+import type { Attachment, AuditEvent, ProjectAgentPolicy, State } from '../shared/types.js';
 import { DEFAULT_AGENT_INSTRUCTIONS } from '../shared/agent-instructions.js';
 
 export class BridgeError extends Error { constructor(message: string, public statusCode = 400) { super(message); } }
@@ -11,7 +11,13 @@ type AccessState = Pick<State, 'security' | 'externalIdentities' | 'sso'>;
 export type AccessDraft = AccessState & { projectMembers?: Map<string, string[]>; projectAgentPolicies?: Map<string, ProjectAgentPolicy> };
 const empty = (): State => ({ schemaVersion: 1, settings: { cliPath: '', allowWrite: false, includePreviews: true, model: '', agentInstructions: DEFAULT_AGENT_INSTRUCTIONS }, projects: [], runs: [], jobs: [] });
 type Row = { id: string; parent: string; payload: string };
+type ChatFileDeletion = { projectId: string; file: Attachment };
 const tables = ['projects', 'chats', 'messages', 'attachments', 'runs', 'jobs'] as const;
+const auditRetentionMs = 7 * 86_400_000;
+const recentAudit = (events: AuditEvent[]) => {
+  const cutoff = Date.now() - auditRetentionMs;
+  return events.filter(event => Date.parse(event.createdAt) > cutoff);
+};
 
 /** Single-process durable repository. Related changes commit in one SQLite transaction. */
 export class Store {
@@ -21,6 +27,7 @@ export class Store {
   readonly legacyFile: string;
   private readonly db: DatabaseSync;
   private queue: Promise<void> = Promise.resolve();
+  private auditExpiry?: ReturnType<typeof setTimeout>;
   private closed = false;
   constructor(readonly root: string) {
     mkdirSync(root, { recursive: true, mode: 0o700 });
@@ -44,6 +51,7 @@ export class Store {
       this.db.exec('CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);');
       this.db.exec('CREATE TABLE IF NOT EXISTS external_identities (installation_id TEXT NOT NULL, external_user_id TEXT NOT NULL, user_id TEXT NOT NULL, PRIMARY KEY(installation_id,external_user_id));');
       this.db.exec('CREATE TABLE IF NOT EXISTS launch_ticket_uses (hash TEXT PRIMARY KEY, expires_at INTEGER NOT NULL);');
+      this.db.exec('CREATE TABLE IF NOT EXISTS chat_file_deletions (project_id TEXT NOT NULL, file_id TEXT NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(project_id,file_id));');
       for (const table of tables) this.db.exec(`CREATE TABLE IF NOT EXISTS ${table} (id TEXT PRIMARY KEY, parent TEXT NOT NULL, position INTEGER NOT NULL, payload TEXT NOT NULL CHECK(json_valid(payload))); CREATE INDEX IF NOT EXISTS ${table}_parent ON ${table}(parent,position);`);
       this.db.exec('PRAGMA user_version=2;');
       const initialized = this.db.prepare("SELECT value FROM metadata WHERE key='settings'").get();
@@ -60,7 +68,7 @@ export class Store {
       }
       for (const project of this.state.projects) for (const chat of project.chats)
         for (const message of chat.messages) if (message.status === 'running') message.status = 'interrupted';
-      this.commit(JSON.parse(JSON.stringify(this.state)) as State);
+      this.commit(this.state);
     } catch {
       this.db.close();
       throw new BridgeError('Не удалось открыть базу SQLite. Файлы сохранены. Проверьте резервную копию и версию приложения.', 500);
@@ -85,12 +93,14 @@ export class Store {
     const externalIdentities = (this.db.prepare('SELECT installation_id,external_user_id,user_id FROM external_identities ORDER BY installation_id,external_user_id').all() as { installation_id: string; external_user_id: string; user_id: string }[]).map(r => ({ installationId: r.installation_id, externalUserId: r.external_user_id, userId: r.user_id }));
     return { schemaVersion: 1, settings: meta.get('settings'), security: meta.get('security'), corporate: meta.get('corporate'), sso: meta.get('sso'), externalIdentities, projects, runs: rows('runs').map(r => JSON.parse(r.payload)), jobs: rows('jobs').map(r => JSON.parse(r.payload)) };
   }
-  private commit(snapshot: State) {
+  private commit(snapshot: State, fileDeletions: ChatFileDeletion[] = []) {
+    const security = snapshot.security;
+    const audit = security && recentAudit(security.audit);
     this.db.exec('BEGIN IMMEDIATE');
     try {
       const putMeta = this.db.prepare('INSERT OR REPLACE INTO metadata(key,value) VALUES(?,?)');
       putMeta.run('settings', JSON.stringify(snapshot.settings));
-      if (snapshot.security) putMeta.run('security', JSON.stringify(snapshot.security));
+      if (security) putMeta.run('security', JSON.stringify({ ...security, audit }));
       if (snapshot.corporate) putMeta.run('corporate', JSON.stringify(snapshot.corporate));
       if (snapshot.sso) putMeta.run('sso', JSON.stringify(snapshot.sso));
       this.db.exec('DELETE FROM external_identities');
@@ -106,10 +116,41 @@ export class Store {
       });
       snapshot.runs.forEach((r, i) => put('runs', r.id, r.chatId ?? '', i, r));
       (snapshot.jobs ?? []).forEach((j, i) => put('jobs', j.runId, '', i, j));
+      if (fileDeletions.length) {
+        const enqueue = this.db.prepare('INSERT OR IGNORE INTO chat_file_deletions(project_id,file_id,payload) VALUES(?,?,?)');
+        for (const { projectId, file } of fileDeletions) enqueue.run(projectId, file.id, JSON.stringify(file));
+      }
       this.db.exec('COMMIT');
     } catch (error) { this.db.exec('ROLLBACK'); throw error; }
+    if (security && audit) {
+      security.audit = audit;
+      this.scheduleAuditExpiry(audit);
+    }
   }
-  save(): Promise<void> {
+  auditEvents() { return recentAudit(this.state.security?.audit ?? []); }
+  private scheduleAuditExpiry(events: AuditEvent[], retryDelay = 0) {
+    clearTimeout(this.auditExpiry);
+    if (!events.length) return;
+    const oldest = events.reduce((min, event) => Math.min(min, Date.parse(event.createdAt)), Infinity);
+    const delay = Math.min(auditRetentionMs, Math.max(1, retryDelay, oldest + auditRetentionMs - Date.now()));
+    this.auditExpiry = setTimeout(() => {
+      const expiry = this.queue.then(() => {
+        const security = this.state.security;
+        if (!security) return;
+        const audit = this.auditEvents();
+        if (audit.length !== security.audit.length) {
+          this.db.prepare("UPDATE metadata SET value = json_set(value, '$.audit', json(?)) WHERE key = 'security'").run(JSON.stringify(audit));
+          security.audit = audit;
+        }
+        this.scheduleAuditExpiry(audit);
+      });
+      this.queue = expiry.catch(error => {
+        void this.log('audit', (error as Error).message);
+        this.scheduleAuditExpiry(this.state.security?.audit ?? [], 60_000);
+      });
+    }, delay).unref();
+  }
+  save({ audit, fileDeletions }: { audit?: AuditEvent; fileDeletions?: ChatFileDeletion[] } = {}): Promise<void> {
     if (this.closed) return Promise.reject(new BridgeError('Хранилище закрыто.', 503));
     const snapshot = JSON.parse(JSON.stringify(this.state)) as State;
     // Access transactions queued ahead of this write may have published new credentials.
@@ -119,9 +160,19 @@ export class Store {
         const current = currentProjects.get(project.id);
         return current ? { ...project, memberIds: current.memberIds, agentPolicy: current.agentPolicy } : project;
       });
-      this.commit({ ...snapshot, ...this.accessState(), projects });
+      const access = this.accessState();
+      const security = audit && access.security ? { ...access.security, audit: [audit, ...access.security.audit].slice(0, 1000) } : access.security;
+      this.commit({ ...snapshot, ...access, security, projects }, fileDeletions);
+      if (audit && access.security && security) access.security.audit = security.audit;
     });
     this.queue = save.catch(() => {}); return save;
+  }
+  pendingChatFileDeletions(): ChatFileDeletion[] {
+    const rows = this.db.prepare('SELECT project_id,payload FROM chat_file_deletions').all() as { project_id: string; payload: string }[];
+    return rows.map(row => ({ projectId: row.project_id, file: JSON.parse(row.payload) }));
+  }
+  finishChatFileDeletion(projectId: string, fileId: string) {
+    this.db.prepare('DELETE FROM chat_file_deletions WHERE project_id=? AND file_id=?').run(projectId, fileId);
   }
   private accessState(): AccessState {
     const { security, externalIdentities, sso } = this.state;
@@ -160,7 +211,7 @@ export class Store {
     if (count.count >= 10000) throw new BridgeError('Слишком много обменов. Повторите позже.', 429);
     return this.db.prepare('INSERT OR IGNORE INTO launch_ticket_uses(hash,expires_at) VALUES(?,?)').run(hash, now + 5 * 60_000).changes === 1;
   }
-  async close() { if (this.closed) return; await this.queue; this.closed = true; this.db.exec('PRAGMA wal_checkpoint(TRUNCATE)'); this.db.close(); }
+  async close() { if (this.closed) return; await this.queue; this.closed = true; clearTimeout(this.auditExpiry); this.db.exec('PRAGMA wal_checkpoint(TRUNCATE)'); this.db.close(); }
   async log(category: string, message: string) {
     const file = path.join(this.root, 'diagnostics.log');
     try { const old = await readFile(file, 'utf8').catch(() => ''); await writeFile(file, (old + `${new Date().toISOString()} [${category}] ${redact(message)}\n`).slice(-64_000), { mode: 0o600 }); }

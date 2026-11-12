@@ -2,24 +2,48 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { ArrowUp, Bot, Check, ChevronDown, ChevronRight, Copy, EllipsisVertical, FileText, Folder, LoaderCircle, LockKeyhole, LogOut, Menu, Moon, Network, PanelLeftClose, PanelLeftOpen, Plus, RefreshCw, Search, Settings2, ShieldCheck, Square, SquarePen, Sun, Terminal, Users, X } from 'lucide-react';
-import type { AgentSummary, Attachment, Chat, ChatSummary, CodexLimits, FastkoreAuthentication, FileStorageStatus, ModelCatalog, ProjectSummary, Run, Settings, Status, User } from '../shared/types';
+import { Archive, ArrowUp, BarChart3, Bot, Check, ChevronDown, ChevronRight, ClipboardList, Copy, Database, EllipsisVertical, FileText, Folder, History, Link2, LoaderCircle, LockKeyhole, LogOut, Menu, Moon, Network, PanelLeftClose, PanelLeftOpen, Plus, RefreshCw, Search, Settings2, ShieldCheck, Square, SquarePen, Sun, Terminal, Users, X } from 'lucide-react';
+import type { AgentSummary, Attachment, Chat, ChatSummary, CodexLimits, FastkoreAuthentication, FileStorageStatus, ModelCatalog, ProjectSummary, RelatedChatSummary, Run, Settings, Status, User } from '../shared/types';
 import './style.css';
 import './workspace.css';
 import { AccountPanel, TeamPanel } from './AccessPanel';
+import { AuditPanel } from './AuditPanel';
+import { ChatArchiveDialog } from './ChatArchiveDialog';
+import { ErpRolesPanel } from './ErpRolesPanel';
+import { CorporatePanel } from './CorporatePanel';
+import { SpecialistsPanel } from './SpecialistsPanel';
+import { UsagePanel } from './UsagePanel';
 import { FastkorePanel } from './FastkorePanel';
+import { KnowledgePanel } from './KnowledgePanel';
+import { shortUserName } from './user-name';
 import { parseHostTheme, webViewHost, type Theme } from './fastkore';
 import { Select } from './Select';
+import { ComposerInput } from './ComposerInput';
 import { WorkspaceDialog } from './WorkspaceDialog';
 import { ProjectFilesDialog } from './ProjectFilesDialog';
 import { ProjectAgentsDialog } from './ProjectAgentsDialog';
 import { VoiceDictation } from './VoiceDictation';
 import { DictationModelSettings } from './DictationModelSettings';
 import { DEFAULT_AGENT_INSTRUCTIONS } from '../shared/agent-instructions';
-import { fastkoreContextProblem, isFastkoreContextMessage, isFastkoreContextReset, parseFastkoreContext, type FastkoreContext } from '../shared/fastkore-context';
+import { fastkoreChatContextKey, fastkoreContextProblem, isFastkoreContextMessage, isFastkoreContextReset, parseFastkoreContext, type FastkoreContext } from '../shared/fastkore-context';
 
 let accessKey = sessionStorage.getItem('bridge-key') ?? '';
 const agentsUrl = (projectId: string) => projectId ? '/api/projects/' + encodeURIComponent(projectId) + '/agents' : '/api/agents';
+const settingsSections = {
+  account: { label: 'Учётная запись', icon: LockKeyhole },
+  team: { label: 'Команда', icon: Users },
+  roles: { label: 'Роли', icon: ShieldCheck },
+  profiles: { label: 'Специалисты', icon: Bot },
+  datasets: { label: 'Источники', icon: Database },
+  agent: { label: 'Общие инструкции', icon: FileText },
+  knowledgeFastkore: { label: 'База знаний о Fastkore', icon: FileText },
+  knowledgeCompany: { label: 'База знаний о компании', icon: Folder },
+  audit: { label: 'Журнал доступа', icon: ClipboardList },
+  usage: { label: 'Использование', icon: BarChart3 },
+  fastkore: { label: 'Вход из Fastkore', icon: Link2 },
+  server: { label: 'Сервер', icon: Network },
+};
+type SettingsSection = keyof typeof settingsSections;
 let browserSession = false, csrfToken = '', sessionUserId = '', authEpoch = 0;
 class ApiError extends Error { constructor(message: string, readonly status: number) { super(message); } }
 async function api<T>(url: string, init: RequestInit = {}, responseType: 'json' | 'blob' = 'json'): Promise<T> {
@@ -68,7 +92,10 @@ function App() {
   const [loggedIn, setLoggedIn] = useState(false), [passwordInput, setPasswordInput] = useState(''), [loginInput, setLoginInput] = useState('');
   const [checkingSession, setCheckingSession] = useState(true), [authSource, setAuthSource] = useState<'local' | 'fastkore'>('local');
   const [erpAuth, setErpAuth] = useState<FastkoreAuthentication | null>(null);
-  const currentErpContext = useRef<{ snapshot?: FastkoreContext; problem?: string }>({});
+  const currentErpContext = useRef<{ snapshot?: FastkoreContext; problem?: string; key?: string; active?: boolean }>({});
+  const autoOpenRelated = useRef<string | undefined>(undefined);
+  const [erpChatKey, setErpChatKey] = useState<string>();
+  const [relatedChats, setRelatedChats] = useState<{ key: string; list: RelatedChatSummary[] }>();
   const [contextProblem, setContextProblem] = useState<string>();
   const readySession = useRef<FastkoreAuthentication | null>(null);
   const [user, setUser] = useState<User | null>(null), [setupRequired, setSetupRequired] = useState(false), [setupName, setSetupName] = useState('Руководитель');
@@ -79,10 +106,14 @@ function App() {
   const [showAll, setShowAll] = useState<Record<string, boolean>>({});
   const [projectId, setProjectId] = useState(localStorage.getItem('bridge-project') ?? ''), [chatId, setChatId] = useState(localStorage.getItem('bridge-chat') ?? '');
   const [drafts, setDrafts] = useState<Record<string, string>>({}), [files, setFiles] = useState<Record<string, Attachment[]>>({});
-  const [panel, setPanel] = useState<'settings' | 'project' | 'project-files' | 'project-agents' | 'search' | null>(null);
+  const [specialists, setSpecialists] = useState<Record<string, string | undefined>>({});
+  const [panel, setPanel] = useState<'settings' | 'project' | 'project-files' | 'project-agents' | 'search' | 'archive' | 'related' | null>(null);
   const [projectActionTarget, setProjectActionTarget] = useState<ProjectSummary | null>(null);
-  const [settingsSection, setSettingsSection] = useState<'account' | 'team' | 'fastkore' | 'server' | 'agent'>('account');
-  const [agentInstructions, setAgentInstructions] = useState('');
+  const [settingsSection, setSettingsSection] = useState<SettingsSection>('account');
+  const [instructionsDraft, setInstructionsDraft] = useState<string>();
+  const [knowledgeDirty, setKnowledgeDirty] = useState(false);
+  const savedInstructions = status?.settings.agentInstructions ?? DEFAULT_AGENT_INSTRUCTIONS;
+  const agentInstructions = instructionsDraft ?? savedInstructions;
   const openedFastkoreSettings = useRef(false);
   const [sidebarOpen, setSidebarOpen] = useState(false), [searchQuery, setSearchQuery] = useState(''), [searchLoading, setSearchLoading] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => localStorage.getItem('bridge-sidebar-collapsed') === '1');
@@ -99,10 +130,16 @@ function App() {
   const scroll = useRef<HTMLDivElement>(null), stick = useRef(true), loadingSettings = useRef(false);
   const sending = useRef(false);
   const sendAttempt = useRef<{ chatId: string; content: string; requestId: string } | null>(null);
-  const selectedProject = projects.find(p => p.id === projectId), draft = drafts[chatId] ?? '', attachments = files[chatId] ?? [];
+  const relatedDraftKey = currentErpContext.current.active && erpChatKey ? 'erp:' + erpChatKey : '';
+  const draftSlot = chatId || relatedDraftKey;
+  const selectedProject = projects.find(p => p.id === projectId), draft = drafts[draftSlot] ?? '', attachments = files[chatId] ?? [];
+  const specialistKey = draftSlot || 'new:' + projectId;
+  const specialistId = specialists[specialistKey];
   const active = status?.activeRun, busy = status?.busy ?? !!active;
   const isAdmin = user?.role === 'admin';
-  const canEdit = !!chat && (isAdmin || chat.ownerId === user?.id);
+  const matchesErpChat = !!erpChatKey && relatedChats?.key === erpChatKey && relatedChats.list.some(item => item.id === chatId);
+  const relatedLoading = !!erpChatKey && relatedChats?.key !== erpChatKey;
+  const canEdit = !!chat && !chat.archivedAt && (!chat.linkedToFastkore || matchesErpChat) && (isAdmin || chat.ownerId === user?.id);
   const codexUnavailable = status?.isolatedCodex && status.cli?.authentication !== 'chatgpt';
   const codexNotice = status?.executionDisabled ? 'Выполнение Codex отключено на сервере.' : codexUnavailable
     ? status.cli?.authentication === 'signed-out' ? 'Требуется вход в ChatGPT на исполнителе.' : 'Исполнитель Codex недоступен.'
@@ -110,12 +147,15 @@ function App() {
   const canCreateProject = isAdmin || status?.canCreateProject === true;
   const canStartWithoutProject = !projectId && projects.length === 0 && canCreateProject;
   const currentAgent = chat ? agents.find(agent => agent.id === (chat.agentProfileId ?? 'universal')) : undefined;
-  const canAttach = canEdit && currentAgent?.available === true && currentAgent.toolIds.includes('chat-files');
-  const canReadFastkore = !!projectId && (chatId ? currentAgent : availableAgents.find(agent => agent.id === newAgent))?.toolIds.includes('fastkore') === true;
+  const messageAgent = chatId ? currentAgent : availableAgents.find(agent => agent.id === newAgent);
+  const otherSpecialists = availableAgents.filter(agent => agent.id !== messageAgent?.id);
+  const canAttach = canEdit && messageAgent?.available === true && messageAgent.toolIds.includes('chat-files');
+  const canReadFastkore = !!projectId && messageAgent?.toolIds.includes('fastkore') === true;
   const canStartChat = !chatId && !!newAgent && (!!selectedProject || canStartWithoutProject);
-  const canSend = !!status && !status.executionDisabled && !codexUnavailable && (!canReadFastkore || !contextProblem) && (!attachments.length || canAttach)
-    && (chatId ? canEdit && !!currentAgent?.available : canStartChat);
+  const canSend = !!status && !(relatedLoading && currentErpContext.current.active) && !status.executionDisabled && !codexUnavailable && (!canReadFastkore || !contextProblem || !!currentErpContext.current.snapshot) && (!attachments.length || canAttach)
+    && !!messageAgent?.available && (!specialistId || otherSpecialists.some(agent => agent.id === specialistId)) && (chatId ? canEdit : canStartChat);
   const inFastkore = embedded || (authSource === 'fastkore' && !!webViewHost());
+  const relatedPanelOpen = panel === 'related';
   useEffect(() => {
     if (!loggedIn || !isAdmin || authSource !== 'local' || inFastkore || setupRequired || openedFastkoreSettings.current) return;
     if (new URLSearchParams(location.search).get('settings') !== 'fastkore') return;
@@ -146,7 +186,7 @@ function App() {
   };
   async function action(work: () => Promise<void>) { setPending(true); setError(''); try { await work(); } catch (e) { fail(e); } finally { setPending(false); } }
   function saveToken(token: string) { accessKey = token; sessionStorage.setItem('bridge-key', token); }
-  function clearLogin() { authEpoch++; browserSession = false; csrfToken = ''; sessionUserId = ''; sendAttempt.current = null; setErpAuth(null); currentErpContext.current = {}; setContextProblem(undefined); readySession.current = null; setAgentCatalog(undefined); setPreferredAgent('universal'); setCatalog(null); setModelError(''); accessKey = ''; sessionStorage.removeItem('bridge-key'); localStorage.removeItem('bridge-project'); localStorage.removeItem('bridge-chat'); setLoggedIn(false); setUser(null); setStatus(null); setProjects([]); setChatLists({}); setOpenProjects({}); setShowAll({}); setSidebarOpen(false); setChat(null); setDrafts({}); setFiles({}); setSubscription(null); setPanel(null); setProjectId(''); setChatId(''); setDiagnostics(''); setPasswordInput(''); }
+  function clearLogin() { authEpoch++; browserSession = false; csrfToken = ''; sessionUserId = ''; sendAttempt.current = null; setErpAuth(null); currentErpContext.current = {}; autoOpenRelated.current = undefined; setErpChatKey(undefined); setRelatedChats(undefined); setContextProblem(undefined); readySession.current = null; setAgentCatalog(undefined); setPreferredAgent('universal'); setCatalog(null); setModelError(''); accessKey = ''; sessionStorage.removeItem('bridge-key'); localStorage.removeItem('bridge-project'); localStorage.removeItem('bridge-chat'); setLoggedIn(false); setUser(null); setStatus(null); setProjects([]); setChatLists({}); setOpenProjects({}); setShowAll({}); setSidebarOpen(false); setChat(null); setDrafts({}); setFiles({}); setSpecialists({}); setSubscription(null); setPanel(null); setProjectId(''); setChatId(''); setDiagnostics(''); setPasswordInput(''); }
   function logout() { void action(async () => { await post('/api/auth/logout'); clearLogin(); }); }
   useEffect(() => {
     let alive = true;
@@ -185,14 +225,20 @@ function App() {
       const nextTheme = parseHostTheme(event.data);
       if (nextTheme) setErpTheme({ theme: nextTheme });
       if (erpAuth && isFastkoreContextMessage(event.data) && event.data.version === 1) {
-        if (isFastkoreContextReset(event.data)) {
-          currentErpContext.current = {};
-          setContextProblem(undefined);
-          return;
+        const reset = isFastkoreContextReset(event.data);
+        const snapshot = reset ? undefined : parseFastkoreContext(event.data) ?? undefined;
+        const problem = reset ? undefined : snapshot ? fastkoreContextProblem(snapshot) : 'Fastkore передал некорректный снимок. Откройте помощника из нужной карточки или списка.';
+        const key = snapshot && fastkoreChatContextKey(snapshot);
+        const previous = currentErpContext.current;
+        const changed = key !== previous.key;
+        currentErpContext.current = { snapshot, problem, key, active: changed ? !!key : previous.active };
+        if (changed) {
+          autoOpenRelated.current = key;
+          setErpChatKey(key);
+          setRelatedChats(undefined);
+          if (key || previous.active) navigateTo(selected.current.projectId);
+          if (!key) setPanel(panel => panel === 'related' ? null : panel);
         }
-        const snapshot = parseFastkoreContext(event.data);
-        const problem = snapshot ? fastkoreContextProblem(snapshot) : 'Fastkore передал некорректный снимок. Откройте помощника из нужной карточки или списка.';
-        currentErpContext.current = { snapshot: snapshot ?? undefined, problem };
         setContextProblem(problem);
       }
     };
@@ -222,6 +268,37 @@ function App() {
     setSidebarOpen(false);
     stick.current = true;
   }
+  function navigateWorkspace(project: string, conversation = '') {
+    currentErpContext.current.active = false;
+    autoOpenRelated.current = undefined;
+    navigateTo(project, conversation);
+  }
+  function navigateToRelated(item: RelatedChatSummary) {
+    currentErpContext.current.active = true;
+    autoOpenRelated.current = undefined;
+    navigateTo(item.projectId, item.id);
+  }
+  useEffect(() => {
+    const context = currentErpContext.current.snapshot;
+    if (!erpChatKey || !context) return;
+    const controller = new AbortController();
+    api<RelatedChatSummary[]>('/api/fastkore/chats/related', {
+      method: 'POST', body: JSON.stringify({ context }), signal: controller.signal,
+    }).then(list => {
+      if (controller.signal.aborted || currentErpContext.current.key !== erpChatKey) return;
+      setRelatedChats({ key: erpChatKey, list });
+      if (autoOpenRelated.current === erpChatKey) {
+        autoOpenRelated.current = undefined;
+        if (list[0]) navigateToRelated(list[0]);
+      }
+    }).catch(error => {
+      if (controller.signal.aborted) return;
+      autoOpenRelated.current = undefined;
+      setRelatedChats({ key: erpChatKey, list: [] });
+      fail(error);
+    });
+    return () => controller.abort();
+  }, [erpChatKey, relatedPanelOpen]);
   async function loadChats(project: string) {
     const credential = accessKey;
     const list = await api<ChatSummary[]>(`/api/projects/${project}/chats`);
@@ -270,7 +347,8 @@ function App() {
           const conversations = await api<ChatSummary[]>(`/api/projects/${p}/chats`); if (disposed || selected.current.projectId !== p) return;
           if (selected.current.chatId !== previousChat) return;
           setChatLists(old => ({ ...old, [p]: conversations }));
-          if ((previousChat || conversations.length) && !conversations.some(c => c.id === previousChat)) navigateTo(p, conversations[0]?.id ?? '');
+          const fallback = currentErpContext.current.active ? undefined : conversations.find(item => !item.linkedToFastkore);
+          if ((previousChat || fallback) && !conversations.some(c => c.id === previousChat)) navigateTo(p, fallback?.id ?? '');
           const c = selected.current.chatId;
           if (c && conversations.some(item => item.id === c)) {
             const detail = await api<Chat>(`/api/projects/${p}/chats/${c}`); if (!disposed && selected.current.projectId === p && selected.current.chatId === c) setChat(detail);
@@ -288,9 +366,10 @@ function App() {
     let disposed = false;
     const previousChat = selected.current.chatId;
     loadChats(projectId).then(list => {
+      const fallback = currentErpContext.current.active ? undefined : list.find(item => !item.linkedToFastkore);
       if (!disposed && selected.current.projectId === projectId && selected.current.chatId === previousChat &&
-        (previousChat || list.length) && !list.some(c => c.id === previousChat)) {
-        navigateTo(projectId, list[0]?.id ?? '');
+        (previousChat || fallback) && !list.some(c => c.id === previousChat)) {
+        navigateTo(projectId, fallback?.id ?? '');
       }
     }).catch(e => { if (!disposed) fail(e); });
     return () => { disposed = true; };
@@ -298,7 +377,7 @@ function App() {
   useEffect(() => {
     if (!loggedIn || !user || setupRequired || !projectId || !chatId || !selectedProject) return;
     let disposed = false;
-    api<Chat>(`/api/projects/${projectId}/chats/${chatId}`).then(detail => { if (!disposed) setChat(detail); }).catch(fail);
+    api<Chat>(`/api/projects/${projectId}/chats/${chatId}`).then(detail => { if (!disposed) setChat(detail); }).catch(error => { if (!disposed) fail(error); });
     return () => { disposed = true; };
   }, [chatId, projectId, loggedIn, !!selectedProject]);
   useEffect(() => { if (stick.current) end.current?.scrollIntoView({ behavior: 'smooth' }); }, [chat?.messages.length, chat?.messages.at(-1)?.text, chatId]);
@@ -332,26 +411,44 @@ function App() {
     }).catch(error => { if (alive) fail(error); });
     return () => { alive = false; };
   }, [loggedIn, !!user, setupRequired, user?.roleId, panel, projectId, !!selectedProject]);
-  async function createChat(project: string) {
+  async function createChat(project: string, context?: FastkoreContext, fresh = false) {
     const choices = project === projectId ? availableAgents : (await api<AgentSummary[]>(agentsUrl(project))).filter(agent => agent.available);
     const agent = choices.find(item => item.id === newAgent) ?? choices[0];
     if (!agent) throw new Error('В этом проекте вам пока не доступен ни один агент.');
-    const created = await post<Chat>(`/api/projects/${project}/chats`, { agentProfileId: agent.id });
-    const { id, title, updatedAt, ownerId, ownerName, visibility, messages } = created;
-    const summary: ChatSummary = { id, title, updatedAt, ownerId, ownerName, visibility, messageCount: messages.length };
-    setChatLists(old => ({ ...old, [project]: [summary, ...(old[project] ?? []).filter(item => item.id !== id)] }));
-    return created;
+    const result = context ? await post<{ projectId: string; chat: Chat }>('/api/fastkore/chats', { projectId: project, context, fresh, agentProfileId: agent.id })
+      : { projectId: project, chat: await post<Chat>(`/api/projects/${project}/chats`, { agentProfileId: agent.id }) };
+    const { id, title, updatedAt, ownerId, ownerName, visibility, messages, linkedToFastkore } = result.chat;
+    const summary: ChatSummary = { id, title, updatedAt, ownerId, ownerName, visibility, linkedToFastkore, messageCount: messages.length };
+    const p = result.projectId;
+    setChatLists(old => ({ ...old, [p]: [summary, ...(old[p] ?? []).filter(item => item.id !== id)] }));
+    const key = context && fastkoreChatContextKey(context);
+    if (key && currentErpContext.current.key === key) {
+      const entry = { ...summary, projectId: p, projectName: projects.find(item => item.id === p)?.name ?? 'Личные чаты' };
+      setRelatedChats(old => ({ key, list: [entry, ...(old?.key === key ? old.list.filter(item => item.id !== id) : [])] }));
+    }
+    return result;
   }
-  async function newChat(project = projectId) {
-    if (!project) { if (canCreateProject) setPanel('project'); return; }
-    if (pending || (project === projectId && !newAgent)) return;
+  async function createPersonalProject() {
+    const created = await post<ProjectSummary>('/api/projects', { name: 'Личные чаты' });
+    setProjects(old => old.some(p => p.id === created.id) ? old : [...old, created]);
+    return created.id;
+  }
+  async function newChat(project = projectId, linked = !!relatedDraftKey) {
+    const context = linked ? currentErpContext.current.snapshot : undefined;
+    const key = context && currentErpContext.current.key;
+    if (!project && !context) { if (canCreateProject) setPanel('project'); return; }
+    if (pending || relatedLoading && linked || (project === projectId && !newAgent) || (!project && !canCreateProject)) return;
     await action(async () => {
-      const created = await createChat(project);
+      const { chat: created, projectId: p } = await createChat(project || await createPersonalProject(), context, true);
+      if (key && currentErpContext.current.key !== key) return;
       if (!selected.current.chatId) {
-        setDrafts(old => old[''] ? { ...old, [created.id]: old[''], '': '' } : old);
+        setDrafts(old => old[draftSlot] ? { ...old, [created.id]: old[draftSlot], [draftSlot]: '' } : old);
+        if (project === projectId) setSpecialists(old => ({ ...old, [created.id]: old[specialistKey], [specialistKey]: undefined }));
       }
-      navigateTo(project, created.id);
+      currentErpContext.current.active = !!key;
+      navigateTo(p, created.id);
       setChat(created);
+      setPanel(panel => panel === 'related' ? null : panel);
       input.current?.focus();
     });
   }
@@ -363,42 +460,54 @@ function App() {
       await loadChats(p);
     });
   }
+  async function archiveChat() {
+    const p = projectId, c = chatId;
+    await action(async () => {
+      await api(`/api/projects/${p}/chats/${c}/archive`, { method: 'PATCH', body: JSON.stringify({ archived: true }) });
+      setChatLists(old => ({ ...old, [p]: (old[p] ?? []).filter(item => item.id !== c) }));
+      setRelatedChats(old => old && { ...old, list: old.list.filter(item => item.id !== c) });
+      if (selected.current.projectId === p && selected.current.chatId === c) navigateTo(p);
+      await loadChats(p);
+    });
+  }
   async function send(override?: string) {
     const text = (override ?? draft).trim();
-    const { snapshot, problem } = canReadFastkore && projectId ? currentErpContext.current : {};
-    if (!canSend || problem || !text || pending || sending.current) return;
+    const link = relatedDraftKey ? currentErpContext.current : undefined;
+    const { snapshot, problem } = link || chat?.linkedToFastkore || canReadFastkore || otherSpecialists.some(agent => agent.toolIds.includes('fastkore')) ? currentErpContext.current : {};
+    if (!canSend || (canReadFastkore && problem && !snapshot) || !text || pending || sending.current) return;
     const attachmentIds = attachments.map(a => a.id);
     sending.current = true;
     try {
       await action(async () => {
-        let project = projectId, conversation = chatId;
-        if (!project) {
-          const created = await post<ProjectSummary>('/api/projects', { name: 'Личные чаты' });
-          project = created.id;
-          setProjects(old => old.some(p => p.id === project) ? old : [...old, created]);
-          if (!selected.current.projectId) navigateTo(project);
-        }
+        const targetProject = projectId || await createPersonalProject();
+        let project = targetProject, conversation = chatId;
         if (!conversation) {
-          const created = await createChat(project);
+          const { chat: created, projectId: p } = await createChat(project, link?.snapshot);
+          project = p;
           conversation = created.id;
-          const shouldOpen = selected.current.projectId === project && !selected.current.chatId;
+          const pSelected = selected.current.projectId;
+          const shouldOpen = (pSelected === projectId || pSelected === targetProject) && !selected.current.chatId
+            && (!link || currentErpContext.current.key === link.key && currentErpContext.current.active);
           setDrafts(old => ({
             ...old,
-            [conversation]: shouldOpen ? old[''] ?? draft : draft,
-            ...(shouldOpen ? { '': '' } : {}),
+            [conversation]: shouldOpen ? old[draftSlot] ?? draft : draft,
+            ...(shouldOpen ? { [draftSlot]: '' } : {}),
           }));
+          setSpecialists(old => ({ ...old, [conversation]: specialistId, ...(shouldOpen ? { [specialistKey]: undefined } : {}) }));
           if (shouldOpen) {
             navigateTo(project, conversation);
             setChat(created);
           }
         }
-        const content = JSON.stringify({ text, attachmentIds, fastkoreContext: snapshot });
+        const message = { text, attachmentIds, fastkoreContext: snapshot, recommendedSpecialistId: specialistId };
+        const content = JSON.stringify(message);
         const previous = sendAttempt.current;
         const id = previous?.chatId === conversation && previous.content === content ? previous.requestId : requestId();
         sendAttempt.current = { chatId: conversation, content, requestId: id };
-        const run = await post<Run>(`/api/projects/${project}/chats/${conversation}/messages`, { text, attachmentIds, clientRequestId: id, fastkoreContext: snapshot });
+        const run = await post<Run>(`/api/projects/${project}/chats/${conversation}/messages`, { ...message, clientRequestId: id });
         sendAttempt.current = null;
         setDrafts(old => old[conversation]?.trim() === text ? { ...old, [conversation]: '' } : old);
+        setSpecialists(old => old[conversation] === specialistId ? { ...old, [conversation]: undefined } : old);
         setFiles(old => ({ ...old, [conversation]: (old[conversation] ?? []).filter(a => !attachmentIds.includes(a.id)) }));
         setStatus(old => old ? { ...old, ...(run.status === 'queued' ? { queuedRuns: [...(old.queuedRuns ?? []).filter(r => r.id !== run.id), run] } : run.status === 'running' ? { activeRun: run } : {}) } : old);
         stick.current = true;
@@ -425,12 +534,19 @@ function App() {
     if (accountMenu.current) accountMenu.current.open = false;
     setSidebarOpen(false);
     setSettingsSection('account');
+    setInstructionsDraft(undefined);
     setPanel('settings');
   }
   async function showServerSettings() {
     setSettingsSection('server');
     setCliPath(status?.settings.cliPath || status?.cli?.path || '');
     if (!loadingSettings.current) { loadingSettings.current = true; try { const log = await api<{ text: string }>('/api/diagnostics'); setDiagnostics(log.text); } catch (e) { fail(e); } finally { loadingSettings.current = false; } }
+  }
+  function chooseSettingsSection(section: SettingsSection) {
+    if (section === settingsSection) return;
+    if (knowledgeDirty && !window.confirm('Перейти в другой раздел и удалить несохранённые изменения?')) return;
+    if (section === 'server') void showServerSettings();
+    else setSettingsSection(section);
   }
   async function saveSettings(next: Partial<Settings>) { await action(async () => { const settings = await api<Settings>('/api/settings', { method: 'PATCH', body: JSON.stringify(next) }); setStatus(old => old ? { ...old, settings, dictationEnabled: !!old.dictationAvailable && settings.dictationEnabled !== false } : old); }); }
 
@@ -477,16 +593,14 @@ function App() {
   });
   const draftEditable = !chatId || canEdit;
   const canCreate = !!selectedProject && !!newAgent && !pending;
-  const canDictate = status?.dictationEnabled && (chatId
-    ? canEdit && agents.some(agent => agent.id === (chat?.agentProfileId ?? 'universal') && agent.available)
-    : canStartChat);
+  const canDictate = status?.dictationEnabled && messageAgent?.available && (chatId ? canEdit : canStartChat);
   const writeMode = (!status?.isolatedCodex || status.workerFilesAvailable) && !!status?.settings.allowWrite
-    && !!currentAgent?.allowWrite && currentAgent.toolIds.includes('chat-files');
+    && !!messageAgent?.allowWrite && messageAgent.toolIds.includes('chat-files');
   const catalogOptions = catalog?.models.map(model => ({ value: model.id, label: model.name })) ?? [];
-  const chatModel = currentAgent?.model ? '' : chat?.model ?? '';
-  const defaultChatModel = modelName(currentAgent?.model || status?.settings.model || catalog?.models.find(model => model.isDefault)?.id);
+  const chatModel = messageAgent?.model ? '' : chat?.model ?? '';
+  const defaultChatModel = modelName(messageAgent?.model || status?.settings.model || catalog?.models.find(model => model.isDefault)?.id);
   const chatModels = [
-    { value: '', label: defaultChatModel + (catalog && !currentAgent?.model ? ' · авто' : '') },
+    { value: '', label: defaultChatModel + (catalog && !messageAgent?.model ? ' · авто' : '') },
     ...(chatModel && !catalogOptions.some(model => model.value === chatModel) ? [{ value: chatModel, label: modelName(chatModel) }] : []),
     ...catalogOptions,
   ];
@@ -496,9 +610,37 @@ function App() {
     ...(serverModel && !catalogOptions.some(model => model.value === serverModel) ? [{ value: serverModel, label: modelName(serverModel) }] : []),
     ...catalogOptions,
   ];
-  const closePanel = () => setPanel(null);
+  const closePanel = () => {
+    if (knowledgeDirty && !window.confirm('Закрыть настройки и удалить несохранённые изменения?')) return;
+    setPanel(null);
+  };
+  const renderHistory = (conversation: Chat, project: string) => <>
+      {conversation.messages.map(message => <article key={message.id} className={'conversation-message is-' + message.role}>
+        {message.role === 'assistant' ? <div className="markdown"><ReactMarkdown remarkPlugins={[remarkGfm]} components={{
+          img: ({ alt }) => <span>[Изображение: {alt}]</span>,
+          a: ({ href, children }) => <a href={href} target="_blank" rel="noreferrer">{children}</a>,
+        }}>{message.text || (message.status === 'running' ? 'Работаю над вопросом…' : 'Ответ не получен.')}</ReactMarkdown></div> :
+          <div className="question-bubble">
+            {message.authorId && message.authorId !== user.id && <small title={message.authorName ?? conversation.ownerName}>{shortUserName(message.authorName ?? conversation.ownerName)}</small>}
+            {message.specialistName && <small title="Рекомендованный специалист">@{message.specialistName}</small>}
+            {message.text}
+          </div>}
+        {message.attachments.length > 0 && <div className="conversation-files">{message.attachments.map(file =>
+          message.role === 'assistant' && message.status === 'complete'
+            ? <button type="button" key={file.id} title={'Скачать ' + file.name} onClick={() => void action(() => downloadChatFile(
+              `/api/projects/${encodeURIComponent(project)}/chats/${encodeURIComponent(conversation.id)}/messages/${encodeURIComponent(message.id)}/files/${encodeURIComponent(file.id)}`, file.name))}
+              ><FileText size={16} />{file.name}</button>
+            : <span key={file.id}><FileText size={16} />{file.name}</span>)}</div>}
+        {['error', 'cancelled', 'interrupted'].includes(message.status) && <div className="message-note">{message.status === 'error' ? 'Ошибка задания' : message.status === 'cancelled' ? 'Задание остановлено' : 'Задание прервано'}</div>}
+        {message.consultedSpecialists?.length ? <div className="message-specialists">Специалисты · {message.consultedSpecialists.join(', ')}</div> : null}
+        <div className="message-actions">
+          <button className="workspace-icon" aria-label="Копировать сообщение" title="Копировать сообщение" onClick={() => void copyItem(message.text, message.id)}>{copied === message.id ? <Check size={14} /> : <Copy size={14} />}</button>
+          <time dateTime={message.createdAt} title={message.usage ? 'Вход: ' + message.usage.inputTokens.toLocaleString('ru-RU') + ' · Выход: ' + message.usage.outputTokens.toLocaleString('ru-RU') : undefined}>{shortDate(message.createdAt)}</time>
+        </div>
+      </article>)}
+  </>;
   const composer = <div className="bridge-composer">
-    {chat && !canEdit && <p className="composer-status">Чат доступен для чтения</p>}
+    {chat && !canEdit && <p className="composer-status">{chat.linkedToFastkore && chat.ownerId === user.id ? 'Чтобы продолжить чат, откройте связанную карточку или список в Fastkore.' : 'Чат доступен для чтения'}</p>}
     {codexNotice && draftEditable && <p className="composer-status" role="status">{codexNotice} Можно подготовить черновик.</p>}
     {canReadFastkore && contextProblem && <p className="composer-status" role="alert">{contextProblem}</p>}
     {!!attachments.length && !canAttach && <p className="composer-status" role="status">Удалите вложения из черновика. Агенту сейчас не разрешено их читать.</p>}
@@ -517,7 +659,7 @@ function App() {
     </div>}
     {!hasMessages && <div className="composer-project">
       <Folder size={17} />
-      <Select label="Проект" placeholder="Выберите проект" value={projectId} onChange={navigateTo} disabled={pending}
+      <Select label="Проект" placeholder="Выберите проект" value={projectId} onChange={project => currentErpContext.current.active ? navigateTo(project) : navigateWorkspace(project)} disabled={pending}
         options={projects.map(project => ({ value: project.id, label: project.name }))} />
       {canCreateProject && <button type="button" className="workspace-icon" title="Новый проект" aria-label="Новый проект" onClick={() => setPanel('project')}><Plus size={17} /></button>}
     </div>}
@@ -525,22 +667,25 @@ function App() {
       {attachments.length > 0 && <div className="attachment-chips">{attachments.map(attachment => <span key={attachment.id}>
         <FileText size={14} />{attachment.name}<button aria-label={'Убрать ' + attachment.name} onClick={() => setFiles(old => ({ ...old, [chatId]: (old[chatId] ?? []).filter(item => item.id !== attachment.id) }))}><X size={13} /></button>
       </span>)}</div>}
-      <textarea ref={input} rows={2} value={draft} onChange={e => setDrafts(old => ({ ...old, [chatId]: e.target.value }))}
+      <ComposerInput key={specialistKey} input={input} draft={draft}
         placeholder={hasMessages ? 'Продолжить разговор…' : 'Напишите сообщение…'}
-        disabled={!draftEditable} aria-label="Сообщение Codex"
-        onKeyDown={e => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); void send(); } }} />
-      <div className="bridge-editor-controls">
+        editable={draftEditable} pickerEnabled={draftEditable && !pending && (chatId ? canEdit : !!selectedProject || canStartWithoutProject)}
+        agents={otherSpecialists} specialistId={specialistId}
+        onDraft={text => setDrafts(old => ({ ...old, [draftSlot]: text }))}
+        onSpecialist={id => setSpecialists(old => ({ ...old, [specialistKey]: id }))}
+        onSend={() => void send()} controls={pickerButton => <div className="bridge-editor-controls">
         <input type="file" multiple ref={fileInput} onChange={e => void upload(e.target.files)} />
         <button className="workspace-icon" title={canAttach ? 'Прикрепить файл' : 'Агенту не разрешено читать вложения'} aria-label="Прикрепить файл" onClick={() => fileInput.current?.click()} disabled={!canAttach || pending}><Plus size={19} /></button>
-        <span className={'access-mode' + (writeMode ? ' write' : '')} title={currentAgent?.name}><ShieldCheck size={16} />{writeMode ? 'Запись разрешена' : 'Только чтение'}</span>
+        {pickerButton}
+        <span className={'access-mode' + (writeMode ? ' write' : '')} title={messageAgent?.name}><ShieldCheck size={16} />{writeMode ? 'Запись разрешена' : 'Только чтение'}</span>
         <div className="composer-actions">
           <LimitsButton request={api} unavailableReason={codexNotice} revision={status?.codexLimitsRevision} />
           <div className="editor-model">
             <Select label="Модель диалога" value={chatModel} options={chatModels}
-              disabled={!!currentAgent?.model || !chat || !(isAdmin || chat.ownerId === user.id) || busy || pending || modelsLoading || (!catalog && !chat.model)}
+              disabled={!!messageAgent?.model || !chat || !(isAdmin || chat.ownerId === user.id) || busy || pending || modelsLoading || (!catalog && !chat.model)}
               onChange={model => void changeModel(model)} title={modelError || undefined} />
           </div>
-          {canDictate && <VoiceDictation key={JSON.stringify([user.id, projectId, chatId, chat?.agentProfileId ?? newAgent])} canSend={canSend && !pending}
+          {canDictate && <VoiceDictation key={JSON.stringify([user.id, projectId, chatId, messageAgent?.id])} canSend={canSend && !pending}
             transcribe={async (wav, signal) => {
               const data = new FormData();
               data.append('file', wav, 'dictation.wav');
@@ -552,13 +697,13 @@ function App() {
             }} onText={(text, shouldSend) => {
               const previous = input.current?.value ?? draft;
               const content = previous + (previous && !/\s$/.test(previous) ? ' ' : '') + text;
-              setDrafts(old => ({ ...old, [chatId]: content }));
+              setDrafts(old => ({ ...old, [draftSlot]: content }));
               if (shouldSend) void send(content);
               if (!shouldSend) requestAnimationFrame(() => input.current?.focus());
             }} onError={fail} />}
-          <button className="bridge-send" aria-label="Отправить вопрос" title={codexNotice || 'Отправить · Ctrl+Enter'} onClick={() => void send()} disabled={!canSend || !draft.trim() || pending}><ArrowUp size={18} /></button>
+          <button className="bridge-send" aria-label="Отправить вопрос" title={codexNotice || 'Отправить · Enter'} onClick={() => void send()} disabled={!canSend || !draft.trim() || pending}><ArrowUp size={18} /></button>
         </div>
-      </div>
+      </div>} />
     </div>
     {!chatId && canCreate && <button className="empty-new-chat" onClick={() => void newChat()}><SquarePen size={15} />Создать чат</button>}
   </div>;
@@ -597,7 +742,7 @@ function App() {
               <button className="workspace-row project-row" onClick={() => toggleProject(project.id)} aria-expanded={open} aria-controls={'chats-' + project.id} title={project.name}>
                 <Folder size={14} /><span>{project.name}</span>{open ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
               </button>
-              <button className="workspace-icon project-new-chat" title="Новый чат в проекте" aria-label={'Новый чат в проекте ' + project.name} disabled={pending || (project.id === projectId && !newAgent)} onClick={() => void newChat(project.id)}><Plus size={16} /></button>
+              <button className="workspace-icon project-new-chat" title="Новый чат в проекте" aria-label={'Новый чат в проекте ' + project.name} disabled={pending || (project.id === projectId && !newAgent)} onClick={() => void newChat(project.id, false)}><Plus size={16} /></button>
               {isAdmin && authSource === 'local' && !inFastkore && <details className="project-actions" onBlur={e => {
                 if (!e.currentTarget.contains(e.relatedTarget)) e.currentTarget.open = false;
               }} onKeyDown={e => {
@@ -625,7 +770,7 @@ function App() {
             </div>
             {open && <div className="project-chat-list" id={'chats-' + project.id}>
               {visible.map(item => <button key={item.id} className="workspace-row chat-row" aria-current={item.id === chatId ? 'page' : undefined}
-                onClick={() => navigateTo(project.id, item.id)} title={item.title}>
+                onClick={() => navigateWorkspace(project.id, item.id)} title={item.title}>
                 <span>{item.title}</span>
                 {active?.chatId === item.id ? <LoaderCircle size={13} className="spin" /> : <time dateTime={item.updatedAt}>{shortDate(item.updatedAt)}</time>}
               </button>)}
@@ -634,15 +779,18 @@ function App() {
           </div>;
         })}
       </nav>
+      {isAdmin && <div className="archive-nav"><button type="button" className="workspace-row" onClick={() => { setSidebarOpen(false); setPanel('archive'); }}>
+        <Archive size={17} aria-hidden="true" />Архив чатов
+      </button></div>}
       <div className="workspace-account">
         {isAdmin && !inFastkore ? <details ref={accountMenu} onBlur={e => { if (!e.currentTarget.contains(e.relatedTarget)) e.currentTarget.open = false; }}
           onKeyDown={e => { if (e.key === 'Escape') { e.currentTarget.open = false; e.currentTarget.querySelector('summary')?.focus(); } }}>
-          <summary className="workspace-row account-row"><span className="account-initial">{user.name.trim()[0]?.toUpperCase()}</span><span>{user.name}</span><ChevronDown size={14} /></summary>
+          <summary className="workspace-row account-row" title={user.name}><span className="account-initial">{user.name.trim()[0]?.toUpperCase()}</span><span>{shortUserName(user.name)}</span><ChevronDown size={14} /></summary>
           <div className="account-actions">
             <button className="workspace-row" onClick={showSettings}><Settings2 size={17} />Настройки</button>
             <button className="workspace-row" onClick={logout}><LogOut size={17} />Выйти</button>
           </div>
-        </details> : <div className="workspace-row account-row"><span className="account-initial">{user.name.trim()[0]?.toUpperCase()}</span><span>{user.name}</span></div>}
+        </details> : <div className="workspace-row account-row" title={user.name}><span className="account-initial">{user.name.trim()[0]?.toUpperCase()}</span><span>{shortUserName(user.name)}</span></div>}
       </div>
     </aside>
     <main className="workspace-main">
@@ -659,12 +807,19 @@ function App() {
         {chat && <>
           {hasMessages && <><Folder size={17} aria-label={selectedProject?.name} /><h1 title={chat.title}>{chat.title}</h1></>}
           <div className="chat-access" title={chat.ownerName}>
-            {isAdmin ? <Select label="Видимость чата" value={chat.visibility ?? 'private'} disabled={pending}
+            {isAdmin && !chat.linkedToFastkore ? <Select label="Видимость чата" value={chat.visibility ?? 'private'} disabled={pending}
               onChange={visibility => void changeVisibility(visibility as 'private' | 'project')}
               options={[{ value: 'private', label: 'Личный' }, { value: 'project', label: 'Общий' }]} />
               : <span><LockKeyhole size={13} />{chat.visibility === 'project' ? 'Общий' : 'Личный'}</span>}
           </div>
+          {isAdmin && !chat.archivedAt && <button type="button" className="workspace-icon chat-archive-button" aria-label="Перенести чат в архив" title="Перенести чат в архив"
+            disabled={pending || active?.chatId === chat.id || status?.queuedRuns?.some(run => run.chatId === chat.id)} onClick={() => void archiveChat()}><Archive size={17} /></button>}
         </>}
+        {erpChatKey && <div className="related-chat-actions">
+          <button type="button" className="workspace-icon" title="Связанные чаты" aria-label="Связанные чаты" onClick={() => { setError(''); setPanel('related'); }}><History size={18} /></button>
+          <button type="button" className="workspace-icon" title="Создать новый чат по этому контексту" aria-label="Создать новый чат по этому контексту"
+            disabled={pending || relatedLoading || !newAgent || (!projectId && !canCreateProject)} onClick={() => void newChat(projectId, true)}><SquarePen size={17} /></button>
+        </div>}
         {themeButton}
       </header>
       {!embedded && chat?.erpContext && <div className="workspace-context">{chat.erpContext.entityType} / {chat.erpContext.entityId}</div>}
@@ -672,27 +827,7 @@ function App() {
       {hasMessages && chat ? <>
         <div ref={scroll} className="conversation-scroll" onScroll={() => { const el = scroll.current; if (el) stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 120; }}>
           <div className="conversation-lane conversation-history">
-            {chat.messages.map(message => <article key={message.id} className={'conversation-message is-' + message.role}>
-              {message.role === 'assistant' ? <div className="markdown"><ReactMarkdown remarkPlugins={[remarkGfm]} components={{
-                img: ({ alt }) => <span>[Изображение: {alt}]</span>,
-                a: ({ href, children }) => <a href={href} target="_blank" rel="noreferrer">{children}</a>,
-              }}>{message.text || (message.status === 'running' ? 'Работаю над вопросом…' : 'Ответ не получен.')}</ReactMarkdown></div> :
-                <div className="question-bubble">
-                  {message.authorId && message.authorId !== user.id && <small>{message.authorName ?? chat.ownerName}</small>}
-                  {message.text}
-                </div>}
-              {message.attachments.length > 0 && <div className="conversation-files">{message.attachments.map(file =>
-                message.role === 'assistant' && message.status === 'complete'
-                  ? <button type="button" key={file.id} title={'Скачать ' + file.name} onClick={() => void action(() => downloadChatFile(
-                    `/api/projects/${encodeURIComponent(projectId)}/chats/${encodeURIComponent(chat.id)}/messages/${encodeURIComponent(message.id)}/files/${encodeURIComponent(file.id)}`, file.name))}
-                    ><FileText size={16} />{file.name}</button>
-                  : <span key={file.id}><FileText size={16} />{file.name}</span>)}</div>}
-              {['error', 'cancelled', 'interrupted'].includes(message.status) && <div className="message-note">{message.status === 'error' ? 'Ошибка задания' : message.status === 'cancelled' ? 'Задание остановлено' : 'Задание прервано'}</div>}
-              <div className="message-actions">
-                <button className="workspace-icon" aria-label="Копировать сообщение" title="Копировать сообщение" onClick={() => void copyItem(message.text, message.id)}>{copied === message.id ? <Check size={14} /> : <Copy size={14} />}</button>
-                <time dateTime={message.createdAt} title={message.usage ? 'Вход: ' + message.usage.inputTokens.toLocaleString('ru-RU') + ' · Выход: ' + message.usage.outputTokens.toLocaleString('ru-RU') : undefined}>{shortDate(message.createdAt)}</time>
-              </div>
-            </article>)}
+            {renderHistory(chat, projectId)}
             <div ref={end} />
           </div>
         </div>
@@ -702,13 +837,26 @@ function App() {
         {composer}
       </div>}
     </main>
+    {panel === 'archive' && isAdmin && <ChatArchiveDialog request={api} close={closePanel} renderChat={renderHistory}
+      onRestore={project => void loadChats(project).catch(fail)} />}
+    {relatedPanelOpen && erpChatKey && <WorkspaceDialog title="Связанные чаты" className="related-chats-dialog" close={closePanel}>
+      {error && <p className="inline-error" role="alert">{error}</p>}
+      {relatedLoading ? <p className="help" role="status">Загрузка…</p> : <div className="archive-list">
+        {relatedChats?.list.map(item => <button type="button" className="workspace-row archive-row" key={item.id} aria-current={item.id === chatId ? 'page' : undefined}
+          onClick={() => { navigateToRelated(item); closePanel(); }}><span><strong>{item.title}</strong><small>{item.projectName}</small></span>
+          <time dateTime={item.updatedAt}>{shortDate(item.updatedAt)}</time></button>)}
+        {!relatedChats?.list.length && !error && <p className="help">По этой карточке или списку пока нет чатов.</p>}
+      </div>}
+      <div className="archive-actions related-dialog-actions"><button type="button" className="secondary" disabled={pending || relatedLoading || !newAgent || (!projectId && !canCreateProject)}
+        onClick={() => void newChat(projectId, true)}><SquarePen size={16} />Создать новый чат</button></div>
+    </WorkspaceDialog>}
     {panel === 'search' && <WorkspaceDialog title="Поиск" className="workspace-search" close={closePanel}>
       <input type="search" aria-label="Поиск по проектам и чатам" placeholder="Поиск по проектам и чатам" value={searchQuery} onChange={e => setSearchQuery(e.target.value)} autoFocus />
       {error && <div className="inline-error" role="alert">{error}</div>}
       <div className="search-results">
         {searchable.map(({ project, matchingChats }) => <div key={project.id}>
-          <button className="workspace-row search-project" onClick={() => { navigateTo(project.id); closePanel(); }}><Folder size={16} />{project.name}</button>
-          {matchingChats.map(item => <button key={item.id} className="workspace-row chat-row" onClick={() => { navigateTo(project.id, item.id); closePanel(); }}><span>{item.title}</span><time dateTime={item.updatedAt}>{shortDate(item.updatedAt)}</time></button>)}
+          <button className="workspace-row search-project" onClick={() => { navigateWorkspace(project.id); closePanel(); }}><Folder size={16} />{project.name}</button>
+          {matchingChats.map(item => <button key={item.id} className="workspace-row chat-row" onClick={() => { navigateWorkspace(project.id, item.id); closePanel(); }}><span>{item.title}</span><time dateTime={item.updatedAt}>{shortDate(item.updatedAt)}</time></button>)}
         </div>)}
         {searchLoading && <p className="composer-status" role="status">Загрузка…</p>}
         {!searchLoading && !searchable.length && <p className="composer-status">Ничего не найдено</p>}
@@ -733,28 +881,40 @@ function App() {
     {panel === 'settings' && isAdmin && <WorkspaceDialog title="Настройки" className="workspace-settings" close={closePanel}>
       <div className="settings-layout">
         <nav aria-label="Разделы настроек" className="settings-nav">
-          <button className="workspace-row" aria-pressed={settingsSection === 'account'} onClick={() => setSettingsSection('account')}><LockKeyhole size={16} />Учётная запись</button>
-          <button className="workspace-row" aria-pressed={settingsSection === 'team'} onClick={() => setSettingsSection('team')}><Users size={16} />Команда</button>
-          <button className="workspace-row" aria-pressed={settingsSection === 'fastkore'} onClick={() => setSettingsSection('fastkore')}><ShieldCheck size={16} />Вход из Fastkore</button>
-          <button className="workspace-row" aria-pressed={settingsSection === 'server'} onClick={() => void showServerSettings()}><Network size={16} />Сервер</button>
-          <button className="workspace-row" aria-pressed={settingsSection === 'agent'} onClick={() => {
-            setAgentInstructions(status?.settings.agentInstructions ?? DEFAULT_AGENT_INSTRUCTIONS);
-            setSettingsSection('agent');
-          }}><FileText size={16} />Инструкции агента</button>
+          {(Object.keys(settingsSections) as SettingsSection[]).map(section => {
+            const { label, icon: Icon } = settingsSections[section];
+            return <button key={section} type="button" className="workspace-row" aria-current={settingsSection === section ? 'page' : undefined}
+              onClick={() => chooseSettingsSection(section)}><Icon size={16} aria-hidden="true" />{label}</button>;
+          })}
         </nav>
-        <div className={'panel-body settings-content' + (settingsSection === 'server' ? ' settings-server' : '')}>
+        <select className="settings-section-picker" aria-label="Раздел настроек" value={settingsSection}
+          onChange={event => chooseSettingsSection(event.target.value as SettingsSection)}>
+          {Object.entries(settingsSections).map(([id, item]) => <option key={id} value={id}>{item.label}</option>)}
+        </select>
+        <section key={settingsSection} className={'panel-body settings-content' + (settingsSection === 'server' ? ' settings-server' : '')}
+          aria-labelledby="settings-section-title">
+          <div className={'settings-pane' + (settingsSection === 'agent' ? ' settings-pane-instructions' : '')}>
+          {settingsSection !== 'profiles' && <h2 id="settings-section-title">{settingsSections[settingsSection].label}</h2>}
           {error && <div className="inline-error" role="alert">{error}</div>}
           {settingsSection === 'account' && <AccountPanel request={api} renewed={saveToken} fastkore={authSource === 'fastkore'} />}
           {settingsSection === 'team' && <TeamPanel request={api} projectId={projectId} projectName={selectedProject?.name ?? ''} self={user} />}
+          {settingsSection === 'roles' && <ErpRolesPanel request={api} />}
+          {settingsSection === 'datasets' && <CorporatePanel request={api} section={settingsSection} />}
+          {settingsSection === 'profiles' && <SpecialistsPanel request={api} globalInstructions={savedInstructions} />}
+          {settingsSection === 'audit' && <AuditPanel request={api} />}
+          {settingsSection === 'usage' && <UsagePanel request={api} />}
           {settingsSection === 'fastkore' && <FastkorePanel request={api} />}
-          {settingsSection === 'agent' && <section className="setting-section">
-            <form onSubmit={e => { e.preventDefault(); void saveSettings({ agentInstructions }); }}>
-              <label htmlFor="agent-instructions">Общие инструкции агента</label>
-              <textarea id="agent-instructions" rows={14} maxLength={8000} required value={agentInstructions} onChange={e => setAgentInstructions(e.target.value)} />
-              <p className="help">Применяются ко всем чатам. Рабочая роль и специалист могут уточнять эти правила.</p>
-              <button className="primary" disabled={pending || busy || !agentInstructions.trim() || agentInstructions.trim() === (status?.settings.agentInstructions ?? DEFAULT_AGENT_INSTRUCTIONS)}>Сохранить</button>
-            </form>
-          </section>}
+          {(settingsSection === 'knowledgeFastkore' || settingsSection === 'knowledgeCompany') && <KnowledgePanel
+            section={settingsSection === 'knowledgeFastkore' ? 'fastkore' : 'company'} request={api}
+            download={url => api<Blob>(url, {}, 'blob')} dirtyChanged={setKnowledgeDirty} />}
+          {settingsSection === 'agent' && <form className="settings-instructions" onSubmit={e => { e.preventDefault(); void saveSettings({ agentInstructions }); }}>
+            <p className="help" id="agent-instructions-help">Действуют во всех чатах. Роли и агенты могут уточнять эти правила.</p>
+            <textarea id="agent-instructions" aria-labelledby="settings-section-title" aria-describedby="agent-instructions-help" maxLength={8000} required
+              value={agentInstructions} onChange={e => setInstructionsDraft(e.target.value)} />
+            <div className="settings-instructions-actions">
+              <button className="primary" disabled={pending || busy || !agentInstructions.trim() || agentInstructions.trim() === savedInstructions}>Сохранить</button>
+            </div>
+          </form>}
           {settingsSection === 'server' && <>
             {!projects.length && <section className="setting-section"><h3>История настольной версии</h3><button className="secondary w-full" disabled={pending || busy} onClick={() => void action(async () => {
               await post('/api/migrations/desktop'); setProjects(await api('/api/projects')); setStatus(await api('/api/status')); closePanel();
@@ -817,7 +977,8 @@ function App() {
             </section>
             {(diagnostics || status?.storageWarning) && <section className="setting-section"><h3>Диагностика</h3>{diagnostics && <pre className="diagnostics settings-log" tabIndex={0} aria-label="Журнал диагностики">{diagnostics}</pre>}{status?.storageWarning && <p role="status">{status.storageWarning}</p>}</section>}
           </>}
-        </div>
+          </div>
+        </section>
       </div>
     </WorkspaceDialog>}
   </div>;
