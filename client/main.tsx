@@ -2,8 +2,8 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { ArrowUp, Check, ChevronDown, ChevronRight, Copy, FileText, Folder, LoaderCircle, LockKeyhole, LogOut, Menu, Moon, Network, Plus, RefreshCw, Search, Settings2, ShieldCheck, Square, SquarePen, Sun, Terminal, Users, X } from 'lucide-react';
-import type { AgentSummary, Attachment, Chat, ChatSummary, CodexLimits, FastkoreAuthentication, ModelCatalog, ProjectSummary, Run, Settings, Status, User } from '../shared/types';
+import { ArrowUp, Bot, Check, ChevronDown, ChevronRight, Copy, EllipsisVertical, FileText, Folder, LoaderCircle, LockKeyhole, LogOut, Menu, Moon, Network, PanelLeftClose, PanelLeftOpen, Plus, RefreshCw, Search, Settings2, ShieldCheck, Square, SquarePen, Sun, Terminal, Users, X } from 'lucide-react';
+import type { AgentSummary, Attachment, Chat, ChatSummary, CodexLimits, FastkoreAuthentication, FileStorageStatus, ModelCatalog, ProjectSummary, Run, Settings, Status, User } from '../shared/types';
 import './style.css';
 import './workspace.css';
 import { AccountPanel, TeamPanel } from './AccessPanel';
@@ -11,17 +11,29 @@ import { FastkorePanel } from './FastkorePanel';
 import { parseHostTheme, webViewHost, type Theme } from './fastkore';
 import { Select } from './Select';
 import { WorkspaceDialog } from './WorkspaceDialog';
+import { ProjectFilesDialog } from './ProjectFilesDialog';
+import { ProjectAgentsDialog } from './ProjectAgentsDialog';
+import { VoiceDictation } from './VoiceDictation';
+import { DictationModelSettings } from './DictationModelSettings';
+import { DEFAULT_AGENT_INSTRUCTIONS } from '../shared/agent-instructions';
+import { fastkoreContextProblem, isFastkoreContextMessage, isFastkoreContextReset, parseFastkoreContext, type FastkoreContext } from '../shared/fastkore-context';
 
 let accessKey = sessionStorage.getItem('bridge-key') ?? '';
+const agentsUrl = (projectId: string) => projectId ? '/api/projects/' + encodeURIComponent(projectId) + '/agents' : '/api/agents';
 let browserSession = false, csrfToken = '', sessionUserId = '', authEpoch = 0;
 class ApiError extends Error { constructor(message: string, readonly status: number) { super(message); } }
-async function api<T>(url: string, init: RequestInit = {}): Promise<T> {
+async function api<T>(url: string, init: RequestInit = {}, responseType: 'json' | 'blob' = 'json'): Promise<T> {
   const epoch = authEpoch;
   const headers = new Headers(init.headers);
   if (browserSession && !['GET', 'HEAD'].includes(init.method ?? 'GET')) headers.set('X-CSRF-Token', csrfToken);
   if (!browserSession && accessKey) headers.set('Authorization', `Bearer ${accessKey}`);
   if (init.body && !(init.body instanceof FormData)) headers.set('Content-Type', 'application/json');
   const response = await fetch(url, { ...init, headers });
+  if (response.ok && responseType === 'blob') {
+    const result = await response.blob();
+    if (epoch !== authEpoch) throw new DOMException('Сеанс изменился.', 'AbortError');
+    return result as T;
+  }
   const result = await response.json();
   if (epoch !== authEpoch) throw new DOMException('Сеанс изменился.', 'AbortError');
   if (!response.ok) throw new ApiError(result.error ?? 'Не удалось выполнить запрос.', response.status);
@@ -29,6 +41,17 @@ async function api<T>(url: string, init: RequestInit = {}): Promise<T> {
   return result;
 }
 const post = <T,>(url: string, body: unknown = {}) => api<T>(url, { method: 'POST', body: JSON.stringify(body) });
+async function downloadChatFile(url: string, name: string) {
+  const contents = await api<Blob>(url, {}, 'blob');
+  const objectUrl = URL.createObjectURL(contents);
+  const link = document.createElement('a');
+  link.href = objectUrl;
+  link.download = name;
+  document.body.append(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+}
 async function copy(text: string) {
   if (navigator.clipboard && window.isSecureContext) { await navigator.clipboard.writeText(text); return; }
   // Clipboard API is unavailable on plain LAN HTTP. Keep copying usable there too.
@@ -45,21 +68,31 @@ function App() {
   const [loggedIn, setLoggedIn] = useState(false), [passwordInput, setPasswordInput] = useState(''), [loginInput, setLoginInput] = useState('');
   const [checkingSession, setCheckingSession] = useState(true), [authSource, setAuthSource] = useState<'local' | 'fastkore'>('local');
   const [erpAuth, setErpAuth] = useState<FastkoreAuthentication | null>(null);
+  const currentErpContext = useRef<{ snapshot?: FastkoreContext; problem?: string }>({});
+  const [contextProblem, setContextProblem] = useState<string>();
   const readySession = useRef<FastkoreAuthentication | null>(null);
   const [user, setUser] = useState<User | null>(null), [setupRequired, setSetupRequired] = useState(false), [setupName, setSetupName] = useState('Руководитель');
   const [status, setStatus] = useState<Status | null>(null), [projects, setProjects] = useState<ProjectSummary[]>([]), [chat, setChat] = useState<Chat | null>(null);
   const [chatLists, setChatLists] = useState<Record<string, ChatSummary[]>>({});
+  const [projectsExpanded, setProjectsExpanded] = useState(() => localStorage.getItem('bridge-projects-collapsed') !== '1');
   const [openProjects, setOpenProjects] = useState<Record<string, boolean>>({});
   const [showAll, setShowAll] = useState<Record<string, boolean>>({});
   const [projectId, setProjectId] = useState(localStorage.getItem('bridge-project') ?? ''), [chatId, setChatId] = useState(localStorage.getItem('bridge-chat') ?? '');
   const [drafts, setDrafts] = useState<Record<string, string>>({}), [files, setFiles] = useState<Record<string, Attachment[]>>({});
-  const [panel, setPanel] = useState<'settings' | 'project' | 'search' | null>(null);
-  const [settingsSection, setSettingsSection] = useState<'account' | 'team' | 'fastkore' | 'server'>('account');
+  const [panel, setPanel] = useState<'settings' | 'project' | 'project-files' | 'project-agents' | 'search' | null>(null);
+  const [projectActionTarget, setProjectActionTarget] = useState<ProjectSummary | null>(null);
+  const [settingsSection, setSettingsSection] = useState<'account' | 'team' | 'fastkore' | 'server' | 'agent'>('account');
+  const [agentInstructions, setAgentInstructions] = useState('');
   const openedFastkoreSettings = useRef(false);
   const [sidebarOpen, setSidebarOpen] = useState(false), [searchQuery, setSearchQuery] = useState(''), [searchLoading, setSearchLoading] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => localStorage.getItem('bridge-sidebar-collapsed') === '1');
   const accountMenu = useRef<HTMLDetailsElement>(null);
   const [error, setError] = useState(''), [pending, setPending] = useState(false), [copied, setCopied] = useState(''), [folderPath, setFolderPath] = useState(''), [projectName, setProjectName] = useState('');
-  const [agents, setAgents] = useState<AgentSummary[]>([]), [newAgent, setNewAgent] = useState('universal');
+  const [agentCatalog, setAgentCatalog] = useState<{ projectId: string; list: AgentSummary[] }>();
+  const [preferredAgent, setPreferredAgent] = useState('universal');
+  const agents = agentCatalog?.projectId === projectId ? agentCatalog.list : [];
+  const availableAgents = agents.filter(agent => agent.available);
+  const newAgent = (availableAgents.find(agent => agent.id === preferredAgent) ?? availableAgents[0])?.id ?? '';
   const [catalog, setCatalog] = useState<ModelCatalog | null>(null), [modelsLoading, setModelsLoading] = useState(false), [modelError, setModelError] = useState('');
   const [cliPath, setCliPath] = useState(''), [diagnostics, setDiagnostics] = useState(''), [subscription, setSubscription] = useState<Run | null>(null);
   const input = useRef<HTMLTextAreaElement>(null), fileInput = useRef<HTMLInputElement>(null), end = useRef<HTMLDivElement>(null);
@@ -76,9 +109,12 @@ function App() {
     : '';
   const canCreateProject = isAdmin || status?.canCreateProject === true;
   const canStartWithoutProject = !projectId && projects.length === 0 && canCreateProject;
-  const canStartChat = !chatId && agents.some(agent => agent.id === newAgent && agent.available)
-    && (!!selectedProject || canStartWithoutProject);
-  const canSend = !!status && !status.executionDisabled && !codexUnavailable && (chatId ? canEdit : canStartChat);
+  const currentAgent = chat ? agents.find(agent => agent.id === (chat.agentProfileId ?? 'universal')) : undefined;
+  const canAttach = canEdit && currentAgent?.available === true && currentAgent.toolIds.includes('chat-files');
+  const canReadFastkore = !!projectId && (chatId ? currentAgent : availableAgents.find(agent => agent.id === newAgent))?.toolIds.includes('fastkore') === true;
+  const canStartChat = !chatId && !!newAgent && (!!selectedProject || canStartWithoutProject);
+  const canSend = !!status && !status.executionDisabled && !codexUnavailable && (!canReadFastkore || !contextProblem) && (!attachments.length || canAttach)
+    && (chatId ? canEdit && !!currentAgent?.available : canStartChat);
   const inFastkore = embedded || (authSource === 'fastkore' && !!webViewHost());
   useEffect(() => {
     if (!loggedIn || !isAdmin || authSource !== 'local' || inFastkore || setupRequired || openedFastkoreSettings.current) return;
@@ -110,7 +146,7 @@ function App() {
   };
   async function action(work: () => Promise<void>) { setPending(true); setError(''); try { await work(); } catch (e) { fail(e); } finally { setPending(false); } }
   function saveToken(token: string) { accessKey = token; sessionStorage.setItem('bridge-key', token); }
-  function clearLogin() { authEpoch++; browserSession = false; csrfToken = ''; sessionUserId = ''; sendAttempt.current = null; setErpAuth(null); readySession.current = null; setAgents([]); setCatalog(null); setModelError(''); accessKey = ''; sessionStorage.removeItem('bridge-key'); localStorage.removeItem('bridge-project'); localStorage.removeItem('bridge-chat'); setLoggedIn(false); setUser(null); setStatus(null); setProjects([]); setChatLists({}); setOpenProjects({}); setShowAll({}); setSidebarOpen(false); setChat(null); setDrafts({}); setFiles({}); setSubscription(null); setPanel(null); setProjectId(''); setChatId(''); setDiagnostics(''); setPasswordInput(''); }
+  function clearLogin() { authEpoch++; browserSession = false; csrfToken = ''; sessionUserId = ''; sendAttempt.current = null; setErpAuth(null); currentErpContext.current = {}; setContextProblem(undefined); readySession.current = null; setAgentCatalog(undefined); setPreferredAgent('universal'); setCatalog(null); setModelError(''); accessKey = ''; sessionStorage.removeItem('bridge-key'); localStorage.removeItem('bridge-project'); localStorage.removeItem('bridge-chat'); setLoggedIn(false); setUser(null); setStatus(null); setProjects([]); setChatLists({}); setOpenProjects({}); setShowAll({}); setSidebarOpen(false); setChat(null); setDrafts({}); setFiles({}); setSubscription(null); setPanel(null); setProjectId(''); setChatId(''); setDiagnostics(''); setPasswordInput(''); }
   function logout() { void action(async () => { await post('/api/auth/logout'); clearLogin(); }); }
   useEffect(() => {
     let alive = true;
@@ -148,10 +184,21 @@ function App() {
     const receive = (event: { data: unknown }) => {
       const nextTheme = parseHostTheme(event.data);
       if (nextTheme) setErpTheme({ theme: nextTheme });
+      if (erpAuth && isFastkoreContextMessage(event.data) && event.data.version === 1) {
+        if (isFastkoreContextReset(event.data)) {
+          currentErpContext.current = {};
+          setContextProblem(undefined);
+          return;
+        }
+        const snapshot = parseFastkoreContext(event.data);
+        const problem = snapshot ? fastkoreContextProblem(snapshot) : 'Fastkore передал некорректный снимок. Откройте помощника из нужной карточки или списка.';
+        currentErpContext.current = { snapshot: snapshot ?? undefined, problem };
+        setContextProblem(problem);
+      }
     };
     host.addEventListener('message', receive);
     return () => host.removeEventListener('message', receive);
-  }, [inFastkore]);
+  }, [inFastkore, erpAuth]);
   useEffect(() => {
     if (inFastkore && erpTheme) webViewHost()?.postMessage({ type: 'fastkore.ui.applied', version: 1, theme: erpTheme.theme });
   }, [inFastkore, erpTheme]);
@@ -206,13 +253,18 @@ function App() {
     async function refresh() {
       try {
         const projectAtStart = selected.current.projectId;
-        const [state, list, allowedAgents] = await Promise.all([api<Status>('/api/status'), api<ProjectSummary[]>('/api/projects'), api<AgentSummary[]>('/api/agents')]);
+        const [state, list] = await Promise.all([api<Status>('/api/status'), api<ProjectSummary[]>('/api/projects')]);
         if (disposed) return;
-        setStatus(state); setUser(state.user); setAgents(allowedAgents); setNewAgent(old => allowedAgents.some(a => a.id === old && a.available) ? old : allowedAgents.find(a => a.available)?.id ?? '');
+        setStatus(state); setUser(state.user);
         const activeProjectExists = list.some(p => p.id === selected.current.projectId);
         if (activeProjectExists || projectAtStart === selected.current.projectId) setProjects(list);
         if (!activeProjectExists && projectAtStart === selected.current.projectId && (projectAtStart || list.length)) navigateTo(list[0]?.id ?? '');
         const p = selected.current.projectId;
+        if (!p || list.some(project => project.id === p)) {
+          const allowedAgents = await api<AgentSummary[]>(agentsUrl(p));
+          if (disposed || selected.current.projectId !== p) return;
+          setAgentCatalog({ projectId: p, list: allowedAgents });
+        }
         const previousChat = selected.current.chatId;
         if (p && list.some(project => project.id === p)) {
           const conversations = await api<ChatSummary[]>(`/api/projects/${p}/chats`); if (disposed || selected.current.projectId !== p) return;
@@ -272,9 +324,19 @@ function App() {
       if (selected.current.projectId === p && selected.current.chatId === c) setChat(updated);
     });
   }
-  useEffect(() => { if (!loggedIn || !user || setupRequired || panel) return; let alive = true; api<AgentSummary[]>('/api/agents').then(list => { if (alive) { setAgents(list); setNewAgent(old => list.some(a => a.id === old && a.available) ? old : list.find(a => a.available)?.id ?? ''); } }).catch(fail); return () => { alive = false; }; }, [loggedIn, !!user, setupRequired, user?.roleId, panel]);
+  useEffect(() => {
+    if (!loggedIn || !user || setupRequired || panel || (projectId && !selectedProject)) return;
+    let alive = true;
+    api<AgentSummary[]>(agentsUrl(projectId)).then(list => {
+      if (alive) setAgentCatalog({ projectId, list });
+    }).catch(error => { if (alive) fail(error); });
+    return () => { alive = false; };
+  }, [loggedIn, !!user, setupRequired, user?.roleId, panel, projectId, !!selectedProject]);
   async function createChat(project: string) {
-    const created = await post<Chat>(`/api/projects/${project}/chats`, { agentProfileId: newAgent });
+    const choices = project === projectId ? availableAgents : (await api<AgentSummary[]>(agentsUrl(project))).filter(agent => agent.available);
+    const agent = choices.find(item => item.id === newAgent) ?? choices[0];
+    if (!agent) throw new Error('В этом проекте вам пока не доступен ни один агент.');
+    const created = await post<Chat>(`/api/projects/${project}/chats`, { agentProfileId: agent.id });
     const { id, title, updatedAt, ownerId, ownerName, visibility, messages } = created;
     const summary: ChatSummary = { id, title, updatedAt, ownerId, ownerName, visibility, messageCount: messages.length };
     setChatLists(old => ({ ...old, [project]: [summary, ...(old[project] ?? []).filter(item => item.id !== id)] }));
@@ -282,7 +344,7 @@ function App() {
   }
   async function newChat(project = projectId) {
     if (!project) { if (canCreateProject) setPanel('project'); return; }
-    if (!newAgent || pending) return;
+    if (pending || (project === projectId && !newAgent)) return;
     await action(async () => {
       const created = await createChat(project);
       if (!selected.current.chatId) {
@@ -301,9 +363,10 @@ function App() {
       await loadChats(p);
     });
   }
-  async function send() {
-    const text = draft.trim();
-    if (!canSend || !text || pending || sending.current) return;
+  async function send(override?: string) {
+    const text = (override ?? draft).trim();
+    const { snapshot, problem } = canReadFastkore && projectId ? currentErpContext.current : {};
+    if (!canSend || problem || !text || pending || sending.current) return;
     const attachmentIds = attachments.map(a => a.id);
     sending.current = true;
     try {
@@ -329,11 +392,11 @@ function App() {
             setChat(created);
           }
         }
-        const content = JSON.stringify({ text, attachmentIds });
+        const content = JSON.stringify({ text, attachmentIds, fastkoreContext: snapshot });
         const previous = sendAttempt.current;
         const id = previous?.chatId === conversation && previous.content === content ? previous.requestId : requestId();
         sendAttempt.current = { chatId: conversation, content, requestId: id };
-        const run = await post<Run>(`/api/projects/${project}/chats/${conversation}/messages`, { text, attachmentIds, clientRequestId: id });
+        const run = await post<Run>(`/api/projects/${project}/chats/${conversation}/messages`, { text, attachmentIds, clientRequestId: id, fastkoreContext: snapshot });
         sendAttempt.current = null;
         setDrafts(old => old[conversation]?.trim() === text ? { ...old, [conversation]: '' } : old);
         setFiles(old => ({ ...old, [conversation]: (old[conversation] ?? []).filter(a => !attachmentIds.includes(a.id)) }));
@@ -345,7 +408,7 @@ function App() {
     }
   }
   async function upload(list: FileList | null) {
-    if (!list || !projectId || !chatId) return;
+    if (!list || !projectId || !chatId || !canAttach) return;
     const p = projectId, c = chatId;
     await action(async () => {
       if (attachments.length + list.length > 8) throw new Error('К вопросу можно прикрепить до 8 файлов.');
@@ -369,7 +432,7 @@ function App() {
     setCliPath(status?.settings.cliPath || status?.cli?.path || '');
     if (!loadingSettings.current) { loadingSettings.current = true; try { const log = await api<{ text: string }>('/api/diagnostics'); setDiagnostics(log.text); } catch (e) { fail(e); } finally { loadingSettings.current = false; } }
   }
-  async function saveSettings(next: Partial<Settings>) { await action(async () => { const settings = await api<Settings>('/api/settings', { method: 'PATCH', body: JSON.stringify(next) }); setStatus(old => old ? { ...old, settings } : old); }); }
+  async function saveSettings(next: Partial<Settings>) { await action(async () => { const settings = await api<Settings>('/api/settings', { method: 'PATCH', body: JSON.stringify(next) }); setStatus(old => old ? { ...old, settings, dictationEnabled: !!old.dictationAvailable && settings.dictationEnabled !== false } : old); }); }
 
   const themeButton = !inFastkore && <button className="workspace-icon theme-toggle" onClick={toggleTheme}
     aria-label={theme === 'dark' ? 'Включить светлую тему' : 'Включить тёмную тему'}
@@ -414,8 +477,11 @@ function App() {
   });
   const draftEditable = !chatId || canEdit;
   const canCreate = !!selectedProject && !!newAgent && !pending;
-  const currentAgent = agents.find(agent => agent.id === chat?.agentProfileId);
-  const writeMode = !status?.isolatedCodex && !!status?.settings.allowWrite && !!currentAgent?.allowWrite;
+  const canDictate = status?.dictationEnabled && (chatId
+    ? canEdit && agents.some(agent => agent.id === (chat?.agentProfileId ?? 'universal') && agent.available)
+    : canStartChat);
+  const writeMode = (!status?.isolatedCodex || status.workerFilesAvailable) && !!status?.settings.allowWrite
+    && !!currentAgent?.allowWrite && currentAgent.toolIds.includes('chat-files');
   const catalogOptions = catalog?.models.map(model => ({ value: model.id, label: model.name })) ?? [];
   const chatModel = currentAgent?.model ? '' : chat?.model ?? '';
   const defaultChatModel = modelName(currentAgent?.model || status?.settings.model || catalog?.models.find(model => model.isDefault)?.id);
@@ -434,9 +500,13 @@ function App() {
   const composer = <div className="bridge-composer">
     {chat && !canEdit && <p className="composer-status">Чат доступен для чтения</p>}
     {codexNotice && draftEditable && <p className="composer-status" role="status">{codexNotice} Можно подготовить черновик.</p>}
+    {canReadFastkore && contextProblem && <p className="composer-status" role="alert">{contextProblem}</p>}
+    {!!attachments.length && !canAttach && <p className="composer-status" role="status">Удалите вложения из черновика. Агенту сейчас не разрешено их читать.</p>}
+    {canReadFastkore && inFastkore && status?.fastkoreToolsStatus === 'reauth' && <p className="composer-status" role="status">Для доступа к ERP откройте помощника из Fastkore заново.</p>}
     {!projectId && status && !canCreateProject && !projects.length && <p className="composer-status">Для отправки администратор должен дать вам доступ к проекту.</p>}
     {canStartChat && canStartWithoutProject && <p className="composer-status">Первое сообщение создаст проект «Личные чаты».</p>}
-    {!chatId && status && (projectId || canCreateProject) && !canStartChat && !agents.some(agent => agent.available) && <p className="composer-status">Для нового чата нужен доступ к специалисту.</p>}
+    {agentCatalog?.projectId === projectId && chat && canEdit && !currentAgent?.available && <p className="composer-status">{currentAgent?.unavailableReason ?? 'Агент этого чата вам сейчас недоступен.'}</p>}
+    {agentCatalog?.projectId === projectId && !chatId && status && (projectId || canCreateProject) && !availableAgents.length && <p className="composer-status">Для нового чата нужен доступ к агенту проекта.</p>}
     {(status?.queuedRuns ?? []).filter(run => run.chatId === chatId).map(run => <div className="bridge-progress" key={run.id}>
       <LoaderCircle size={14} className="spin" /><span>В очереди</span>
       <button onClick={() => void action(async () => { await post('/api/runs/' + run.id + '/cancel'); })}>Отменить</button>
@@ -461,7 +531,7 @@ function App() {
         onKeyDown={e => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); void send(); } }} />
       <div className="bridge-editor-controls">
         <input type="file" multiple ref={fileInput} onChange={e => void upload(e.target.files)} />
-        <button className="workspace-icon" title={status?.isolatedCodex ? 'Исполнитель принимает текстовые сообщения' : 'Прикрепить файл'} aria-label="Прикрепить файл" onClick={() => fileInput.current?.click()} disabled={status?.isolatedCodex || !canEdit || pending}><Plus size={19} /></button>
+        <button className="workspace-icon" title={canAttach ? 'Прикрепить файл' : 'Агенту не разрешено читать вложения'} aria-label="Прикрепить файл" onClick={() => fileInput.current?.click()} disabled={!canAttach || pending}><Plus size={19} /></button>
         <span className={'access-mode' + (writeMode ? ' write' : '')} title={currentAgent?.name}><ShieldCheck size={16} />{writeMode ? 'Запись разрешена' : 'Только чтение'}</span>
         <div className="composer-actions">
           <LimitsButton request={api} unavailableReason={codexNotice} revision={status?.codexLimitsRevision} />
@@ -470,6 +540,22 @@ function App() {
               disabled={!!currentAgent?.model || !chat || !(isAdmin || chat.ownerId === user.id) || busy || pending || modelsLoading || (!catalog && !chat.model)}
               onChange={model => void changeModel(model)} title={modelError || undefined} />
           </div>
+          {canDictate && <VoiceDictation key={JSON.stringify([user.id, projectId, chatId, chat?.agentProfileId ?? newAgent])} canSend={canSend && !pending}
+            transcribe={async (wav, signal) => {
+              const data = new FormData();
+              data.append('file', wav, 'dictation.wav');
+              const query = new URLSearchParams();
+              if (projectId) query.set('projectId', projectId);
+              if (chatId) query.set('chatId', chatId);
+              else query.set('agentProfileId', newAgent);
+              return (await api<{ text: string }>('/api/dictation?' + query, { method: 'POST', body: data, signal })).text;
+            }} onText={(text, shouldSend) => {
+              const previous = input.current?.value ?? draft;
+              const content = previous + (previous && !/\s$/.test(previous) ? ' ' : '') + text;
+              setDrafts(old => ({ ...old, [chatId]: content }));
+              if (shouldSend) void send(content);
+              if (!shouldSend) requestAnimationFrame(() => input.current?.focus());
+            }} onError={fail} />}
           <button className="bridge-send" aria-label="Отправить вопрос" title={codexNotice || 'Отправить · Ctrl+Enter'} onClick={() => void send()} disabled={!canSend || !draft.trim() || pending}><ArrowUp size={18} /></button>
         </div>
       </div>
@@ -479,19 +565,29 @@ function App() {
 
   return <div className="workspace-shell" data-theme={theme}>
     {sidebarOpen && <button className="workspace-scrim" aria-label="Закрыть навигацию" onClick={() => setSidebarOpen(false)} />}
-    <aside className={'workspace-sidebar' + (sidebarOpen ? ' is-open' : '')} aria-label="Боковая панель">
-      <div className="workspace-brand"><span className="workspace-mark"><Terminal size={16} /></span><b>Agentic Platform</b></div>
+    <aside id="workspace-sidebar" className={'workspace-sidebar' + (sidebarOpen ? ' is-open' : '') + (sidebarCollapsed ? ' is-collapsed' : '')} aria-label="Боковая панель">
+      <div className="workspace-brand"><span className="workspace-mark"><Terminal size={16} /></span><b>Agentic Platform</b>
+        <button type="button" className="workspace-icon workspace-mobile-close" aria-label="Закрыть боковую панель" onClick={() => setSidebarOpen(false)}><X size={18} /></button>
+      </div>
       <div className="workspace-start">
         <button className="workspace-row new-conversation" onClick={() => void newChat()} disabled={pending || (projectId ? !newAgent : !canCreateProject)}><SquarePen size={17} />Новый чат</button>
-        {isAdmin && agents.filter(agent => agent.available).length > 1 && <Select className="workspace-agent" label="Специалист нового чата"
-          value={newAgent} onChange={setNewAgent} options={agents.filter(agent => agent.available).map(agent => ({ value: agent.id, label: agent.name }))} />}
+        {availableAgents.length > 1 && <Select className="workspace-agent" label="Агент нового чата"
+          value={newAgent} onChange={setPreferredAgent} options={availableAgents.map(agent => ({ value: agent.id, label: agent.name }))} />}
+        {availableAgents.length === 1 && <p className="workspace-agent-current"><Bot size={15} aria-hidden="true" />{availableAgents[0].name}</p>}
       </div>
       <div className="projects-heading">
-        <b>Проекты</b>
+        <button type="button" className="workspace-row projects-toggle" aria-expanded={projectsExpanded} aria-controls="workspace-projects" onClick={() => {
+          const expanded = !projectsExpanded;
+          setProjectsExpanded(expanded);
+          localStorage.setItem('bridge-projects-collapsed', expanded ? '0' : '1');
+        }}>
+          {projectsExpanded ? <ChevronDown size={13} aria-hidden="true" /> : <ChevronRight size={13} aria-hidden="true" />}
+          <span>Проекты</span>
+        </button>
         <button className="workspace-icon" onClick={openSearch} aria-label="Найти проект или чат" title="Поиск"><Search size={16} /></button>
         {canCreateProject && <button className="workspace-icon" onClick={() => setPanel('project')} aria-label="Добавить проект" title="Добавить проект"><Plus size={18} /></button>}
       </div>
-      <nav className="project-tree" aria-label="Проекты и чаты">
+      <nav id="workspace-projects" className="project-tree" aria-label="Проекты и чаты" hidden={!projectsExpanded}>
         {projects.map(project => {
           const open = openProjects[project.id] ?? project.id === projectId;
           const list = chatLists[project.id] ?? [];
@@ -499,9 +595,33 @@ function App() {
           return <div key={project.id} className="project-group">
             <div className="project-line">
               <button className="workspace-row project-row" onClick={() => toggleProject(project.id)} aria-expanded={open} aria-controls={'chats-' + project.id} title={project.name}>
-                <Folder size={17} /><span>{project.name}</span>{open ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+                <Folder size={14} /><span>{project.name}</span>{open ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
               </button>
-              <button className="workspace-icon project-new-chat" title="Новый чат в проекте" aria-label={'Новый чат в проекте ' + project.name} disabled={!newAgent || pending} onClick={() => void newChat(project.id)}><Plus size={16} /></button>
+              <button className="workspace-icon project-new-chat" title="Новый чат в проекте" aria-label={'Новый чат в проекте ' + project.name} disabled={pending || (project.id === projectId && !newAgent)} onClick={() => void newChat(project.id)}><Plus size={16} /></button>
+              {isAdmin && authSource === 'local' && !inFastkore && <details className="project-actions" onBlur={e => {
+                if (!e.currentTarget.contains(e.relatedTarget)) e.currentTarget.open = false;
+              }} onKeyDown={e => {
+                if (e.key === 'Escape') {
+                  e.currentTarget.open = false;
+                  e.currentTarget.querySelector('summary')?.focus();
+                }
+              }}>
+                <summary className="workspace-icon" aria-label={'Действия проекта ' + project.name} title="Действия проекта"><EllipsisVertical size={16} /></summary>
+                <div className="project-actions-menu">
+                  <button className="workspace-row" onClick={e => {
+                    const menu = e.currentTarget.closest('details');
+                    if (menu) menu.open = false;
+                    setProjectActionTarget(project);
+                    setPanel('project-files');
+                  }}><FileText size={15} />Файлы проекта</button>
+                  <button className="workspace-row" onClick={e => {
+                    const menu = e.currentTarget.closest('details');
+                    if (menu) menu.open = false;
+                    setProjectActionTarget(project);
+                    setPanel('project-agents');
+                  }}><Bot size={15} />Агенты проекта</button>
+                </div>
+              </details>}
             </div>
             {open && <div className="project-chat-list" id={'chats-' + project.id}>
               {visible.map(item => <button key={item.id} className="workspace-row chat-row" aria-current={item.id === chatId ? 'page' : undefined}
@@ -527,7 +647,15 @@ function App() {
     </aside>
     <main className="workspace-main">
       <header className="workspace-top">
-        <button className="workspace-icon workspace-mobile-toggle" onClick={() => setSidebarOpen(true)} aria-label="Открыть проекты"><Menu size={20} /></button>
+        <button type="button" className="workspace-icon workspace-sidebar-toggle" aria-controls="workspace-sidebar" aria-expanded={!sidebarCollapsed}
+          aria-label={sidebarCollapsed ? 'Развернуть боковую панель' : 'Свернуть боковую панель'}
+          title={sidebarCollapsed ? 'Развернуть боковую панель' : 'Свернуть боковую панель'} onClick={() => {
+            const collapsed = !sidebarCollapsed;
+            setSidebarCollapsed(collapsed);
+            localStorage.setItem('bridge-sidebar-collapsed', collapsed ? '1' : '0');
+          }}>{sidebarCollapsed ? <PanelLeftOpen size={18} /> : <PanelLeftClose size={18} />}</button>
+        <button type="button" className="workspace-icon workspace-mobile-toggle" onClick={() => setSidebarOpen(true)}
+          aria-label="Открыть проекты" aria-controls="workspace-sidebar" aria-expanded={sidebarOpen}><Menu size={20} /></button>
         {chat && <>
           {hasMessages && <><Folder size={17} aria-label={selectedProject?.name} /><h1 title={chat.title}>{chat.title}</h1></>}
           <div className="chat-access" title={chat.ownerName}>
@@ -553,7 +681,12 @@ function App() {
                   {message.authorId && message.authorId !== user.id && <small>{message.authorName ?? chat.ownerName}</small>}
                   {message.text}
                 </div>}
-              {message.attachments.length > 0 && <div className="conversation-files">{message.attachments.map(file => <span key={file.id}><FileText size={16} />{file.name}</span>)}</div>}
+              {message.attachments.length > 0 && <div className="conversation-files">{message.attachments.map(file =>
+                message.role === 'assistant' && message.status === 'complete'
+                  ? <button type="button" key={file.id} title={'Скачать ' + file.name} onClick={() => void action(() => downloadChatFile(
+                    `/api/projects/${encodeURIComponent(projectId)}/chats/${encodeURIComponent(chat.id)}/messages/${encodeURIComponent(message.id)}/files/${encodeURIComponent(file.id)}`, file.name))}
+                    ><FileText size={16} />{file.name}</button>
+                  : <span key={file.id}><FileText size={16} />{file.name}</span>)}</div>}
               {['error', 'cancelled', 'interrupted'].includes(message.status) && <div className="message-note">{message.status === 'error' ? 'Ошибка задания' : message.status === 'cancelled' ? 'Задание остановлено' : 'Задание прервано'}</div>}
               <div className="message-actions">
                 <button className="workspace-icon" aria-label="Копировать сообщение" title="Копировать сообщение" onClick={() => void copyItem(message.text, message.id)}>{copied === message.id ? <Check size={14} /> : <Copy size={14} />}</button>
@@ -593,6 +726,10 @@ function App() {
         <button className="primary w-full" disabled={pending}>{folderPath.trim() && isAdmin ? 'Подключить папку' : 'Создать проект'}</button>
       </form>
     </WorkspaceDialog>}
+    {panel === 'project-files' && projectActionTarget && isAdmin && authSource === 'local' && !inFastkore &&
+      <ProjectFilesDialog key={projectActionTarget.id} project={projectActionTarget} request={api} download={url => api<Blob>(url, {}, 'blob')} close={closePanel} />}
+    {panel === 'project-agents' && projectActionTarget && isAdmin && authSource === 'local' && !inFastkore &&
+      <ProjectAgentsDialog key={projectActionTarget.id} project={projectActionTarget} request={api} close={closePanel} />}
     {panel === 'settings' && isAdmin && <WorkspaceDialog title="Настройки" className="workspace-settings" close={closePanel}>
       <div className="settings-layout">
         <nav aria-label="Разделы настроек" className="settings-nav">
@@ -600,12 +737,24 @@ function App() {
           <button className="workspace-row" aria-pressed={settingsSection === 'team'} onClick={() => setSettingsSection('team')}><Users size={16} />Команда</button>
           <button className="workspace-row" aria-pressed={settingsSection === 'fastkore'} onClick={() => setSettingsSection('fastkore')}><ShieldCheck size={16} />Вход из Fastkore</button>
           <button className="workspace-row" aria-pressed={settingsSection === 'server'} onClick={() => void showServerSettings()}><Network size={16} />Сервер</button>
+          <button className="workspace-row" aria-pressed={settingsSection === 'agent'} onClick={() => {
+            setAgentInstructions(status?.settings.agentInstructions ?? DEFAULT_AGENT_INSTRUCTIONS);
+            setSettingsSection('agent');
+          }}><FileText size={16} />Инструкции агента</button>
         </nav>
         <div className={'panel-body settings-content' + (settingsSection === 'server' ? ' settings-server' : '')}>
           {error && <div className="inline-error" role="alert">{error}</div>}
           {settingsSection === 'account' && <AccountPanel request={api} renewed={saveToken} fastkore={authSource === 'fastkore'} />}
           {settingsSection === 'team' && <TeamPanel request={api} projectId={projectId} projectName={selectedProject?.name ?? ''} self={user} />}
           {settingsSection === 'fastkore' && <FastkorePanel request={api} />}
+          {settingsSection === 'agent' && <section className="setting-section">
+            <form onSubmit={e => { e.preventDefault(); void saveSettings({ agentInstructions }); }}>
+              <label htmlFor="agent-instructions">Общие инструкции агента</label>
+              <textarea id="agent-instructions" rows={14} maxLength={8000} required value={agentInstructions} onChange={e => setAgentInstructions(e.target.value)} />
+              <p className="help">Применяются ко всем чатам. Рабочая роль и специалист могут уточнять эти правила.</p>
+              <button className="primary" disabled={pending || busy || !agentInstructions.trim() || agentInstructions.trim() === (status?.settings.agentInstructions ?? DEFAULT_AGENT_INSTRUCTIONS)}>Сохранить</button>
+            </form>
+          </section>}
           {settingsSection === 'server' && <>
             {!projects.length && <section className="setting-section"><h3>История настольной версии</h3><button className="secondary w-full" disabled={pending || busy} onClick={() => void action(async () => {
               await post('/api/migrations/desktop'); setProjects(await api('/api/projects')); setStatus(await api('/api/status')); closePanel();
@@ -615,7 +764,7 @@ function App() {
             </section>
             <section className="setting-section"><h3>Codex CLI</h3>
               <p className="settings-status">{status?.cli?.authentication === 'chatgpt' ? 'Подключён через ChatGPT' : status?.cli?.authentication === 'api-key' ? 'API-ключ · выполнение отключено' : 'Codex не подключён'}</p>
-              {status?.isolatedCodex ? <p className="help">Отдельный исполнитель · текстовые чаты</p>
+              {status?.isolatedCodex ? <p className="help">Отдельный исполнитель</p>
                 : <><label htmlFor="cli-path">Путь к Codex CLI</label><input id="cli-path" value={cliPath} onChange={e => setCliPath(e.target.value)} placeholder="Автоопределение" disabled={busy} /></>}
               <div className="settings-actions">
                 {!status?.isolatedCodex && <button className="secondary" disabled={pending || busy} onClick={() => void saveSettings({ cliPath: cliPath.trim() })}>Сохранить</button>}
@@ -640,6 +789,32 @@ function App() {
               <Toggle checked={status?.settings.allowWrite ?? false} disabled={busy || pending} title="Разрешить запись в проект" onChange={allowWrite => void saveSettings({ allowWrite })} />
               <Toggle checked={status?.settings.includePreviews ?? true} disabled={busy || pending} title="Добавлять выдержки из документов" onChange={includePreviews => void saveSettings({ includePreviews })} />
             </section>}
+            {status?.workerFilesAvailable && authSource === 'local' && !inFastkore && <section className="setting-section">
+              <h3>Рабочая папка агента</h3>
+              <Toggle checked={status.settings.allowWrite} disabled={busy || pending}
+                title="Разрешить запись в рабочую папку" onChange={allowWrite => void saveSettings({ allowWrite })} />
+              <p className="help">Запись также должна быть разрешена в профиле специалиста. Готовые файлы можно скачать из чата.</p>
+            </section>}
+            {status?.fileStorage && authSource === 'local' && !inFastkore && <section className="setting-section">
+              <h3>Хранилище файлов</h3>
+              <label htmlFor="file-storage">Куда сохранять новые файлы</label>
+              <Select id="file-storage" value={status.fileStorage.provider} disabled={pending}
+                options={[
+                  { value: 'local', label: 'Локальный диск' },
+                  { value: 's3', label: 'S3 / MinIO', disabled: !status.fileStorage.s3Configured },
+                ]}
+                onChange={provider => void action(async () => {
+                  const fileStorage = await api<FileStorageStatus>('/api/settings/file-storage', { method: 'PATCH', body: JSON.stringify({ provider }) });
+                  setStatus(current => current ? { ...current, fileStorage } : current);
+                })} />
+              <p className="help">{status.fileStorage.s3Configured
+                ? 'Ранее загруженные файлы остаются в своём хранилище.'
+                : 'S3 пока не настроен на сервере.'}</p>
+            </section>}
+            <section className="setting-section">
+              <Toggle checked={!!status?.dictationEnabled} disabled={!status?.dictationAvailable || busy || pending} title="Использовать голос" onChange={dictationEnabled => void saveSettings({ dictationEnabled })} />
+              {status?.dictationAvailable ? <DictationModelSettings request={api} /> : <p className="help">Сервис распознавания речи не настроен.</p>}
+            </section>
             {(diagnostics || status?.storageWarning) && <section className="setting-section"><h3>Диагностика</h3>{diagnostics && <pre className="diagnostics settings-log" tabIndex={0} aria-label="Журнал диагностики">{diagnostics}</pre>}{status?.storageWarning && <p role="status">{status.storageWarning}</p>}</section>}
           </>}
         </div>

@@ -35,6 +35,7 @@ HTTP-маршруты обслуживают веб-интерфейс. Для �
 | POST | /api/cli/check | Версия CLI и login status, без запроса к модели |
 | POST | /api/subscription/check | Пробный запрос через ChatGPT; 202 с заданием |
 | PATCH | /api/settings | cliPath, allowWrite, includePreviews, model |
+| PATCH | /api/settings/file-storage | Локальный администратор выбирает `{provider: "local" \| "s3"}` для новых загрузок и результатов |
 | GET | /api/diagnostics | Краткий обезличенный журнал |
 | GET | /api/projects | [{id, name, directory, chatCount}] |
 | POST | /api/projects | Подключить папку сервера: {directory, name?} |
@@ -45,6 +46,9 @@ HTTP-маршруты обслуживают веб-интерфейс. Для �
 | GET | /api/projects/{projectId}/chats/{chatId}/messages | Сообщения чата |
 | POST | /api/projects/{projectId}/chats/{chatId}/messages | Отправить вопрос; 202 с заданием |
 | POST | /api/projects/{projectId}/attachments | multipart/form-data, один файл в поле file; 201 |
+| GET, POST | /api/projects/{projectId}/files | Список и загрузка файлов проекта для локального администратора |
+| GET, DELETE | /api/projects/{projectId}/files/{fileId} | Локальный администратор скачивает или удаляет файл проекта |
+| GET | /api/projects/{projectId}/chats/{chatId}/messages/{messageId}/files/{fileId} | Скачать готовый файл агента при наличии доступа к чату |
 | GET | /api/runs/{runId} | Задание, состояние, response/error/usage |
 | POST | /api/runs/{runId}/cancel | Отменить выполняемое задание |
 | POST | /api/migrations/desktop | Импорт старой истории сервера в пустое пространство |

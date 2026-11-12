@@ -5,9 +5,10 @@ import path from 'node:path';
 import { createInterface } from 'node:readline';
 import { BridgeError, redact } from './store.js';
 import type { CliInfo, CodexLimits, LimitWindow, ModelCatalog, ModelOption, Usage } from '../shared/types.js';
+import type { CodexTools } from './codex-tools.js';
 
 export interface CodexEvent { kind: 'session' | 'message' | 'progress' | 'usage'; text?: string; usage?: Usage }
-export interface CodexRequest { cliPath: string; workspace: string; prompt: string; sessionId?: string; allowWrite: boolean; ephemeral?: boolean; model?: string; reasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh' }
+export interface CodexRequest { cliPath: string; workspace: string; prompt: string; developerInstructions?: string; tools?: CodexTools; sessionId?: string; allowWrite: boolean; workDirectoryId?: string; ephemeral?: boolean; model?: string; reasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh' }
 export interface CodexResult { sessionId?: string; response: string; usage?: Usage }
 export interface CodexRunner { readonly isolated?: boolean; inspect(cliPath: string, signal?: AbortSignal): Promise<CliInfo>; listModels?(cliPath: string): Promise<ModelCatalog>; readLimits?(cliPath: string): Promise<CodexLimits | null>; run(request: CodexRequest, onEvent: (event: CodexEvent) => Promise<void>, signal: AbortSignal): Promise<CodexResult> }
 type RateWindow = { usedPercent?: number; windowDurationMins?: number | null; resetsAt?: number | null };
@@ -27,11 +28,25 @@ function rateWindow(window?: RateWindow | null): LimitWindow[] {
   }];
 }
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+function workerWriteConfig(workspace: string) {
+  return ['-c', 'default_permissions="bridge-job"', '-c', `permissions.bridge-job.filesystem={":root"="deny", ${JSON.stringify(workspace)}="write"}`,
+    '-c', 'features.shell_tool=true'];
+}
+
 export function buildArguments(r: CodexRequest, mode: 'local' | 'worker' = 'local') {
   const sandbox = mode === 'worker'
-    ? ['--ignore-user-config', '--ignore-rules']
+    ? ['--ignore-user-config', '--ignore-rules', ...(r.allowWrite ? workerWriteConfig(r.workspace) : [])]
     : ['--sandbox', r.allowWrite ? 'workspace-write' : 'read-only'];
   const args = ['-a', 'never', '-c', 'model_provider="openai"', 'exec', ...sandbox, '--cd', path.resolve(r.workspace), '--skip-git-repo-check', '--json', '--color', 'never'];
+  if (r.developerInstructions) {
+    const instructions = r.developerInstructions.replace(/[\ud800-\udfff]/gu, '\ufffd');
+    const setting = 'developer_instructions=' + JSON.stringify(instructions).replace(/\x7f/g, '\\u007f');
+    const tooLong = process.platform === 'win32'
+      ? setting.length + (setting.match(/[\\"]/g)?.length ?? 0) > 30_000
+      : Buffer.byteLength(setting) > 120_000;
+    if (tooLong) throw new BridgeError('Общие инструкции и правила роли вместе слишком длинные для запуска Codex.');
+    args.push('-c', setting);
+  }
   if (r.model) { if (!/^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,127}$/.test(r.model)) throw new BridgeError('Некорректный идентификатор модели.'); args.push('--model', r.model); }
   if (r.reasoningEffort) { if (!['low', 'medium', 'high', 'xhigh'].includes(r.reasoningEffort)) throw new BridgeError('Некорректный уровень рассуждения.'); args.push('-c', `model_reasoning_effort="${r.reasoningEffort}"`); }
   if (r.ephemeral) args.push('--ephemeral');
@@ -103,16 +118,16 @@ export class CodexClient implements CodexRunner {
     const status = await this.capture(cliPath, ['login', 'status'], signal);
     return { path: cliPath, version: version.text.trim(), authentication: authentication(status.text, status.code), status: status.text.trim() };
   }
-  private appServer(cliPath: string) {
-    const child = this.start(cliPath, ['-c', 'model_provider="openai"', 'app-server', '--listen', 'stdio://']);
+  private appServer(cliPath: string, experimental = false, timeout = 25_000, config: string[] = []) {
+    const child = this.start(cliPath, ['-c', 'model_provider="openai"', ...config, 'app-server', '--listen', 'stdio://']);
     let timedOut = false;
     const closed = new Promise<void>((resolve, reject) => { child.once('error', reject); child.once('close', () => resolve()); });
     void closed.catch(() => {});
     child.stderr.on('data', () => {});
     child.stdin.on('error', () => {});
     const send = (message: unknown) => child.stdin.write(JSON.stringify(message) + '\n');
-    const timer = setTimeout(() => { timedOut = true; void killTree(child); }, 25_000);
-    send({ id: 1, method: 'initialize', params: { clientInfo: { name: 'codex_chat_bridge', version: '0.5.0' }, capabilities: { experimentalApi: false } } });
+    const timer = setTimeout(() => { timedOut = true; void killTree(child); }, timeout);
+    send({ id: 1, method: 'initialize', params: { clientInfo: { name: 'codex_chat_bridge', version: '0.5.0' }, capabilities: { experimentalApi: experimental } } });
     return {
       lines: createInterface({ input: child.stdout, crlfDelay: Infinity }),
       send,
@@ -181,6 +196,10 @@ export class CodexClient implements CodexRunner {
   }
   async run(request: CodexRequest, onEvent: (event: CodexEvent) => Promise<void>, signal: AbortSignal) {
     signal.throwIfAborted();
+    if (request.tools) {
+      if (this.mode !== 'worker') throw new BridgeError('Инструменты Fastkore доступны только в изолированном исполнителе.', 403);
+      return this.runWithTools(request, request.tools, onEvent, signal);
+    }
     const child = this.start(request.cliPath, buildArguments(request, this.mode), request.workspace);
     let stderr = '', response = '', sessionId = request.sessionId, usage: Usage | undefined, completed = false, failed = false, error = '';
     const seen = new Set<string>();
@@ -218,5 +237,73 @@ export class CodexClient implements CodexRunner {
       if (!sessionId && !request.ephemeral) throw new BridgeError('Codex не вернул ID сессии.', 502);
       return { sessionId, response, usage };
     } finally { clearTimeout(timer); signal.removeEventListener('abort', abort); await killTree(child); }
+  }
+
+  private async runWithTools(request: CodexRequest, tools: CodexTools, onEvent: (event: CodexEvent) => Promise<void>, signal: AbortSignal) {
+    const writableWorker = this.mode === 'worker' && request.allowWrite;
+    const server = this.appServer(request.cliPath, true, 15 * 60_000, writableWorker ? workerWriteConfig(request.workspace) : []);
+    const abort = () => { void server.close(); };
+    signal.addEventListener('abort', abort, { once: true });
+    let sessionId = request.sessionId, turnId: string | undefined, response = '', usage: Usage | undefined;
+    let toolCalls = 0;
+    const seenCalls = new Set<string>(), seenMessages = new Set<string>();
+    try {
+      for await (const line of server.lines) {
+        signal.throwIfAborted();
+        if (line.length > 4_000_000) throw new BridgeError('Слишком большое событие Codex.', 502);
+        let message: any; try { message = JSON.parse(line); } catch { continue; }
+        if (message.method && message.id !== undefined) {
+          if (message.method !== 'item/tool/call') {
+            server.send({ id: message.id, error: { code: -32601, message: 'Запрос исполнителя не разрешён.' } });
+            continue;
+          }
+          const { threadId, turnId: toolTurn, callId, tool, arguments: args } = message.params ?? {};
+          let result = { success: false, text: 'Вызов инструмента недоступен.' };
+          if (sessionId && threadId === sessionId && (!turnId || toolTurn === turnId) && typeof callId === 'string'
+            && !seenCalls.has(callId) && typeof tool === 'string' && ++toolCalls <= 64) {
+            seenCalls.add(callId);
+            await onEvent({ kind: 'progress', text: 'Codex обращается к Fastkore…' });
+            try { result = await tools.call(tool, args, signal); } catch { /* Never forward an upstream exception to the model. */ }
+          }
+          signal.throwIfAborted();
+          server.send({ id: message.id, result: { success: result.success, contentItems: [{ type: 'inputText', text: result.text }] } });
+          continue;
+        }
+        if (message.id !== undefined && message.error) throw new BridgeError('Codex отклонил запуск с инструментами Fastkore.', 502);
+        if (message.id === 1) {
+          server.send({ method: 'initialized' });
+          const params = { cwd: request.workspace, model: request.model, developerInstructions: request.developerInstructions, approvalPolicy: 'never',
+            config: { features: { shell_tool: writableWorker, shell_snapshot: false, apps: false, plugins: false, multi_agent: false, goals: false }, mcp_servers: {}, web_search: 'disabled' } };
+          server.send(request.sessionId
+            ? { id: 2, method: 'thread/resume', params: { ...params, threadId: request.sessionId, excludeTurns: true } }
+            : { id: 2, method: 'thread/start', params: { ...params, dynamicTools: tools.definitions } });
+        } else if (message.id === 2) {
+          const id = message.result?.thread?.id;
+          if (typeof id !== 'string' || !uuid.test(id) || sessionId && id !== sessionId) throw new BridgeError('Codex вернул неподходящую сессию.', 502);
+          sessionId = id;
+          await onEvent({ kind: 'session', text: id });
+          server.send({ id: 3, method: 'turn/start', params: { threadId: id, input: [{ type: 'text', text: request.prompt, text_elements: [] }], effort: request.reasoningEffort } });
+        } else if (message.id === 3 || message.method === 'turn/started') {
+          turnId = (message.result ?? message.params)?.turn?.id;
+        } else if (message.method === 'item/completed' && message.params?.threadId === sessionId) {
+          const item = message.params.item;
+          if (item?.type === 'agentMessage' && typeof item.text === 'string' && !seenMessages.has(item.id)) {
+            seenMessages.add(item.id); response += (response ? '\n\n' : '') + item.text;
+            await onEvent({ kind: 'message', text: item.text });
+          }
+        } else if (message.method === 'thread/tokenUsage/updated' && message.params?.threadId === sessionId) {
+          const last = message.params.tokenUsage?.last;
+          if (last) {
+            usage = { inputTokens: Number(last.inputTokens) || 0, cachedInputTokens: Number(last.cachedInputTokens) || 0, outputTokens: Number(last.outputTokens) || 0 };
+            await onEvent({ kind: 'usage', usage });
+          }
+        } else if (message.method === 'turn/completed' && message.params?.threadId === sessionId) {
+          if (message.params.turn?.status !== 'completed') throw new BridgeError('Codex не завершил запрос с инструментами Fastkore.', 502);
+          return { sessionId, response, usage };
+        }
+      }
+      signal.throwIfAborted();
+      throw new BridgeError('Исполнитель Codex завершился без готового ответа.', 502);
+    } finally { signal.removeEventListener('abort', abort); await server.close(); }
   }
 }

@@ -3,12 +3,21 @@ import fastifyStatic from '@fastify/static';
 import multipart from '@fastify/multipart';
 import { networkInterfaces } from 'node:os';
 import { readFile } from 'node:fs/promises';
+import { createReadStream } from 'node:fs';
 import path from 'node:path';
 import { Workspace } from './workspace.js';
 import { BridgeError } from './store.js';
 import { Access, publicUser, type Principal } from './access.js';
-import { uploadAttachment } from './documents.js';
-import type { AgentProfile, Dataset, FastkoreAuthentication, FastkoreInstallation, FastkoreKeyIssue, Settings, User, WorkRole } from '../shared/types.js';
+import { projectFilePath } from './documents.js';
+import { maxUploadBytes } from './file-storage.js';
+import { loadDictation, maxDictationBytes, validateDictation, type TranscribeDictation } from './dictation.js';
+import type { DictationModelId } from '../shared/types.js';
+import { fastkoreContextProblem, isFastkoreContextReset, parseFastkoreContext, type FastkoreContext } from '../shared/fastkore-context.js';
+import { FastkoreMcp } from './fastkore-mcp.js';
+import { FastkoreCli } from './fastkore-cli.js';
+import { withFastkoreCliDescription, withFastkoreCliReads } from './codex-tools.js';
+import type { AgentProfile, Dataset, FastkoreAuthentication, FastkoreInstallation, FastkoreKeyIssue, FileStorageProvider, ProjectAgentPolicy, ProjectAgentSettings, Settings, User, WorkRole } from '../shared/types.js';
+import { agentToolIds } from '../shared/agent-tools.js';
 import { operationIds } from './corporate.js';
 import { FastkoreSso, loadSsoKey, cookieToken, csrfFor, validCsrf, setSessionCookie, setStartCookie, startCookie, normalizeTheme, uuid, type InstallationPatch, type PairingClient, type Theme, type TicketValidator } from './fastkore.js';
 
@@ -28,9 +37,10 @@ const password = { type: 'string', minLength: 12, maxLength: 200 };
 const modelSchema = { type: 'string', maxLength: 128, pattern: '^$|^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,127}$' };
 const identifier = { type: 'string', pattern: '^[a-z][a-z0-9_-]{1,63}$' };
 const identifiers = { type: 'array', items: string(100), maxItems: 100, uniqueItems: true };
+const agentToolList = { type: 'array', items: { enum: agentToolIds }, maxItems: agentToolIds.length, uniqueItems: true };
 const object = (properties: Record<string, unknown>, required: string[] = []) => ({ type: 'object', properties, required, additionalProperties: false });
 const loopback = (ip: string) => ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1';
-export interface AppOptions { clientRoot?: string; port?: number; lan?: boolean; publicOrigin?: string; trustedProxies?: string[]; ssoKey?: Buffer; ticketValidator?: TicketValidator; pairingClient?: PairingClient }
+export interface AppOptions { clientRoot?: string; port?: number; lan?: boolean; publicOrigin?: string; trustedProxies?: string[]; ssoKey?: Buffer; ticketValidator?: TicketValidator; pairingClient?: PairingClient; transcribeDictation?: TranscribeDictation }
 const ssoStart = '/auth/fastkore/start', ssoExchange = '/auth/fastkore/exchange';
 function ssoPage(theme: Theme, challenge?: string) {
   const message = challenge ? 'Вход через Fastkore' : 'Откройте помощника из ERP заново.';
@@ -41,6 +51,10 @@ function ssoPage(theme: Theme, challenge?: string) {
 }
 export async function createApp(workspace: Workspace, options: AppOptions = {}) {
   const port = options.port ?? 8787, lan = options.lan ?? false;
+  const dictation = options.transcribeDictation ? undefined : await loadDictation();
+  const transcribeDictation = options.transcribeDictation ?? dictation?.transcribe;
+  const dictationEnabled = () => !!transcribeDictation && workspace.store.state.settings.dictationEnabled !== false;
+  const activeDictations = new Set<string>();
   const publicOrigin = options.publicOrigin ?? process.env.BRIDGE_PUBLIC_ORIGIN;
   if (publicOrigin && (new URL(publicOrigin).origin !== publicOrigin || !publicOrigin.startsWith('https://'))) throw new Error('BRIDGE_PUBLIC_ORIGIN должен содержать HTTPS origin без пути и завершающего слеша.');
   const trustedProxies = options.trustedProxies ?? (process.env.BRIDGE_TRUST_PROXY ?? '').split(',').map(v => v.trim()).filter(Boolean);
@@ -49,6 +63,42 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
   if (!ssoKey && process.env.BRIDGE_SSO_CONFIG) throw new Error('Обновите конфигурацию Fastkore до ТЗ 1.1 и задайте BRIDGE_SSO_KEY_FILE.');
   if (ssoKey && (!publicOrigin || !trustedProxies.length || (!workspace.isolatedCodex && process.env.BRIDGE_EXECUTION !== 'disabled'))) throw new Error('Fastkore SSO требует HTTPS origin, доверенный proxy и изолированный исполнитель либо отключённое выполнение.');
   const access = new Access(workspace), sso = ssoKey && new FastkoreSso(workspace.store, ssoKey, publicOrigin!, options.ticketValidator, options.pairingClient);
+  const fastkoreMcp = sso ? new FastkoreMcp(sso, id => access.forgetErpDelegation(id)) : undefined;
+  const cliSocket = process.env.BRIDGE_FASTKORE_CLI_SOCKET;
+  const fastkoreCli = cliSocket ? new FastkoreCli(cliSocket) : undefined;
+  access.onSessionsRemoved = sessions => {
+    for (const session of sessions) void fastkoreMcp?.revoke(session).catch(() => {});
+  };
+  workspace.prepareFastkoreTools = async (credentialId, context, authorize, signal) => {
+    if (!fastkoreMcp) return {};
+    const current = () => {
+      authorize();
+      return access.authenticateCredential(credentialId).credential;
+    };
+    const credential = current();
+    const integration = await fastkoreMcp.prepare(credential, context, authorize, signal);
+    if (!fastkoreCli || !sso || credential.source !== 'fastkore') return integration;
+    const tools = withFastkoreCliDescription(integration.tools ?? {
+      definitions: [], call: async () => ({ success: false, text: 'Инструмент Fastkore недоступен.' }),
+    }, (command, callSignal) => fastkoreCli.describe(command, callSignal), authorize);
+    const active = current();
+    const stored = active.erpDelegation;
+    const cliReady = process.env.BRIDGE_FASTKORE_CLI_TICKETS === '1' && !active.erpDelegationRevoked &&
+      stored && stored.expiresAt > Date.now() && sso.delegationBinding(active)?.revision === stored.revision;
+    if (!cliReady) return { ...integration, tools };
+    const reads = withFastkoreCliReads(tools, context, async (input, callSignal) => {
+      try {
+        const result = await fastkoreCli.run(input, sso, current, id => fastkoreMcp.invalidate(id), callSignal);
+        if (!result.success) return { success: false, text: `Fastkore CLI не выполнила чтение (код ${result.exitCode}).` };
+        const text = JSON.stringify(result.data);
+        if (text.length > 96_000) return { success: false, text: 'Ответ Fastkore CLI слишком большой. Уменьшите выборку.' };
+        return { success: true, text };
+      } catch (error) {
+        return { success: false, text: error instanceof BridgeError ? error.message : 'Fastkore CLI не выполнила чтение.' };
+      }
+    });
+    return { tools: reads, problem: reads.definitions.length > tools.definitions.length ? undefined : integration.problem };
+  };
   if (sso) {
     if (!workspace.isolatedCodex) workspace.lockCliForSso();
     workspace.corporate.ensureSsoPendingRole();
@@ -190,13 +240,14 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
     try {
       const { installation_id, ticket, login_challenge } = request.body;
       const previous = cookieToken(request.headers.cookie);
-      const { identity, theme, recheck } = await configuredSso().exchange({ installation_id, ticket, login_challenge }, cookieToken(request.headers.cookie, startCookie));
-      const issued = await access.fastkoreLogin(identity, previous, recheck);
+      const sso = configuredSso();
+      const { identity, theme, recheck } = await sso.exchange({ installation_id, ticket, login_challenge }, cookieToken(request.headers.cookie, startCookie));
+      const issued = await access.fastkoreLogin(identity, previous, recheck, (credential, delegation) => sso.sealDelegation(credential, delegation));
       const maxAge = Math.max(0, Math.floor((Date.parse(issued.expiresAt!) - Date.now()) / 1000));
       return reply.header('Set-Cookie', [setStartCookie('', 0), setSessionCookie(issued.token, maxAge)]).code(303).header('Location', '/?embedded=fastkore&theme=' + theme).send();
     } finally { logins--; }
   });
-  await app.register(multipart, { limits: { fileSize: 20 * 1024 * 1024, files: 1, fields: 0, parts: 1 } });
+  await app.register(multipart, { limits: { fileSize: maxUploadBytes, files: 1, fields: 0, parts: 1 } });
   app.get('/api/health', async () => ({ name: 'Codex Chat Bridge', version: '0.6.0', ok: true }));
   const authDetails = (p: Principal, token: string): FastkoreAuthentication => ({
     source: 'fastkore', installationId: p.credential.installationId!, externalUserId: p.credential.externalUserId!,
@@ -225,10 +276,19 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
   app.post('/api/auth/logout', async (request, reply) => { const p = principal(request); const result = await access.logout(p); if (p.credential.source === 'fastkore') reply.header('Set-Cookie', setSessionCookie('', 0)); return result; });
   app.post<{ Body: { currentPassword: string; password: string } }>('/api/auth/password', { schema: { body: object({ currentPassword: string(200), password }, ['currentPassword', 'password']) } }, async request => access.changePassword(principal(request), request.body.currentPassword, request.body.password));
   app.get('/api/users', async request => access.users(user(request)));
+  app.get<{ Params: { userId: string } }>('/api/users/:userId/projects', async request => access.userProjects(user(request), request.params.userId));
+  app.patch<{ Params: { userId: string }; Body: { projectIds: string[] } }>('/api/users/:userId/projects', {
+    schema: { body: object({ projectIds: { type: 'array', maxItems: 1000, uniqueItems: true, items: string(100) } }, ['projectIds']) },
+  }, async request => access.setUserProjects(() => user(request), request.params.userId, request.body.projectIds));
   app.post<{ Body: { username: string; name: string; password: string; role: User['role']; roleId?: string } }>('/api/users', { schema: { body: object({ username: string(48), name: string(100), password, role: { enum: ['admin', 'employee'] }, roleId: identifier }, ['username', 'name', 'password', 'role']) } }, async (request, reply) => reply.code(201).send(await access.createUser(localAdmin(request), request.body)));
   app.patch<{ Params: { userId: string }; Body: { disabled?: boolean; password?: string; name?: string; roleId?: string; role?: User['role'] } }>('/api/users/:userId', { schema: { body: object({ disabled: { type: 'boolean' }, password, name: string(100), roleId: identifier, role: { enum: ['admin', 'employee'] } }) } }, async request => access.updateUser(user(request), request.params.userId, request.body));
   app.get('/api/audit', async request => { admin(request); return access.data.audit; });
   app.get('/api/admin/fastkore/installations', async request => { localAdmin(request); return sso?.list() ?? []; });
+  app.get('/api/admin/fastkore/cli-pilot', async request => {
+    localAdmin(request); secureRequest(request);
+    if (!fastkoreCli) throw new BridgeError('Исполнитель Fastkore CLI не настроен.', 503);
+    return fastkoreCli.describe();
+  });
   const tlsFingerprint = { type: 'string', pattern: '^[0-9a-fA-F]{2}(:[0-9a-fA-F]{2}){31}$' };
   app.post<{ Body: { validateTicketUrl: string } }>('/api/admin/fastkore/tls/check', {
     schema: { body: object({ validateTicketUrl: string(2048) }, ['validateTicketUrl']) },
@@ -258,7 +318,7 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
     return reply.code(201).send(result);
   });
   app.patch<{ Params: { id: string }; Body: InstallationPatch }>('/api/admin/fastkore/installations/:id', {
-    schema: { body: { ...object({ name: string(100), validateTicketUrl: string(2048), enabled: { type: 'boolean' }, confirmValidateTicketUrl: { type: 'boolean' } }), minProperties: 1 } },
+    schema: { body: { ...object({ name: string(100), validateTicketUrl: string(2048), enabled: { type: 'boolean' }, confirmValidateTicketUrl: { type: 'boolean' }, mcpUrl: string(2048) }), minProperties: 1 } },
   }, async request => {
     localAdmin(request);
     const service = configuredSso();
@@ -294,26 +354,86 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
   app.get('/api/admin/operations', async request => { admin(request); return operationIds; });
   const revision = { type: 'integer', minimum: 1, maximum: 2147483647 };
   app.put<{ Params: { id: string }; Body: Omit<WorkRole, 'id' | 'revision'> & { revision?: number } }>('/api/admin/roles/:id', { schema: { params: object({ id: identifier }, ['id']), body: object({ name: string(100), enabled: { type: 'boolean' }, profileIds: identifiers, operationIds: identifiers, readDatasetIds: identifiers, instructions: { type: 'string', maxLength: 20000 }, revision }, ['name', 'enabled', 'profileIds', 'operationIds', 'readDatasetIds', 'instructions']) } }, async request => workspace.corporate.saveRole(admin(request), { ...request.body, id: request.params.id }));
-  app.put<{ Params: { id: string }; Body: Omit<AgentProfile, 'id' | 'revision'> & { revision?: number } }>('/api/admin/profiles/:id', { schema: { params: object({ id: identifier }, ['id']), body: object({ name: string(100), description: { type: 'string', maxLength: 1000 }, instructions: { type: 'string', maxLength: 20000 }, enabled: { type: 'boolean' }, model: modelSchema, reasoningEffort: { enum: ['low', 'medium', 'high', 'xhigh'] }, operationIds: identifiers, datasetIds: identifiers, skillIds: identifiers, allowWrite: { type: 'boolean' }, outputMode: { enum: ['chat', 'restricted'] }, revision }, ['name', 'description', 'instructions', 'enabled', 'model', 'reasoningEffort', 'operationIds', 'datasetIds', 'skillIds', 'allowWrite', 'outputMode']) } }, async request => workspace.corporate.saveProfile(admin(request), { ...request.body, id: request.params.id }));
+  app.put<{ Params: { id: string }; Body: Omit<AgentProfile, 'id' | 'revision'> & { revision?: number } }>('/api/admin/profiles/:id', { schema: { params: object({ id: identifier }, ['id']), body: object({ name: string(100), description: { type: 'string', maxLength: 1000 }, instructions: { type: 'string', maxLength: 20000 }, enabled: { type: 'boolean' }, model: modelSchema, reasoningEffort: { enum: ['low', 'medium', 'high', 'xhigh'] }, operationIds: identifiers, datasetIds: identifiers, skillIds: identifiers, allowWrite: { type: 'boolean' }, outputMode: { enum: ['chat', 'restricted'] }, revision, toolIds: agentToolList }, ['name', 'description', 'instructions', 'enabled', 'model', 'reasoningEffort', 'operationIds', 'datasetIds', 'skillIds', 'allowWrite', 'outputMode']) } }, async request => workspace.corporate.saveProfile(admin(request), { ...request.body, id: request.params.id }));
   app.put<{ Params: { id: string }; Body: Omit<Dataset, 'id' | 'revision'> & { revision?: number } }>('/api/admin/datasets/:id', { schema: { params: object({ id: identifier }, ['id']), body: object({ name: string(100), directory: string(2000), projectIds: identifiers, classification: { enum: ['shared', 'restricted'] }, revision }, ['name', 'directory', 'projectIds', 'classification']) } }, async request => workspace.corporate.saveDataset(admin(request), { ...request.body, id: request.params.id }));
   const canCreateProject = (u: User) => u.role === 'admin' || workspace.corporate.role(u)?.operationIds.includes('chat') === true;
   app.get('/api/status', async request => {
     const cli = await workspace.codexConnection();
-    const u = user(request); let activeRun = workspace.activeRun;
+    const { user: u, credential } = principal(request);
+    const settings = workspace.store.state.settings;
+    let activeRun = workspace.activeRun;
     if (activeRun) { try { access.run(u, activeRun.id); } catch { activeRun = null; } }
     const queuedRuns = workspace.queuedRuns.filter(r => { try { access.run(u, r.id); return true; } catch { return false; } });
     return { version: '0.6.0', activeRun, queuedRuns, busy: workspace.busy, user: publicUser(u), setupRequired: access.setupRequired, canCreateProject: canCreateProject(u),
       cli: u.role === 'admin' ? cli : cli && { ...cli, path: '', status: '' },
-      isolatedCodex: workspace.isolatedCodex, codexLimitsRevision: workspace.codexLimitsRevision,
-      settings: u.role === 'admin' ? workspace.store.state.settings : { ...workspace.store.state.settings, cliPath: '' },
-      addresses: publicOrigin ? [publicOrigin] : addresses(port, lan), port, lan, executionDisabled: workspace.executionDisabled, storageWarning: u.role === 'admin' ? workspace.store.warning : undefined };
+      isolatedCodex: workspace.isolatedCodex, workerFilesAvailable: workspace.workerFilesAvailable, codexLimitsRevision: workspace.codexLimitsRevision,
+      settings: { ...settings, cliPath: u.role === 'admin' ? settings.cliPath : '',
+        agentInstructions: u.role === 'admin' && credential.source !== 'fastkore' ? settings.agentInstructions : undefined },
+      addresses: publicOrigin ? [publicOrigin] : addresses(port, lan), port, lan, executionDisabled: workspace.executionDisabled,
+      dictationAvailable: !!transcribeDictation, dictationEnabled: dictationEnabled(),
+      fastkoreToolsStatus: credential.source === 'fastkore' ? fastkoreMcp?.status(credential) : undefined,
+      storageWarning: u.role === 'admin' ? workspace.store.warning : undefined,
+      fileStorage: u.role === 'admin' && credential.source === 'local' ? workspace.fileStorageStatus : undefined };
+  });
+  app.get('/api/dictation/models', async request => {
+    admin(request);
+    return dictation ? dictation.models() : null;
+  });
+  app.post<{ Params: { id: DictationModelId; action: 'download' | 'select' } }>('/api/dictation/models/:id/:action', {
+    schema: { params: object({ id: { enum: ['turbo', 'quality'] }, action: { enum: ['download', 'select'] } }, ['id', 'action']) },
+  }, async request => {
+    admin(request);
+    if (!dictation) throw new BridgeError('Сервис распознавания речи не настроен.', 503);
+    return dictation.models(request.params);
+  });
+  app.post<{ Querystring: { projectId?: string; chatId?: string; agentProfileId?: string } }>('/api/dictation', {
+    schema: { querystring: object({ projectId: string(100), chatId: string(100), agentProfileId: identifier }) },
+  }, async request => {
+    const { projectId, chatId, agentProfileId } = request.query;
+    const authorize = () => {
+      const actor = user(request);
+      if (chatId && !projectId) throw new BridgeError('Укажите проект диалога.');
+      const project = projectId ? access.project(actor, projectId) : undefined;
+      if (!project && !canCreateProject(actor)) throw new BridgeError('Рабочая роль не разрешает работу с чатом.', 403);
+      const chat = chatId && projectId ? access.editChat(actor, projectId, chatId) : undefined;
+      workspace.corporate.profile(actor, chat ? chat.agentProfileId : agentProfileId, project);
+      return actor.id;
+    };
+    const actorId = authorize();
+    if (!transcribeDictation || !dictationEnabled()) throw new BridgeError('Диктовка выключена на сервере.', 503);
+    if (activeDictations.has(actorId) || activeDictations.size >= 2) throw new BridgeError('Распознавание занято. Попробуйте чуть позже.', 429);
+    activeDictations.add(actorId);
+    try {
+      const file = await request.file({ limits: { fileSize: maxDictationBytes + 1 } });
+      if (file?.mimetype !== 'audio/wav') throw new BridgeError('Ожидается запись с микрофона.');
+      const audio = await file.toBuffer();
+      validateDictation(audio);
+      authorize();
+      if (!dictationEnabled()) throw new BridgeError('Диктовка выключена на сервере.', 503);
+      const text = await transcribeDictation(audio);
+      authorize();
+      if (!dictationEnabled()) throw new BridgeError('Диктовка выключена на сервере.', 503);
+      return { text };
+    } finally {
+      activeDictations.delete(actorId);
+    }
   });
   app.get('/api/models', async () => workspace.models());
   app.post('/api/models/refresh', async () => workspace.models(true));
   app.get('/api/codex/limits', async () => ({ limits: await workspace.limits() }));
   app.post('/api/cli/check', async request => { admin(request); return workspace.isolatedCodex ? workspace.codexConnection(true) : workspace.inspect(); });
   app.post('/api/subscription/check', async (request, reply) => { admin(request); const run = await workspace.subscription(); return reply.code(202).header('Location', `/api/runs/${run.id}`).send(run); });
-  app.patch<{ Body: Partial<Settings> }>('/api/settings', { schema: { body: object({ cliPath: { type: 'string', maxLength: 2000 }, allowWrite: { type: 'boolean' }, includePreviews: { type: 'boolean' }, model: modelSchema }) } }, async request => { admin(request); return workspace.settings(request.body); });
+  app.patch<{ Body: Partial<Settings> }>('/api/settings', { schema: { body: object({ cliPath: { type: 'string', maxLength: 2000 }, allowWrite: { type: 'boolean' }, includePreviews: { type: 'boolean' }, model: modelSchema, dictationEnabled: { type: 'boolean' }, agentInstructions: string(8000) }) } }, async request => {
+    admin(request);
+    if (request.body.agentInstructions !== undefined) localAdmin(request);
+    if (workspace.isolatedCodex && request.body.allowWrite !== undefined) localAdmin(request);
+    if (request.body.dictationEnabled && !transcribeDictation) throw new BridgeError('Сервис распознавания речи не настроен.', 409);
+    const settings = await workspace.settings(request.body);
+    return principal(request).credential.source === 'fastkore' ? { ...settings, agentInstructions: undefined } : settings;
+  });
+  app.patch<{ Body: { provider: FileStorageProvider } }>('/api/settings/file-storage', {
+    schema: { body: object({ provider: { enum: ['local', 's3'] } }, ['provider']) },
+  }, request => workspace.changeFileStorage(request.body.provider, () => { localAdmin(request); }));
   app.get('/api/diagnostics', async request => { admin(request); return { text: (await readFile(path.join(workspace.store.root, 'diagnostics.log'), 'utf8').catch(() => '')).slice(-12_000) }; });
   app.get('/api/projects', async request => {
     const u = user(request); return workspace.store.state.projects.filter(p => u.role === 'admin' || p.memberIds?.includes(u.id)).map(p => ({ id: p.id, name: p.name, directory: p.directory, chatCount: p.chats.filter(c => access.canChat(u, c)).length }));
@@ -333,6 +453,70 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
     return reply.code(201).send({ id: project.id, name: project.name, directory: project.directory, chatCount: project.chats.length });
   });
   app.get<{ Params: { projectId: string } }>('/api/projects/:projectId/members', async request => { admin(request); return { memberIds: workspace.project(request.params.projectId).memberIds ?? [] }; });
+  app.get<{ Params: { projectId: string } }>('/api/projects/:projectId/agents', async request => {
+    const actor = user(request);
+    return workspace.corporate.list(actor, access.project(actor, request.params.projectId));
+  });
+  const projectAgentSettings = '/api/projects/:projectId/agent-settings';
+  app.get<{ Params: { projectId: string } }>(projectAgentSettings, async (request): Promise<ProjectAgentSettings> => {
+    localAdmin(request);
+    const project = workspace.project(request.params.projectId);
+    const files = workspace.projectFiles(project);
+    const fileIds = new Set(files.map(file => file.id));
+    const policy = project.agentPolicy ?? workspace.corporate.defaultProjectPolicy(true);
+    return {
+      policy: { ...policy, connections: policy.connections.map(connection => ({
+        ...connection, fileIds: connection.fileIds?.filter(id => fileIds.has(id)) ?? null,
+      })) },
+      files,
+      isolated: workspace.isolatedCodex,
+      profiles: workspace.corporate.data.profiles.map(profile => ({
+        id: profile.id, name: profile.name, description: profile.description, toolIds: workspace.corporate.tools(profile),
+        unavailableReason: profile.enabled ? workspace.corporate.unavailable(profile) : 'Агент выключен в каталоге.',
+      })),
+    };
+  });
+  app.put<{ Params: { projectId: string }; Body: ProjectAgentPolicy }>(projectAgentSettings, {
+    schema: { body: object({
+      revision: { ...revision, minimum: 0 },
+      connections: { type: 'array', maxItems: 100, items: object({
+        profileId: identifier, toolIds: agentToolList,
+        fileIds: { anyOf: [{ type: 'null' }, { ...identifiers, maxItems: 1000 }] },
+      }, ['profileId', 'toolIds', 'fileIds']) },
+    }, ['revision', 'connections']) },
+  }, async request => {
+    const authorize = () => localAdmin(request);
+    authorize();
+    return workspace.corporate.saveProjectPolicy(workspace.project(request.params.projectId), request.body, authorize);
+  });
+  const projectFilesPath = '/api/projects/:projectId/files';
+  app.get<{ Params: { projectId: string } }>(projectFilesPath, async request => {
+    localAdmin(request);
+    return workspace.projectFiles(workspace.project(request.params.projectId));
+  });
+  app.post<{ Params: { projectId: string } }>(projectFilesPath, async (request, reply) => {
+    const authorize = () => localAdmin(request).id;
+    authorize();
+    workspace.project(request.params.projectId);
+    const file = await request.file();
+    if (!file) throw new BridgeError('Выберите файл для загрузки.');
+    const buffer = await file.toBuffer();
+    return reply.code(201).send(await workspace.addProjectFile(request.params.projectId, file.filename, buffer, authorize));
+  });
+  app.get<{ Params: { projectId: string; fileId: string } }>(projectFilesPath + '/:fileId', async (request, reply) => {
+    localAdmin(request);
+    const project = workspace.project(request.params.projectId);
+    const file = workspace.projectFile(project, request.params.fileId);
+    const contents = file.storage === 's3' ? await workspace.files.read(project, file) : undefined;
+    const target = contents ? undefined : await projectFilePath(project, file);
+    localAdmin(request);
+    workspace.projectFile(project, file.id);
+    const name = encodeURIComponent(file.name).replace(/[!'()*]/g, c => '%' + c.charCodeAt(0).toString(16));
+    return reply.type('application/octet-stream').header('Content-Disposition', "attachment; filename*=UTF-8''" + name)
+      .send(target ? createReadStream(target) : contents);
+  });
+  app.delete<{ Params: { projectId: string; fileId: string } }>(projectFilesPath + '/:fileId', request =>
+    workspace.deleteProjectFile(request.params.projectId, request.params.fileId, () => { localAdmin(request); }));
   app.patch<{ Params: { projectId: string }; Body: { memberIds: string[] } }>('/api/projects/:projectId/members', { schema: { body: object({ memberIds: { type: 'array', maxItems: 1000, uniqueItems: true, items: string(100) } }, ['memberIds']) } }, async request => access.members(user(request), request.params.projectId, request.body.memberIds));
   app.get<{ Params: { projectId: string } }>('/api/projects/:projectId/chats', async request => {
     const u = user(request); return access.project(u, request.params.projectId).chats.filter(c => access.canChat(u, c)).map(c => ({ id: c.id, title: c.title, updatedAt: c.updatedAt, messageCount: c.messages.length, ownerId: c.ownerId, ownerName: access.viewChat(c).ownerName, visibility: c.visibility }));
@@ -344,28 +528,63 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
   type ChatParams = { projectId: string; chatId: string };
   const chatPath = '/api/projects/:projectId/chats/:chatId';
   app.get<{ Params: ChatParams }>(chatPath, async request => access.viewChat(access.chat(user(request), request.params.projectId, request.params.chatId)));
+  app.get<{ Params: ChatParams & { messageId: string; fileId: string } }>(chatPath + '/messages/:messageId/files/:fileId', async (request, reply) => {
+    const { projectId, chatId, messageId, fileId } = request.params;
+    const findFile = () => {
+      const chat = access.chat(user(request), projectId, chatId);
+      const file = chat.messages.find(message => message.id === messageId && message.role === 'assistant' && message.status === 'complete')
+        ?.attachments.find(item => item.id === fileId);
+      if (!file) throw new BridgeError('Файл результата не найден.', 404);
+      return file;
+    };
+    const file = findFile();
+    const contents = await workspace.files.read(workspace.project(projectId), file);
+    findFile();
+    const name = encodeURIComponent(file.name).replace(/[!'()*]/g, c => '%' + c.charCodeAt(0).toString(16));
+    return reply.type('application/octet-stream').header('Cache-Control', 'private, no-store')
+      .header('Content-Disposition', "attachment; filename*=UTF-8''" + name).send(contents);
+  });
   app.patch<{ Params: ChatParams; Body: { model: string } }>(chatPath, { schema: { body: object({ model: modelSchema }, ['model']) } }, async request => {
     const check = () => access.editChat(user(request), request.params.projectId, request.params.chatId); check();
     return access.viewChat(await workspace.changeChatModel(request.params.projectId, request.params.chatId, request.body.model, check));
   });
   app.patch<{ Params: ChatParams; Body: { visibility: 'private' | 'project' } }>(chatPath + '/visibility', { schema: { body: object({ visibility: { enum: ['private', 'project'] } }, ['visibility']) } }, async request => access.visibility(user(request), request.params.projectId, request.params.chatId, request.body.visibility));
   app.get<{ Params: ChatParams }>(chatPath + '/messages', async request => access.chat(user(request), request.params.projectId, request.params.chatId).messages);
-  app.post<{ Params: ChatParams; Body: { text: string; attachmentIds?: string[]; clientRequestId?: string; model?: string } }>(chatPath + '/messages', { schema: { body: object({ text: string(60_000), attachmentIds: { type: 'array', items: string(100), maxItems: 8, uniqueItems: true }, clientRequestId: string(100), model: modelSchema }, ['text']) } }, async (request, reply) => {
+  app.post<{ Params: ChatParams; Body: { text: string; attachmentIds?: string[]; clientRequestId?: string; model?: string; fastkoreContext?: unknown } }>(chatPath + '/messages', { schema: { body: object({ text: string(60_000), attachmentIds: { type: 'array', items: string(100), maxItems: 8, uniqueItems: true }, clientRequestId: string(100), model: modelSchema, fastkoreContext: { type: 'object' } }, ['text']) } }, async (request, reply) => {
     const check = () => {
       const u = user(request); access.editChat(u, request.params.projectId, request.params.chatId);
       const p = access.project(u, request.params.projectId);
-      for (const id of request.body.attachmentIds ?? []) if (!p.attachments.some(a => a.id === id && (u.role === 'admin' || a.ownerId === u.id))) throw new BridgeError('Вложение не найдено.', 404);
+      for (const id of request.body.attachmentIds ?? []) if (!p.attachments.some(a => a.id === id && !a.libraryUploadedAt && (u.role === 'admin' || a.ownerId === u.id))) throw new BridgeError('Вложение не найдено.', 404);
     }; check();
     const text = request.body.text.trim(); if (!text) throw new BridgeError('Напишите вопрос.');
-    const run = await workspace.send(request.params.projectId, request.params.chatId, text, request.body.attachmentIds ?? [], request.body.clientRequestId ? `${user(request).id}:${request.body.clientRequestId}` : undefined, request.body.model, check, { id: user(request).id, name: user(request).name, credentialId: principal(request).credential.id });
+    let snapshot: FastkoreContext | undefined;
+    if (request.body.fastkoreContext !== undefined) {
+      if (principal(request).credential.source !== 'fastkore') throw new BridgeError('Контекст ERP доступен в сеансе Fastkore.', 403);
+      const project = workspace.project(request.params.projectId);
+      const chat = workspace.chat(project.id, request.params.chatId);
+      const profile = workspace.corporate.profile(user(request), chat.agentProfileId, project);
+      if (workspace.corporate.tools(profile, project).includes('fastkore') && !isFastkoreContextReset(request.body.fastkoreContext)) {
+        const parsed = parseFastkoreContext(request.body.fastkoreContext);
+        if (!parsed) throw new BridgeError('Fastkore передал некорректный снимок. Откройте помощника из нужной карточки или списка.');
+        const problem = fastkoreContextProblem(parsed);
+        if (problem) throw new BridgeError(problem, 409);
+        snapshot = parsed;
+      }
+    }
+    const run = await workspace.send(request.params.projectId, request.params.chatId, text, request.body.attachmentIds ?? [], request.body.clientRequestId ? `${user(request).id}:${request.body.clientRequestId}` : undefined, request.body.model, check, { id: user(request).id, name: user(request).name, credentialId: principal(request).credential.id }, snapshot);
     return reply.code(202).header('Location', `/api/runs/${run.id}`).send(run);
   });
   app.post<{ Params: { projectId: string } }>('/api/projects/:projectId/attachments', async (request, reply) => {
-    const p = access.project(user(request), request.params.projectId);
+    const { projectId } = request.params;
+    const authorize = () => {
+      const actor = user(request);
+      access.project(actor, projectId);
+      return actor.id;
+    };
+    authorize();
     const file = await request.file(); if (!file) throw new BridgeError('Прикрепите один файл.');
-    const buffer = await file.toBuffer(); access.project(user(request), p.id);
-    const attachment = await uploadAttachment(p.directory, file.filename, buffer); attachment.ownerId = user(request).id;
-    p.attachments.push(attachment); await workspace.store.save(); return reply.code(201).send(attachment);
+    const buffer = await file.toBuffer();
+    return reply.code(201).send(await workspace.addAttachment(projectId, file.filename, buffer, authorize));
   });
   app.get<{ Params: { runId: string } }>('/api/runs/:runId', async request => access.run(user(request), request.params.runId));
   app.post<{ Params: { runId: string } }>('/api/runs/:runId/cancel', async request => {

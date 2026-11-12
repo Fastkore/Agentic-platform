@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { createApp } from '../server/app.js';
-import { audience, csrfFor, pairErpHttps, validateTicketHttps, type PairingClient, type PairingInput, type TicketValidator } from '../server/fastkore.js';
+import { audience, csrfFor, FastkoreSso, pairErpHttps, validateTicketHttps, type PairingClient, type PairingInput, type TicketValidator } from '../server/fastkore.js';
 import { BridgeError, Store, redact } from '../server/store.js';
 import { Workspace } from '../server/workspace.js';
 import { parseHostTheme } from '../client/fastkore.js';
@@ -129,7 +129,16 @@ test('1.1 provisions a cookie-only identity with no automatic platform rights', 
     assert.deepEqual((await f.asCookie(session, 'GET', '/api/agents')).json(), []);
     assert.equal((await f.asCookie(session, 'POST', '/api/projects', { name: 'Без роли' })).statusCode, 403);
     assert.equal(f.store.state.security!.users.find(u => u.id === session.user.id)!.passwordHash, '');
-    assert.equal((await f.login()).user.id, session.user.id);
+    const next = await start(f.app), updatedTicket = f.ticket(next);
+    f.responses.get(updatedTicket)!.result.user.display_name = 'Иван Петров';
+    const exchanged = await f.exchange(next, updatedTicket);
+    assert.equal(exchanged.statusCode, 303);
+    const cookie = cookies(exchanged)[1].split(';')[0];
+    const updatedUser = (await f.req('GET', '/api/auth/me', '', undefined, { cookie })).json().user;
+    assert.equal(updatedUser.id, session.user.id);
+    assert.equal(updatedUser.roleId, 'sso_pending');
+    assert.equal(updatedUser.name, 'Иван Петров');
+    assert.equal((await f.req('GET', '/api/users', f.admin)).json().find((item: { id: string }) => item.id === session.user.id).name, 'Иван Петров');
     const other = await f.create('ERP B');
     await f.patch({ enabled: true }, other.installationId);
     assert.notEqual((await f.login(f.userId, other.installationId)).user.id, session.user.id);
@@ -193,6 +202,42 @@ test('only one exchange wins per browser preparation and a claimed ticket stays 
       assert.equal(f.calls, 1);
       const list = await app.inject({ url: installations, headers: { authorization: 'Bearer ' + f.admin } });
       assert.equal(list.json()[0].id, f.id);
+    } finally { await app.close(); }
+  } finally { if (!closed) await f.app.close(); }
+});
+
+test('an existing WebView session keeps only its own sealed ERP grant across an Agent Platform restart', async () => {
+  const f = await fixture();
+  let closed = false;
+  try {
+    assert.equal((await f.patch({ mcpUrl: 'https://erp.example.test/webapi/mcp' })).statusCode, 200);
+    const grant = 'fkug1.' + random();
+    f.setValidator(async () => ({
+      ...identity(f.id, f.userId), delegation: { grant, expires_in: 3600, audiences: ['fastkore-mcp'] },
+    }));
+    const session = await f.login();
+    f.setValidator(async () => identity(f.id, randomUUID()));
+    const denied = await f.login();
+    assert.equal((await f.asCookie(session, 'GET', '/api/status')).json().fastkoreToolsStatus, 'ready');
+    await f.app.close(); closed = true;
+    const store = new Store(f.root), app = await createApp(makeWorkspace(store), f.options);
+    try {
+      const status = (cookie: string) => app.inject({ url: '/api/status', headers: { ...headers, cookie } });
+      const ready = await status(session.cookie), unavailable = await status(denied.cookie);
+      assert.equal(ready.statusCode, 200);
+      assert.equal(ready.json().fastkoreToolsStatus, 'ready');
+      assert.equal(unavailable.json().fastkoreToolsStatus, 'unavailable');
+      assert.equal(f.calls, 2, 'restored WebView session does not exchange another ticket');
+      const saved = store.state.security!.credentials.find(c => c.userId === session.user.id)!;
+      const other = store.state.security!.credentials.find(c => c.userId === denied.user.id)!;
+      assert.ok(saved.erpDelegation);
+      const sso = new FastkoreSso(store, f.options.ssoKey, origin);
+      const revision = saved.erpDelegation.revision;
+      assert.equal(sso.openDelegation(saved, revision)?.grant, grant);
+      assert.equal(sso.openDelegation({ ...other, erpDelegation: saved.erpDelegation }, revision), undefined);
+      assert.equal(sso.openDelegation(saved, randomUUID()), undefined);
+      assert.ok(!(await readFile(store.file)).includes(Buffer.from(grant)));
+      assert.doesNotMatch(ready.body, /fkug1\.|sealedGrant/);
     } finally { await app.close(); }
   } finally { if (!closed) await f.app.close(); }
 });

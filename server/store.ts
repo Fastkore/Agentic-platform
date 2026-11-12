@@ -2,12 +2,14 @@ import { readFile, writeFile } from 'node:fs/promises';
 import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 import path from 'node:path';
-import type { State } from '../shared/types.js';
+import type { ProjectAgentPolicy, State } from '../shared/types.js';
+import { DEFAULT_AGENT_INSTRUCTIONS } from '../shared/agent-instructions.js';
 
 export class BridgeError extends Error { constructor(message: string, public statusCode = 400) { super(message); } }
-export function redact(text: string) { return text.replace(/\bfkap1\.[a-f0-9-]{36}\.[A-Za-z0-9_-]+\b/gi, '[REDACTED]').replace(/\b(?:sk-|ccb_[ks]_)[A-Za-z0-9_-]{8,}\b/g, '[REDACTED]').replace(/(Bearer\s+)[^\s"']+/gi, '$1[REDACTED]').replace(/((?:access_token|refresh_token|api_key|authorization|password|login_challenge|ticket|pairing_code|pairingCode|connectionKey|erp_key_verifier|erpKeyVerifier|__Host-bridge_sso_start|__Host-bridge_session)["'\s:=]+)[^\s,"';}&]+/gi, '$1[REDACTED]'); }
+export function redact(text: string) { return text.replace(/\bfkap1\.[a-f0-9-]{36}\.[A-Za-z0-9_-]+\b/gi, '[REDACTED]').replace(/\b(?:fku[ag]1|fkct1)\.[A-Za-z0-9._-]+/gi, '[REDACTED]').replace(/\b(?:sk-|ccb_[ks]_)[A-Za-z0-9_-]{8,}\b/g, '[REDACTED]').replace(/(Bearer\s+)[^\s"']+/gi, '$1[REDACTED]').replace(/((?:access_token|refresh_token|api_key|authorization|password|delegation|grant|login_challenge|ticket|pairing_code|pairingCode|connectionKey|erp_key_verifier|erpKeyVerifier|__Host-bridge_sso_start|__Host-bridge_session)["'\s:=]+)[^\s,"';}&]+/gi, '$1[REDACTED]'); }
 type AccessState = Pick<State, 'security' | 'externalIdentities' | 'sso'>;
-const empty = (): State => ({ schemaVersion: 1, settings: { cliPath: '', allowWrite: false, includePreviews: true, model: '' }, projects: [], runs: [], jobs: [] });
+export type AccessDraft = AccessState & { projectMembers?: Map<string, string[]>; projectAgentPolicies?: Map<string, ProjectAgentPolicy> };
+const empty = (): State => ({ schemaVersion: 1, settings: { cliPath: '', allowWrite: false, includePreviews: true, model: '', agentInstructions: DEFAULT_AGENT_INSTRUCTIONS }, projects: [], runs: [], jobs: [] });
 type Row = { id: string; parent: string; payload: string };
 const tables = ['projects', 'chats', 'messages', 'attachments', 'runs', 'jobs'] as const;
 
@@ -49,7 +51,9 @@ export class Store {
         try { legacy = this.readLegacy(this.legacyFile); } catch { legacy = this.readLegacy(this.legacyFile + '.bak'); }
       }
       this.state = initialized ? this.load() : legacy ?? empty();
-      this.state.settings.model ??= ''; this.state.jobs ??= [];
+      this.state.settings.model ??= '';
+      this.state.settings.agentInstructions ??= DEFAULT_AGENT_INSTRUCTIONS;
+      this.state.jobs ??= [];
       for (const run of this.state.runs) if (run.status === 'running') {
         run.status = 'interrupted'; run.progress = 'Выполнение прервано остановкой сервера'; run.completedAt = new Date().toISOString();
         run.response = undefined;
@@ -109,19 +113,36 @@ export class Store {
     if (this.closed) return Promise.reject(new BridgeError('Хранилище закрыто.', 503));
     const snapshot = JSON.parse(JSON.stringify(this.state)) as State;
     // Access transactions queued ahead of this write may have published new credentials.
-    const save = this.queue.then(() => this.commit({ ...snapshot, ...this.accessState() }));
+    const save = this.queue.then(() => {
+      const currentProjects = new Map(this.state.projects.map(project => [project.id, project]));
+      const projects = snapshot.projects.map(project => {
+        const current = currentProjects.get(project.id);
+        return current ? { ...project, memberIds: current.memberIds, agentPolicy: current.agentPolicy } : project;
+      });
+      this.commit({ ...snapshot, ...this.accessState(), projects });
+    });
     this.queue = save.catch(() => {}); return save;
   }
   private accessState(): AccessState {
     const { security, externalIdentities, sso } = this.state;
     return { security, externalIdentities, sso };
   }
-  changeAccess<T>(change: (draft: AccessState) => T): Promise<T> {
+  changeAccess<T>(change: (draft: AccessDraft) => T): Promise<T> {
     if (this.closed) return Promise.reject(new BridgeError('Хранилище закрыто.', 503));
     const save = this.queue.then(() => {
-      const draft = structuredClone(this.accessState());
+      const draft: AccessDraft = structuredClone(this.accessState());
       const result = change(draft);
-      this.commit({ ...this.state, ...draft });
+      const { projectMembers, projectAgentPolicies, ...updatedAccess } = draft;
+      const projects = this.state.projects.map(project => ({
+        ...project,
+        memberIds: projectMembers?.get(project.id) ?? project.memberIds,
+        agentPolicy: projectAgentPolicies?.get(project.id) ?? project.agentPolicy,
+      }));
+      this.commit({ ...this.state, ...updatedAccess, projects });
+      for (const project of this.state.projects) {
+        if (projectMembers?.has(project.id)) project.memberIds = projectMembers.get(project.id);
+        if (projectAgentPolicies?.has(project.id)) project.agentPolicy = projectAgentPolicies.get(project.id);
+      }
       if (this.state.security && draft.security) Object.assign(this.state.security, draft.security);
       else this.state.security = draft.security;
       this.state.externalIdentities = draft.externalIdentities;

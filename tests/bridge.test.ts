@@ -42,6 +42,10 @@ test('model arguments are explicit on first run and resume, and reject flag inje
   assert.equal(first[first.indexOf('--model') + 1], 'test-a'); assert.equal(resumed[resumed.indexOf('--model') + 1], 'test-b'); assert.ok(resumed.includes('resume'));
   assert.throws(() => buildArguments({ ...request, model: '--dangerously-bypass-approvals-and-sandbox' }));
   assert.ok(!buildArguments({ ...request, model: undefined }).includes('--model'));
+  const developerInstructions = 'Проверь "кавычки" и C:\\Проект.\nСоблюдай правила.';
+  const withInstructions = buildArguments({ ...request, developerInstructions });
+  assert.ok(withInstructions.includes('developer_instructions=' + JSON.stringify(developerInstructions)));
+  assert.equal(withInstructions.at(-1), '-');
 });
 test('Codex model catalog follows stdio handshake, pagination and hides invisible entries', async () => {
   const client = new CodexClient([fakeFile]); const catalog = await client.listModels(process.execPath);

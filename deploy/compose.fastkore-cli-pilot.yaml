@@ -1,0 +1,29 @@
+services:
+  cli:
+    image: fastkore-cli:27.0.48.0-sso
+    platform: linux/amd64
+    build:
+      context: ../private/fastkore-cli-pilot/27.0.48.0-sso
+      dockerfile: Dockerfile.pilot
+    init: true
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 128
+    mem_limit: 2g
+    cpus: 2
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,size=512m,mode=1777
+    environment:
+      FASTKORE_SERVER: grpc://mcp.fastkore.ru:17050
+      FASTKORE_TLS: "true"
+      FASTKORE_CA_FILE: /certs/ca.pem
+    volumes:
+      - ../private/fastkore-ca/ca.pem:/certs/ca.pem:ro
+      - work:/workspace
+      - fastkore_cli_ticket_socket:/run/fastkore-cli
+volumes:
+  work:
+  fastkore_cli_ticket_socket:
+    external: true

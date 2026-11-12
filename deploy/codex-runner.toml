@@ -15,7 +15,14 @@ goals = false
 [permissions.bridge-chat.filesystem]
 ":minimal" = "read"
 "/run/bridge-codex" = "deny"
+"/run/fastkore-cli" = "deny"
 "/home/node/.codex" = "deny"
 
 [permissions.bridge-chat.network]
 enabled = false
+
+[permissions.bridge-job]
+extends = "bridge-chat"
+
+[permissions.bridge-job.filesystem]
+":root" = "deny"

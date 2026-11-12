@@ -13,27 +13,28 @@
     "test": "tsx --test tests/*.test.ts"
   },
   "dependencies": {
-    "fastify": "5.12.8",
-    "@fastify/static": "10.1.10",
+    "@aws-sdk/client-s3": "3.1167.0",
     "@fastify/multipart": "10.1.8",
+    "@fastify/static": "10.1.10",
+    "csv-parse": "7.0.3",
+    "fastify": "5.12.8",
+    "lucide-react": "1.71.0",
+    "pdfjs-dist": "6.5.438",
     "react": "19.3.1",
     "react-dom": "19.3.1",
     "react-markdown": "10.1.0",
-    "remark-gfm": "4.0.1",
-    "lucide-react": "1.71.0",
     "read-excel-file": "9.3.14",
-    "csv-parse": "7.0.3",
-    "pdfjs-dist": "6.5.438"
+    "remark-gfm": "4.0.1"
   },
   "devDependencies": {
-    "typescript": "7.0.2",
-    "tsx": "4.23.15",
-    "vite": "8.3.7",
-    "@vitejs/plugin-react": "6.3.0",
-    "tailwindcss": "4.3.5",
     "@tailwindcss/vite": "4.3.5",
     "@types/node": "26.6.6",
     "@types/react": "19.3.0",
-    "@types/react-dom": "19.3.0"
+    "@types/react-dom": "19.3.0",
+    "@vitejs/plugin-react": "6.3.0",
+    "tailwindcss": "4.3.5",
+    "tsx": "4.23.15",
+    "typescript": "7.0.2",
+    "vite": "8.3.7"
   }
 }

@@ -1,32 +1,55 @@
-export interface Settings { cliPath: string; allowWrite: boolean; includePreviews: boolean; model: string }
+import type { FastkoreContext } from './fastkore-context.js';
+import type { AgentToolId } from './agent-tools.js';
+
+export type FileStorageProvider = 'local' | 's3';
+export interface FileStorageStatus { provider: FileStorageProvider; s3Configured: boolean }
+export interface Settings { cliPath: string; allowWrite: boolean; includePreviews: boolean; model: string; dictationEnabled?: boolean; agentInstructions?: string; fileStorageProvider?: FileStorageProvider }
+export type DictationModelId = 'turbo' | 'quality';
+export interface DictationModels {
+  active: DictationModelId | null;
+  loading: DictationModelId | null;
+  downloading: DictationModelId | null;
+  error: string | null;
+  models: { id: DictationModelId; name: string; installed: boolean }[];
+}
 export interface ModelOption { id: string; name: string; description: string; isDefault: boolean }
 export interface ModelCatalog { models: ModelOption[]; fetchedAt: string; source: 'codex' }
 export interface LimitWindow { usedPercent: number; windowDurationMins: number | null; resetsAt: number | null }
 export interface CodexLimits { buckets: { name: string; windows: LimitWindow[] }[]; resetsAvailable: number | null }
 export interface Usage { inputTokens: number; cachedInputTokens: number; outputTokens: number }
 export type RunStatus = 'queued' | 'running' | 'complete' | 'cancelled' | 'error' | 'interrupted';
-export interface Attachment { id: string; name: string; path: string; size: number; ownerId?: string }
-export interface Message { id: string; role: 'user' | 'assistant'; text: string; status: RunStatus; createdAt: string; attachments: Attachment[]; usage?: Usage; runId?: string; model?: string; authorId?: string; authorName?: string }
+export interface ProjectFile { id: string; name: string; size: number; uploadedAt: string }
+export interface Attachment { id: string; name: string; path?: string; storage?: 's3'; size: number; ownerId?: string; libraryUploadedAt?: string }
+export interface Message { id: string; role: 'user' | 'assistant'; text: string; status: RunStatus; createdAt: string; attachments: Attachment[]; usage?: Usage; runId?: string; model?: string; authorId?: string; authorName?: string; fileScope?: string }
 export interface ErpContext { installationId: string; entityType: string; entityId: string }
 export interface ExternalIdentity { installationId: string; externalUserId: string; userId: string }
 export interface Chat { id: string; title: string; sessionId?: string; sessionScope?: string; updatedAt: string; messages: Message[]; model?: string; agentProfileId?: string; erpContext?: ErpContext; ownerId?: string; ownerName?: string; visibility?: 'private' | 'project' }
-export interface Project { id: string; name: string; directory: string; chats: Chat[]; attachments: Attachment[]; memberIds?: string[] }
+export interface ProjectAgentConnection { profileId: string; toolIds: AgentToolId[]; fileIds: string[] | null }
+export interface ProjectAgentPolicy { revision: number; connections: ProjectAgentConnection[] }
+export interface ProjectAgentSettings {
+  policy: ProjectAgentPolicy;
+  profiles: Pick<AgentSummary, 'id' | 'name' | 'description' | 'toolIds' | 'unavailableReason'>[];
+  files: ProjectFile[];
+  isolated: boolean;
+}
+export interface Project { id: string; name: string; directory: string; chats: Chat[]; attachments: Attachment[]; memberIds?: string[]; agentPolicy?: ProjectAgentPolicy }
 export interface Run { id: string; projectId?: string; chatId?: string; status: RunStatus; progress: string; createdAt: string; startedAt?: string; completedAt?: string; response?: string; error?: string; usage?: Usage; clientRequestId?: string; requestHash?: string; model?: string; ownerId?: string; agentProfileId?: string; profileRevision?: number }
 /** Trusted queue input. Never return this record from HTTP handlers. */
-export interface Job { runId: string; kind: 'chat' | 'subscription'; text: string; attachmentIds: string[]; authorId?: string; credentialId?: string; scope?: string }
+export interface Job { runId: string; kind: 'chat' | 'subscription'; text: string; attachmentIds: string[]; authorId?: string; credentialId?: string; scope?: string; fastkoreContext?: FastkoreContext }
 export interface User { id: string; username: string; name: string; role: 'admin' | 'employee'; roleId?: string; disabled: boolean }
 export interface WorkRole { id: string; name: string; enabled: boolean; profileIds: string[]; operationIds: string[]; readDatasetIds: string[]; instructions: string; revision: number }
-export interface AgentProfile { id: string; name: string; description: string; instructions: string; enabled: boolean; model: string; reasoningEffort: 'low' | 'medium' | 'high' | 'xhigh'; operationIds: string[]; datasetIds: string[]; skillIds: string[]; allowWrite: boolean; outputMode: 'chat' | 'restricted'; revision: number }
+export interface AgentProfile { id: string; name: string; description: string; instructions: string; enabled: boolean; model: string; reasoningEffort: 'low' | 'medium' | 'high' | 'xhigh'; operationIds: string[]; datasetIds: string[]; skillIds: string[]; allowWrite: boolean; outputMode: 'chat' | 'restricted'; revision: number; toolIds?: AgentToolId[] }
 export interface Dataset { id: string; name: string; directory: string; projectIds: string[]; classification: 'shared' | 'restricted'; revision: number }
 export interface Corporate { roles: WorkRole[]; profiles: AgentProfile[]; datasets: Dataset[] }
-export interface AgentSummary { id: string; name: string; description: string; available: boolean; unavailableReason?: string; model: string; allowWrite?: boolean }
+export interface AgentSummary { id: string; name: string; description: string; available: boolean; unavailableReason?: string; model: string; allowWrite?: boolean; toolIds: AgentToolId[] }
 export interface UserRecord extends User { passwordHash: string; createdAt: string }
-export interface Credential { id: string; userId: string; kind: 'session' | 'api'; hash: string; name: string; createdAt: string; expiresAt?: string; source?: 'local' | 'fastkore'; installationId?: string; externalUserId?: string }
+export interface StoredErpDelegation { sealedGrant: string; expiresAt: number; revision: string }
+export interface Credential { id: string; userId: string; kind: 'session' | 'api'; hash: string; name: string; createdAt: string; expiresAt?: string; source?: 'local' | 'fastkore'; installationId?: string; externalUserId?: string; externalDisplayName?: string; erpDelegation?: StoredErpDelegation; erpDelegationRevoked?: true }
 export interface AuditEvent { id: string; actorId: string; action: string; targetId: string; createdAt: string }
 export interface Security { users: UserRecord[]; credentials: Credential[]; audit: AuditEvent[] }
 export interface FastkoreTlsInfo { origin: string; fingerprint: string; subject: string; expiresAt: string }
 export interface FastkoreTlsTrust extends FastkoreTlsInfo { pem: string }
-export interface FastkoreInstallation { id: string; name: string; validateTicketUrl: string; enabled: boolean; autoProvision: true; defaultRoleId: 'sso_pending'; sessionTtlSeconds: 1800; pairingStatus: 'manual' | 'unpaired' | 'pending' | 'paired'; pairedAt?: string; pairingRotationPending?: boolean; tlsFingerprint?: string; tlsConfirmationRequired?: boolean }
+export interface FastkoreInstallation { id: string; name: string; validateTicketUrl: string; mcpUrl?: string; enabled: boolean; autoProvision: true; defaultRoleId: 'sso_pending'; sessionTtlSeconds: 1800; pairingStatus: 'manual' | 'unpaired' | 'pending' | 'paired'; pairedAt?: string; pairingRotationPending?: boolean; tlsFingerprint?: string; tlsConfirmationRequired?: boolean }
 export interface FastkoreKeyIssue { installationId: string; connectionKey: string; erpKeyVerifier: string }
 export interface FastkoreAuthentication { source: 'fastkore'; installationId: string; externalUserId: string; expiresAt: string; csrfToken: string; canChangePassword: false }
 export interface FastkorePairingAttempt {
@@ -42,4 +65,4 @@ export interface State { schemaVersion: 1; settings: Settings; projects: Project
 export interface CliInfo { path: string; version: string; authentication: 'chatgpt' | 'api-key' | 'signed-out' | 'unknown'; status: string }
 export interface ProjectSummary { id: string; name: string; directory: string; chatCount: number }
 export interface ChatSummary { id: string; title: string; updatedAt: string; messageCount: number; ownerId?: string; ownerName?: string; visibility?: 'private' | 'project' }
-export interface Status { version: string; activeRun: Run | null; queuedRuns: Run[]; busy: boolean; executionDisabled?: boolean; isolatedCodex?: boolean; codexLimitsRevision?: number; user: User; setupRequired: boolean; canCreateProject?: boolean; cli: CliInfo | null; settings: Settings; addresses: string[]; port: number; lan: boolean; storageWarning?: string }
+export interface Status { version: string; activeRun: Run | null; queuedRuns: Run[]; busy: boolean; executionDisabled?: boolean; isolatedCodex?: boolean; workerFilesAvailable?: boolean; codexLimitsRevision?: number; user: User; setupRequired: boolean; canCreateProject?: boolean; dictationAvailable?: boolean; dictationEnabled?: boolean; fastkoreToolsStatus?: 'unavailable' | 'ready' | 'reauth'; cli: CliInfo | null; settings: Settings; addresses: string[]; port: number; lan: boolean; storageWarning?: string; fileStorage?: FileStorageStatus }

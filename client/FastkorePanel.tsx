@@ -209,7 +209,8 @@ export function FastkorePanel({ request }: { request: Request }) {
 
       {installation && <article className="access-user fastkore-card">
         <div className="fastkore-card-top">
-          <div><h4>{installation.name}</h4><small className="fastkore-url">{installation.validateTicketUrl}</small></div>
+          <div><h4>{installation.name}</h4><small className="fastkore-url">{installation.validateTicketUrl}</small>
+            {installation.mcpUrl && <small className="fastkore-url">MCP · {installation.mcpUrl}</small>}</div>
           <span className="fastkore-state" data-connected={installation.enabled}>
             {installation.pairingStatus === 'paired' && installation.enabled && <Check size={14} />}{installationStatus(installation)}
           </span>
@@ -259,6 +260,7 @@ export function FastkorePanel({ request }: { request: Request }) {
                 await request(endpoint + '/' + installation.id, json('PATCH', {
                   name: editing.name.trim(),
                   validateTicketUrl: editing.validateTicketUrl.trim(),
+                  mcpUrl: editing.mcpUrl?.trim() ?? '',
                   confirmValidateTicketUrl: confirmUrl,
                 }));
                 setEditing(null);
@@ -272,6 +274,9 @@ export function FastkorePanel({ request }: { request: Request }) {
                 onChange={e => { setEditing({ ...editing, validateTicketUrl: e.target.value }); setConfirmUrl(false); }} maxLength={2048} required />
               {installation.enabled && <p className="help">Чтобы изменить адрес, приостановите вход.</p>}
               {urlChanged && <label className="check-setting"><input type="checkbox" checked={confirmUrl} onChange={e => setConfirmUrl(e.target.checked)} />Подтверждаю новый HTTPS-адрес ERP</label>}
+              <label htmlFor="sso-mcp-url">HTTPS-адрес MCP</label>
+              <input id="sso-mcp-url" type="url" value={editing.mcpUrl ?? ''} placeholder="https://erp.example.ru/webapi/mcp"
+                onChange={e => setEditing({ ...editing, mcpUrl: e.target.value })} maxLength={2048} />
               <div className="settings-dialog-actions">
                 <button type="button" className="secondary" disabled={busy} onClick={() => { setEditing(null); setError(''); }}>Отмена</button>
                 <button className="primary" disabled={busy || (urlChanged && !confirmUrl)}>Сохранить</button>

@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { createCodexWorker } from '../server/codex-worker.js';
 import { RemoteCodexRunner } from '../server/codex-remote.js';
+import { withFastkoreCliDescription } from '../server/codex-tools.js';
 import { Store } from '../server/store.js';
 import { Workspace } from '../server/workspace.js';
 import type { CodexRunner } from '../server/codex.js';
@@ -28,6 +29,8 @@ test('isolated worker transports login status, limits and chat over a private so
       assert.equal(request.workspace, '/runner');
       assert.equal(request.allowWrite, false);
       assert.equal(request.prompt, 'Только тестовый текст.');
+      assert.match(request.developerInstructions!, /Общие инструкции агента/);
+      if (request.tools) assert.deepEqual(await request.tools.call('fastkore_GetCurrentUserInfo', {}, new AbortController().signal), { success: true, text: 'Пользователь ERP' });
       await event({ kind: 'session', text: sessionId });
       await event({ kind: 'message', text: 'Проверено.' });
       await event({ kind: 'usage', usage });
@@ -51,7 +54,7 @@ test('isolated worker transports login status, limits and chat over a private so
     assert.deepEqual(await workspace.limits(), limits());
     assert.equal(workspace.codexLimitsRevision, 0);
     assert.equal((await workspace.models()).models[0].id, 'test');
-    await assert.rejects(workspace.send(project.id, chat.id, 'Только тестовый текст.', ['file']), /только текст/i);
+    await assert.rejects(workspace.send(project.id, chat.id, 'Только тестовый текст.', ['file']), /вложение не найдено/i);
     const run = await workspace.send(project.id, chat.id, 'Только тестовый текст.', []);
     const deadline = Date.now() + 5000;
     while (!run.completedAt && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 15));
@@ -61,9 +64,32 @@ test('isolated worker transports login status, limits and chat over a private so
     assert.equal(chat.sessionId, sessionId);
     assert.equal(workspace.codexLimitsRevision, 1);
     assert.deepEqual(await workspace.limits(), limits());
+    const toolRun = await remote.run({ cliPath: '/unused', workspace: '/unused', allowWrite: false, prompt: 'Только тестовый текст.',
+      developerInstructions: 'Общие инструкции агента', tools: {
+        definitions: [{ type: 'function', name: 'fastkore_GetCurrentUserInfo', description: 'ERP identity', inputSchema: { type: 'object' } }],
+        async call(name, args) { assert.equal(name, 'fastkore_GetCurrentUserInfo'); assert.deepEqual(args, {}); return { success: true, text: 'Пользователь ERP' }; },
+      },
+    }, async () => {}, new AbortController().signal);
+    assert.equal(toolRun.response, 'Проверено.');
   } finally {
     await workspace.shutdown();
     await worker.close();
     await rm(root, { recursive: true, force: true });
   }
+});
+test('CLI tools expose only fixed offline descriptions and recheck the session', async () => {
+  const calls: string[] = [];
+  let authorized = true;
+  const tools = withFastkoreCliDescription({ definitions: [], call: async () => ({ success: false, text: '' }) }, async command => {
+    calls.push(command);
+    return { authenticated: false, erpReadAvailable: false };
+  }, () => { if (!authorized) throw new Error('Session ended'); });
+  const signal = new AbortController().signal;
+  assert.equal((await tools.call('fastkore_cli_describe', { command: 'data query', password: 'ignored' }, signal)).success, false);
+  assert.equal((await tools.call('fastkore_cli_describe', { command: 'data delete' }, signal)).success, false);
+  assert.deepEqual(calls, []);
+  assert.match((await tools.call('fastkore_cli_describe', { command: 'data query' }, signal)).text, /"erpReadAvailable":false/);
+  authorized = false;
+  await assert.rejects(tools.call('fastkore_cli_describe', { command: 'data get' }, signal), /Session ended/);
+  assert.deepEqual(calls, ['data-query']);
 });

@@ -1,7 +1,8 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { realpath, stat } from 'node:fs/promises';
 import path from 'node:path';
-import type { AgentProfile, AgentSummary, Corporate, Dataset, State, User, WorkRole } from '../shared/types.js';
+import { agentToolIds } from '../shared/agent-tools.js';
+import type { AgentProfile, AgentSummary, Corporate, Dataset, Project, ProjectAgentPolicy, State, User, WorkRole } from '../shared/types.js';
 import { BridgeError, Store } from './store.js';
 
 export const operationIds = ['chat', 'estimate', 'technology', 'accounting'] as const;
@@ -20,7 +21,7 @@ export function initializeCorporate(state: State): Corporate {
 /** Business permissions are checked outside prompts and shared by UI and API. */
 export class CorporateAccess {
   readonly data: Corporate;
-  constructor(readonly store: Store) { this.data = initializeCorporate(store.state); }
+  constructor(readonly store: Store, private readonly isolated: boolean) { this.data = initializeCorporate(store.state); }
   ensureSsoPendingRole() {
     const existing = this.data.roles.find(role => role.id === 'sso_pending');
     if (existing?.enabled && !existing.profileIds.length && !existing.operationIds.length && !existing.readDatasetIds.length && !existing.instructions) return;
@@ -35,26 +36,79 @@ export class CorporateAccess {
     const role = this.role(user);
     return profile.enabled && (user.role === 'admin' || !!role && role.profileIds.includes(profile.id) && profile.operationIds.some(id => role.operationIds.includes(id)));
   }
-  profile(user: User | undefined, id = 'universal', enforceRuntime = true): AgentProfile {
+  profile(user: User | undefined, id = 'universal', project?: Project): AgentProfile {
     const profile = this.data.profiles.find(p => p.id === id);
     if (!profile || user && !this.canUse(user, profile)) throw new BridgeError('Профиль недоступен.', 403);
     if (!profile.enabled) throw new BridgeError('Профиль выключен.', 403);
-    if (enforceRuntime) { const reason = this.unavailable(profile); if (reason) throw new BridgeError(reason, 409); }
+    if (project?.agentPolicy && !this.connection(profile, project)) throw new BridgeError('Агент не подключён к этому проекту.', 403);
+    const reason = this.unavailable(profile, project);
+    if (reason) throw new BridgeError(reason, 409);
     return profile;
   }
-  unavailable(profile: AgentProfile) {
+  unavailable(profile: AgentProfile, project?: Project) {
     // A shared OS identity cannot promise that a "normal" chat cannot read another source.
     if (this.data.datasets.some(d => d.classification === 'restricted')) return 'На сервере зарегистрированы закрытые источники. Запуски приостановлены до проверки изоляции на Linux.';
     if (profile.outputMode === 'restricted' || profile.operationIds.some(id => id !== 'chat') || profile.datasetIds.length) return 'Профиль ожидает проверки изоляции и выдачи результатов на Linux. Запуск пока закрыт.';
     if (profile.skillIds.length) return 'Профиль ожидает установки и проверки утверждённых Skills в среде исполнения.';
+    if (!this.isolated && (project?.agentPolicy || profile.toolIds !== undefined)) return 'Для применения разрешений на инструменты нужен отдельный исполнитель Codex.';
     return undefined;
   }
-  list(user: User): AgentSummary[] { return this.data.profiles.filter(p => this.canUse(user, p)).map(p => ({ id: p.id, name: p.name, description: p.description, model: p.model, allowWrite: p.allowWrite, available: !this.unavailable(p), unavailableReason: this.unavailable(p) })); }
-  scope(user: User | undefined, profile: AgentProfile, projectId: string) {
-    const role = user && this.role(user);
-    return createHash('sha256').update(JSON.stringify({ profile: profile.id, revision: profile.revision, projectId, role: role?.id, roleRevision: role?.revision, actor: user?.id })).digest('hex');
+  connection(profile: AgentProfile, project?: Project) {
+    return project?.agentPolicy?.connections.find(connection => connection.profileId === profile.id);
   }
-  instructions(user: User | undefined, profile: AgentProfile) { return [profile.instructions, user && this.role(user)?.instructions].filter(Boolean).join('\n\n'); }
+  tools(profile: AgentProfile, project?: Project) {
+    const tools = profile.toolIds ?? agentToolIds;
+    const policy = project?.agentPolicy;
+    if (!policy) return tools;
+    const connection = this.connection(profile, project);
+    return tools.filter(id => connection?.toolIds.includes(id));
+  }
+  list(user: User, project?: Project): AgentSummary[] {
+    return this.data.profiles.filter(profile => this.canUse(user, profile) && (!project?.agentPolicy || this.connection(profile, project)))
+      .map(profile => {
+        const unavailableReason = this.unavailable(profile, project);
+        return { id: profile.id, name: profile.name, description: profile.description, model: profile.model, allowWrite: profile.allowWrite,
+          toolIds: this.tools(profile, project), available: !unavailableReason, unavailableReason };
+      });
+  }
+  defaultProjectPolicy(includeFastkore: boolean): ProjectAgentPolicy {
+    return {
+      revision: includeFastkore ? 0 : 1,
+      connections: this.data.profiles.filter(profile => profile.enabled).map(profile => ({
+        profileId: profile.id, fileIds: null, toolIds: this.tools(profile).filter(id => includeFastkore || id !== 'fastkore'),
+      })),
+    };
+  }
+  saveProjectPolicy(project: Project, input: ProjectAgentPolicy, authorize: () => User) {
+    return this.store.changeAccess(draft => {
+      const actor = authorize();
+      this.admin(actor);
+      if ((project.agentPolicy?.revision ?? 0) !== input.revision) throw new BridgeError('Подключения изменились. Откройте настройки проекта заново.', 409);
+      const knownProfiles = new Set(this.data.profiles.map(profile => profile.id));
+      const library = new Set(project.attachments.filter(file => file.libraryUploadedAt).map(file => file.id));
+      const seen = new Set<string>();
+      for (const connection of input.connections) {
+        if (!knownProfiles.has(connection.profileId) || seen.has(connection.profileId)) throw new BridgeError('Выберите существующих агентов без повторов.');
+        if (connection.fileIds?.some(id => !library.has(id))) throw new BridgeError('Файл недоступен в библиотеке проекта.');
+        seen.add(connection.profileId);
+      }
+      const policy = { revision: input.revision + 1, connections: input.connections };
+      draft.projectAgentPolicies = new Map([[project.id, policy]]);
+      draft.security?.audit.unshift({ id: randomUUID(), actorId: actor.id, action: 'project.agents', targetId: project.id, createdAt: new Date().toISOString() });
+      draft.security?.audit.splice(1000);
+      return policy;
+    });
+  }
+  scope(user: User | undefined, profile: AgentProfile, project: Project) {
+    const role = user && this.role(user);
+    return createHash('sha256').update(JSON.stringify({ profile: profile.id, revision: profile.revision, projectId: project.id, role: role?.id,
+      roleRevision: role?.revision, actor: user?.id, projectRevision: project.agentPolicy?.revision })).digest('hex');
+  }
+  instructions(user: User | undefined, profile: AgentProfile) {
+    const role = user && this.role(user)?.instructions;
+    return [role && 'Инструкции рабочей роли\n' + role,
+      profile.instructions && 'Инструкции специалиста\n' + profile.instructions].filter(Boolean).join('\n\n');
+  }
   private admin(actor: User) { if (actor.role !== 'admin' || actor.disabled) throw new BridgeError('Доступно только руководителю.', 403); }
   private audit(actor: User, action: string, id: string) { this.store.state.security?.audit.unshift({ id: randomUUID(), actorId: actor.id, action, targetId: id, createdAt: new Date().toISOString() }); this.store.state.security?.audit.splice(1000); }
   async saveRole(actor: User, input: Omit<WorkRole, 'revision'> & { revision?: number }) {
@@ -73,7 +127,7 @@ export class CorporateAccess {
     if (input.model && !/^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,127}$/.test(input.model)) throw new BridgeError('Некорректная модель.');
     const old = this.data.profiles.find(p => p.id === input.id); if (old && old.revision !== input.revision) throw new BridgeError('Профиль изменён. Обновите настройки.', 409);
     if (this.store.state.runs.some(r => r.agentProfileId === input.id && ['queued', 'running'].includes(r.status))) throw new BridgeError('Дождитесь завершения заданий профиля.', 409);
-    const value: AgentProfile = { ...input, name: input.name.trim(), revision: (old?.revision ?? 0) + 1 };
+    const value: AgentProfile = { ...input, name: input.name.trim(), revision: (old?.revision ?? 0) + 1, toolIds: input.toolIds ?? old?.toolIds };
     if (!value.name || !value.operationIds.length) throw new BridgeError('Укажите название и хотя бы одну операцию.');
     if (old) Object.assign(old, value); else this.data.profiles.push(value);
     this.audit(actor, 'profile.update', value.id); await this.store.save(); return value;

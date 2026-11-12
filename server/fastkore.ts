@@ -1,4 +1,4 @@
-import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
+import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { request } from 'node:https';
 import path from 'node:path';
@@ -15,7 +15,8 @@ const startTtl = 120;
 const pairingTtl = 5 * 60_000;
 const maxAttempts = 5000;
 export type Theme = 'light' | 'dark';
-export interface TicketIdentity { installationId: string; externalUserId: string; displayName: string }
+export interface ErpDelegation { grant: string; expiresAt: number }
+export interface TicketIdentity { installationId: string; externalUserId: string; displayName: string; delegation?: ErpDelegation }
 interface ExchangeInput { installation_id: string; ticket: string; login_challenge: string }
 type ErpTlsOptions = { ca: string };
 export type TicketValidator = (url: string, key: string, payload: ExchangeInput, trust?: ErpTlsOptions) => Promise<unknown>;
@@ -23,7 +24,7 @@ export interface PairingInput {
   version: 1; pairing_code: string; platform_origin: string; installation_id: string; erp_key_verifier: string;
 }
 export type PairingClient = (url: string, payload: PairingInput, trust?: ErpTlsOptions) => Promise<unknown>;
-export type InstallationPatch = { name?: string; validateTicketUrl?: string; confirmValidateTicketUrl?: boolean; enabled?: boolean };
+export type InstallationPatch = { name?: string; validateTicketUrl?: string; confirmValidateTicketUrl?: boolean; enabled?: boolean; mcpUrl?: string };
 
 export const uuid = (v: unknown): v is string => typeof v === 'string' && v.length === 36 && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(v);
 const opaque = (v: string) => v.length === 43 && /^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$/.test(v);
@@ -66,10 +67,11 @@ function nameOf(value: string) {
   return name;
 }
 /** No redirects, client-supplied destinations, retries or unbounded responses. */
-function postErpJson(url: string, body: string, options: { ca?: string; key?: string }, fail: () => BridgeError) {
+export function postErpJson(url: string, body: string, options: { ca?: string; key?: string; signal?: AbortSignal }, fail: () => BridgeError) {
   return new Promise<{ status?: number; value?: unknown }>((resolve, reject) => {
+    const timeout = AbortSignal.timeout(10_000);
     const req = request(url, {
-      ca: options.ca, method: 'POST', signal: AbortSignal.timeout(10_000),
+      ca: options.ca, method: 'POST', signal: options.signal ? AbortSignal.any([timeout, options.signal]) : timeout,
       headers: { ...(options.key ? { Authorization: 'Bearer ' + options.key } : {}),
         'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body), Accept: 'application/json' },
     }, res => {
@@ -88,6 +90,16 @@ function postErpJson(url: string, body: string, options: { ca?: string; key?: st
     });
     req.end(body);
   });
+}
+
+function normalizeMcpUrl(value: string) {
+  if (!value.trim()) return undefined;
+  let url: URL;
+  try { url = new URL(value.trim()); } catch { throw new BridgeError('Укажите полный HTTPS-адрес /webapi/mcp.'); }
+  if (url.protocol !== 'https:' || url.username || url.password || url.pathname !== '/webapi/mcp' || url.href !== url.origin + url.pathname) {
+    throw new BridgeError('Укажите доверенный HTTPS-адрес /webapi/mcp без параметров.');
+  }
+  return url.href;
 }
 
 export async function validateTicketHttps(url: string, key: string, payload: ExchangeInput, trust?: { ca: string }): Promise<unknown> {
@@ -120,11 +132,13 @@ type PairingPreparation = { receipt: FastkoreInstallation } | { attempt: Fastkor
 export class FastkoreSso {
   private readonly attempts = new Map<string, StartAttempt>();
   private readonly pairingInFlight = new Set<string>();
+  private readonly delegationKey: Buffer;
   constructor(
     private readonly store: Store, private readonly key: Buffer, private readonly origin: string,
     private readonly validate: TicketValidator = validateTicketHttps, private readonly pairClient: PairingClient = pairErpHttps,
   ) {
     if (key.length !== 32) throw new Error('Некорректный ключ шифрования Fastkore SSO.');
+    this.delegationKey = createHmac('sha256', key).update('fastkore-sso-delegation-v1').digest();
     // Fail at startup if a deployed key file cannot decrypt the saved installations.
     for (const item of this.items()) this.decrypt(item);
   }
@@ -171,7 +185,7 @@ export class FastkoreSso {
     return {
       id, name, validateTicketUrl, enabled: enabled && this.canUse(item), autoProvision, defaultRoleId, sessionTtlSeconds,
       pairingStatus, pairedAt, pairingRotationPending: pending ? attempt.rotate : undefined,
-      tlsFingerprint, tlsConfirmationRequired: item.tls && !tlsFingerprint || undefined,
+      tlsFingerprint, tlsConfirmationRequired: item.tls && !tlsFingerprint || undefined, mcpUrl: item.mcpUrl,
     };
   }
   list() { return this.items().map(item => this.publicInstallation(item)); }
@@ -249,9 +263,11 @@ export class FastkoreSso {
       throw new BridgeError('Отключите установку и отдельно подтвердите новый адрес проверки.', 409);
     }
     if (patch.enabled === true && !this.canUse(item)) throw new BridgeError('Сначала подключите установку кодом из ERP.', 409);
-    const enabled = urlChanged ? false : patch.enabled ?? item.enabled, revoke = urlChanged || enabled !== item.enabled;
+    const mcpUrl = patch.mcpUrl === undefined ? item.mcpUrl : normalizeMcpUrl(patch.mcpUrl);
+    const enabled = urlChanged ? false : patch.enabled ?? item.enabled;
+    const revoke = urlChanged || enabled !== item.enabled || mcpUrl !== item.mcpUrl;
     if (patch.name !== undefined) item.name = nameOf(patch.name);
-    item.validateTicketUrl = url; item.enabled = enabled;
+    item.validateTicketUrl = url; item.enabled = enabled; item.mcpUrl = mcpUrl;
     if (urlChanged && item.pairing) delete item.pairing.binding;
     if (urlChanged && item.tls) delete item.tls.trust;
     if (revoke) item.revision = randomUUID();
@@ -337,6 +353,38 @@ export class FastkoreSso {
     return this.items().some(item => item.enabled && item.id === c.installationId && this.canUse(item))
       && (this.store.state.externalIdentities?.some(i => i.installationId === c.installationId && i.externalUserId === c.externalUserId && i.userId === c.userId) ?? false);
   }
+  private delegationAad(c: Credential, revision: string, expiresAt: number) {
+    return Buffer.from(JSON.stringify([this.origin, c.id, c.hash, c.userId, c.installationId, c.externalUserId, c.expiresAt, revision, expiresAt]));
+  }
+  sealDelegation(c: Credential, delegation: ErpDelegation): NonNullable<Credential['erpDelegation']> {
+    const { revision } = this.enabled(c.installationId!);
+    const { expiresAt } = delegation;
+    const nonce = randomBytes(12), cipher = createCipheriv('aes-256-gcm', this.delegationKey, nonce);
+    cipher.setAAD(this.delegationAad(c, revision, expiresAt));
+    const ciphertext = Buffer.concat([cipher.update(delegation.grant, 'utf8'), cipher.final()]);
+    return { sealedGrant: Buffer.concat([nonce, cipher.getAuthTag(), ciphertext]).toString('base64url'), expiresAt, revision };
+  }
+  openDelegation(c: Credential, revision: string): ErpDelegation | undefined {
+    const stored = c.erpDelegation;
+    if (c.kind !== 'session' || c.source !== 'fastkore' || c.erpDelegationRevoked || !stored || stored.revision !== revision
+      || !Number.isFinite(stored.expiresAt) || stored.expiresAt <= Date.now()) return;
+    try {
+      const buffer = Buffer.from(stored.sealedGrant, 'base64url');
+      const cipher = createDecipheriv('aes-256-gcm', this.delegationKey, buffer.subarray(0, 12));
+      cipher.setAAD(this.delegationAad(c, revision, stored.expiresAt));
+      cipher.setAuthTag(buffer.subarray(12, 28));
+      const grant = Buffer.concat([cipher.update(buffer.subarray(28)), cipher.final()]).toString('utf8');
+      return { grant, expiresAt: stored.expiresAt };
+    } catch { return; }
+  }
+  delegationBinding(c: Credential) {
+    if (c.source !== 'fastkore' || !this.credentialValid(c)) return;
+    const item = this.enabled(c.installationId!);
+    const origin = new URL(item.validateTicketUrl).origin;
+    const ca = this.tlsOptions(item)?.ca;
+    return { origin, key: this.decrypt(item), ca, revision: item.revision, mcpUrl: item.mcpUrl,
+      mcpCa: item.mcpUrl && new URL(item.mcpUrl).origin === origin ? ca : undefined };
+  }
   start(theme: Theme, previousCookie: string) {
     const now = Date.now();
     for (const [key, attempt] of this.attempts) if (attempt.expires <= now) this.attempts.delete(key);
@@ -372,7 +420,11 @@ export class FastkoreSso {
       || typeof value.user.display_name !== 'string' || !value.user.display_name.trim() || value.user.display_name.length > 200 || /[\x00-\x1f\x7f]/.test(value.user.display_name)) {
       throw new BridgeError('Fastkore отклонил билет или вернул неподходящий ответ.', 401);
     }
-    const identity: TicketIdentity = { installationId: id, externalUserId: value.user.id, displayName: value.user.display_name.trim() };
+    const d = value.delegation;
+    const delegation = d && typeof d.grant === 'string' && /^fkug1\.[A-Za-z0-9._-]{1,2048}$/.test(d.grant)
+      && Number.isInteger(d.expires_in) && d.expires_in > 0 && d.expires_in <= 28_800 && Array.isArray(d.audiences) && d.audiences.includes('fastkore-mcp')
+      ? { grant: d.grant, expiresAt: Date.now() + d.expires_in * 1000 } : undefined;
+    const identity: TicketIdentity = { installationId: id, externalUserId: value.user.id, displayName: value.user.display_name.trim(), delegation };
     return { identity, theme: attempt.theme, recheck };
   }
 }

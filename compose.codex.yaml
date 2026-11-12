@@ -1,11 +1,13 @@
-# The only shared filesystem is the Unix socket used by the platform.
+# The worker shares the Unix socket and temporary job files with the platform.
 services:
   app:
     environment:
       BRIDGE_EXECUTION: isolated
       BRIDGE_CODEX_SOCKET: /run/bridge-codex/worker.sock
+      BRIDGE_CODEX_JOB_FILES: /run/bridge-work
     volumes:
       - codex_socket:/run/bridge-codex:ro
+      - codex_job_files:/run/bridge-work
     depends_on:
       codex:
         condition: service_healthy
@@ -26,9 +28,11 @@ services:
     cpus: 2
     environment:
       HTTPS_PROXY: ${BRIDGE_CODEX_HTTPS_PROXY:-}
+      BRIDGE_CODEX_JOB_FILES: /runner/jobs
     volumes:
       - codex_socket:/run/bridge-codex
       - codex_auth:/home/node/.codex
+      - codex_job_files:/runner/jobs
     tmpfs:
       - /tmp:rw,noexec,nosuid,size=64m
     networks: [codex_egress]
@@ -40,5 +44,10 @@ services:
 volumes:
   codex_socket:
   codex_auth:
+  codex_job_files:
+    driver_opts:
+      type: tmpfs
+      device: tmpfs
+      o: size=256m,uid=1000,gid=1000,mode=0700,nosuid,nodev
 networks:
   codex_egress:

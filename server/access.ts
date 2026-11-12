@@ -1,9 +1,9 @@
 import { randomBytes, randomUUID, createHash, scrypt, timingSafeEqual } from 'node:crypto';
 import { promisify } from 'node:util';
-import type { Chat, Credential, Security, State, StoredFastkoreInstallation, User, UserRecord } from '../shared/types.js';
-import { BridgeError } from './store.js';
+import type { Chat, Credential, Security, StoredFastkoreInstallation, User, UserRecord } from '../shared/types.js';
+import { BridgeError, type AccessDraft } from './store.js';
 import type { Workspace } from './workspace.js';
-import type { TicketIdentity } from './fastkore.js';
+import type { ErpDelegation, TicketIdentity } from './fastkore.js';
 
 const derive = promisify(scrypt);
 const digest = (value: string) => createHash('sha256').update(value).digest('hex');
@@ -15,6 +15,7 @@ export class Access {
   readonly data: Security;
   private queue: Promise<unknown> = Promise.resolve();
   externalCredentialValid?: (credential: Credential) => boolean;
+  onSessionsRemoved?: (sessions: Credential[]) => void;
   constructor(readonly workspace: Workspace) {
     const state = workspace.store.state;
     if (!state.security) state.security = { users: [{ id: randomUUID(), username: 'admin', name: 'Руководитель', role: 'admin', disabled: false, passwordHash: '', createdAt: new Date().toISOString() }], credentials: [], audit: [] };
@@ -39,12 +40,28 @@ export class Access {
     }
   }
   private async change<T>(work: () => Promise<T> | T): Promise<T> {
-    const result = this.queue.then(async () => { const value = await work(); await this.workspace.store.save(); return value; });
+    const result = this.queue.then(async () => {
+      const before = [...this.data.credentials];
+      const value = await work();
+      await this.workspace.store.save();
+      this.notifyRemoved(before);
+      return value;
+    });
     this.queue = result.catch(() => {}); return result;
   }
-  private changeSso<T>(work: (draft: Pick<State, 'security' | 'sso' | 'externalIdentities'>) => T) {
-    const result = this.queue.then(() => this.workspace.store.changeAccess(work));
+  private changeAccess<T>(work: (draft: AccessDraft) => T) {
+    const result = this.queue.then(async () => {
+      const before = [...this.data.credentials];
+      const value = await this.workspace.store.changeAccess(work);
+      this.notifyRemoved(before);
+      return value;
+    });
     this.queue = result.catch(() => {}); return result;
+  }
+  private notifyRemoved(before: Credential[]) {
+    if (!this.onSessionsRemoved) return;
+    const current = new Set(this.data.credentials.map(c => c.id));
+    this.onSessionsRemoved(before.filter(c => c.source === 'fastkore' && !current.has(c.id)));
   }
   private audit(actorId: string, action: string, targetId: string, data = this.data) {
     data.audit.unshift({ id: randomUUID(), actorId, action, targetId, createdAt: new Date().toISOString() }); data.audit.splice(1000);
@@ -60,10 +77,12 @@ export class Access {
     const candidate = await derive(value, salt, 64) as Buffer, expected = Buffer.from(hash, 'hex');
     return candidate.length === expected.length && timingSafeEqual(candidate, expected);
   }
-  private issueSession(user: UserRecord, name: string, external?: Pick<Credential, 'source' | 'installationId' | 'externalUserId'>, data = this.data) {
+  private issueSession(user: UserRecord, name: string, external?: Pick<Credential, 'source' | 'installationId' | 'externalUserId' | 'externalDisplayName'>,
+    data = this.data, seal?: (credential: Credential) => Credential['erpDelegation']) {
     const token = 'ccb_s_' + randomBytes(32).toString('hex');
     const expiresAt = new Date(Date.now() + (external?.source === 'fastkore' ? 1800_000 : 12 * 3600_000)).toISOString();
     const record: Credential = { id: randomUUID(), userId: user.id, kind: 'session', hash: digest(token), name, createdAt: new Date().toISOString(), expiresAt, ...external };
+    if (seal) record.erpDelegation = seal(record);
     data.credentials = data.credentials.filter(c => !c.expiresAt || Date.parse(c.expiresAt) > Date.now());
     const old = data.credentials.filter(c => c.userId === user.id);
     for (const c of old.slice(0, Math.max(0, old.length - 19))) data.credentials.splice(data.credentials.indexOf(c), 1);
@@ -100,8 +119,9 @@ export class Access {
     });
   }
   logout(principal: Principal) { return this.change(() => { this.data.credentials = this.data.credentials.filter(c => c.id !== principal.credential.id); return { ok: true }; }); }
-  fastkoreLogin(identity: TicketIdentity, previousToken = '', recheck: () => void = () => {}) {
-    return this.changeSso(draft => {
+  fastkoreLogin(identity: TicketIdentity, previousToken = '', recheck: () => void = () => {},
+    seal?: (credential: Credential, delegation: ErpDelegation) => Credential['erpDelegation']) {
+    return this.changeAccess(draft => {
       recheck();
       if (this.setupRequired) throw new BridgeError('Сначала администратор должен настроить платформу.', 403);
       const data = draft.security!, identities = draft.externalIdentities ??= [];
@@ -113,14 +133,25 @@ export class Access {
         user = { id, username: `sso-${id}`, name: identity.displayName, role: 'employee', roleId: 'sso_pending', disabled: false, passwordHash: '', createdAt: new Date().toISOString() };
         data.users.push(user); identities.push({ installationId: identity.installationId, externalUserId: identity.externalUserId, userId: id });
         this.audit(user.id, 'sso.user.create', user.id, data);
-      }
+      } else user.name = identity.displayName;
       if (previousToken) data.credentials = data.credentials.filter(c => c.source !== 'fastkore' || c.hash !== digest(previousToken));
       this.audit(user.id, 'sso.login', identity.installationId, data);
-      return this.issueSession(user, 'Fastkore', { source: 'fastkore', installationId: identity.installationId, externalUserId: identity.externalUserId }, data);
+      const { delegation } = identity;
+      return this.issueSession(user, 'Fastkore', { source: 'fastkore', installationId: identity.installationId, externalUserId: identity.externalUserId, externalDisplayName: identity.displayName },
+        data, delegation && seal ? credential => seal(credential, delegation) : undefined);
+    });
+  }
+  async forgetErpDelegation(id: string) {
+    await this.changeAccess(draft => {
+      const credential = draft.security?.credentials.find(c => c.id === id);
+      if (credential?.erpDelegation) {
+        delete credential.erpDelegation;
+        credential.erpDelegationRevoked = true;
+      }
     });
   }
   linkExternal(authorize: () => User, installationId: string, externalUserId: string, userId: string) {
-    return this.changeSso(draft => {
+    return this.changeAccess(draft => {
       const actor = authorize(), data = draft.security!;
       if (!data.users.some(u => u.id === userId && !u.disabled)) throw new BridgeError('Пользователь не найден.', 404);
       const identities = draft.externalIdentities ??= [];
@@ -131,7 +162,7 @@ export class Access {
     });
   }
   changeInstallation<T>(authorize: () => User, action: string, work: (items: StoredFastkoreInstallation[]) => { id: string; result: T; revoke?: boolean }) {
-    return this.changeSso(draft => {
+    return this.changeAccess(draft => {
       const actor = authorize(), data = draft.security!;
       const items = (draft.sso ??= {}).installations ??= [];
       const { id, result, revoke } = work(items);
@@ -203,6 +234,30 @@ export class Access {
       const project = this.workspace.project(projectId);
       if (memberIds.some(id => !this.data.users.some(u => u.id === id && !u.disabled))) throw new BridgeError('Выберите действующих пользователей.');
       project.memberIds = [...new Set(memberIds)]; this.audit(actor.id, 'project.members', projectId); return { memberIds: project.memberIds };
+    });
+  }
+  userProjects(actor: User, userId: string) {
+    this.admin(actor);
+    const employee = this.data.users.find(user => user.id === userId && user.role === 'employee');
+    if (!employee) throw new BridgeError('Сотрудник не найден.', 404);
+    return this.workspace.store.state.projects.map(project => ({ id: project.id, name: project.name, allowed: project.memberIds?.includes(userId) ?? false }));
+  }
+  setUserProjects(authorize: () => User, userId: string, projectIds: string[]) {
+    return this.changeAccess(draft => {
+      const actor = authorize();
+      const available = this.userProjects(actor, userId);
+      const known = new Set(available.map(project => project.id));
+      const selected = new Set(projectIds);
+      if (projectIds.some(id => !known.has(id))) throw new BridgeError('Проект не найден.', 404);
+      const projectMembers = new Map<string, string[]>();
+      for (const project of this.workspace.store.state.projects) {
+        const members = project.memberIds ?? [];
+        if (selected.has(project.id) && !members.includes(userId)) projectMembers.set(project.id, [...members, userId]);
+        else if (!selected.has(project.id) && members.includes(userId)) projectMembers.set(project.id, members.filter(id => id !== userId));
+      }
+      draft.projectMembers = projectMembers;
+      this.audit(actor.id, 'user.projects', userId, draft.security);
+      return available.map(project => ({ ...project, allowed: selected.has(project.id) }));
     });
   }
   visibility(actor: User, projectId: string, chatId: string, visibility: 'private' | 'project') {

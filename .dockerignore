@@ -16,3 +16,4 @@ private
 *.key
 fastkore-sso.json
 fastkore-validation
+FastkoreCLI-*-linux-x64*.zip

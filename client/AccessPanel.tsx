@@ -56,13 +56,16 @@ export function AccountPanel({ request, renewed, fastkore }: { request: Request;
   </>;
 }
 
-type TeamDialog = { type: 'members' | 'roles' | 'audit' } | { type: 'disable'; user: User };
+type TeamDialog = { type: 'members' | 'roles' | 'audit' } | { type: 'disable' | 'projects'; user: User };
+type EmployeeProject = { id: string; name: string; allowed: boolean };
 
 const auditLabels: Record<string, string> = {
   setup: 'Настройка руководителя',
   'user.create': 'Создан пользователь',
   'user.update': 'Изменён пользователь',
+  'user.projects': 'Изменён доступ к проектам',
   'project.members': 'Изменены участники',
+  'project.agents': 'Изменены агенты проекта',
   'chat.private': 'Чат сделан личным',
   'chat.project': 'Чат открыт проекту',
   'key.create': 'Создан ключ API',
@@ -73,9 +76,10 @@ const auditLabels: Record<string, string> = {
 export function TeamPanel({ request, projectId, projectName, self }: { request: Request; projectId: string; projectName: string; self: User }) {
   const [roles, setRoles] = useState<WorkRole[]>([]);
   const [users, setUsers] = useState<User[]>([]), [members, setMembers] = useState<string[]>([]), [audit, setAudit] = useState<AuditEvent[]>([]);
+  const [employeeProjects, setEmployeeProjects] = useState<EmployeeProject[]>([]);
   const [dialog, setDialog] = useState<TeamDialog | null>(null);
   const [error, setError] = useState(''), [busy, setBusy] = useState(false), [notice, setNotice] = useState('');
-  const title = dialog?.type === 'members' ? 'Участники проекта' : dialog?.type === 'roles' ? 'Роли, специалисты и библиотеки'
+  const title = dialog?.type === 'projects' ? 'Доступ к проектам' : dialog?.type === 'members' ? 'Участники проекта' : dialog?.type === 'roles' ? 'Роли, агенты и библиотеки'
     : dialog?.type === 'audit' ? 'Журнал доступа' : 'Отключить доступ';
 
   async function load() {
@@ -133,7 +137,11 @@ export function TeamPanel({ request, projectId, projectName, self }: { request: 
           <td><Select className="settings-select" label={`Рабочая роль · ${user.name}`} value={user.roleId ?? 'employee'} disabled={busy}
             onChange={roleId => void run(() => updateUser(user, { roleId }))}
             options={roles.map(role => ({ value: role.id, label: role.name + (role.enabled ? '' : ' · выключена'), disabled: !role.enabled }))} /></td>
-          <td><span>{user.disabled ? 'Отключён' : 'Активен'}</span>{user.id !== self.id && <button type="button" className="secondary" disabled={busy} onClick={() => {
+          <td><span>{user.disabled ? 'Отключён' : 'Активен'}</span>{user.role === 'employee' && <button type="button" className="secondary" disabled={busy}
+            aria-label={'Проекты · ' + user.name} onClick={() => void run(async () => {
+              setEmployeeProjects(await request<EmployeeProject[]>(`/api/users/${user.id}/projects`));
+              openDialog({ type: 'projects', user });
+            })}>Проекты</button>}{user.id !== self.id && <button type="button" className="secondary" disabled={busy} onClick={() => {
             if (user.disabled) void run(() => updateUser(user, { disabled: false }));
             else openDialog({ type: 'disable', user });
           }}>{user.disabled ? 'Включить' : 'Отключить'}</button>}</td>
@@ -141,7 +149,7 @@ export function TeamPanel({ request, projectId, projectName, self }: { request: 
       </table>
     </section>
     <div className="settings-actions">
-      <button type="button" className="secondary" disabled={busy} onClick={() => openDialog({ type: 'roles' })}>Роли, специалисты и библиотеки</button>
+      <button type="button" className="secondary" disabled={busy} onClick={() => openDialog({ type: 'roles' })}>Роли, агенты и библиотеки</button>
       <button type="button" className="secondary" disabled={busy} onClick={() => openDialog({ type: 'audit' })}>Журнал доступа</button>
     </div>
     {!dialog && error && <div className="inline-error" role="alert">{error}</div>}
@@ -149,6 +157,25 @@ export function TeamPanel({ request, projectId, projectName, self }: { request: 
 
     {dialog && <WorkspaceDialog title={title} className={dialog.type === 'roles' ? 'settings-action-dialog wide' : 'settings-action-dialog'} close={() => { if (!busy) closeDialog(); }}>
       <div className="panel-body">
+        {dialog.type === 'projects' && <>
+          <p>{dialog.user.name}</p>
+          {employeeProjects.length ? <div className="member-list">{employeeProjects.map(project => <label key={project.id}>
+            <input type="checkbox" checked={project.allowed} disabled={busy} onChange={e => {
+              const allowed = e.target.checked;
+              setEmployeeProjects(items => items.map(item => item.id === project.id ? { ...item, allowed } : item));
+            }} />
+            <span>{project.name}</span>
+          </label>)}</div> : <p>Проектов пока нет.</p>}
+          <div className="settings-dialog-actions">
+            <button type="button" className="secondary" disabled={busy} onClick={closeDialog}>Отмена</button>
+            <button type="button" className="primary" disabled={busy || !employeeProjects.length} onClick={() => void run(async () => {
+              const projectIds = employeeProjects.filter(project => project.allowed).map(project => project.id);
+              await request(`/api/users/${dialog.user.id}/projects`, json('PATCH', { projectIds }));
+              closeDialog();
+              setNotice('Доступ к проектам сохранён.');
+            })}>Сохранить</button>
+          </div>
+        </>}
         {dialog.type === 'members' && <>
           <p>{projectName}</p>
           <div className="member-list">{users.filter(user => user.role === 'employee' && !user.disabled).map(user => <label key={user.id}>

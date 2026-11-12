@@ -8,10 +8,12 @@ import { Store } from '../server/store.js';
 import { Workspace } from '../server/workspace.js';
 import { CodexClient } from '../server/codex.js';
 import { createApp } from '../server/app.js';
+import { csrfFor } from '../server/fastkore.js';
+import type { TranscribeDictation } from '../server/dictation.js';
 import { erpBrowser } from './erp-browser.js';
 
 const password = 'Test-password-for-office-2026';
-async function fixture() {
+async function fixture(transcribeDictation?: TranscribeDictation) {
   const root = await mkdtemp(path.join(tmpdir(), 'bridge-access-')), directory = path.join(root, 'library'); await mkdir(directory);
   const store = new Store(path.join(root, 'data'));
   const cli = new CodexClient([fileURLToPath(new URL('./fake-cli.mjs', import.meta.url))]);
@@ -23,7 +25,7 @@ async function fixture() {
   await workspace.settings({ cliPath: process.execPath, includePreviews: false });
   const project = await workspace.addProject(directory), legacy = await workspace.addChat(project.id, 'Старая история'); legacy.sessionId = '87db344a-98f3-42c8-bba8-c7d9f3dcff11';
   const erp = erpBrowser();
-  const app = await createApp(workspace, erp.options);
+  const app = await createApp(workspace, { ...erp.options, transcribeDictation });
   const req = erp.request(app);
   const boot = (await app.inject({ method: 'POST', url: '/api/local-login', headers: { host: 'localhost:8787', 'x-bridge-local': '1' } })).json();
   const setup = await req('POST', '/api/auth/setup', boot.token, { username: 'boss', name: 'Руководитель', password }); assert.equal(setup.statusCode, 200);
@@ -61,6 +63,50 @@ test('employees can create a managed project without opening access to server fo
     assert.equal((await f.req('POST', '/api/projects/' + project.id + '/chats', creator.token, {})).statusCode, 201);
     assert.equal((await f.req('GET', '/api/projects/' + project.id + '/chats', colleague.token)).statusCode, 404);
     assert.equal((await f.req('POST', '/api/projects', creator.token, { name: 'Существующая папка', directory: f.root })).statusCode, 403);
+  } finally { await f.app.close(); }
+});
+
+test('per-user project access controls dictation and leaves other memberships intact', async () => {
+  let transcriptions = 0;
+  const f = await fixture(async () => { transcriptions++; return 'Текст черновика'; });
+  try {
+    const a = await f.employee('alice'), b = await f.employee('boris');
+    const accessRoute = `/api/users/${a.id}/projects`, projectRoute = `/api/projects/${f.project.id}`;
+    assert.equal((await f.req('GET', accessRoute, a.token)).statusCode, 403);
+    assert.deepEqual((await f.req('GET', accessRoute, f.admin)).json().map((p: { allowed: boolean }) => p.allowed), [false]);
+    assert.equal((await f.req('PATCH', projectRoute + '/members', f.admin, { memberIds: [b.id] })).statusCode, 200);
+
+    const wav = Buffer.alloc(46);
+    wav.write('RIFF', 0); wav.writeUInt32LE(38, 4); wav.write('WAVEfmt ', 8);
+    wav.writeUInt32LE(16, 16); wav.writeUInt16LE(1, 20); wav.writeUInt16LE(1, 22);
+    wav.writeUInt32LE(16000, 24); wav.writeUInt32LE(32000, 28); wav.writeUInt16LE(2, 32); wav.writeUInt16LE(16, 34);
+    wav.write('data', 36); wav.writeUInt32LE(2, 40);
+    const data = new FormData();
+    data.append('file', new Blob([new Uint8Array(wav)], { type: 'audio/wav' }), 'dictation.wav');
+    const request = new Request('http://localhost/', { method: 'POST', body: data });
+    const payload = Buffer.from(await request.arrayBuffer());
+    const publicOrigin = 'https://agents.example.test';
+    const dictate = (chatId?: string) => f.app.inject({ method: 'POST', url: `/api/dictation?projectId=${f.project.id}${chatId ? '&chatId=' + chatId : ''}`,
+      headers: { host: 'agents.example.test', 'x-forwarded-proto': 'https', origin: publicOrigin,
+        cookie: a.token, 'x-csrf-token': csrfFor(a.token.split('=')[1]), 'content-type': request.headers.get('content-type')! }, payload });
+
+    assert.equal((await dictate()).statusCode, 404);
+    assert.equal((await f.req('PATCH', accessRoute, a.token, { projectIds: [f.project.id] })).statusCode, 403);
+    assert.equal((await f.req('PATCH', accessRoute, f.admin, { projectIds: [f.project.id] })).statusCode, 200);
+    assert.equal((await dictate(f.legacy.id)).statusCode, 404);
+    assert.equal((await f.req('PATCH', '/api/settings', a.token, { dictationEnabled: false })).statusCode, 403);
+    assert.equal((await f.req('GET', '/api/dictation/models', a.token)).statusCode, 403);
+    assert.equal((await f.req('PATCH', '/api/settings', f.admin, { dictationEnabled: false })).statusCode, 200);
+    assert.equal((await dictate()).statusCode, 503);
+    assert.equal((await f.req('PATCH', '/api/settings', f.admin, { dictationEnabled: true })).statusCode, 200);
+    const transcription = await dictate();
+    assert.equal(transcription.statusCode, 200, transcription.body);
+    assert.deepEqual(transcription.json(), { text: 'Текст черновика' });
+    assert.equal(f.legacy.messages.length, 0);
+    assert.equal((await f.req('PATCH', accessRoute, f.admin, { projectIds: [] })).statusCode, 200);
+    assert.equal((await dictate()).statusCode, 404);
+    assert.deepEqual(f.workspace.project(f.project.id).memberIds, [b.id]);
+    assert.equal(transcriptions, 1);
   } finally { await f.app.close(); }
 });
 test('three employees share library but private chat metadata, messages, jobs and writes are protected', async () => {

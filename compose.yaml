@@ -18,8 +18,17 @@ services:
       BRIDGE_HOST: 0.0.0.0
       BRIDGE_EXECUTION: disabled
       BRIDGE_PUBLIC_ORIGIN: ${BRIDGE_PUBLIC_ORIGIN:?Set HTTPS origin in .env}
+      BRIDGE_DICTATION_URL: ${BRIDGE_DICTATION_URL:-}
+      BRIDGE_DICTATION_TOKEN_FILE: /run/dictation/token
+      BRIDGE_S3_ENDPOINT: ${BRIDGE_S3_ENDPOINT:-}
+      BRIDGE_S3_BUCKET: ${BRIDGE_S3_BUCKET:-}
+      BRIDGE_S3_REGION: ${BRIDGE_S3_REGION:-us-east-1}
+      BRIDGE_S3_FORCE_PATH_STYLE: ${BRIDGE_S3_FORCE_PATH_STYLE:-1}
+      BRIDGE_S3_ACCESS_KEY: ${BRIDGE_S3_ACCESS_KEY:-}
+      BRIDGE_S3_SECRET_KEY: ${BRIDGE_S3_SECRET_KEY:-}
     volumes:
       - ./data:/data
       - ./projects:/projects
+      - ./private/dictation:/run/dictation:ro
     tmpfs:
       - /tmp:rw,noexec,nosuid,size=64m

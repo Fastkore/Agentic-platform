@@ -5,6 +5,7 @@ import { Store } from './store.js';
 import { CodexClient } from './codex.js';
 import { RemoteCodexRunner } from './codex-remote.js';
 import { Workspace } from './workspace.js';
+import { FileStorage } from './file-storage.js';
 import { addresses, createApp } from './app.js';
 
 const root = path.resolve(process.env.BRIDGE_DATA_DIR ?? path.join(process.env.LOCALAPPDATA ?? process.cwd(), 'CodexChatBridgeWeb'));
@@ -31,7 +32,8 @@ try {
   await store.save();
   const socket = process.env.BRIDGE_CODEX_SOCKET;
   if (process.env.BRIDGE_EXECUTION === 'isolated' && (!socket || !path.isAbsolute(socket))) throw new Error('Для BRIDGE_EXECUTION=isolated нужен абсолютный BRIDGE_CODEX_SOCKET.');
-  const workspace = new Workspace(store, socket ? new RemoteCodexRunner(socket) : new CodexClient());
+  const workspace = new Workspace(store, socket ? new RemoteCodexRunner(socket) : new CodexClient(),
+    new FileStorage(process.env), process.env.BRIDGE_CODEX_JOB_FILES);
   const app = await createApp(workspace, { port, lan, clientRoot: path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../client') });
   let stopping = false;
   const stop = async () => { if (stopping) return; stopping = true; await workspace.shutdown(); await app.close(); await cleanup(); };

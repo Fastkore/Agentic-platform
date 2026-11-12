@@ -2,16 +2,19 @@ import { request as httpRequest, type IncomingMessage } from 'node:http';
 import { createInterface } from 'node:readline';
 import type { CliInfo, CodexLimits, ModelCatalog } from '../shared/types.js';
 import type { CodexEvent, CodexRequest, CodexResult, CodexRunner } from './codex.js';
+import type { CodexToolDefinition, CodexToolResult } from './codex-tools.js';
 import { BridgeError } from './store.js';
 
-export type WorkerRun = Pick<CodexRequest, 'prompt' | 'sessionId' | 'ephemeral' | 'model' | 'reasoningEffort'>;
-export type WorkerMessage = { event: CodexEvent } | { result: CodexResult } | { error: string };
+export type WorkerRun = Pick<CodexRequest, 'prompt' | 'developerInstructions' | 'sessionId' | 'ephemeral' | 'model' | 'reasoningEffort' | 'workDirectoryId'> & { toolDefinitions?: CodexToolDefinition[] };
+export type WorkerToolResult = CodexToolResult & { id: string };
+export type WorkerMessage = { event: CodexEvent } | { result: CodexResult } | { error: string }
+  | { toolCall: { id: string; name: string; args: unknown } };
 
 export class RemoteCodexRunner implements CodexRunner {
   readonly isolated = true;
   constructor(private readonly socketPath: string) {}
 
-  private request(path: string, body?: WorkerRun, signal?: AbortSignal): Promise<IncomingMessage> {
+  private request(path: string, body?: WorkerRun | WorkerToolResult, signal?: AbortSignal): Promise<IncomingMessage> {
     const timeout = AbortSignal.timeout(body ? 16 * 60_000 : 35_000);
     return new Promise((resolve, reject) => {
       const payload = body && JSON.stringify(body);
@@ -44,8 +47,8 @@ export class RemoteCodexRunner implements CodexRunner {
   listModels() { return this.read<ModelCatalog>('/models'); }
   async readLimits() { return (await this.read<{ limits: CodexLimits | null }>('/limits')).limits; }
   async run(r: CodexRequest, onEvent: (event: CodexEvent) => Promise<void>, signal: AbortSignal) {
-    const { prompt, sessionId, ephemeral, model, reasoningEffort } = r;
-    const res = await this.request('/run', { prompt, sessionId, ephemeral, model, reasoningEffort }, signal);
+    const { prompt, developerInstructions, sessionId, ephemeral, model, reasoningEffort, workDirectoryId, tools } = r;
+    const res = await this.request('/run', { prompt, developerInstructions, sessionId, ephemeral, model, reasoningEffort, workDirectoryId, toolDefinitions: tools?.definitions }, signal);
     const stream = createInterface({ input: res, crlfDelay: Infinity });
     try {
       for await (const line of stream) {
@@ -53,6 +56,16 @@ export class RemoteCodexRunner implements CodexRunner {
         if (line.length > 4_000_000) throw new BridgeError('Событие исполнителя слишком большое.', 502);
         const message = JSON.parse(line) as WorkerMessage;
         if ('event' in message) await onEvent(message.event);
+        else if ('toolCall' in message) {
+          const { id, name, args } = message.toolCall;
+          let result = { success: false, text: 'Инструмент Fastkore недоступен.' };
+          if (tools) {
+            try { result = await tools.call(name, args, signal); } catch { /* Reply without disclosing the backend exception. */ }
+          }
+          signal.throwIfAborted();
+          const reply = await this.request('/tool-result', { id, ...result }, signal);
+          reply.resume();
+        }
         else if ('result' in message) return message.result;
         else if ('error' in message) throw new BridgeError(message.error, 502);
       }
