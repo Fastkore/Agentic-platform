@@ -2,6 +2,7 @@ import { useEffect, useState, type ReactNode } from 'react';
 import { ArrowLeft, ArchiveRestore, Trash2 } from 'lucide-react';
 import type { ArchivedChatSummary, Chat } from '../shared/types';
 import { WorkspaceDialog } from './WorkspaceDialog';
+import { chatTooltip, shortDate } from './chat-date';
 
 export function ChatArchiveDialog({ request, close, renderChat, onRestore }: {
   request: <T>(url: string, init?: RequestInit) => Promise<T>;
@@ -71,9 +72,9 @@ export function ChatArchiveDialog({ request, close, renderChat, onRestore }: {
         </div>}
       </> : !error && <p role="status">Загрузка…</p>}
     </> : <div className="archive-list">
-      {list?.map(item => <button type="button" className="workspace-row archive-row" key={item.id} onClick={() => { setError(''); setSelected(item); }}>
+      {list?.map(item => <button type="button" className="workspace-row archive-row" key={item.id} title={chatTooltip(item, item.archivedAt)} onClick={() => { setError(''); setSelected(item); }}>
         <span><strong>{item.title}</strong><small>{item.projectName} · {item.ownerName}</small></span>
-        <time dateTime={item.archivedAt}>{new Date(item.archivedAt).toLocaleDateString('ru-RU')}</time>
+        <time dateTime={item.archivedAt}>{shortDate(item.archivedAt)}</time>
       </button>)}
       {!list?.length && !error && <p className="help" role="status">{list ? 'Архив пуст.' : 'Загрузка…'}</p>}
     </div>}

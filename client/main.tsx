@@ -8,6 +8,7 @@ import './style.css';
 import './workspace.css';
 import { ChatArchiveDialog } from './ChatArchiveDialog';
 import { shortUserName } from './user-name';
+import { chatTooltip, dateTooltip, shortDate } from './chat-date';
 import { parseHostTheme, webViewHost, type Theme } from './fastkore';
 import { Select } from './Select';
 import { SidebarResizeHandle } from './SidebarResizeHandle';
@@ -647,7 +648,7 @@ function App() {
           a: ({ href, children }) => <a href={href} target="_blank" rel="noreferrer">{children}</a>,
         }}>{message.text}</ReactMarkdown></div> :
           <div className="question-bubble">
-            {message.authorId && message.authorId !== user.id && <small title={message.authorName ?? conversation.ownerName}>{shortUserName(message.authorName ?? conversation.ownerName)}</small>}
+            {message.authorId && message.authorId !== user.id && <small title={dateTooltip(message.createdAt, message.authorName ?? conversation.ownerName)}>{shortUserName(message.authorName ?? conversation.ownerName)}</small>}
             {message.specialistName && <small title="Рекомендованный специалист">@{message.specialistName}</small>}
             {message.text}
           </div>}
@@ -661,7 +662,10 @@ function App() {
         {message.consultedSpecialists?.length ? <div className="message-specialists">Специалисты · {message.consultedSpecialists.join(', ')}</div> : null}
         <div className="message-actions">
           {message.text && <button className="workspace-icon" aria-label="Копировать сообщение" title="Копировать сообщение" onClick={() => void copyItem(message.text, message.id)}>{copied === message.id ? <Check size={14} /> : <Copy size={14} />}</button>}
-          <time dateTime={message.createdAt} title={message.usage ? 'Вход: ' + message.usage.inputTokens.toLocaleString('ru-RU') + ' · Выход: ' + message.usage.outputTokens.toLocaleString('ru-RU') : undefined}>{shortDate(message.createdAt)}</time>
+          <time dateTime={message.createdAt} title={[
+            dateTooltip(message.createdAt, message.role === 'user' ? message.authorName ?? (message.authorId === user.id ? user.name : conversation.ownerName) : 'Codex'),
+            message.usage && 'Вход: ' + message.usage.inputTokens.toLocaleString('ru-RU') + ' · Выход: ' + message.usage.outputTokens.toLocaleString('ru-RU'),
+          ].filter(Boolean).join('\n')}>{shortDate(message.createdAt)}</time>
         </div>
       </article>)}
   </>;
@@ -806,7 +810,7 @@ function App() {
             </div>
             {open && <div className="project-chat-list" id={'chats-' + project.id}>
               {visible.map(item => <button key={item.id} className="workspace-row chat-row" aria-current={item.id === chatId ? 'page' : undefined}
-                onClick={() => navigateWorkspace(project.id, item.id)} title={item.title}>
+                onClick={() => navigateWorkspace(project.id, item.id)} title={chatTooltip(item)}>
                 <span>{item.title}</span>
                 {active?.chatId === item.id ? <LoaderCircle size={13} className="spin" /> : <time dateTime={item.updatedAt}>{shortDate(item.updatedAt)}</time>}
               </button>)}
@@ -840,7 +844,7 @@ function App() {
         {chat && <>
           <div className="workspace-chat-title">
             <Folder size={17} aria-label={selectedProject?.name} />
-            <h1 title={chat.title}>{chat.title}</h1>
+            <h1 title={chatTooltip(chat)}>{chat.title}</h1>
             {!chat.archivedAt && (isAdmin || chat.ownerId === user.id) && <button type="button" className="workspace-icon chat-rename-button"
               aria-label="Переименовать чат" title="Переименовать чат" disabled={pending} onClick={() => {
                 setError('');
@@ -848,7 +852,7 @@ function App() {
                 setPanel('rename-chat');
               }}><Pencil size={15} /></button>}
           </div>
-          <div className="chat-access" title={chat.ownerName}>
+          <div className="chat-access" title={dateTooltip(chat.updatedAt, chat.ownerName)}>
             {isAdmin && !chat.linkedToFastkore ? <Select label="Видимость чата" value={chat.visibility ?? 'private'} disabled={pending}
               onChange={visibility => void changeVisibility(visibility as 'private' | 'project')}
               options={[{ value: 'private', label: 'Личный' }, { value: 'project', label: 'Общий' }]} />
@@ -897,7 +901,7 @@ function App() {
       {error && <p className="inline-error" role="alert">{error}</p>}
       {relatedLoading ? <p className="help" role="status">Загрузка…</p> : <div className="archive-list">
         {relatedChats?.list.map(item => <button type="button" className="workspace-row archive-row" key={item.id} aria-current={item.id === chatId ? 'page' : undefined}
-          onClick={() => { navigateToRelated(item); closePanel(); }}><span><strong>{item.title}</strong><small>{item.projectName}</small></span>
+          onClick={() => { navigateToRelated(item); closePanel(); }} title={chatTooltip(item)}><span><strong>{item.title}</strong><small>{item.projectName}</small></span>
           <time dateTime={item.updatedAt}>{shortDate(item.updatedAt)}</time></button>)}
         {!relatedChats?.list.length && !error && <p className="help">По этой карточке или списку пока нет чатов.</p>}
       </div>}
@@ -910,7 +914,7 @@ function App() {
       <div className="search-results">
         {searchable.map(({ project, matchingChats }) => <div key={project.id}>
           <button className="workspace-row search-project" onClick={() => { navigateWorkspace(project.id); closePanel(); }}><Folder size={16} />{project.name}</button>
-          {matchingChats.map(item => <button key={item.id} className="workspace-row chat-row" onClick={() => { navigateWorkspace(project.id, item.id); closePanel(); }}><span>{item.title}</span><time dateTime={item.updatedAt}>{shortDate(item.updatedAt)}</time></button>)}
+          {matchingChats.map(item => <button key={item.id} className="workspace-row chat-row" title={chatTooltip(item)} onClick={() => { navigateWorkspace(project.id, item.id); closePanel(); }}><span>{item.title}</span><time dateTime={item.updatedAt}>{shortDate(item.updatedAt)}</time></button>)}
         </div>)}
         {searchLoading && <p className="composer-status" role="status">Загрузка…</p>}
         {!searchLoading && !searchable.length && <p className="composer-status">Ничего не найдено</p>}
@@ -1038,14 +1042,6 @@ function App() {
       </div>
     </WorkspaceDialog>}
   </div>;
-}
-
-function shortDate(value: string) {
-  const date = new Date(value);
-  if (!Number.isFinite(date.getTime())) return '';
-  return date.toDateString() === new Date().toDateString()
-    ? date.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })
-    : date.toLocaleDateString('ru-RU', { day: 'numeric', month: 'short' });
 }
 
 const remainingPercent = (used: number) => Math.min(100, Math.max(0, 100 - used));
