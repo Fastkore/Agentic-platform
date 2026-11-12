@@ -8,7 +8,8 @@ import { BridgeError, redact } from './store.js';
 export type FastkoreCliRead =
   | { operation: 'get'; entitySetId: string; entityId: string }
   | { operation: 'query'; entitySetId: string; limit: number };
-export type FastkoreCliOperation = FastkoreCliRead | { operation: 'auth-info' };
+export type FastkoreCliOperation = FastkoreCliRead | { operation: 'auth-info' } |
+  { operation: 'execute'; command: string; args: string[]; workDirectoryId: string };
 type Result = { success: boolean; exitCode: number; data?: unknown };
 const audience = 'fastkore-cli';
 const unavailable = 'Исполнитель Fastkore CLI недоступен.';
@@ -22,7 +23,7 @@ export class FastkoreCli {
     return new Promise((resolve, reject) => {
       const fail = () => new BridgeError(unavailable, 503);
       const body = payload && JSON.stringify(payload);
-      const timeout = AbortSignal.timeout(28_000);
+      const timeout = AbortSignal.timeout(95_000);
       const req = request({
         socketPath: this.socketPath, path, method: body ? 'POST' : 'GET',
         headers: body ? { 'content-type': 'application/json', 'content-length': Buffer.byteLength(body) } : undefined,
@@ -51,6 +52,9 @@ export class FastkoreCli {
   describe(command?: FastkoreCliCommand, signal?: AbortSignal) {
     return this.exchange(command ? '/describe/' + command : '/capabilities', undefined, signal);
   }
+  describeCommand(command: string, signal?: AbortSignal) {
+    return this.exchange('/command-description?name=' + encodeURIComponent(command), undefined, signal);
+  }
 
   async checkTrust(binding: { origin: string; ca?: string }, signal: AbortSignal) {
     if (!binding.ca) throw new BridgeError('Для Fastkore CLI требуется подтверждённый CA установки ERP.', 424);
@@ -70,6 +74,7 @@ export class FastkoreCli {
     signal.throwIfAborted();
     const credential = current();
     const binding = sso.delegationBinding(credential);
+    if (binding?.cliEnabled === false) throw new BridgeError('Fastkore CLI отключена в настройках установки.', 403);
     const grant = binding && sso.openDelegation(credential, binding.revision);
     if (!binding || !grant) throw new BridgeError(reauth, 403);
     const check = () => {
@@ -77,6 +82,7 @@ export class FastkoreCli {
       const session = current();
       const now = sso.delegationBinding(session);
       if (session.id !== credential.id || session.erpDelegationRevoked ||
+        now?.cliEnabled === false ||
         session.erpDelegation?.sealedGrant !== credential.erpDelegation?.sealedGrant ||
         now?.revision !== binding.revision || now.origin !== binding.origin || grant.expiresAt <= Date.now()) {
         throw new BridgeError(reauth, 403);
@@ -116,6 +122,7 @@ export class FastkoreCli {
     }
     return result.success
       ? { success: true, exitCode: 0, data: JSON.parse(redact(JSON.stringify(result.data))) }
-      : { success: false, exitCode: result.exitCode };
+      : { success: false, exitCode: result.exitCode,
+        data: result.data === undefined ? undefined : JSON.parse(redact(JSON.stringify(result.data))) };
   }
 }

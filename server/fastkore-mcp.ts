@@ -170,7 +170,7 @@ export class FastkoreMcp {
   }
 
   async prepare(credential: Credential, context: FastkoreContext | undefined, authorize: () => void, signal: AbortSignal,
-    audit?: (event: ReadAudit) => void): Promise<{ tools?: CodexTools; problem?: string }> {
+    audit?: (event: ReadAudit) => void, fullCatalog = false): Promise<{ tools?: CodexTools; problem?: string }> {
     const status = this.status(credential);
     if (status === 'reauth') return { problem: reauth };
     const state = status === 'ready' ? this.sessions.get(credential.id) : undefined;
@@ -221,7 +221,8 @@ export class FastkoreMcp {
         const { result } = await rpc('tools/list', cursor ? { cursor } : {}, signal);
         if (!Array.isArray(result?.tools)) throw new BridgeError(unavailable, 502);
         for (const value of result.tools) {
-          if (typeof value?.name !== 'string' || !readTools.has(value.name) || !record(value.inputSchema)) continue;
+          if (typeof value?.name !== 'string' || !/^[a-zA-Z0-9_-]{1,55}$/.test(value.name) ||
+            (!fullCatalog && !readTools.has(value.name)) || !record(value.inputSchema)) continue;
           const fixed = scopedArguments(context, value.inputSchema, value.name);
           const name = 'fastkore_' + value.name;
           const upstreamSchema = JSON.parse(redact(JSON.stringify(value.inputSchema)));

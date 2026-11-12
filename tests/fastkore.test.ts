@@ -357,8 +357,12 @@ test('a valid SSO grant exposes CLI tools without MCP and only with a trusted ru
     assert.equal(ready.problem, undefined);
     assert.deepEqual(ready.tools?.definitions.map(tool => tool.name), [
       'fastkore_cli_describe', 'fastkore_cli_auth_info', 'fastkore_cli_data_get', 'fastkore_cli_data_query',
+      'fastkore_cli_catalog', 'fastkore_cli_command_describe', 'fastkore_cli_execute',
     ]);
     assert.equal(check.mock.callCount(), 2);
+    assert.equal((await f.patch({ cliEnabled: false })).statusCode, 200);
+    assert.equal((await prepare()).tools, undefined);
+    assert.equal((await f.patch({ cliEnabled: true })).statusCode, 200);
     const entitySetId = randomUUID(), entityId = randomUUID();
     assert.equal((await ready.tools!.call('fastkore_cli_data_get', { entitySetId, entityId, scope: 'erp' }, signal)).success, true);
     const entry = f.store.auditEvents().find(event => event.action === 'erp.cli.read')!;

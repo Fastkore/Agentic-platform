@@ -3,6 +3,7 @@ import { X509Certificate } from 'node:crypto';
 import { createServer } from 'node:http';
 import { chmod, lstat, readFile, unlink } from 'node:fs/promises';
 import { promisify } from 'node:util';
+import { commandCatalog, commandArguments, jobDirectory } from './fastkore-cli-commands.mjs';
 
 const socket = '/run/fastkore-cli/pilot.sock';
 const serverAddress = process.env.FASTKORE_SERVER;
@@ -16,7 +17,7 @@ const cliEnv = {
   FASTKORE_SERVER: serverAddress, FASTKORE_TLS: 'true', FASTKORE_CA_FILE: caFile,
 };
 const cli = '/usr/local/bin/fastkore-cli';
-const cliOptions = { env: cliEnv, timeout: 25_000, killSignal: 'SIGKILL', maxBuffer: 512 * 1024 };
+const cliOptions = { env: cliEnv, timeout: 90_000, killSignal: 'SIGKILL', maxBuffer: 512 * 1024 };
 const capabilitiesArgs = ['agent', 'capabilities', '--json'];
 const capabilities = await promisify(execFile)(cli, capabilitiesArgs, cliOptions)
   .then(({ stdout }) => JSON.parse(stdout))
@@ -28,6 +29,8 @@ if (capabilities?.success !== true || capabilities.exitCode !== 0 ||
   throw new Error('Fastkore CLI package does not provide the required command catalog');
 }
 
+const catalog = commandCatalog(capabilities.data.commands);
+const jobsRoot = process.env.BRIDGE_CODEX_JOB_FILES;
 const old = await lstat(socket).catch(error => { if (error.code !== 'ENOENT') throw error; });
 if (old) {
   if (!old.isSocket()) throw new Error('Pilot socket path is occupied');
@@ -49,7 +52,7 @@ async function readCommand(req) {
   req.setEncoding('utf8');
   for await (const chunk of req) {
     body += chunk;
-    if (Buffer.byteLength(body) > 8192) return;
+    if (Buffer.byteLength(body) > 131072) return;
   }
   const input = JSON.parse(body);
   if (!input || typeof input !== 'object' || Array.isArray(input)) return;
@@ -57,6 +60,11 @@ async function readCommand(req) {
   if (authority !== trust.authority || caFingerprint !== trust.caFingerprint ||
     typeof ticket !== 'string' || !ticketPattern.test(ticket)) return;
   const flags = ['--user-ticket-stdin', '--json'];
+  if (operation === 'execute' && Object.keys(args).length === 3 && jobsRoot) {
+    const cwd = await jobDirectory(jobsRoot, args.workDirectoryId);
+    const argv = await commandArguments(catalog, args.command, args.args, cwd);
+    return { argv, ticket, cwd };
+  }
   if (operation === 'auth-info' && Object.keys(args).length === 0) return { argv: ['auth', 'info', ...flags], ticket };
   if (typeof args.entitySetId !== 'string' || !guid.test(args.entitySetId) || Object.keys(args).length !== 2) return;
   const entitySet = ['--entity-set', args.entitySetId];
@@ -80,14 +88,19 @@ const server = createServer(async (req, res) => {
     try { read = await readCommand(req); } catch { /* A malformed payload never starts a process. */ }
     if (!read) { send(400, {}); return; }
   }
-  const args = read?.argv ?? (req.method === 'GET' ? commands.get(req.url) : undefined);
+  let describe;
+  if (req.method === 'GET' && req.url?.startsWith('/command-description?')) {
+    const name = new URL(req.url, 'http://localhost').searchParams.get('name');
+    if (catalog.has(name)) describe = ['agent', 'describe', name, '--json'];
+  }
+  const args = read?.argv ?? describe ?? (req.method === 'GET' ? commands.get(req.url) : undefined);
   if (!args) { send(404, {}); return; }
   if (active) { send(409, {}); return; }
   active = true;
   const stop = new AbortController();
   res.once('close', () => { if (!res.writableEnded) stop.abort(); });
   if (res.destroyed) stop.abort();
-  const child = execFile(cli, args, { ...cliOptions, signal: stop.signal }, (error, stdout, stderr) => {
+  const child = execFile(cli, args, { ...cliOptions, cwd: read?.cwd, signal: stop.signal }, (error, stdout, stderr) => {
     active = false;
     if (res.destroyed) return;
     try {
@@ -96,7 +109,7 @@ const server = createServer(async (req, res) => {
           let reported;
           try { reported = JSON.parse(stderr); } catch { /* Exit status is sufficient for an unstructured error. */ }
           if (reported?.exitCode !== undefined && reported.exitCode !== error.code) throw new Error();
-          send(200, { success: false, exitCode: error.code });
+          send(200, { success: false, exitCode: error.code, data: reported });
           return;
         }
         throw new Error();
@@ -107,7 +120,7 @@ const server = createServer(async (req, res) => {
         send(200, { success: true, exitCode: 0, data: parsed.data });
         return;
       }
-      if (parsed.success !== true || parsed.data?.operation !== 'read') throw new Error('Unexpected CLI contract');
+      if (parsed.success !== true || !parsed.data?.name) throw new Error('Unexpected CLI contract');
       const { name, purpose, operation, required, optional, returns } = parsed.data;
       send(200, { ok: true, authenticated: false,
         contract: { name, purpose, operation, required, optional, returns } });

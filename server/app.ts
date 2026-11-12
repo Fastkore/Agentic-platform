@@ -22,6 +22,7 @@ import { FastkoreMcp } from './fastkore-mcp.js';
 import { FastkoreCli } from './fastkore-cli.js';
 import { erpRoleCatalog, restoreErpRoles } from './erp-roles.js';
 import { withFastkoreCliDescription, withFastkoreCliReads } from './codex-tools.js';
+import { withFastkoreCliCommands } from './fastkore-cli-tools.js';
 import type { AgentProfile, Dataset, FastkoreAuthentication, FastkoreInstallation, FastkoreKeyIssue, FileStorageProvider, ProjectAgentPolicy, ProjectAgentSettings, Settings, User, WorkRole } from '../shared/types.js';
 import type { AuditEvent } from '../shared/types.js';
 import { agentToolIds } from '../shared/agent-tools.js';
@@ -102,8 +103,8 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
       } });
     };
     const integration = await fastkoreMcp.prepare(credential, context, authorize, signal, ({ tool, parameters, ...details }) =>
-      audit('erp.mcp.read', tool, { ...details, objectIds: erpAuditIds(parameters) }));
-    if (!fastkoreCli || !sso || credential.source !== 'fastkore') return integration;
+      audit('erp.mcp.call', tool, { ...details, objectIds: erpAuditIds(parameters) }), true);
+    if (!fastkoreCli || !sso || credential.source !== 'fastkore' || sso.delegationBinding(credential)?.cliEnabled === false) return integration;
     const tools = withFastkoreCliDescription(integration.tools ?? {
       definitions: [], call: async () => ({ success: false, text: 'Инструмент Fastkore недоступен.' }),
     }, (command, callSignal) => fastkoreCli.describe(command, callSignal), authorize);
@@ -134,7 +135,20 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
         audit('erp.cli.read', input.operation, { scope, success, elapsedMs: Date.now() - started, objectIds: erpAuditIds(input) });
       }
     });
-    return { tools: reads, problem: reads.scopedReadAvailable ? undefined : integration.problem };
+    const commands = run ? withFastkoreCliCommands(reads, () => fastkoreCli.describe(),
+      (command, callSignal) => fastkoreCli.describeCommand(command, callSignal),
+      async (command, args, callSignal) => {
+        const started = Date.now();
+        let success = false;
+        try {
+          const result = await fastkoreCli.run({ operation: 'execute', command, args, workDirectoryId: run.id },
+            sso, current, id => fastkoreMcp.invalidate(id), callSignal);
+          success = result.success;
+          const text = JSON.stringify({ exitCode: result.exitCode, data: result.data });
+          return { success, text: text.length <= 96000 ? text : 'Ответ CLI слишком большой. Сохраните результат в файл или уменьшите выборку.' };
+        } finally { audit('erp.cli.command', command, { success, elapsedMs: Date.now() - started }); }
+      }, authorize) : reads;
+    return { tools: commands, problem: reads.scopedReadAvailable ? undefined : integration.problem };
   };
   migrateFastkoreChatBindings(workspace.store.state);
   if (sso) {
@@ -417,7 +431,7 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
     return reply.code(201).send(result);
   });
   app.patch<{ Params: { id: string }; Body: InstallationPatch }>('/api/admin/fastkore/installations/:id', {
-    schema: { body: { ...object({ name: string(100), validateTicketUrl: string(2048), enabled: { type: 'boolean' }, confirmValidateTicketUrl: { type: 'boolean' }, mcpUrl: string(2048) }), minProperties: 1 } },
+    schema: { body: { ...object({ name: string(100), validateTicketUrl: string(2048), enabled: { type: 'boolean' }, confirmValidateTicketUrl: { type: 'boolean' }, mcpUrl: string(2048), mcpEnabled: { type: 'boolean' }, cliEnabled: { type: 'boolean' } }), minProperties: 1 } },
   }, async request => {
     localAdmin(request);
     const service = configuredSso();

@@ -8,6 +8,7 @@ services:
       additional_contexts:
         cli_package: ../private/fastkore-cli-pilot/27.0.48.0-sso
     init: true
+    user: "1000:1000"
     restart: unless-stopped
     read_only: true
     cap_drop: [ALL]
@@ -21,6 +22,7 @@ services:
       FASTKORE_SERVER: ${BRIDGE_FASTKORE_CLI_SERVER:-grpc://mcp.fastkore.ru:17050}
       FASTKORE_TLS: "true"
       FASTKORE_CA_FILE: /certs/ca.pem
+      BRIDGE_CODEX_JOB_FILES: /runner/jobs
     volumes:
       - type: bind
         source: ../private/fastkore-ca/ca.pem
@@ -30,6 +32,7 @@ services:
           create_host_path: false
       - work:/workspace
       - fastkore_cli_ticket_socket:/run/fastkore-cli
+      - codex_job_files:/runner/jobs
     healthcheck:
       test: ["CMD", "node", "-e", "const r=require('node:http').get({socketPath:'/run/fastkore-cli/pilot.sock',path:'/health'},s=>{s.resume();process.exitCode=s.statusCode===200?0:1});r.on('error',()=>{process.exitCode=1})"]
       interval: 10s
@@ -39,3 +42,6 @@ volumes:
   work:
   fastkore_cli_ticket_socket:
     external: true
+  codex_job_files:
+    external: true
+    name: ${BRIDGE_CODEX_JOB_VOLUME:-agentic-platformin_codex_job_files}

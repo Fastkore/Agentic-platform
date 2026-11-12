@@ -18,6 +18,7 @@ const labels: Record<string, string> = {
   'sso.installation.create': 'Добавлена установка Fastkore', 'sso.installation.update': 'Изменено подключение Fastkore',
   'erp.role.delete': 'Удалена роль из списка',
   'erp.mcp.read': 'Чтение ERP через MCP', 'erp.cli.read': 'Чтение ERP через CLI',
+  'erp.mcp.call': 'Вызов ERP через MCP', 'erp.cli.command': 'Команда Fastkore CLI',
   'knowledge.summary': 'Изменена памятка базы знаний', 'knowledge.upload': 'Добавлен файл базы знаний',
   'knowledge.replace': 'Заменён файл базы знаний', 'knowledge.delete': 'Удалён файл базы знаний', login: 'Локальный вход',
 };

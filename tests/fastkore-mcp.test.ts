@@ -83,6 +83,8 @@ test('Fastkore MCP scopes tokens to two SSO sessions, blocks writes and handles 
     attach(alice); attach(boris);
     const [a, b] = await Promise.all([prepare(alice), prepare(boris)]);
     assert.ok(a.tools && b.tools);
+    const full = await mcp.prepare(alice, undefined, () => {}, signal, undefined, true);
+    assert.ok(full.tools?.definitions.some(tool => tool.name === 'fastkore_CreateTask'));
     assert.deepEqual(a.tools.definitions.map(tool => tool.name), ['fastkore_GetCurrentUserInfo', 'fastkore_GetOrders']);
     assert.ok(!a.tools.definitions.some(tool => tool.name.includes('CreateTask')));
     assert.equal((await a.tools.call('fastkore_CreateTask', {}, signal)).success, false);

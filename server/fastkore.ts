@@ -25,7 +25,7 @@ export interface PairingInput {
   version: 1; pairing_code: string; platform_origin: string; installation_id: string; erp_key_verifier: string;
 }
 export type PairingClient = (url: string, payload: PairingInput, trust?: ErpTlsOptions) => Promise<unknown>;
-export type InstallationPatch = { name?: string; validateTicketUrl?: string; confirmValidateTicketUrl?: boolean; enabled?: boolean; mcpUrl?: string };
+export type InstallationPatch = { name?: string; validateTicketUrl?: string; confirmValidateTicketUrl?: boolean; enabled?: boolean; mcpUrl?: string; mcpEnabled?: boolean; cliEnabled?: boolean };
 
 export const uuid = (v: unknown): v is string => typeof v === 'string' && v.length === 36 && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(v);
 function ticketRoles(value: unknown): FastkoreRole[] | undefined {
@@ -206,6 +206,7 @@ export class FastkoreSso {
       id, name, validateTicketUrl, enabled: enabled && this.canUse(item), autoProvision, defaultRoleId, sessionTtlSeconds,
       pairingStatus, pairedAt, pairingRotationPending: pending ? attempt.rotate : undefined,
       tlsFingerprint, tlsConfirmationRequired: item.tls && !tlsFingerprint || undefined, mcpUrl: item.mcpUrl,
+      mcpEnabled: item.mcpEnabled, cliEnabled: item.cliEnabled,
     };
   }
   list() { return this.items().map(item => this.publicInstallation(item)); }
@@ -288,6 +289,8 @@ export class FastkoreSso {
     const revoke = urlChanged || enabled !== item.enabled || mcpUrl !== item.mcpUrl;
     if (patch.name !== undefined) item.name = nameOf(patch.name);
     item.validateTicketUrl = url; item.enabled = enabled; item.mcpUrl = mcpUrl;
+    item.mcpEnabled = patch.mcpEnabled ?? item.mcpEnabled;
+    item.cliEnabled = patch.cliEnabled ?? item.cliEnabled;
     if (urlChanged && item.pairing) delete item.pairing.binding;
     if (urlChanged && item.tls) delete item.tls.trust;
     if (revoke) item.revision = randomUUID();
@@ -402,7 +405,8 @@ export class FastkoreSso {
     const item = this.enabled(c.installationId!);
     const origin = new URL(item.validateTicketUrl).origin;
     const ca = this.tlsOptions(item)?.ca;
-    return { origin, key: this.decrypt(item), ca, revision: item.revision, mcpUrl: item.mcpUrl,
+    return { origin, key: this.decrypt(item), ca, revision: item.revision, mcpUrl: item.mcpEnabled === false ? undefined : item.mcpUrl,
+      mcpEnabled: item.mcpEnabled, cliEnabled: item.cliEnabled,
       mcpCa: item.mcpUrl && new URL(item.mcpUrl).origin === origin ? ca : undefined };
   }
   start(theme: Theme, previousCookie: string) {

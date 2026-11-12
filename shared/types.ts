@@ -72,7 +72,7 @@ export interface AuditEvent {
 export interface Security { users: UserRecord[]; credentials: Credential[]; audit: AuditEvent[] }
 export interface FastkoreTlsInfo { origin: string; fingerprint: string; subject: string; expiresAt: string }
 export interface FastkoreTlsTrust extends FastkoreTlsInfo { pem: string }
-export interface FastkoreInstallation { id: string; name: string; validateTicketUrl: string; mcpUrl?: string; enabled: boolean; autoProvision: true; defaultRoleId: 'sso_pending'; sessionTtlSeconds: 1800; pairingStatus: 'manual' | 'unpaired' | 'pending' | 'paired'; pairedAt?: string; pairingRotationPending?: boolean; tlsFingerprint?: string; tlsConfirmationRequired?: boolean }
+export interface FastkoreInstallation { id: string; name: string; validateTicketUrl: string; mcpUrl?: string; mcpEnabled?: boolean; cliEnabled?: boolean; enabled: boolean; autoProvision: true; defaultRoleId: 'sso_pending'; sessionTtlSeconds: 1800; pairingStatus: 'manual' | 'unpaired' | 'pending' | 'paired'; pairedAt?: string; pairingRotationPending?: boolean; tlsFingerprint?: string; tlsConfirmationRequired?: boolean }
 export interface FastkoreKeyIssue { installationId: string; connectionKey: string; erpKeyVerifier: string }
 export interface FastkoreAuthentication { source: 'fastkore'; installationId: string; externalUserId: string; expiresAt: string; csrfToken: string; canChangePassword: false; roles?: FastkoreRole[] }
 export interface FastkorePairingAttempt {

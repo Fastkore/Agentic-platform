@@ -264,6 +264,8 @@ export function FastkorePanel({ request }: { request: Request }) {
               name: editing.name.trim(),
               validateTicketUrl: editing.validateTicketUrl.trim(),
               mcpUrl: editing.mcpUrl?.trim() ?? '',
+              mcpEnabled: editing.mcpEnabled !== false,
+              cliEnabled: editing.cliEnabled !== false,
               confirmValidateTicketUrl: confirmUrl,
             }));
             setEditing(null);
@@ -280,6 +282,10 @@ export function FastkorePanel({ request }: { request: Request }) {
           <label htmlFor="sso-mcp-url">HTTPS-адрес MCP</label>
           <input id="sso-mcp-url" type="url" value={editing.mcpUrl ?? ''} placeholder="https://erp.example.ru/webapi/mcp"
             onChange={e => setEditing({ ...editing, mcpUrl: e.target.value })} maxLength={2048} />
+          <label className="check-setting"><input type="checkbox" checked={editing.mcpEnabled !== false}
+            onChange={e => setEditing({ ...editing, mcpEnabled: e.target.checked })} />Разрешить Fastkore MCP</label>
+          <label className="check-setting"><input type="checkbox" checked={editing.cliEnabled !== false}
+            onChange={e => setEditing({ ...editing, cliEnabled: e.target.checked })} />Разрешить Fastkore CLI</label>
           <div className="settings-dialog-actions">
             <button type="button" className="secondary" disabled={busy} onClick={() => { setEditing(null); setError(''); }}>Отмена</button>
             <button className="primary" disabled={busy || (urlChanged && !confirmUrl)}>Сохранить</button>

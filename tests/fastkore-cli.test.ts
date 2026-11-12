@@ -27,7 +27,7 @@ test('Fastkore CLI uses a fresh ticket per command and stops after ERP revokes t
   const key = 'test-binding-key';
   const tickets = new Set<string>();
   const used: string[] = [];
-  let denied = false, forgotten = false, wrongAudience = false, wrongTrust = false, wrongUser = false;
+  let denied = false, forgotten = false, wrongAudience = false, wrongTrust = false, wrongUser = false, cliEnabled = true;
   const erp = httpsServer(tls, async (req, res) => {
     assert.equal(req.url, '/api/ai/cli-ticket');
     assert.equal(req.headers.authorization, 'Bearer ' + key);
@@ -64,7 +64,7 @@ test('Fastkore CLI uses a fresh ticket per command and stops after ERP revokes t
   await once(runner, 'listening');
   const cli = new FastkoreCli(socket);
   const sso = {
-    delegationBinding: () => ({ origin: 'https://' + authority, ca: tls.cert, revision: '1', key, mcpUrl: undefined, mcpCa: undefined }),
+    delegationBinding: () => ({ origin: 'https://' + authority, ca: tls.cert, revision: '1', key, mcpUrl: undefined, mcpCa: undefined, cliEnabled }),
     openDelegation: () => forgotten ? undefined : grant,
   };
   const run = (operation: Parameters<FastkoreCli['run']>[0]) => cli.run(operation, sso, () => credential,
@@ -79,6 +79,10 @@ test('Fastkore CLI uses a fresh ticket per command and stops after ERP revokes t
     assert.equal((await run({ operation: 'query', entitySetId, limit: 2 })).success, true);
     assert.deepEqual(used, ['auth-info', 'get', 'query']);
     assert.equal(tickets.size, 0);
+    cliEnabled = false;
+    await assert.rejects(run({ operation: 'auth-info' }), /отключена/);
+    assert.equal(tickets.size, 0);
+    cliEnabled = true;
     wrongTrust = true;
     await assert.rejects(run({ operation: 'auth-info' }), /не совпадает с привязкой/);
     assert.equal(tickets.size, 0);
