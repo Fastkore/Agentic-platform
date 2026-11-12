@@ -31,6 +31,7 @@ export class FastkoreCli {
       }, async res => {
         try {
           if (res.statusCode === 409) throw new BridgeError('Исполнитель Fastkore CLI занят. Повторите позже.', 409);
+          if (res.statusCode === 400) throw new BridgeError('Проверьте имя команды, её параметры и пути. CLI использует подключение текущего сотрудника и рабочую папку cli.', 400);
           if (res.statusCode !== 200) throw fail();
           let body = '';
           res.setEncoding('utf8');

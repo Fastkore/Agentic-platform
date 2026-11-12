@@ -16,7 +16,8 @@ export function commandCatalog(commands) {
 }
 
 const fileOptions = new Set(['--file', '--out', '--spec', '--input', '--workspace', '--plan', '--journal', '--selection-load']);
-const transportOptions = new Set(['--server', '--user-ticket-stdin', '--json', '--agent-compact', '--agent-full', '--compare-profile']);
+const transportOptions = new Set(['--server', '--user-ticket-stdin', '--compare-profile']);
+const formatOptions = new Set(['--json', '--agent-compact', '--agent-full']);
 
 export async function commandArguments(catalog, command, args, directory) {
   const contract = catalog.get(command);
@@ -26,6 +27,10 @@ export async function commandArguments(catalog, command, args, directory) {
   const result = command.split(' ');
   for (let index = 0; index < args.length; index++) {
     const option = args[index];
+    if (formatOptions.has(option)) {
+      if (option !== '--json') result.push(option);
+      continue;
+    }
     if (!options.has(option) || transportOptions.has(option)) throw Error('Invalid CLI option');
     result.push(option);
     const value = args[index + 1];
