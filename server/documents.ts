@@ -1,8 +1,7 @@
 import { lstat, mkdir, readFile, readdir, realpath, rmdir, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { createRequire } from 'node:module';
-import readExcelFile from 'read-excel-file/node';
+import { Worker } from 'node:worker_threads';
 import { parse } from 'csv-parse/sync';
 import type { Attachment, Project, ProjectFile } from '../shared/types.js';
 import { BridgeError } from './store.js';
@@ -42,36 +41,39 @@ export async function projectFilePath(project: Project, attachment: Attachment) 
 export function supportsDocumentText(name: string) {
   return ['.txt', '.md', '.json', '.xml', '.log', '.xlsx', '.csv', '.tsv', '.pdf'].includes(path.extname(name).toLowerCase());
 }
+let activePreviews = 0;
+async function documentPreview(kind: 'pdf' | 'xlsx', input: Buffer) {
+  if (activePreviews >= 2) throw new BridgeError('Предпросмотр документов занят.', 429);
+  activePreviews++;
+  let worker: Worker | undefined;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const script = new URL(import.meta.url.endsWith('.ts') ? './document-preview.ts' : './document-preview.js', import.meta.url);
+    worker = new Worker(script, {
+      workerData: { kind, input },
+      resourceLimits: { maxOldGenerationSizeMb: kind === 'pdf' ? 192 : 96, maxYoungGenerationSizeMb: 24, stackSizeMb: 4 },
+    });
+    const preview = worker;
+    return await new Promise<string>((resolve, reject) => {
+      const invalid = () => new BridgeError('Документ повреждён или превышает лимиты предпросмотра.', 422);
+      timer = setTimeout(() => reject(invalid()), 5000);
+      preview.once('message', resolve);
+      preview.once('error', () => reject(invalid()));
+      preview.once('exit', () => reject(invalid()));
+    });
+  } finally {
+    clearTimeout(timer);
+    try { await worker?.terminate(); } finally { activePreviews--; }
+  }
+}
 export async function documentText(file: string, contents?: Buffer): Promise<string> {
   if ((contents?.length ?? (await stat(file)).size) > 25 * 1024 * 1024) return '[Файл слишком большой для выдержки]';
   const ext = path.extname(file).toLowerCase();
-  if (ext === '.xlsx') {
-    const sheets = await readExcelFile(contents ?? file);
-    return sheets.slice(0, 6).map(sheet => {
-      const rows = sheet.data.slice(0, 25).map(row => row.slice(0, 16).map(cell => String(cell ?? '').slice(0, 250)).join(' | '));
-      return `Лист: ${sheet.sheet}\n${rows.join('\n')}`;
-    }).join('\n\n').slice(0, 8000);
-  }
+  if (ext === '.xlsx' || ext === '.pdf') return documentPreview(ext === '.xlsx' ? 'xlsx' : 'pdf', contents ?? await readFile(file));
   if (ext === '.csv' || ext === '.tsv') {
     const raw = (contents?.toString('utf8') ?? await readFile(file, 'utf8')).slice(0, 256_000);
     const delimiter = ext === '.tsv' ? '\t' : (raw.split('\n')[0]?.split(';').length ?? 0) > (raw.split('\n')[0]?.split(',').length ?? 0) ? ';' : ',';
     return (parse(raw, { delimiter, relax_column_count: true, relax_quotes: true, to: 25, bom: true }) as string[][]).map(row => row.slice(0, 16).join(' | ')).join('\n').slice(0, 8000);
-  }
-  if (ext === '.pdf') {
-    const { getDocument } = await import('pdfjs-dist/legacy/build/pdf.mjs');
-    const pdfRoot = path.dirname(createRequire(import.meta.url).resolve('pdfjs-dist/package.json'));
-    const task = getDocument({ data: new Uint8Array(contents ?? await readFile(file)), useSystemFonts: false,
-      standardFontDataUrl: path.join(pdfRoot, 'standard_fonts').replaceAll('\\', '/') + '/',
-      cMapUrl: path.join(pdfRoot, 'cmaps').replaceAll('\\', '/') + '/', wasmUrl: path.join(pdfRoot, 'wasm').replaceAll('\\', '/') + '/' });
-    const doc = await task.promise;
-    try {
-      let text = '';
-      for (let p = 1; p <= Math.min(5, doc.numPages); p++) {
-        const content = await (await doc.getPage(p)).getTextContent();
-        text += `Страница ${p}\n` + content.items.map(item => 'str' in item ? item.str : '').join(' ') + '\n';
-      }
-      return text.slice(0, 8000);
-    } finally { await task.destroy(); }
   }
   if (['.txt', '.md', '.json', '.xml', '.log'].includes(ext)) return (contents?.toString('utf8') ?? await readFile(file, 'utf8')).slice(0, 8000);
   return '[Путь передан Codex. Автоматическая выдержка этого формата не поддерживается]';

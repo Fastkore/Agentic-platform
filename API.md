@@ -20,7 +20,7 @@ HTTP-маршруты обслуживают веб-интерфейс. Для �
 | GET | /api/projects/{projectId}/members | Только руководитель: {memberIds} |
 | PATCH | /api/projects/{projectId}/members | Только руководитель: {memberIds: [userId, ...]} |
 | PATCH | /api/projects/{projectId}/chats/{chatId}/visibility | Только руководитель: {visibility: private или project} |
-| GET | /api/audit | Только руководитель: до 1000 событий доступа за последние 7 суток |
+| GET | /api/audit | Журнал руководителя, до 1000 событий на страницу. `before=<createdAt>/<id>` запрашивает более ранние записи. События ERP и базы знаний хранятся до 30 дней с ограничением объёма журнала. |
 
 Пароль: 12–200 символов. Логин: 3–48 латинских букв, цифр, точек, дефисов или подчёркиваний; регистр не учитывается. Максимум 10 ключей на пользователя. Первичная настройка через POST /api/local-login доступна только с loopback, localhost Host и X-Bridge-Local: 1 до задания первого пароля. Этот маршрут выдаёт временный сеанс, которому доступны только /api/auth/me, /api/auth/setup и /api/auth/logout. POST /api/auth/setup принимает {username, name, password}, возвращает новый сеанс и закрывает локальный вход без пароля. Для интеграций эти маршруты не нужны.
 
@@ -57,7 +57,7 @@ HTTP-маршруты обслуживают веб-интерфейс. Для �
 | GET | /api/projects/{projectId}/chats/{chatId} | Чат, messages, sessionId |
 | GET | /api/projects/{projectId}/chats/{chatId}/messages | Сообщения чата |
 | POST | /api/projects/{projectId}/chats/{chatId}/messages | Отправить вопрос; 202 с заданием |
-| POST | /api/projects/{projectId}/attachments | multipart/form-data, один файл в поле file; 201 |
+| POST | /api/projects/{projectId}/attachments | multipart/form-data, один файл в поле file до 20 МиБ. При исчерпании квоты возвращает 413, при занятом слоте возвращает 429. Неиспользованные вложения удаляются после 24 часов. |
 | GET, POST | /api/projects/{projectId}/files | Список и загрузка файлов проекта для локального администратора |
 | GET, DELETE | /api/projects/{projectId}/files/{fileId} | Локальный администратор скачивает или удаляет файл проекта |
 | GET | /api/projects/{projectId}/chats/{chatId}/messages/{messageId}/files/{fileId} | Скачать готовый файл агента при наличии доступа к чату |

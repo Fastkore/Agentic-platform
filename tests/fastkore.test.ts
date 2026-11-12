@@ -337,6 +337,7 @@ test('a valid SSO grant exposes CLI tools without MCP and only with a trusted ru
     if (!trusted) throw new BridgeError('Адрес или CA исполнителя не совпадает.', 424);
     return { authority: 'erp.example.test', caFingerprint: 'test-fingerprint' };
   });
+  t.mock.method(FastkoreCli.prototype, 'run', async () => ({ success: true, exitCode: 0, data: { text: 'private ERP content' } }));
   const f = await fixture();
   try {
     const grant = 'fkug1.' + random();
@@ -346,7 +347,8 @@ test('a valid SSO grant exposes CLI tools without MCP and only with a trusted ru
     const session = await f.login();
     const credential = f.store.state.security!.credentials.find(item => item.userId === session.user.id)!;
     const signal = new AbortController().signal;
-    const prepare = () => f.workspace.prepareFastkoreTools!(credential.id, undefined, () => {}, signal);
+    const run = { id: randomUUID(), chatId: randomUUID(), status: 'running' as const, createdAt: new Date().toISOString(), progress: '' };
+    const prepare = () => f.workspace.prepareFastkoreTools!(credential.id, undefined, () => {}, signal, run);
     const blocked = await prepare();
     assert.match(blocked.problem!, /не совпадает/);
     assert.deepEqual(blocked.tools?.definitions.map(tool => tool.name), ['fastkore_cli_describe']);
@@ -357,6 +359,17 @@ test('a valid SSO grant exposes CLI tools without MCP and only with a trusted ru
       'fastkore_cli_describe', 'fastkore_cli_auth_info', 'fastkore_cli_data_get', 'fastkore_cli_data_query',
     ]);
     assert.equal(check.mock.callCount(), 2);
+    const entitySetId = randomUUID(), entityId = randomUUID();
+    assert.equal((await ready.tools!.call('fastkore_cli_data_get', { entitySetId, entityId, scope: 'erp' }, signal)).success, true);
+    const entry = f.store.auditEvents().find(event => event.action === 'erp.cli.read')!;
+    assert.equal(entry.actorId, session.user.id);
+    assert.equal(entry.details?.sessionId, credential.id);
+    assert.equal(entry.details?.installationId, f.id);
+    assert.equal(entry.details?.runId, run.id);
+    assert.equal(entry.details?.chatId, run.chatId);
+    assert.equal(entry.details?.scope, 'erp');
+    assert.deepEqual(entry.details?.objectIds, { entitysetid: entitySetId, entityid: entityId });
+    assert.doesNotMatch(JSON.stringify(entry), /private ERP content|fkug1/);
     await f.asCookie(session, 'POST', '/api/auth/logout', {});
     await assert.rejects(prepare());
   } finally { await f.app.close(); }

@@ -78,7 +78,7 @@ function cliReadArgs(name: string, args: unknown): FastkoreCliRead | undefined {
 }
 
 export function withFastkoreCliReads(tools: CodexTools, context: FastkoreContext | undefined,
-  read: (input: FastkoreCliOperation, signal: AbortSignal) => Promise<CodexToolResult>): CodexTools & { scopedReadAvailable: boolean } {
+  read: (input: FastkoreCliOperation, signal: AbortSignal, scope?: 'current' | 'erp') => Promise<CodexToolResult>): CodexTools & { scopedReadAvailable: boolean } {
   // This CLI interface cannot reproduce filter XML, links or folder restrictions.
   const allowGet = !context || (context.view === 'card' && context.scope_reproducible && !!context.entity_id);
   const allowQuery = !context || (context.view === 'list' && context.scope_reproducible && context.filter_status === 'none' &&
@@ -105,7 +105,7 @@ export function withFastkoreCliReads(tools: CodexTools, context: FastkoreContext
         (input.operation === 'get' ? !allowGet : !allowQuery))) {
         return { success: false, text: 'Fastkore CLI не может воспроизвести текущую область выборки ERP.' };
       }
-      return read(input, signal);
+      return read(input, signal, context ? scope : 'erp');
     },
   };
 }

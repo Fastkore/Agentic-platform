@@ -12,6 +12,7 @@ import { Access, publicUser, type Principal } from './access.js';
 import { projectFilePath } from './documents.js';
 import { maxUploadBytes } from './file-storage.js';
 import { knowledgeRoutes } from './knowledge-routes.js';
+import { UploadAdmission } from './upload-admission.js';
 import { loadDictation, maxDictationBytes, validateDictation, type TranscribeDictation } from './dictation.js';
 import { specialistFileLimits, specialistIcons } from '../shared/types.js';
 import type { DictationModelId } from '../shared/types.js';
@@ -22,6 +23,7 @@ import { FastkoreCli } from './fastkore-cli.js';
 import { erpRoleCatalog, restoreErpRoles } from './erp-roles.js';
 import { withFastkoreCliDescription, withFastkoreCliReads } from './codex-tools.js';
 import type { AgentProfile, Dataset, FastkoreAuthentication, FastkoreInstallation, FastkoreKeyIssue, FileStorageProvider, ProjectAgentPolicy, ProjectAgentSettings, Settings, User, WorkRole } from '../shared/types.js';
+import type { AuditEvent } from '../shared/types.js';
 import { agentToolIds } from '../shared/agent-tools.js';
 import { operationIds } from './corporate.js';
 import { FastkoreSso, loadSsoKey, cookieToken, csrfFor, validCsrf, setSessionCookie, setStartCookie, startCookie, normalizeTheme, uuid, type InstallationPatch, type PairingClient, type Theme, type TicketValidator } from './fastkore.js';
@@ -45,6 +47,17 @@ const identifiers = { type: 'array', items: string(100), maxItems: 100, uniqueIt
 const agentToolList = { type: 'array', items: { enum: agentToolIds }, maxItems: agentToolIds.length, uniqueItems: true };
 const object = (properties: Record<string, unknown>, required: string[] = []) => ({ type: 'object', properties, required, additionalProperties: false });
 const loopback = (ip: string) => ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1';
+const erpAuditFields = new Set(['id', 'guid', 'entityid', 'entitysetid', 'orderid', 'projectid', 'taskid', 'purchaseorderid',
+  'customerid', 'supplierid', 'contactid', 'contractorid', 'nomenclatureid', 'equipmentid', 'folderid', 'catalogid',
+  'ownerentityid', 'ownerentitysetid', 'treeparentid', 'linkid', 'communicationentryid']);
+function erpAuditIds(parameters: Record<string, unknown>) {
+  const ids: Record<string, string> = {};
+  for (const [key, value] of Object.entries(parameters)) {
+    const field = key.replaceAll('_', '').toLowerCase();
+    if (erpAuditFields.has(field) && typeof value === 'string' && uuid(value.toLowerCase())) ids[field] = value.toLowerCase();
+  }
+  return ids;
+}
 export interface AppOptions { clientRoot?: string; port?: number; lan?: boolean; publicOrigin?: string; trustedProxies?: string[]; ssoKey?: Buffer; ticketValidator?: TicketValidator; pairingClient?: PairingClient; transcribeDictation?: TranscribeDictation }
 const ssoStart = '/auth/fastkore/start', ssoExchange = '/auth/fastkore/exchange';
 function ssoPage(theme: Theme, challenge?: string) {
@@ -60,6 +73,7 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
   const transcribeDictation = options.transcribeDictation ?? dictation?.transcribe;
   const dictationEnabled = () => !!transcribeDictation && workspace.store.state.settings.dictationEnabled !== false;
   const activeDictations = new Set<string>();
+  const uploads = new UploadAdmission();
   const publicOrigin = options.publicOrigin ?? process.env.BRIDGE_PUBLIC_ORIGIN;
   if (publicOrigin && (new URL(publicOrigin).origin !== publicOrigin || !publicOrigin.startsWith('https://'))) throw new Error('BRIDGE_PUBLIC_ORIGIN должен содержать HTTPS origin без пути и завершающего слеша.');
   const trustedProxies = options.trustedProxies ?? (process.env.BRIDGE_TRUST_PROXY ?? '').split(',').map(v => v.trim()).filter(Boolean);
@@ -75,14 +89,20 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
   access.onSessionsRemoved = sessions => {
     for (const session of sessions) void fastkoreMcp?.revoke(session).catch(() => {});
   };
-  workspace.prepareFastkoreTools = async (credentialId, context, authorize, signal) => {
+  workspace.prepareFastkoreTools = async (credentialId, context, authorize, signal, run) => {
     if (!fastkoreMcp) return {};
     const current = () => {
       authorize();
       return access.authenticateCredential(credentialId).credential;
     };
     const credential = current();
-    const integration = await fastkoreMcp.prepare(credential, context, authorize, signal);
+    const audit = (action: string, targetId: string, details: AuditEvent['details']) => {
+      workspace.store.recordAudit({ actorId: credential.userId, action, targetId, details: {
+        sessionId: credential.id, installationId: credential.installationId, runId: run?.id, chatId: run?.chatId, ...details,
+      } });
+    };
+    const integration = await fastkoreMcp.prepare(credential, context, authorize, signal, ({ tool, parameters, ...details }) =>
+      audit('erp.mcp.read', tool, { ...details, objectIds: erpAuditIds(parameters) }));
     if (!fastkoreCli || !sso || credential.source !== 'fastkore') return integration;
     const tools = withFastkoreCliDescription(integration.tools ?? {
       definitions: [], call: async () => ({ success: false, text: 'Инструмент Fastkore недоступен.' }),
@@ -98,15 +118,20 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
       return { tools, problem: [integration.problem, problem].filter(Boolean).join(' ') };
     }
     current();
-    const reads = withFastkoreCliReads(tools, context, async (input, callSignal) => {
+    const reads = withFastkoreCliReads(tools, context, async (input, callSignal, scope) => {
+      const started = Date.now();
+      let success = false;
       try {
         const result = await fastkoreCli.run(input, sso, current, id => fastkoreMcp.invalidate(id), callSignal);
         if (!result.success) return { success: false, text: `Fastkore CLI завершила команду с кодом ${result.exitCode}.` };
         const text = JSON.stringify(result.data);
         if (text.length > 96_000) return { success: false, text: 'Ответ Fastkore CLI слишком большой. Уменьшите выборку.' };
+        success = true;
         return { success: true, text };
       } catch (error) {
         return { success: false, text: error instanceof BridgeError ? error.message : 'Fastkore CLI не выполнила команду.' };
+      } finally {
+        audit('erp.cli.read', input.operation, { scope, success, elapsedMs: Date.now() - started, objectIds: erpAuditIds(input) });
       }
     });
     return { tools: reads, problem: reads.scopedReadAvailable ? undefined : integration.problem };
@@ -139,14 +164,31 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
     if (!sso) throw new BridgeError('На сервере не настроен ключ шифрования Fastkore.', 503);
     return sso;
   };
-  const attempts = new Map<string, { count: number; until: number }>(); let logins = 0;
+  const attempts = new Map<string, { count: number; until: number }>();
+  const failedAccounts = new Map<string, { count: number; until: number }>();
+  let logins = 0;
   const starts = new Map<string, { count: number; until: number }>();
   const exchanges = new Map<string, { count: number; until: number }>();
-  const rateLimit = (r: FastifyRequest, bucket = attempts) => {
-    const now = Date.now(); for (const [ip, entry] of bucket) if (entry.until <= now) bucket.delete(ip);
-    let entry = bucket.get(r.ip);
-    if (!entry) { if (bucket.size >= 5000) throw new BridgeError('Попробуйте войти позже.', 429); entry = { count: 0, until: now + 10 * 60_000 }; bucket.set(r.ip, entry); }
-    if (++entry.count > 10 || logins >= 8) throw new BridgeError('Слишком много попыток входа. Повторите через 10 минут.', 429);
+  const throttled = () => new BridgeError('Слишком много попыток входа. Повторите позже.', 429);
+  const rateLimit = (key: string, bucket: typeof attempts, max: number) => {
+    const now = Date.now();
+    let entry = bucket.get(key);
+    if (!entry || entry.until <= now) {
+      if (bucket.size >= 5000) {
+        for (const [id, value] of bucket) if (value.until <= now) bucket.delete(id);
+        if (bucket.size >= 5000 && !bucket.has(key)) throw throttled();
+      }
+      entry = { count: 0, until: now + 10 * 60_000 };
+      bucket.set(key, entry);
+    }
+    if (entry.count >= max) throw throttled();
+    return entry;
+  };
+  const checkBootstrap = (request: FastifyRequest) => {
+    const host = request.headers.host ?? '';
+    if (cookieToken(request.headers.cookie) || !loopback(request.ip) || !/^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/.test(host) || request.headers['x-bridge-local'] !== '1') {
+      throw new BridgeError('Первичная настройка доступна только на серверном компьютере.', 403);
+    }
   };
   const secureRequest = (r: FastifyRequest) => {
     if (!publicOrigin || r.protocol !== 'https' || r.headers.host !== new URL(publicOrigin).host) throw new BridgeError('Для входа Fastkore требуется настроенный HTTPS-адрес.', 403);
@@ -157,7 +199,7 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
     reply.header('X-Content-Type-Options', 'nosniff').header('Referrer-Policy', 'no-referrer').header('X-Frame-Options', 'DENY')
       .header('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'");
     reply.header('Cache-Control', 'no-store');
-    const route = request.url.split('?')[0];
+    const route = request.routeOptions.url ?? '';
     if (route === ssoStart || route === ssoExchange) {
       if (!sso) throw new BridgeError('Вход Fastkore ещё не настроен.', 503);
       if (route === ssoExchange && request.url.includes('?')) throw new BridgeError('Билет передаётся только в теле POST-запроса.');
@@ -169,21 +211,22 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
         || (route === ssoExchange && fetchSite && !['none', 'same-origin'].includes(fetchSite as string))) {
         throw new BridgeError('Откройте помощника штатной кнопкой Fastkore.', 403);
       }
-      secureRequest(request); rateLimit(request, route === ssoStart ? starts : exchanges); return;
+      secureRequest(request);
+      rateLimit(request.ip, route === ssoStart ? starts : exchanges, 120).count++;
+      return;
     }
-    if (!request.url.startsWith('/api/')) return;
+    if (!route.startsWith('/api/')) return;
     if (request.headers.origin && request.headers.origin !== (publicOrigin ?? `${request.protocol}://${request.headers.host}`)) throw new BridgeError('Запрос с другого сайта запрещён.', 403);
     if (route === '/api/health' || route === '/api/auth/browser-session') return;
     const authorization = request.headers.authorization ?? '', cookie = cookieToken(request.headers.cookie);
     if (cookie && authorization) throw new BridgeError('Обнаружены два способа входа. Используйте отдельное окно браузера.', 409);
     if (route === '/api/auth/login') {
       if (cookie) throw new BridgeError('Для локального входа используйте отдельное окно браузера.', 409);
-      rateLimit(request); return;
+      rateLimit(request.ip, attempts, 120).count++; return;
     }
     if (route === '/api/local-login') {
-      const host = request.headers.host ?? '';
-      if (cookie || !loopback(request.ip) || !/^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/.test(host) || request.headers['x-bridge-local'] !== '1') throw new BridgeError('Первичная настройка доступна только на серверном компьютере.', 403);
-      rateLimit(request); return;
+      checkBootstrap(request);
+      rateLimit(request.ip, attempts, 120).count++; return;
     }
     if (cookie) {
       secureRequest(request);
@@ -203,7 +246,7 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
     const err = error as Error & { statusCode?: number; validation?: unknown };
     const code = err.statusCode && err.statusCode >= 400 && err.statusCode < 600 ? err.statusCode : 500;
     const message = err.validation ? 'Некорректные поля запроса.' : code >= 500 && !(error instanceof BridgeError) ? 'Внутренняя ошибка сервера. Проверьте папку данных и настройки.' : err.message;
-    const route = request.url.split('?')[0];
+    const route = request.routeOptions.url ?? '';
     if (code === 401 && route.startsWith('/api/') && request.headers.cookie?.includes('__Host-bridge_session=')) reply.header('Set-Cookie', setSessionCookie('', 0));
     if (route === ssoStart || route === ssoExchange) {
       if (process.env.NODE_ENV === 'production') {
@@ -250,6 +293,7 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
   }, async (request, reply) => {
     if (!/^application\/x-www-form-urlencoded(?:\s*;|$)/i.test(request.headers['content-type'] ?? '')) throw new BridgeError('Вход Fastkore принимает POST формы.', 415);
     if (request.headers.authorization) throw new BridgeError('Вход по билету выполняется отдельно от API-ключа.', 400);
+    if (logins >= 8) throw throttled();
     logins++;
     try {
       const { installation_id, ticket, login_challenge } = request.body;
@@ -275,9 +319,20 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
     if (p.credential.source !== 'fastkore') throw new BridgeError('Недействительная сессия Fastkore.', 401);
     return { authenticated: true, user: publicUser(p.user), setupRequired: false, authentication: authDetails(p, token) };
   });
-  app.post('/api/local-login', async () => access.bootstrap());
+  app.post('/api/local-login', async request => { checkBootstrap(request); return access.bootstrap(); });
   app.post<{ Body: { username: string; password: string } }>('/api/auth/login', { schema: { body: object({ username: string(48), password: { type: 'string', maxLength: 200 } }, ['username', 'password']) } }, async request => {
-    logins++; try { return await access.login(request.body.username, request.body.password); } finally { logins--; }
+    if (logins >= 8) throw throttled();
+    const account = rateLimit(request.body.username.trim().toLowerCase(), failedAccounts, 10);
+    account.count++;
+    logins++;
+    try {
+      const session = await access.login(request.body.username, request.body.password);
+      account.count--;
+      return session;
+    } catch (error) {
+      if (!(error instanceof BridgeError) || error.statusCode !== 401) account.count--;
+      throw error;
+    } finally { logins--; }
   });
   app.get('/api/auth/me', async request => {
     const p = principal(request), source = p.credential.source ?? 'local';
@@ -286,7 +341,7 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
       ...(source === 'fastkore' ? { authentication: authDetails(p, cookieToken(request.headers.cookie)) } : {}),
     };
   });
-  app.post<{ Body: { username: string; name: string; password: string } }>('/api/auth/setup', { schema: { body: object({ username: string(48), name: string(100), password }, ['username', 'name', 'password']) } }, async request => access.setup(user(request), request.body.username, request.body.name, request.body.password));
+  app.post<{ Body: { username: string; name: string; password: string } }>('/api/auth/setup', { schema: { body: object({ username: string(48), name: string(100), password }, ['username', 'name', 'password']) } }, async request => access.setup(() => principal(request), request.body.username, request.body.name, request.body.password));
   app.post('/api/auth/logout', async (request, reply) => { const p = principal(request); const result = await access.logout(p); if (p.credential.source === 'fastkore') reply.header('Set-Cookie', setSessionCookie('', 0)); return result; });
   app.post<{ Body: { currentPassword: string; password: string } }>('/api/auth/password', { schema: { body: object({ currentPassword: string(200), password }, ['currentPassword', 'password']) } }, async request => access.changePassword(principal(request), request.body.currentPassword, request.body.password));
   app.get('/api/users', async request => access.users(user(request)));
@@ -314,8 +369,19 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
     schema: { body: object({ projectIds: { type: 'array', maxItems: 1000, uniqueItems: true, items: string(100) } }, ['projectIds']) },
   }, async request => access.setUserProjects(() => user(request), request.params.userId, request.body.projectIds));
   app.post<{ Body: { username: string; name: string; password: string; role: User['role']; roleId?: string } }>('/api/users', { schema: { body: object({ username: string(48), name: string(100), password, role: { enum: ['admin', 'employee'] }, roleId: identifier }, ['username', 'name', 'password', 'role']) } }, async (request, reply) => reply.code(201).send(await access.createUser(localAdmin(request), request.body)));
-  app.patch<{ Params: { userId: string }; Body: { disabled?: boolean; password?: string; name?: string; roleId?: string; role?: User['role'] } }>('/api/users/:userId', { schema: { body: object({ disabled: { type: 'boolean' }, password, name: string(100), roleId: identifier, role: { enum: ['admin', 'employee'] } }) } }, async request => access.updateUser(user(request), request.params.userId, request.body));
-  app.get('/api/audit', async request => { admin(request); return workspace.store.auditEvents(); });
+  app.patch<{ Params: { userId: string }; Body: { disabled?: boolean; password?: string; name?: string; roleId?: string; role?: User['role'] } }>('/api/users/:userId', { schema: { body: object({ disabled: { type: 'boolean' }, password, name: string(100), roleId: identifier, role: { enum: ['admin', 'employee'] } }) } }, async request => access.updateUser(() => principal(request), request.params.userId, request.body));
+  app.get<{ Querystring: { before?: string } }>('/api/audit', {
+    schema: { querystring: object({ before: string(80) }) },
+  }, async request => {
+    admin(request);
+    const before = request.query.before;
+    if (!before) return workspace.store.auditEvents(undefined, workspace.knowledge.auditEvents());
+    const [time, id, extra] = before.split('/');
+    const at = Date.parse(time);
+    if (!Number.isFinite(at) || !uuid(id) || extra !== undefined) throw new BridgeError('Некорректный курсор журнала.');
+    const cursor = { at, id };
+    return workspace.store.auditEvents(cursor, workspace.knowledge.auditEvents(cursor));
+  });
   app.get('/api/admin/fastkore/installations', async request => { localAdmin(request); return sso?.list() ?? []; });
   app.get('/api/admin/fastkore/cli-pilot', async request => {
     localAdmin(request); secureRequest(request);
@@ -381,7 +447,7 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
     return access.linkExternal(() => localAdmin(request), b.installationId, b.externalUserId, b.userId);
   });
   app.get('/api/agents', async request => workspace.corporate.list(user(request)));
-  knowledgeRoutes(app, workspace.knowledge, localAdmin);
+  knowledgeRoutes(app, workspace.knowledge, localAdmin, uploads);
   app.get('/api/admin/roles', async request => { admin(request); return workspace.corporate.data.roles; });
   app.get('/api/admin/profiles', async request => { admin(request); return workspace.corporate.data.profiles.map(p => ({ ...p, unavailableReason: workspace.corporate.unavailable(p) })); });
   app.get('/api/admin/datasets', async request => { admin(request); return workspace.corporate.data.datasets; });
@@ -539,12 +605,10 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
   });
   app.post<{ Params: { projectId: string } }>(projectFilesPath, async (request, reply) => {
     const authorize = () => localAdmin(request).id;
-    authorize();
+    const actorId = authorize();
     workspace.project(request.params.projectId);
-    const file = await request.file();
-    if (!file) throw new BridgeError('Выберите файл для загрузки.');
-    const buffer = await file.toBuffer();
-    return reply.code(201).send(await workspace.addProjectFile(request.params.projectId, file.filename, buffer, authorize));
+    const file = await uploads.receive(request, actorId, (name, data) => workspace.addProjectFile(request.params.projectId, name, data, authorize));
+    return reply.code(201).send(file);
   });
   app.get<{ Params: { projectId: string; fileId: string } }>(projectFilesPath + '/:fileId', async (request, reply) => {
     localAdmin(request);
@@ -667,10 +731,9 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
       access.project(actor, projectId);
       return actor.id;
     };
-    authorize();
-    const file = await request.file(); if (!file) throw new BridgeError('Прикрепите один файл.');
-    const buffer = await file.toBuffer();
-    return reply.code(201).send(await workspace.addAttachment(projectId, file.filename, buffer, authorize));
+    const actorId = authorize();
+    const file = await uploads.receive(request, actorId, (name, data) => workspace.addAttachment(projectId, name, data, authorize));
+    return reply.code(201).send(file);
   });
   app.get<{ Params: { runId: string } }>('/api/runs/:runId', async request => access.run(user(request), request.params.runId));
   app.post<{ Params: { runId: string } }>('/api/runs/:runId/cancel', async request => {

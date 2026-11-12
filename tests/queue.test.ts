@@ -18,13 +18,27 @@ function runner(calls: string[] = []): CodexRunner {
     await pause(80); return { sessionId: session, response: r.prompt };
   } };
 }
-async function fixture() {
+async function fixture(storageBudget?: { user: number; project: number; platform: number }) {
   const root = await mkdtemp(path.join(tmpdir(), 'bridge-queue-')); await mkdir(path.join(root, 'project'));
-  const store = new Store(path.join(root, 'data')), calls: string[] = [], workspace = new Workspace(store, runner(calls));
+  const store = new Store(path.join(root, 'data')), calls: string[] = [], workspace = new Workspace(store, runner(calls), undefined, undefined, storageBudget);
   await workspace.settings({ cliPath: process.execPath, includePreviews: false });
   const project = await workspace.addProject(path.join(root, 'project')), chat = await workspace.addChat(project.id);
   return { root, store, calls, workspace, project, chat };
 }
+test('file quota counts durable uploads and releases expired unattached files', async () => {
+  const f = await fixture({ user: 8, project: 20, platform: 20 });
+  try {
+    const first = await f.workspace.addAttachment(f.project.id, 'draft.txt', Buffer.from('123456'), () => 'employee');
+    const library = await f.workspace.addProjectFile(f.project.id, 'library.txt', Buffer.from('abc'), () => 'admin');
+    await assert.rejects(f.workspace.addAttachment(f.project.id, 'second.txt', Buffer.from('abc'), () => 'employee'),
+      (error: unknown) => (error as { statusCode?: number }).statusCode === 413);
+    await f.workspace.expireUnusedUploads(Date.parse(first.uploadedAt!) + 25 * 60 * 60_000);
+    await until(() => f.store.pendingChatFileDeletions().length === 0);
+    await assert.rejects(readFile(first.path!), { code: 'ENOENT' });
+    assert.deepEqual(f.project.attachments.map(file => file.id), [library.id]);
+    assert.equal((await f.workspace.addAttachment(f.project.id, 'new.txt', Buffer.from('abc'), () => 'employee')).size, 3);
+  } finally { await f.workspace.shutdown(); }
+});
 test('durable queue serializes turns and concurrent idempotency survives reload', async () => {
   const f = await fixture();
   try {
@@ -36,9 +50,16 @@ test('durable queue serializes turns and concurrent idempotency survives reload'
     assert.equal(a.id, duplicate.id); assert.equal(b.status, 'queued'); assert.equal(f.store.state.jobs!.length, 2);
     await assert.rejects(f.workspace.send(f.project.id, f.chat.id, 'different', [], 'request-a'), /другим содержимым/);
     await until(() => !f.workspace.busy); assert.deepEqual(f.calls, ['first', 'second']); assert.equal(f.chat.messages.length, 4);
+    assert.equal(f.store.state.jobs!.length, 0);
     await f.workspace.shutdown();
     const store = new Store(f.store.root), next = new Workspace(store, runner());
-    try { const same = await next.send(f.project.id, f.chat.id, 'first', [], 'request-a'); assert.equal(same.id, a.id); assert.equal(store.state.runs.length, 2); }
+    try {
+      const same = await next.send(f.project.id, f.chat.id, 'first', [], 'request-a');
+      assert.equal(same.id, a.id);
+      assert.equal(store.state.runs.length, 2);
+      assert.equal(store.state.jobs!.length, 0);
+      assert.deepEqual(next.chat(f.project.id, f.chat.id).messages.map(message => message.text), ['first', 'first', 'second', 'second']);
+    }
     finally { await next.shutdown(); }
   } finally { await f.workspace.shutdown(); }
 });
@@ -65,6 +86,25 @@ test('failed SQLite transaction does not partially overwrite persisted history',
   finally { reader.close(); }
   f.store.state.projects.pop(); await f.workspace.shutdown();
   const reloaded = new Store(f.store.root); assert.equal(reloaded.state.projects[0].id, original); await reloaded.close();
+});
+test('saving new turns and settings does not rewrite old message rows', async () => {
+  const f = await fixture();
+  try {
+    await f.workspace.send(f.project.id, f.chat.id, 'first', []);
+    await until(() => !f.workspace.busy);
+    const db = new DatabaseSync(f.store.file);
+    try {
+      db.exec(`CREATE TRIGGER preserve_history_delete BEFORE DELETE ON messages
+        WHEN json_extract(OLD.payload,'$.text') = 'first' BEGIN SELECT RAISE(ABORT,'old message deleted'); END;
+        CREATE TRIGGER preserve_history_update BEFORE UPDATE ON messages
+        WHEN json_extract(OLD.payload,'$.text') = 'first' BEGIN SELECT RAISE(ABORT,'old message updated'); END;`);
+      const second = await f.workspace.send(f.project.id, f.chat.id, 'second', []);
+      await until(() => !f.workspace.busy);
+      assert.equal(second.status, 'complete');
+      await f.workspace.settings({ includePreviews: true });
+      assert.equal((db.prepare('SELECT count(*) AS n FROM messages').get() as { n: number }).n, 4);
+    } finally { db.close(); }
+  } finally { await f.workspace.shutdown(); }
 });
 test('legacy migration keeps original JSON and existing SQLite never falls back to stale JSON', async () => {
   const f = await fixture(); const state = structuredClone(f.store.state); await f.workspace.shutdown();

@@ -9,6 +9,7 @@ type Binding = NonNullable<ReturnType<FastkoreSso['delegationBinding']>>;
 type Token = { value: string; expiresAt: number };
 type Session = { credential: Credential; delegation: ErpDelegation; revision: string; token?: Token; refresh?: Promise<Token> };
 type Tool = { upstream: string; definition: CodexToolDefinition; fixed?: Record<string, unknown> };
+type ReadAudit = { tool: string; scope?: 'current' | 'erp'; parameters: Record<string, unknown>; status?: number; success: boolean; elapsedMs: number };
 const audience = 'fastkore-mcp';
 const reauth = 'Доступ к ERP завершён или отозван. Откройте помощника из Fastkore заново.';
 const scopeError = 'Текущая выборка Fastkore недоступна через этот инструмент. Другие разделы ERP доступны по запросу сотрудника с scope=erp.';
@@ -168,7 +169,8 @@ export class FastkoreMcp {
     return state.refresh;
   }
 
-  async prepare(credential: Credential, context: FastkoreContext | undefined, authorize: () => void, signal: AbortSignal): Promise<{ tools?: CodexTools; problem?: string }> {
+  async prepare(credential: Credential, context: FastkoreContext | undefined, authorize: () => void, signal: AbortSignal,
+    audit?: (event: ReadAudit) => void): Promise<{ tools?: CodexTools; problem?: string }> {
     const status = this.status(credential);
     if (status === 'reauth') return { problem: reauth };
     const state = status === 'ready' ? this.sessions.get(credential.id) : undefined;
@@ -255,19 +257,27 @@ export class FastkoreMcp {
           const fixed = wrapped && supplied.scope === 'erp' ? {} : tool.fixed;
           if (!fixed) return { success: false, text: scopeError };
           const parameters = wrapped ? supplied.arguments : supplied;
+          const fixedKeys = new Set(Object.keys(fixed).map(key => key.replaceAll('_', '').toLowerCase()));
+          const forwarded = Object.fromEntries(Object.entries(parameters).filter(([key]) => !fixedKeys.has(key.replaceAll('_', '').toLowerCase())));
+          const effective = { ...forwarded, ...fixed };
+          const started = Date.now();
+          let status: number | undefined;
+          let success = false;
           try {
-            const fixedKeys = new Set(Object.keys(fixed).map(key => key.replaceAll('_', '').toLowerCase()));
-            const args = Object.fromEntries(Object.entries(parameters).filter(([key]) => !fixedKeys.has(key.replaceAll('_', '').toLowerCase())));
-            const result = await rpc('tools/call', { name: tool.upstream, arguments: { ...args, ...fixed } }, callSignal);
-            if (process.env.NODE_ENV === 'production') console.info(JSON.stringify({ event: 'fastkore.mcp.read', tool: tool.upstream, status: result.status, success: !!result.result && result.result.isError !== true }));
+            const result = await rpc('tools/call', { name: tool.upstream, arguments: effective }, callSignal);
+            status = result.status;
             if (result.status === 401) return { success: false, text: 'Fastkore отклонил токен. Повторный вызов не отправлен. Проверьте состояние операции чтением.' };
             if (!result.result) return { success: false, text: 'Fastkore не подтвердил результат операции. Проверьте состояние чтением.' };
             const text = redact(JSON.stringify(result.result));
             if (text.length > 96_000) return { success: false, text: 'Ответ Fastkore слишком большой. Уточните выборку.' };
-            return { success: result.result.isError !== true, text };
+            success = result.result.isError !== true;
+            return { success, text };
           } catch (error) {
             if (error instanceof BridgeError && error.message === reauth) return { success: false, text: reauth };
             return { success: false, text: 'Fastkore не подтвердил результат операции. Проверьте состояние чтением перед повтором.' };
+          } finally {
+            audit?.({ tool: tool.upstream, scope: wrapped && supplied.scope === 'erp' ? 'erp' : context ? 'current' : 'erp',
+              parameters: effective, status, success, elapsedMs: Date.now() - started });
           }
         },
       } };

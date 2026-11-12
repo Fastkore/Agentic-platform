@@ -7,16 +7,19 @@ import type { KnowledgeFile, KnowledgeOverview, KnowledgeSection } from '../shar
 import { attachmentName, documentText, supportsDocumentText } from './documents.js';
 import { maxUploadBytes } from './file-storage.js';
 import { BridgeError } from './store.js';
+import { AuditJournal, publishAudit, type AuditCursor, type NewAuditEvent } from './audit-journal.js';
 
 type MetadataRow = Omit<KnowledgeFile, 'editable'> & { editable: number };
 type DocumentRow = MetadataRow & { content: Uint8Array };
 const metadataColumns = 'id, section, name, size, revision, updatedAt, editable, extraction';
 const digest = (value: string | Buffer) => createHash('sha256').update(value).digest('hex');
 const textFile = (name: string) => /\.(md|txt|json|xml|log|csv|tsv)$/i.test(name);
+const maxKnowledgeBytes = 256 * 1024 * 1024;
 const defaultSummary = 'Fastkore — платформа корпоративных приложений. Business — конфигурация заказов, смет, склада, производства, документов и платежей. Вводная 00-Fastkore-for-Agent-Platform.md описывает сеанс сотрудника и контекст окна. Руководство Platform описывает схему, связи и разработку. Руководство CLI описывает команды. Руководство Business описывает предметные процессы. Доступные операции определяются инструментами текущего сеанса, схема и состояния объектов — целевой установкой.';
 
 export class KnowledgeBase {
   private readonly db: DatabaseSync;
+  private readonly audit: AuditJournal;
   constructor(root: string) {
     const file = path.join(root, 'knowledge.sqlite');
     this.db = new DatabaseSync(file);
@@ -27,6 +30,7 @@ export class KnowledgeBase {
         size INTEGER NOT NULL, revision TEXT NOT NULL, updatedAt TEXT NOT NULL, editable INTEGER NOT NULL,
         extraction TEXT NOT NULL, content BLOB NOT NULL, UNIQUE(section, name));
       CREATE VIRTUAL TABLE IF NOT EXISTS chunks USING fts5(documentId UNINDEXED, part UNINDEXED, title, text);`);
+    this.audit = new AuditJournal(this.db);
     // The seed marker and documents commit together. Local edits survive package upgrades.
     if (!this.db.prepare('SELECT id FROM sections WHERE id = ?').get('fastkore')) {
       const source = new URL('../knowledge/fastkore/', import.meta.url);
@@ -65,11 +69,28 @@ export class KnowledgeBase {
   private checkRevision(actual: string, expected: string) {
     if (actual !== expected) throw new BridgeError('Документ уже обновлён. Скачайте свою версию и откройте актуальную перед сохранением.', 409);
   }
-  summary(section: KnowledgeSection, summary: string, revision: string) {
+  auditEvents(before?: AuditCursor) { return this.audit.page(before); }
+  private change<T>(write: () => { value: T; event?: NewAuditEvent }) {
+    this.audit.prune();
+    this.db.exec('BEGIN IMMEDIATE');
+    let result, auditEvent;
+    try {
+      result = write();
+      auditEvent = result.event && this.audit.insert(result.event);
+      this.db.exec('COMMIT');
+    } catch (error) { this.db.exec('ROLLBACK'); throw error; }
+    publishAudit(auditEvent);
+    return result.value;
+  }
+  summary(section: KnowledgeSection, summary: string, revision: string, actorId?: string) {
     const current = this.overview(section);
     this.checkRevision(current.revision, revision);
-    this.db.prepare('UPDATE sections SET summary = ?, revision = ? WHERE id = ?').run(summary, randomUUID(), section);
-    return this.overview(section);
+    return this.change(() => {
+      this.db.prepare('UPDATE sections SET summary = ?, revision = ? WHERE id = ?').run(summary, randomUUID(), section);
+      const value = this.overview(section);
+      return { value, event: actorId ? { actorId, action: 'knowledge.summary', targetId: section,
+        details: { section, previousRevision: revision, revision: value.revision } } : undefined };
+    });
   }
   private write(section: KnowledgeSection, name: string, content: Buffer, text: string, extraction: KnowledgeFile['extraction'], id: string = randomUUID()) {
     const file: KnowledgeFile = { id, section, name, size: content.length, revision: randomUUID(),
@@ -86,7 +107,7 @@ export class KnowledgeBase {
     this.db.prepare('UPDATE sections SET revision = ? WHERE id = ?').run(randomUUID(), section);
     return file;
   }
-  async upload(section: KnowledgeSection, name: string, content: Buffer, authorize: () => void, replacement?: { id: string; revision: string }) {
+  async upload(section: KnowledgeSection, name: string, content: Buffer, authorize: () => void, replacement?: { id: string; revision: string }, actorId?: string) {
     authorize();
     if (content.length > maxUploadBytes) throw new BridgeError('Максимальный размер файла — 20 МБ.', 413);
     name = attachmentName(name);
@@ -108,22 +129,24 @@ export class KnowledgeBase {
     if (replacement) this.checkRevision(this.row(section, replacement.id).revision, replacement.revision);
     const duplicate = this.db.prepare('SELECT id FROM documents WHERE section = ? AND name = ?').get(section, name) as { id: string } | undefined;
     if (duplicate && duplicate.id !== replacement?.id) throw new BridgeError('Файл с таким именем уже есть. Используйте «Заменить».', 409);
-    this.db.exec('BEGIN IMMEDIATE');
-    try {
-      const file = this.write(section, name, content, text, extraction, replacement?.id);
-      this.db.exec('COMMIT');
-      return file;
-    } catch (error) { this.db.exec('ROLLBACK'); throw error; }
+    return this.change(() => {
+      const usage = this.db.prepare('SELECT coalesce(sum(size),0) AS bytes, count(*) AS files FROM documents WHERE id <> ?')
+        .get(replacement?.id ?? '') as { bytes: number; files: number };
+      if (usage.files >= 500 || usage.bytes + content.length > maxKnowledgeBytes) throw new BridgeError('Квота базы знаний исчерпана.', 413);
+      const value = this.write(section, name, content, text, extraction, replacement?.id);
+      return { value, event: actorId ? { actorId, action: replacement ? 'knowledge.replace' : 'knowledge.upload',
+        targetId: value.id, details: { section, previousRevision: replacement?.revision, revision: value.revision } } : undefined };
+    });
   }
-  remove(section: KnowledgeSection, id: string, revision: string) {
+  remove(section: KnowledgeSection, id: string, revision: string, actorId?: string) {
     this.checkRevision(this.row(section, id).revision, revision);
-    this.db.exec('BEGIN IMMEDIATE');
-    try {
+    this.change(() => {
       this.db.prepare('DELETE FROM chunks WHERE documentId = ?').run(id);
       this.db.prepare('DELETE FROM documents WHERE id = ?').run(id);
       this.db.prepare('UPDATE sections SET revision = ? WHERE id = ?').run(randomUUID(), section);
-      this.db.exec('COMMIT');
-    } catch (error) { this.db.exec('ROLLBACK'); throw error; }
+      return { value: undefined, event: actorId ? { actorId, action: 'knowledge.delete',
+        targetId: id, details: { section, previousRevision: revision } } : undefined };
+    });
   }
   index(section: KnowledgeSection, id?: string, offset = 0) {
     if (id) {

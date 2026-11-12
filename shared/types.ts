@@ -25,12 +25,12 @@ export interface TokenActivityReport {
 }
 export type RunStatus = 'queued' | 'running' | 'complete' | 'cancelled' | 'error' | 'interrupted';
 export interface ProjectFile { id: string; name: string; size: number; uploadedAt: string }
-export interface Attachment { id: string; name: string; path?: string; storage?: 's3'; size: number; ownerId?: string; libraryUploadedAt?: string }
+export interface Attachment { id: string; name: string; path?: string; storage?: 's3'; size: number; ownerId?: string; libraryUploadedAt?: string; uploadedAt?: string }
 export interface Message { id: string; role: 'user' | 'assistant'; text: string; status: RunStatus; createdAt: string; attachments: Attachment[]; usage?: Usage; runId?: string; model?: string; authorId?: string; authorName?: string; fileScope?: string; specialistName?: string; consultedSpecialists?: string[] }
 export interface ErpContext { installationId: string; entityType: string; entityId: string }
 export interface FastkoreChatBinding { installationId: string; key: string; view: FastkoreContext['view']; entitySetId: string; entityId?: string }
 export interface ExternalIdentity { installationId: string; externalUserId: string; userId: string }
-export interface Chat { id: string; title: string; sessionId?: string; sessionScope?: string; knowledgeRevision?: string; specialistSessions?: Record<string, Pick<Chat, 'sessionId' | 'sessionScope' | 'knowledgeRevision'>>; updatedAt: string; archivedAt?: string; messages: Message[]; model?: string; agentProfileId?: string; erpContext?: ErpContext; fastkoreBinding?: FastkoreChatBinding; linkedToFastkore?: true; ownerId?: string; ownerName?: string; visibility?: 'private' | 'project' }
+export interface Chat { id: string; title: string; sessionId?: string; sessionScope?: string; knowledgeRevision?: string; specialistSessions?: Record<string, Pick<Chat, 'sessionId' | 'sessionScope' | 'knowledgeRevision'>>; updatedAt: string; archivedAt?: string; messages: Message[]; model?: string; agentProfileId?: string; erpContext?: ErpContext; fastkoreBinding?: FastkoreChatBinding; fastkoreHistory?: { binding: FastkoreChatBinding; turns: number } | null; linkedToFastkore?: true; ownerId?: string; ownerName?: string; visibility?: 'private' | 'project' }
 export interface ProjectAgentConnection { profileId: string; toolIds: AgentToolId[]; fileIds: string[] | null }
 export interface ProjectAgentPolicy { revision: number; connections: ProjectAgentConnection[] }
 export interface ProjectAgentSettings {
@@ -61,7 +61,14 @@ export interface FastkoreRoleSnapshot { installationId: string; externalUserId: 
 export interface FastkoreRoleSummary extends FastkoreRoleRecord { installationName: string; userCount: number }
 export interface TeamUser extends User { erpRoles: { installationId: string; roles?: FastkoreRole[] }[] }
 export interface Credential { id: string; userId: string; kind: 'session' | 'api'; hash: string; name: string; createdAt: string; expiresAt?: string; source?: 'local' | 'fastkore'; installationId?: string; externalUserId?: string; externalDisplayName?: string; externalRoles?: FastkoreRole[]; erpDelegation?: StoredErpDelegation; erpDelegationRevoked?: true }
-export interface AuditEvent { id: string; actorId: string; action: string; targetId: string; createdAt: string }
+export interface AuditEvent {
+  id: string; actorId: string; action: string; targetId: string; createdAt: string;
+  details?: {
+    sessionId?: string; installationId?: string; runId?: string; chatId?: string;
+    scope?: 'current' | 'erp'; objectIds?: Record<string, string>; success?: boolean; status?: number; elapsedMs?: number;
+    section?: 'fastkore' | 'company'; previousRevision?: string; revision?: string;
+  };
+}
 export interface Security { users: UserRecord[]; credentials: Credential[]; audit: AuditEvent[] }
 export interface FastkoreTlsInfo { origin: string; fingerprint: string; subject: string; expiresAt: string }
 export interface FastkoreTlsTrust extends FastkoreTlsInfo { pem: string }

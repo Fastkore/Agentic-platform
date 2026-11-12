@@ -170,9 +170,73 @@ test('bootstrap only works on loopback before setup, setup gates data and login 
   try {
     assert.equal((await app.inject({ method:'POST',url:'/api/local-login',remoteAddress:'192.168.2.20',headers:{host:'localhost','x-bridge-local':'1'} })).statusCode,403);
     assert.equal((await app.inject({ method:'POST',url:'/api/local-login',headers:{host:'localhost.evil.test','x-bridge-local':'1'} })).statusCode,403);
+    const alternatePath = '/%' + '61pi/local-login';
+    const remote = await app.inject({ method: 'POST', url: alternatePath, remoteAddress: '192.168.2.20',
+      headers: { host: 'localhost', 'x-bridge-local': '1' } });
+    assert.equal(remote.statusCode, 403);
+    assert.equal(remote.json().token, undefined);
+    assert.equal((await app.inject({ url: '/%' + '61pi/models' })).statusCode, 401);
+    assert.equal((await app.inject({ url: '/api/%ZZ' })).statusCode, 400);
     const boot = (await app.inject({ method:'POST',url:'/api/local-login',headers:{host:'localhost','x-bridge-local':'1'} })).json();
     assert.equal((await app.inject({ url:'/api/projects',headers:{authorization:`Bearer ${boot.token}`} })).statusCode,403);
     for(let i=0;i<10;i++) await app.inject({method:'POST',url:'/api/auth/login',payload:{username:'wrong',password:'wrong'}});
     assert.equal((await app.inject({method:'POST',url:'/api/auth/login',payload:{username:'wrong',password:'wrong'}})).statusCode,429);
   } finally { await app.close(); }
+});
+
+test('ERP administrators cannot assign administrator roles or set local passwords', async () => {
+  const f = await fixture();
+  try {
+    const elevated = await f.employee('ERP Admin'), other = await f.employee('Employee');
+    const target = (id: string) => '/api/users/' + id;
+    const role = { role: 'admin' };
+    const change = { password: 'Different-local-password-2026' };
+    assert.equal((await f.req('PATCH', target(elevated.id), f.admin, role)).statusCode, 200);
+    assert.equal((await f.req('PATCH', target(elevated.id), elevated.token, change)).statusCode, 403);
+    assert.equal((await f.req('PATCH', target(f.adminId), elevated.token, change)).statusCode, 403);
+    assert.equal((await f.req('PATCH', target(other.id), elevated.token, role)).statusCode, 403);
+    assert.equal((await f.req('PATCH', target(other.id), elevated.token, { name: 'Updated employee' })).statusCode, 200);
+    assert.equal((await f.req('GET', '/api/admin/fastkore/installations', elevated.token)).statusCode, 403);
+    assert.equal((await f.req('POST', '/api/auth/login', '', { username: 'boss', password })).statusCode, 200);
+    assert.equal((await f.req('PATCH', target(elevated.id), f.admin, change)).statusCode, 200);
+    assert.equal((await f.req('POST', '/api/auth/login', '', { username: 'sso-' + elevated.id, ...change })).statusCode, 200);
+  } finally { await f.app.close(); }
+});
+
+test('twenty successful ERP sign-ins can share one office IP', async () => {
+  const f = await fixture();
+  try {
+    for (let i = 0; i < 20; i++) await f.employee('Office user ' + i);
+  } finally { await f.app.close(); }
+});
+
+test('simultaneous file uploads share a bounded admission per actor', async t => {
+  const f = await fixture();
+  const started = Promise.withResolvers<void>(), finish = Promise.withResolvers<void>();
+  const upload = f.workspace.files.upload.bind(f.workspace.files);
+  t.mock.method(f.workspace.files, 'upload', async (...args: Parameters<typeof upload>) => {
+    started.resolve();
+    await finish.promise;
+    return upload(...args);
+  });
+  try {
+    const employee = await f.employee('Uploader');
+    assert.equal((await f.req('PATCH', `/api/projects/${f.project.id}/members`, f.admin, { memberIds: [employee.id] })).statusCode, 200);
+    const request = () => f.app.inject({
+      method: 'POST', url: `/api/projects/${f.project.id}/attachments`,
+      headers: { host: 'agents.example.test', 'x-forwarded-proto': 'https', origin: 'https://agents.example.test',
+        cookie: employee.token, 'x-csrf-token': csrfFor(employee.token.split('=')[1]), 'content-type': 'multipart/form-data; boundary=upload' },
+      payload: '--upload\r\nContent-Disposition: form-data; name="file"; filename="draft.txt"\r\n\r\nDraft\r\n--upload--\r\n',
+    });
+    const first = request().then(response => response);
+    const winner = await Promise.race([started.promise.then(() => 'storage'), first.then(response => response.body)]);
+    assert.equal(winner, 'storage');
+    assert.equal((await request()).statusCode, 429);
+    finish.resolve();
+    assert.equal((await first).statusCode, 201);
+    assert.equal((await request()).statusCode, 201);
+  } finally {
+    finish.resolve();
+    await f.app.close();
+  }
 });

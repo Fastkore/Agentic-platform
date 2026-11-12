@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -6,15 +6,7 @@ import { Archive, ArrowUp, BarChart3, Bot, Check, ChevronDown, ChevronRight, Cli
 import type { AgentSummary, Attachment, Chat, ChatSummary, CodexLimits, FastkoreAuthentication, FileStorageStatus, ModelCatalog, ProjectSummary, RelatedChatSummary, Run, Settings, Status, User } from '../shared/types';
 import './style.css';
 import './workspace.css';
-import { AccountPanel, TeamPanel } from './AccessPanel';
-import { AuditPanel } from './AuditPanel';
 import { ChatArchiveDialog } from './ChatArchiveDialog';
-import { ErpRolesPanel } from './ErpRolesPanel';
-import { CorporatePanel } from './CorporatePanel';
-import { SpecialistsPanel } from './SpecialistsPanel';
-import { UsagePanel } from './UsagePanel';
-import { FastkorePanel } from './FastkorePanel';
-import { KnowledgePanel } from './KnowledgePanel';
 import { shortUserName } from './user-name';
 import { parseHostTheme, webViewHost, type Theme } from './fastkore';
 import { Select } from './Select';
@@ -26,6 +18,16 @@ import { VoiceDictation } from './VoiceDictation';
 import { DictationModelSettings } from './DictationModelSettings';
 import { DEFAULT_AGENT_INSTRUCTIONS } from '../shared/agent-instructions';
 import { fastkoreChatContextKey, fastkoreContextProblem, isFastkoreContextMessage, isFastkoreContextReset, parseFastkoreContext, type FastkoreContext } from '../shared/fastkore-context';
+
+const AccountPanel = lazy(() => import('./AccessPanel').then(module => ({ default: module.AccountPanel })));
+const TeamPanel = lazy(() => import('./AccessPanel').then(module => ({ default: module.TeamPanel })));
+const AuditPanel = lazy(() => import('./AuditPanel').then(module => ({ default: module.AuditPanel })));
+const ErpRolesPanel = lazy(() => import('./ErpRolesPanel').then(module => ({ default: module.ErpRolesPanel })));
+const CorporatePanel = lazy(() => import('./CorporatePanel').then(module => ({ default: module.CorporatePanel })));
+const SpecialistsPanel = lazy(() => import('./SpecialistsPanel').then(module => ({ default: module.SpecialistsPanel })));
+const UsagePanel = lazy(() => import('./UsagePanel').then(module => ({ default: module.UsagePanel })));
+const FastkorePanel = lazy(() => import('./FastkorePanel').then(module => ({ default: module.FastkorePanel })));
+const KnowledgePanel = lazy(() => import('./KnowledgePanel').then(module => ({ default: module.KnowledgePanel })));
 
 let accessKey = sessionStorage.getItem('bridge-key') ?? '';
 const agentsUrl = (projectId: string) => projectId ? '/api/projects/' + encodeURIComponent(projectId) + '/agents' : '/api/agents';
@@ -896,6 +898,7 @@ function App() {
           <div className={'settings-pane' + (settingsSection === 'agent' ? ' settings-pane-instructions' : '')}>
           {settingsSection !== 'profiles' && <h2 id="settings-section-title">{settingsSections[settingsSection].label}</h2>}
           {error && <div className="inline-error" role="alert">{error}</div>}
+          <Suspense fallback={<p role="status">Загрузка…</p>}>
           {settingsSection === 'account' && <AccountPanel request={api} renewed={saveToken} fastkore={authSource === 'fastkore'} />}
           {settingsSection === 'team' && <TeamPanel request={api} projectId={projectId} projectName={selectedProject?.name ?? ''} self={user} />}
           {settingsSection === 'roles' && <ErpRolesPanel request={api} />}
@@ -907,6 +910,7 @@ function App() {
           {(settingsSection === 'knowledgeFastkore' || settingsSection === 'knowledgeCompany') && <KnowledgePanel
             section={settingsSection === 'knowledgeFastkore' ? 'fastkore' : 'company'} request={api}
             download={url => api<Blob>(url, {}, 'blob')} dirtyChanged={setKnowledgeDirty} />}
+          </Suspense>
           {settingsSection === 'agent' && <form className="settings-instructions" onSubmit={e => { e.preventDefault(); void saveSettings({ agentInstructions }); }}>
             <p className="help" id="agent-instructions-help">Действуют во всех чатах. Роли и агенты могут уточнять эти правила.</p>
             <textarea id="agent-instructions" aria-labelledby="settings-section-title" aria-describedby="agent-instructions-help" maxLength={8000} required

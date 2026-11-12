@@ -46,26 +46,6 @@ db.close();
     Invoke-Docker @stack stop --timeout 30 app
     $appStopped = $true
     Invoke-Docker @cli up -d --no-build --wait --wait-timeout 90 cli
-    $enableFiles = @'
-import { Store } from './dist/server/store.js';
-import { SOURCE_SELECTION_INSTRUCTIONS } from './dist/shared/agent-instructions.js';
-const store = new Store('/data');
-try {
-  const profile = store.state.corporate?.profiles.find(p=>p.id==='universal');
-  if (!profile) throw new Error('Universal agent profile is missing');
-  store.state.settings.allowWrite = true;
-  const instructions = store.state.settings.agentInstructions ?? '';
-  if (!instructions.includes('Выбор источников и инструментов')) {
-    const updated = [instructions, SOURCE_SELECTION_INSTRUCTIONS].filter(Boolean).join('\n\n');
-    if (updated.length > 8000) throw new Error('Agent instructions exceed 8000 characters');
-    store.state.settings.agentInstructions = updated;
-  }
-  if (!profile.allowWrite) { profile.allowWrite = true; profile.revision++; }
-  await store.save();
-  console.log('Working-directory writes enabled for the universal test agent.');
-} finally { await store.close(); }
-'@
-    Invoke-Docker @stack run --rm --no-deps -T --entrypoint node app --input-type=module -e $enableFiles
     Invoke-Docker @stack up -d --no-build --wait --wait-timeout 120 app codex
     $appStopped = $false
 
@@ -73,7 +53,6 @@ try {
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { FastkoreCli } from './dist/server/fastkore-cli.js';
-import { DatabaseSync } from 'node:sqlite';
 const source = readFileSync('./dist/server/fastkore.js','utf8');
 assert.match(source,/ticketRoles/);
 assert.match(source,/maxTicketResponseBytes\s*=\s*64\s*\*\s*1024/);
@@ -81,12 +60,7 @@ assert.equal(process.env.BRIDGE_FASTKORE_CLI_TICKETS,'1');
 const cli = new FastkoreCli(process.env.BRIDGE_FASTKORE_CLI_SOCKET);
 const catalog = await cli.describe();
 assert.equal(catalog.ok,true);
-const db = new DatabaseSync('/data/state.sqlite',{readOnly:true});
-const metadata = Object.fromEntries(db.prepare('SELECT key,value FROM metadata').all().map(r=>[r.key,JSON.parse(r.value)]));
-assert.equal(metadata.settings.allowWrite,true);
-assert.equal(metadata.corporate.profiles.find(p=>p.id==='universal').allowWrite,true);
-console.log(JSON.stringify({rolesSupported:true,ssoLimitBytes:65536,cliReady:true,workingDirectoryWrites:true}));
-db.close();
+console.log(JSON.stringify({rolesSupported:true,ssoLimitBytes:65536,cliReady:true}));
 '@
     Invoke-Docker @stack exec -T app node --input-type=module -e $verify
     Invoke-Docker @stack ps

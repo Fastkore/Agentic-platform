@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { KnowledgeBase } from '../server/knowledge.js';
 import { withKnowledge } from '../server/knowledge-tools.js';
 import { Store } from '../server/store.js';
@@ -97,11 +98,28 @@ test('knowledge HTTP upload and replacement use admin access and revision checks
     assert.equal((await app.inject({ url: route + '/files/' + file.id, headers })).body, 'Original');
     const replace = () => app.inject({ method: 'PUT', url: route + '/files/' + file.id + '?revision=' + file.revision,
       headers: { ...headers, 'content-type': 'multipart/form-data; boundary=kb' }, payload: multipart('Updated') });
+    const db = new DatabaseSync(path.join(root, 'knowledge.sqlite'));
+    try {
+      db.exec("CREATE TRIGGER fail_audit BEFORE INSERT ON detailed_audit BEGIN SELECT RAISE(ABORT, 'test audit failure'); END;");
+      assert.equal((await replace()).statusCode, 500);
+      assert.equal((await app.inject({ url: route + '/files/' + file.id, headers })).body, 'Original');
+      db.exec('DROP TRIGGER fail_audit');
+    } finally { db.close(); }
     assert.equal((await replace()).statusCode, 200);
     assert.equal((await replace()).statusCode, 409);
     const current = (await app.inject({ url: route, headers })).json();
     assert.equal(current.files.length, 1);
     assert.equal((await app.inject({ method: 'DELETE', url: route + '/files/' + file.id, headers, payload: { revision: current.files[0].revision } })).statusCode, 200);
+    const events = (await app.inject({ url: '/api/audit', headers })).json();
+    const recorded = events.filter((event: { targetId: string }) => event.targetId === file.id);
+    assert.deepEqual(new Set(recorded.map((event: { action: string }) => event.action)), new Set(['knowledge.upload', 'knowledge.replace', 'knowledge.delete']));
+    const replaced = recorded.find((event: { action: string }) => event.action === 'knowledge.replace');
+    assert.equal(replaced.actorId, admin.user.id);
+    assert.deepEqual(replaced.details, { section: 'company', previousRevision: file.revision, revision: current.files[0].revision });
+    assert.ok(!JSON.stringify(recorded).includes('Updated'));
+    const before = encodeURIComponent(events[0].createdAt + '/' + events[0].id);
+    const page = (await app.inject({ url: '/api/audit?before=' + before, headers })).json();
+    assert.deepEqual(page, events.slice(1));
   } finally { await app.close(); }
 });
 

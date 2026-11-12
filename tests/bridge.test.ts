@@ -4,6 +4,7 @@ import { mkdtemp, mkdir, writeFile, readFile, copyFile, realpath, symlink } from
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
+import { zipSync } from 'fflate';
 import { Store, redact } from '../server/store.js';
 import { Workspace } from '../server/workspace.js';
 import { authentication, buildArguments, CodexClient, type CodexRunner } from '../server/codex.js';
@@ -11,6 +12,12 @@ import { createApp } from '../server/app.js';
 import { buildContext, documentText, uploadAttachment } from '../server/documents.js';
 
 const fakeFile = fileURLToPath(new URL('./fake-cli.mjs', import.meta.url));
+test('XLSX preview rejects an archive beyond its expanded size budget', async () => {
+  const content = zipSync({ 'xl/worksheets/sheet1.xml': new Uint8Array(9 * 1024 * 1024) });
+  assert.ok(content.length < 20 * 1024 * 1024);
+  await assert.rejects(documentText('large.xlsx', Buffer.from(content)), (error: unknown) =>
+    (error as { statusCode?: number }).statusCode === 422);
+});
 async function authorizedApp(workspace: Workspace) {
   const app = await createApp(workspace);
   const initial = (await app.inject({ method: 'POST', url: '/api/local-login', headers: { host: '127.0.0.1:8787', 'x-bridge-local': '1' } })).json();

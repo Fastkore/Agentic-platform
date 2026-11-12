@@ -100,12 +100,28 @@ export class Access {
       || (credential.source === 'fastkore' ? !this.externalCredentialValid?.(credential) : user.role !== 'admin')) throw new BridgeError('Войдите под своей учётной записью.', 401);
     return { user, credential };
   }
-  bootstrap() { return this.change(() => { if (!this.setupRequired) throw new BridgeError('Первичная настройка завершена. Войдите по логину и паролю.', 403); return this.issueSession(this.data.users.find(u => u.role === 'admin')!, 'Первичная настройка'); }); }
-  setup(actor: UserRecord, username: string, name: string, password: string) {
-    return this.change(async () => {
-      if (!this.setupRequired || actor.role !== 'admin') throw new BridgeError('Первичная настройка уже завершена.', 403);
-      const login = this.username(username), hash = await this.password(password); actor.username = login; actor.name = name.trim() || 'Руководитель'; actor.passwordHash = hash;
-      this.data.credentials = []; this.audit(actor.id, 'setup', actor.id); return this.issueSession(actor, 'Браузер');
+  bootstrap() {
+    return this.changeAccess(draft => {
+      if (!this.setupRequired) throw new BridgeError('Первичная настройка завершена. Войдите по логину и паролю.', 403);
+      const data = draft.security!;
+      return this.issueSession(data.users.find(u => u.role === 'admin' && !u.disabled)!, 'Первичная настройка', undefined, data);
+    });
+  }
+  async setup(current: () => Principal, username: string, name: string, password: string) {
+    if (!this.setupRequired || current().user.role !== 'admin') throw new BridgeError('Первичная настройка уже завершена.', 403);
+    const login = this.username(username), hash = await this.password(password);
+    return this.changeAccess(draft => {
+      if (!this.setupRequired) throw new BridgeError('Первичная настройка уже завершена.', 403);
+      const { user, credential } = current();
+      this.admin(user);
+      if (credential.source === 'fastkore') throw new BridgeError('Требуется локальный вход руководителя.', 403);
+      const data = draft.security!, actor = data.users.find(item => item.id === user.id)!;
+      actor.username = login;
+      actor.name = name.trim() || 'Руководитель';
+      actor.passwordHash = hash;
+      data.credentials = [];
+      this.audit(actor.id, 'setup', actor.id, data);
+      return this.issueSession(actor, 'Браузер', undefined, data);
     });
   }
   async login(username: string, password: string) {
@@ -113,13 +129,21 @@ export class Access {
     // Run the same expensive derivation for an unknown login as for a known one.
     const previousHash = user?.passwordHash;
     const ok = await this.matches(password, previousHash || `${'0'.repeat(32)}:${'0'.repeat(128)}`);
-    return this.change(() => {
-      const current = this.data.users.find(u => u.id === user?.id && !u.disabled);
+    return this.changeAccess(draft => {
+      const data = draft.security!;
+      const current = data.users.find(u => u.id === user?.id && !u.disabled);
       if (!current || current.role !== 'admin' || current.passwordHash !== previousHash || !ok || this.setupRequired) throw new BridgeError('Неверный логин или пароль.', 401);
-      return this.issueSession(current, 'Браузер');
+      this.audit(current.id, 'login', current.id, data);
+      return this.issueSession(current, 'Браузер', undefined, data);
     });
   }
-  logout(principal: Principal) { return this.change(() => { this.data.credentials = this.data.credentials.filter(c => c.id !== principal.credential.id); return { ok: true }; }); }
+  logout(principal: Principal) {
+    return this.changeAccess(draft => {
+      const data = draft.security!;
+      data.credentials = data.credentials.filter(c => c.id !== principal.credential.id);
+      return { ok: true };
+    });
+  }
   fastkoreLogin(identity: TicketIdentity, previousToken = '', recheck: () => void = () => {},
     seal?: (credential: Credential, delegation: ErpDelegation) => Credential['erpDelegation']) {
     return this.changeAccess(draft => {
@@ -193,7 +217,7 @@ export class Access {
     const run = this.workspace.getRun(id); if (run.projectId && run.chatId) this.chat(user, run.projectId, run.chatId); else this.admin(user); return run;
   }
   viewChat(chat: Chat) {
-    const { specialistSessions, knowledgeRevision, fastkoreBinding, ...view } = chat;
+    const { specialistSessions, knowledgeRevision, fastkoreBinding, fastkoreHistory, ...view } = chat;
     return { ...view, linkedToFastkore: fastkoreBinding ? true as const : undefined, ownerName: this.data.users.find(u => u.id === chat.ownerId)?.name ?? 'Пользователь', messages: chat.messages.map(m => m.role === 'user' ? { ...m, authorId: m.authorId ?? chat.ownerId, authorName: this.data.users.find(u => u.id === (m.authorId ?? chat.ownerId))?.name ?? 'Пользователь' } : m) };
   }
   chatSummary({ id, title, updatedAt, messages, ownerId, visibility, fastkoreBinding }: Chat): ChatSummary {
@@ -213,25 +237,38 @@ export class Access {
       this.data.users.push(user); this.audit(actor.id, 'user.create', user.id); return publicUser(user);
     });
   }
-  updateUser(actor: User, id: string, input: { disabled?: boolean; password?: string; name?: string; roleId?: string; role?: User['role'] }) {
-    this.admin(actor); return this.change(async () => {
-      const user = this.data.users.find(u => u.id === id); if (!user) throw new BridgeError('Пользователь не найден.', 404);
+  async updateUser(current: () => Principal, id: string, input: { disabled?: boolean; password?: string; name?: string; roleId?: string; role?: User['role'] }) {
+    const authorize = () => {
+      const { user, credential } = current();
+      this.admin(user);
+      const target = this.data.users.find(item => item.id === id);
+      if (!target) throw new BridgeError('Пользователь не найден.', 404);
+      if (credential.source === 'fastkore' && (input.password !== undefined ||
+        input.role !== undefined && input.role !== target.role || target.role === 'admin')) {
+        throw new BridgeError('Требуется локальный вход руководителя.', 403);
+      }
+      return user;
+    };
+    authorize();
+    const hash = input.password === undefined ? undefined : await this.password(input.password);
+    return this.changeAccess(draft => {
+      const actor = authorize(), data = draft.security!;
+      const user = data.users.find(u => u.id === id)!;
       if (actor.id === id && input.disabled) throw new BridgeError('Нельзя отключить свою учётную запись.');
       if (input.disabled && user.role === 'admin' && this.data.users.filter(u => u.role === 'admin' && !u.disabled).length <= 1) throw new BridgeError('Должен остаться хотя бы один руководитель.');
       if (input.role && input.role !== 'admin' && user.role === 'admin' && this.data.users.filter(u => u.role === 'admin' && !u.disabled).length <= 1) throw new BridgeError('Должен остаться хотя бы один руководитель.');
       if (input.roleId !== undefined && !this.workspace.corporate.data.roles.some(r => r.id === input.roleId && r.enabled)) throw new BridgeError('Роль недоступна.');
       if (input.password !== undefined && (input.role ?? user.role) !== 'admin') throw new BridgeError('Сотрудники входят через Fastkore.', 403);
-      const hash = input.password === undefined ? undefined : await this.password(input.password);
       if (input.disabled !== undefined) user.disabled = input.disabled; if (hash) user.passwordHash = hash;
       if (input.name !== undefined) user.name = input.name.trim() || user.username;
       if (input.roleId !== undefined) user.roleId = input.roleId;
       if (input.role !== undefined) user.role = input.role;
-      if (input.disabled || hash) this.data.credentials = this.data.credentials.filter(c => c.userId !== id);
+      if (input.disabled || hash) data.credentials = data.credentials.filter(c => c.userId !== id);
       if (user.role !== 'admin') {
         user.passwordHash = '';
-        this.data.credentials = this.data.credentials.filter(c => c.userId !== id || c.source === 'fastkore');
+        data.credentials = data.credentials.filter(c => c.userId !== id || c.source === 'fastkore');
       }
-      this.audit(actor.id, 'user.update', id); return publicUser(user);
+      this.audit(actor.id, 'user.update', id, data); return publicUser(user);
     });
   }
   changePassword(principal: Principal, current: string, password: string) {

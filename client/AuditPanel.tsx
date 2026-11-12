@@ -16,6 +16,9 @@ const labels: Record<string, string> = {
   'key.create': 'Создан ключ API', 'key.revoke': 'Отозван ключ API', 'password.change': 'Изменён пароль',
   'sso.installation.create': 'Добавлена установка Fastkore', 'sso.installation.update': 'Изменено подключение Fastkore',
   'erp.role.delete': 'Удалена роль из списка',
+  'erp.mcp.read': 'Чтение ERP через MCP', 'erp.cli.read': 'Чтение ERP через CLI',
+  'knowledge.summary': 'Изменена памятка базы знаний', 'knowledge.upload': 'Добавлен файл базы знаний',
+  'knowledge.replace': 'Заменён файл базы знаний', 'knowledge.delete': 'Удалён файл базы знаний', login: 'Локальный вход',
 };
 const groups = [
   { id: 'login', label: 'Входы', icon: LogIn },
@@ -35,16 +38,35 @@ export function AuditPanel({ request }: { request: Request }) {
   const [error, setError] = useState('');
   const [period, setPeriod] = useState('7'), [actor, setActor] = useState('all'), [eventType, setEventType] = useState('all');
   const [search, setSearch] = useState(''), [ascending, setAscending] = useState(false);
+  const [loadingOlder, setLoadingOlder] = useState(false), [hasOlder, setHasOlder] = useState(false);
+  const [pageError, setPageError] = useState('');
   useEffect(() => {
     const controller = new AbortController();
     const options = { signal: controller.signal };
     Promise.all([request<AuditEvent[]>('/api/audit', options), request<User[]>('/api/users', options), request<ProjectSummary[]>('/api/projects', options)])
-      .then(([events, users, projects]) => { if (!controller.signal.aborted) setData({ events, users, projects }); })
+      .then(([events, users, projects]) => {
+        if (controller.signal.aborted) return;
+        setData({ events, users, projects });
+        setHasOlder(events.length === 1000);
+      })
       .catch(e => { if (!controller.signal.aborted) setError(e.message); });
     return () => controller.abort();
   }, [request]);
   if (error) return <p className="inline-error" role="alert">{error}</p>;
   if (!data) return <p role="status">Загрузка…</p>;
+  async function loadOlder() {
+    const last = data?.events.at(-1);
+    if (!last || loadingOlder) return;
+    setLoadingOlder(true);
+    setPageError('');
+    try {
+      const before = encodeURIComponent(last.createdAt + '/' + last.id);
+      const older = await request<AuditEvent[]>('/api/audit?before=' + before);
+      setData(current => current && { ...current, events: [...current.events, ...older] });
+      setHasOlder(older.length === 1000);
+    } catch (error) { setPageError((error as Error).message); }
+    finally { setLoadingOlder(false); }
+  }
   const users = new Map(data.users.map(user => [user.id, user]));
   const projects = new Map(data.projects.map(project => [project.id, project.name]));
   const details = (event: AuditEvent) => {
@@ -63,13 +85,13 @@ export function AuditPanel({ request }: { request: Request }) {
     .sort((a, b) => (ascending ? 1 : -1) * (Date.parse(a.createdAt) - Date.parse(b.createdAt)));
   const week = data.events.filter(event => Date.parse(event.createdAt) >= Date.now() - 7 * 86400_000);
   return <div className="audit-panel">
-    <p className="audit-intro">Входы пользователей и изменения доступа за последние 7 дней.</p>
+    <p className="audit-intro">Входы, изменения доступа, обращения к ERP и изменения базы знаний.</p>
     <div className="audit-summary">{groups.map(({ id, label, icon: Icon }) => <div className="audit-metric" key={id}>
       <Icon size={21} aria-hidden="true" /><div><span>{label}</span><p><strong>{week.filter(event => category(event.action) === id).length}</strong><small>за 7 дней</small></p></div>
     </div>)}</div>
     <div className="audit-filters">
       <div><label><CalendarDays size={16} />Период</label><Select label="Период журнала" className="settings-select" value={period} onChange={setPeriod}
-        options={[{ value: '1', label: 'Последние сутки' }, { value: '7', label: 'Последние 7 дней' }]} /></div>
+        options={[{ value: '1', label: 'Последние сутки' }, { value: '7', label: 'Последние 7 дней' }, { value: '30', label: 'Последние 30 дней' }]} /></div>
       <div><label><UserRound size={16} />Пользователь</label><Select label="Пользователь журнала" className="settings-select" value={actor} onChange={setActor}
         options={[{ value: 'all', label: 'Все пользователи' }, ...data.users.map(user => ({ value: user.id, label: shortUserName(user.name) }))]} /></div>
       <div><label><Layers size={16} />Событие</label><Select label="Тип события" className="settings-select" value={eventType} onChange={setEventType}
@@ -90,10 +112,24 @@ export function AuditPanel({ request }: { request: Request }) {
           <td><span className="audit-event"><Icon size={18} aria-hidden="true" />{labels[event.action] ?? event.action}</span></td>
           <td><details className="audit-details"><summary>{details(event)}</summary><dl>
             <dt>Код события</dt><dd>{event.action}</dd><dt>Объект</dt><dd>{event.targetId}</dd><dt>ID события</dt><dd>{event.id}</dd>
+            {event.details?.installationId && <><dt>Установка ERP</dt><dd>{event.details.installationId}</dd></>}
+            {event.details?.sessionId && <><dt>Сеанс</dt><dd>{event.details.sessionId}</dd></>}
+            {event.details?.runId && <><dt>Задание</dt><dd>{event.details.runId}</dd></>}
+            {event.details?.chatId && <><dt>Чат</dt><dd>{event.details.chatId}</dd></>}
+            {event.details?.scope && <><dt>Область запроса</dt><dd>{event.details.scope}</dd></>}
+            {Object.entries(event.details?.objectIds ?? {}).map(([field, id]) => <div key={field}><dt>{field}</dt><dd>{id}</dd></div>)}
+            {event.details?.success !== undefined && <><dt>Результат</dt><dd>{event.details.success ? 'Успешно' : 'Ошибка'}{event.details.status ? ` · HTTP ${event.details.status}` : ''}</dd></>}
+            {event.details?.section && <><dt>Раздел</dt><dd>{event.details.section}</dd></>}
+            {event.details?.previousRevision && <><dt>Предыдущая версия</dt><dd>{event.details.previousRevision}</dd></>}
+            {event.details?.revision && <><dt>Новая версия</dt><dd>{event.details.revision}</dd></>}
           </dl></details></td>
         </tr>;
       })}</tbody>
     </table>{!rows.length && <p className="audit-empty" role="status">{data.events.length ? 'По выбранным условиям событий нет.' : 'В журнале пока нет записей.'}</p>}</div>
     <p className="audit-count" role="status">Показано {rows.length} из {data.events.length}</p>
+    {pageError && <p className="inline-error" role="alert">{pageError}</p>}
+    {hasOlder && <button type="button" className="secondary" disabled={loadingOlder} onClick={() => void loadOlder()}>
+      {loadingOlder ? 'Загрузка…' : 'Загрузить предыдущие события'}
+    </button>}
   </div>;
 }
