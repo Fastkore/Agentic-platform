@@ -119,12 +119,25 @@
 .workspace-select-menu [aria-disabled="true"] { color: var(--text-muted); cursor: default; opacity: .65; }
 
 .workspace-sidebar {
-  width: clamp(224px, 18vw, 272px); flex: 0 0 auto; min-height: 0;
+  position: relative;
+  width: clamp(230px, var(--sidebar-width, min(24.5vw, 380px)), min(520px, 45vw)); flex: 0 0 auto; min-height: 0;
+  border-inline-end: 1px solid var(--nav-border);
   display: flex; flex-direction: column; background: var(--nav); color: var(--nav-text);
   font-size: var(--chat-font-size);
 }
+.workspace-sidebar-resize {
+  position: absolute; z-index: 4; inset: 0 -5px 0 auto; width: 10px;
+  cursor: col-resize; touch-action: none;
+}
+.workspace-sidebar-resize::after {
+  content: ''; position: absolute; inset: 0 4px; background: transparent; pointer-events: none;
+}
+.workspace-sidebar-resize:hover::after, .workspace-sidebar-resize:active::after,
+.workspace-sidebar-resize:focus-visible::after { background: var(--accent); }
 .workspace-brand { display: flex; align-items: center; gap: 10px; padding: 0 20px; height: 64px; flex: 0 0 auto; }
 .workspace-brand b { font-weight: 600; }
+.workspace-brand:has(.workspace-sidebar-collapse) { padding-inline-end: 8px; }
+.workspace-sidebar-collapse { margin-left: auto; }
 .workspace-mark {
   width: 23px; height: 23px; display: grid; place-items: center;
   background: var(--canvas); border: 1px solid var(--control-border); border-radius: 5px; color: var(--text);
@@ -153,8 +166,8 @@
   flex: 1; min-height: 0; overflow: auto; padding: 0 10px 12px;
   scrollbar-width: thin; scrollbar-color: var(--control-border) transparent;
 }
-.project-line { display: flex; align-items: center; gap: 2px; }
-.project-row { color: var(--nav-muted); }
+.project-line { display: flex; align-items: center; gap: 2px; margin-inline-end: -5px; }
+.project-row { flex: 1; width: auto; gap: 6px; padding-inline: 8px 3px; color: var(--nav-muted); }
 .project-tree :is(.project-row, .chat-row, .show-chats) { min-height: 30px; }
 .project-row > span { flex: 1; }
 .project-row > svg:last-child { opacity: .65; }
@@ -163,7 +176,7 @@
 .project-actions { position: relative; flex: 0 0 auto; }
 .project-actions summary { width: 28px; list-style: none; cursor: pointer; }
 .project-actions summary::-webkit-details-marker { display: none; }
-.project-tree:has(.project-actions[open]) { padding-bottom: 88px; }
+.project-tree:has(.project-actions[open]) { padding-bottom: 128px; }
 .project-actions-menu {
   position: absolute; z-index: 3; right: 0; top: 100%; width: max-content; min-width: 150px;
   padding: 4px; border: 1px solid var(--control-border); border-radius: 8px; background: var(--elevated);
@@ -204,6 +217,9 @@
 .workspace-top:has(h1) { border-bottom: 1px solid var(--border); }
 .workspace-top > svg { flex: 0 0 auto; }
 .workspace-top h1 { min-width: 0; color: var(--text); font-size: 16px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.workspace-chat-title { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.workspace-chat-title > svg { flex: none; }
+.chat-rename-button { width: 28px; height: 28px; }
 .workspace-mobile-toggle, .workspace-mobile-close, .workspace-scrim { display: none; }
 .workspace-mobile-close { margin-left: auto; }
 .workspace-sidebar-toggle { flex: 0 0 auto; }
@@ -676,6 +692,54 @@
   .workspace-main { --lane-gutter: 16px; }
   .workspace-welcome { width: min(806px, calc(100% - 38px)); }
 }
+
+@media (721px <= width <= 1440px), (width > 720px) and (height <= 820px) {
+  .workspace-shell { --chat-font-size: 13.2px; font-size: 13px; }
+  .workspace-brand { height: 58px; padding-inline: 18px; }
+  .workspace-start { padding-bottom: 14px; }
+  .new-conversation { min-height: 39px; }
+  .project-tree :is(.project-row, .chat-row, .show-chats) { min-height: 27px; }
+  .workspace-top { flex-basis: 52px; gap: 12px; padding-inline: 15px; }
+  .workspace-top h1 { font-size: 15px; }
+  .workspace-welcome h2 { font-size: clamp(24px, 1.8vw, 32px); }
+  .conversation-message { margin-bottom: 26px; }
+  .conversation-message.is-user { margin-bottom: 28px; }
+  .question-bubble { padding: 9px 13px; }
+  .conversation-footer { padding-bottom: 15px; }
+  .composer-project { min-height: 41px; }
+  .bridge-editor textarea { min-height: 69px; }
+
+  .workspace-settings {
+    width: min(1400px, calc(100vw - 24px));
+    height: min(860px, calc(100dvh - 24px));
+  }
+  .workspace-settings > header { padding: 10px 18px; min-height: 52px; }
+  .workspace-settings > header h2 { font-size: 18px; }
+  .settings-layout { grid-template-columns: clamp(168px, 15vw, 200px) minmax(0, 1fr); }
+  .settings-nav { padding: 12px 9px; gap: 2px; }
+  .settings-nav .workspace-row {
+    min-height: 35px; padding: 4px 9px; gap: 9px;
+    font-size: 13px; line-height: 1.25; white-space: normal;
+  }
+  .settings-nav svg { width: 16px; height: 16px; }
+  .settings-content { padding: 18px 20px; }
+  .workspace-settings .settings-pane > h2 { font-size: 24px; margin-bottom: 18px; }
+  .settings-section-heading, .roles-filters { margin-bottom: 16px; }
+  .settings-section-heading h3 { font-size: 16px; }
+  .settings-content :is(.primary, .secondary) { min-height: 32px; padding-block: 6px; font-size: 13px; }
+  .settings-content .settings-select { min-height: 34px; }
+  .team-table :is(th, td), .audit-table :is(th, td) { padding: 10px 12px; }
+  .settings-server .setting-section, .settings-server .setting-section:last-child { padding: 13px; }
+  .erp-role-cards { gap: 12px; }
+  .erp-role-cards > li { padding: 16px; }
+  .erp-role-meta { margin-top: 14px; padding-top: 12px; }
+  .audit-panel .audit-intro { margin: -8px 0 16px; }
+  .audit-summary, .audit-filters { gap: 10px; margin-bottom: 16px; }
+  .audit-metric { padding: 12px; gap: 9px; }
+  .audit-metric span { font-size: 13px; }
+  .audit-metric strong { font-size: 21px; }
+}
+
 @media (max-width: 720px) {
   .workspace-main { margin: 0; border-radius: 0; --lane-gutter: 10px; }
   .workspace-top { flex-basis: 47px; gap: 7px; padding-inline: 9px; }
@@ -684,6 +748,7 @@
     visibility: hidden; transform: translateX(-100%); transition: transform .18s, visibility .18s;
   }
   .workspace-sidebar.is-open { visibility: visible; transform: translateX(0); }
+  .workspace-sidebar-resize { display: none; }
   .workspace-scrim { display: block; position: fixed; inset: 0; z-index: 11; background: var(--scrim); }
   .workspace-mobile-toggle { display: inline-grid; }
   .workspace-mobile-close { display: inline-grid; }

@@ -217,7 +217,7 @@ export class Access {
     const run = this.workspace.getRun(id); if (run.projectId && run.chatId) this.chat(user, run.projectId, run.chatId); else this.admin(user); return run;
   }
   viewChat(chat: Chat) {
-    const { specialistSessions, knowledgeRevision, fastkoreBinding, fastkoreHistory, ...view } = chat;
+    const { specialistSessions, knowledgeRevision, fastkoreBinding, fastkoreHistory, titleCustomized, ...view } = chat;
     return { ...view, linkedToFastkore: fastkoreBinding ? true as const : undefined, ownerName: this.data.users.find(u => u.id === chat.ownerId)?.name ?? 'Пользователь', messages: chat.messages.map(m => m.role === 'user' ? { ...m, authorId: m.authorId ?? chat.ownerId, authorName: this.data.users.find(u => u.id === (m.authorId ?? chat.ownerId))?.name ?? 'Пользователь' } : m) };
   }
   chatSummary({ id, title, updatedAt, messages, ownerId, visibility, fastkoreBinding }: Chat): ChatSummary {

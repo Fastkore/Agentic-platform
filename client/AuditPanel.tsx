@@ -13,6 +13,7 @@ const labels: Record<string, string> = {
   'role.update': 'Изменена рабочая роль', 'profile.update': 'Изменён агент', 'dataset.update': 'Изменён источник',
   'chat.private': 'Чат сделан личным', 'chat.project': 'Чат открыт проекту',
   'chat.archive': 'Чат перемещён в архив', 'chat.restore': 'Чат восстановлен из архива', 'chat.delete': 'Чат удалён',
+  'chat.rename': 'Чат переименован',
   'key.create': 'Создан ключ API', 'key.revoke': 'Отозван ключ API', 'password.change': 'Изменён пароль',
   'sso.installation.create': 'Добавлена установка Fastkore', 'sso.installation.update': 'Изменено подключение Fastkore',
   'erp.role.delete': 'Удалена роль из списка',

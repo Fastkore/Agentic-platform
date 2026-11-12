@@ -2,7 +2,7 @@ import React, { lazy, Suspense, useCallback, useEffect, useRef, useState } from 
 import { createRoot } from 'react-dom/client';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { Archive, ArrowUp, BarChart3, Bot, Check, ChevronDown, ChevronRight, ClipboardList, Copy, Database, EllipsisVertical, FileText, Folder, History, Link2, LoaderCircle, LockKeyhole, LogOut, Menu, Moon, Network, PanelLeftClose, PanelLeftOpen, Plus, RefreshCw, Search, Settings2, ShieldCheck, Square, SquarePen, Sun, Terminal, Users, X } from 'lucide-react';
+import { Archive, ArrowUp, BarChart3, Bot, Check, ChevronDown, ChevronRight, ClipboardList, Copy, Database, EllipsisVertical, FileText, Folder, History, Link2, LoaderCircle, LockKeyhole, LogOut, Menu, Moon, Network, PanelLeftClose, PanelLeftOpen, Pencil, Plus, RefreshCw, Search, Settings2, ShieldCheck, Square, SquarePen, Sun, Terminal, Users, X } from 'lucide-react';
 import type { AgentSummary, Attachment, Chat, ChatSummary, CodexLimits, FastkoreAuthentication, FileStorageStatus, ModelCatalog, ProjectSummary, RelatedChatSummary, Run, Settings, Status, User } from '../shared/types';
 import './style.css';
 import './workspace.css';
@@ -10,6 +10,7 @@ import { ChatArchiveDialog } from './ChatArchiveDialog';
 import { shortUserName } from './user-name';
 import { parseHostTheme, webViewHost, type Theme } from './fastkore';
 import { Select } from './Select';
+import { SidebarResizeHandle } from './SidebarResizeHandle';
 import { ComposerInput } from './ComposerInput';
 import { WorkspaceDialog } from './WorkspaceDialog';
 import { ProjectFilesDialog } from './ProjectFilesDialog';
@@ -32,7 +33,6 @@ const KnowledgePanel = lazy(() => import('./KnowledgePanel').then(module => ({ d
 let accessKey = sessionStorage.getItem('bridge-key') ?? '';
 const agentsUrl = (projectId: string) => projectId ? '/api/projects/' + encodeURIComponent(projectId) + '/agents' : '/api/agents';
 const settingsSections = {
-  account: { label: 'Учётная запись', icon: LockKeyhole },
   team: { label: 'Команда', icon: Users },
   roles: { label: 'Роли', icon: ShieldCheck },
   profiles: { label: 'Специалисты', icon: Bot },
@@ -44,6 +44,7 @@ const settingsSections = {
   usage: { label: 'Использование', icon: BarChart3 },
   fastkore: { label: 'Вход из Fastkore', icon: Link2 },
   server: { label: 'Сервер', icon: Network },
+  account: { label: 'Учётная запись', icon: LockKeyhole },
 };
 type SettingsSection = keyof typeof settingsSections;
 let browserSession = false, csrfToken = '', sessionUserId = '', authEpoch = 0;
@@ -109,9 +110,10 @@ function App() {
   const [projectId, setProjectId] = useState(localStorage.getItem('bridge-project') ?? ''), [chatId, setChatId] = useState(localStorage.getItem('bridge-chat') ?? '');
   const [drafts, setDrafts] = useState<Record<string, string>>({}), [files, setFiles] = useState<Record<string, Attachment[]>>({});
   const [specialists, setSpecialists] = useState<Record<string, string | undefined>>({});
-  const [panel, setPanel] = useState<'settings' | 'project' | 'project-files' | 'project-agents' | 'search' | 'archive' | 'related' | null>(null);
+  const [panel, setPanel] = useState<'settings' | 'project' | 'project-files' | 'project-agents' | 'search' | 'archive' | 'related' | 'rename-chat' | null>(null);
+  const [renameDraft, setRenameDraft] = useState<{ projectId: string; chatId: string; title: string }>();
   const [projectActionTarget, setProjectActionTarget] = useState<ProjectSummary | null>(null);
-  const [settingsSection, setSettingsSection] = useState<SettingsSection>('account');
+  const [settingsSection, setSettingsSection] = useState<SettingsSection>('team');
   const [instructionsDraft, setInstructionsDraft] = useState<string>();
   const [knowledgeDirty, setKnowledgeDirty] = useState(false);
   const savedInstructions = status?.settings.agentInstructions ?? DEFAULT_AGENT_INSTRUCTIONS;
@@ -119,6 +121,7 @@ function App() {
   const openedFastkoreSettings = useRef(false);
   const [sidebarOpen, setSidebarOpen] = useState(false), [searchQuery, setSearchQuery] = useState(''), [searchLoading, setSearchLoading] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => localStorage.getItem('bridge-sidebar-collapsed') === '1');
+  const sidebarCollapseButton = useRef<HTMLButtonElement>(null), sidebarExpandButton = useRef<HTMLButtonElement>(null);
   const accountMenu = useRef<HTMLDetailsElement>(null);
   const [error, setError] = useState(''), [pending, setPending] = useState(false), [copied, setCopied] = useState(''), [folderPath, setFolderPath] = useState(''), [projectName, setProjectName] = useState('');
   const [agentCatalog, setAgentCatalog] = useState<{ projectId: string; list: AgentSummary[] }>();
@@ -462,6 +465,26 @@ function App() {
       await loadChats(p);
     });
   }
+  function changeSidebarCollapsed(collapsed: boolean) {
+    setSidebarCollapsed(collapsed);
+    localStorage.setItem('bridge-sidebar-collapsed', collapsed ? '1' : '0');
+    requestAnimationFrame(() => (collapsed ? sidebarExpandButton : sidebarCollapseButton).current?.focus());
+  }
+  async function renameChat() {
+    if (!renameDraft || pending) return;
+    const { projectId: p, chatId: c, title } = renameDraft;
+    if (!title.trim()) return;
+    await action(async () => {
+      const updated = await api<{ title: string }>(`/api/projects/${p}/chats/${c}/title`, {
+        method: 'PATCH', body: JSON.stringify({ title: title.trim() }),
+      });
+      setChat(old => old?.id === c ? { ...old, title: updated.title } : old);
+      setChatLists(old => ({ ...old, [p]: (old[p] ?? []).map(item => item.id === c ? { ...item, title: updated.title } : item) }));
+      setRelatedChats(old => old && { ...old, list: old.list.map(item => item.id === c ? { ...item, title: updated.title } : item) });
+      setPanel(current => current === 'rename-chat' ? null : current);
+      setRenameDraft(undefined);
+    });
+  }
   async function archiveChat() {
     const p = projectId, c = chatId;
     await action(async () => {
@@ -535,7 +558,7 @@ function App() {
   function showSettings() {
     if (accountMenu.current) accountMenu.current.open = false;
     setSidebarOpen(false);
-    setSettingsSection('account');
+    setSettingsSection('team');
     setInstructionsDraft(undefined);
     setPanel('settings');
   }
@@ -617,11 +640,12 @@ function App() {
     setPanel(null);
   };
   const renderHistory = (conversation: Chat, project: string) => <>
-      {conversation.messages.map(message => <article key={message.id} className={'conversation-message is-' + message.role}>
-        {message.role === 'assistant' ? <div className="markdown"><ReactMarkdown remarkPlugins={[remarkGfm]} components={{
+      {conversation.messages.filter(message => message.status !== 'running' || message.text.trim() || message.attachments.length)
+        .map(message => <article key={message.id} className={'conversation-message is-' + message.role}>
+        {message.role === 'assistant' ? message.text && <div className="markdown"><ReactMarkdown remarkPlugins={[remarkGfm]} components={{
           img: ({ alt }) => <span>[Изображение: {alt}]</span>,
           a: ({ href, children }) => <a href={href} target="_blank" rel="noreferrer">{children}</a>,
-        }}>{message.text || (message.status === 'running' ? 'Работаю над вопросом…' : 'Ответ не получен.')}</ReactMarkdown></div> :
+        }}>{message.text}</ReactMarkdown></div> :
           <div className="question-bubble">
             {message.authorId && message.authorId !== user.id && <small title={message.authorName ?? conversation.ownerName}>{shortUserName(message.authorName ?? conversation.ownerName)}</small>}
             {message.specialistName && <small title="Рекомендованный специалист">@{message.specialistName}</small>}
@@ -636,7 +660,7 @@ function App() {
         {['error', 'cancelled', 'interrupted'].includes(message.status) && <div className="message-note">{message.status === 'error' ? 'Ошибка задания' : message.status === 'cancelled' ? 'Задание остановлено' : 'Задание прервано'}</div>}
         {message.consultedSpecialists?.length ? <div className="message-specialists">Специалисты · {message.consultedSpecialists.join(', ')}</div> : null}
         <div className="message-actions">
-          <button className="workspace-icon" aria-label="Копировать сообщение" title="Копировать сообщение" onClick={() => void copyItem(message.text, message.id)}>{copied === message.id ? <Check size={14} /> : <Copy size={14} />}</button>
+          {message.text && <button className="workspace-icon" aria-label="Копировать сообщение" title="Копировать сообщение" onClick={() => void copyItem(message.text, message.id)}>{copied === message.id ? <Check size={14} /> : <Copy size={14} />}</button>}
           <time dateTime={message.createdAt} title={message.usage ? 'Вход: ' + message.usage.inputTokens.toLocaleString('ru-RU') + ' · Выход: ' + message.usage.outputTokens.toLocaleString('ru-RU') : undefined}>{shortDate(message.createdAt)}</time>
         </div>
       </article>)}
@@ -655,8 +679,8 @@ function App() {
       <LoaderCircle size={14} className="spin" /><span>В очереди</span>
       <button onClick={() => void action(async () => { await post('/api/runs/' + run.id + '/cancel'); })}>Отменить</button>
     </div>)}
-    {active && (active.chatId === chatId || isAdmin) && <div className="bridge-progress" role="status">
-      <LoaderCircle size={14} className="spin" /><span>{active.progress}</span>
+    {active && (active.chatId === chatId || isAdmin) && <div className="bridge-progress">
+      <span role="status"><LoaderCircle size={14} className="spin" aria-hidden="true" /><span className="sr-only">Ответ готовится</span></span>
       {(isAdmin || (active.chatId === chatId && canEdit)) && <button onClick={() => void action(async () => { await post('/api/runs/' + active.id + '/cancel'); })}><Square size={12} />Остановить</button>}
     </div>}
     {!hasMessages && <div className="composer-project">
@@ -714,6 +738,9 @@ function App() {
     {sidebarOpen && <button className="workspace-scrim" aria-label="Закрыть навигацию" onClick={() => setSidebarOpen(false)} />}
     <aside id="workspace-sidebar" className={'workspace-sidebar' + (sidebarOpen ? ' is-open' : '') + (sidebarCollapsed ? ' is-collapsed' : '')} aria-label="Боковая панель">
       <div className="workspace-brand"><span className="workspace-mark"><Terminal size={16} /></span><b>Agentic Platform</b>
+        <button ref={sidebarCollapseButton} type="button" className="workspace-icon workspace-sidebar-toggle workspace-sidebar-collapse"
+          aria-label="Свернуть боковую панель" title="Свернуть боковую панель" aria-controls="workspace-sidebar" aria-expanded="true"
+          onClick={() => changeSidebarCollapsed(true)}><PanelLeftClose size={18} /></button>
         <button type="button" className="workspace-icon workspace-mobile-close" aria-label="Закрыть боковую панель" onClick={() => setSidebarOpen(false)}><X size={18} /></button>
       </div>
       <div className="workspace-start">
@@ -739,13 +766,15 @@ function App() {
           const open = openProjects[project.id] ?? project.id === projectId;
           const list = chatLists[project.id] ?? [];
           const visible = showAll[project.id] ? list : list.slice(0, 5);
+          const canManageProject = isAdmin && authSource === 'local' && !inFastkore;
+          const newChatDisabled = pending || (project.id === projectId && !newAgent);
           return <div key={project.id} className="project-group">
             <div className="project-line">
               <button className="workspace-row project-row" onClick={() => toggleProject(project.id)} aria-expanded={open} aria-controls={'chats-' + project.id} title={project.name}>
                 <Folder size={14} /><span>{project.name}</span>{open ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
               </button>
-              <button className="workspace-icon project-new-chat" title="Новый чат в проекте" aria-label={'Новый чат в проекте ' + project.name} disabled={pending || (project.id === projectId && !newAgent)} onClick={() => void newChat(project.id, false)}><Plus size={16} /></button>
-              {isAdmin && authSource === 'local' && !inFastkore && <details className="project-actions" onBlur={e => {
+              {!canManageProject && <button className="workspace-icon project-new-chat" title="Новый чат в проекте" aria-label={'Новый чат в проекте ' + project.name} disabled={newChatDisabled} onClick={() => void newChat(project.id, false)}><Plus size={16} /></button>}
+              {canManageProject && <details className="project-actions" onBlur={e => {
                 if (!e.currentTarget.contains(e.relatedTarget)) e.currentTarget.open = false;
               }} onKeyDown={e => {
                 if (e.key === 'Escape') {
@@ -755,6 +784,11 @@ function App() {
               }}>
                 <summary className="workspace-icon" aria-label={'Действия проекта ' + project.name} title="Действия проекта"><EllipsisVertical size={16} /></summary>
                 <div className="project-actions-menu">
+                  <button className="workspace-row" disabled={newChatDisabled} onClick={e => {
+                    const menu = e.currentTarget.closest('details');
+                    if (menu) menu.open = false;
+                    void newChat(project.id, false);
+                  }}><Plus size={15} />Новый чат</button>
                   <button className="workspace-row" onClick={e => {
                     const menu = e.currentTarget.closest('details');
                     if (menu) menu.open = false;
@@ -794,20 +828,26 @@ function App() {
           </div>
         </details> : <div className="workspace-row account-row" title={user.name}><span className="account-initial">{user.name.trim()[0]?.toUpperCase()}</span><span>{shortUserName(user.name)}</span></div>}
       </div>
+      <SidebarResizeHandle />
     </aside>
     <main className="workspace-main">
       <header className="workspace-top">
-        <button type="button" className="workspace-icon workspace-sidebar-toggle" aria-controls="workspace-sidebar" aria-expanded={!sidebarCollapsed}
-          aria-label={sidebarCollapsed ? 'Развернуть боковую панель' : 'Свернуть боковую панель'}
-          title={sidebarCollapsed ? 'Развернуть боковую панель' : 'Свернуть боковую панель'} onClick={() => {
-            const collapsed = !sidebarCollapsed;
-            setSidebarCollapsed(collapsed);
-            localStorage.setItem('bridge-sidebar-collapsed', collapsed ? '1' : '0');
-          }}>{sidebarCollapsed ? <PanelLeftOpen size={18} /> : <PanelLeftClose size={18} />}</button>
+        {sidebarCollapsed && <button ref={sidebarExpandButton} type="button" className="workspace-icon workspace-sidebar-toggle"
+          aria-controls="workspace-sidebar" aria-expanded="false" aria-label="Развернуть боковую панель" title="Развернуть боковую панель"
+          onClick={() => changeSidebarCollapsed(false)}><PanelLeftOpen size={18} /></button>}
         <button type="button" className="workspace-icon workspace-mobile-toggle" onClick={() => setSidebarOpen(true)}
           aria-label="Открыть проекты" aria-controls="workspace-sidebar" aria-expanded={sidebarOpen}><Menu size={20} /></button>
         {chat && <>
-          {hasMessages && <><Folder size={17} aria-label={selectedProject?.name} /><h1 title={chat.title}>{chat.title}</h1></>}
+          <div className="workspace-chat-title">
+            <Folder size={17} aria-label={selectedProject?.name} />
+            <h1 title={chat.title}>{chat.title}</h1>
+            {!chat.archivedAt && (isAdmin || chat.ownerId === user.id) && <button type="button" className="workspace-icon chat-rename-button"
+              aria-label="Переименовать чат" title="Переименовать чат" disabled={pending} onClick={() => {
+                setError('');
+                setRenameDraft({ projectId, chatId: chat.id, title: chat.title });
+                setPanel('rename-chat');
+              }}><Pencil size={15} /></button>}
+          </div>
           <div className="chat-access" title={chat.ownerName}>
             {isAdmin && !chat.linkedToFastkore ? <Select label="Видимость чата" value={chat.visibility ?? 'private'} disabled={pending}
               onChange={visibility => void changeVisibility(visibility as 'private' | 'project')}
@@ -839,6 +879,18 @@ function App() {
         {composer}
       </div>}
     </main>
+    {panel === 'rename-chat' && renameDraft && <WorkspaceDialog title="Переименовать чат" className="workspace-chat-rename" close={closePanel}>
+      <form onSubmit={e => { e.preventDefault(); void renameChat(); }}>
+        <label htmlFor="chat-title">Название чата</label>
+        <input id="chat-title" data-dialog-focus required maxLength={120} value={renameDraft.title}
+          onFocus={e => e.currentTarget.select()} onChange={e => setRenameDraft({ ...renameDraft, title: e.target.value })} />
+        {error && <div className="inline-error" role="alert">{error}</div>}
+        <div className="settings-dialog-actions">
+          <button type="button" className="secondary" onClick={closePanel} disabled={pending}>Отмена</button>
+          <button type="submit" className="primary" disabled={pending || !renameDraft.title.trim()}>Сохранить</button>
+        </div>
+      </form>
+    </WorkspaceDialog>}
     {panel === 'archive' && isAdmin && <ChatArchiveDialog request={api} close={closePanel} renderChat={renderHistory}
       onRestore={project => void loadChats(project).catch(fail)} />}
     {relatedPanelOpen && erpChatKey && <WorkspaceDialog title="Связанные чаты" className="related-chats-dialog" close={closePanel}>

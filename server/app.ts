@@ -691,6 +691,11 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
     const check = () => access.editChat(user(request), request.params.projectId, request.params.chatId); check();
     return access.viewChat(await workspace.changeChatModel(request.params.projectId, request.params.chatId, request.body.model, check));
   });
+  app.patch<{ Params: ChatParams; Body: { title: string } }>(chatPath + '/title', { schema: { body: object({ title: string(120) }, ['title']) } }, request =>
+    workspace.renameChat(request.body.title, () => {
+      const actor = user(request);
+      return { actor, chat: access.editChat(actor, request.params.projectId, request.params.chatId) };
+    }));
   app.patch<{ Params: ChatParams; Body: { visibility: 'private' | 'project' } }>(chatPath + '/visibility', { schema: { body: object({ visibility: { enum: ['private', 'project'] } }, ['visibility']) } }, async request => access.visibility(user(request), request.params.projectId, request.params.chatId, request.body.visibility));
   app.get<{ Params: ChatParams }>(chatPath + '/messages', async request => access.chat(user(request), request.params.projectId, request.params.chatId).messages);
   app.post<{ Params: ChatParams; Body: { text: string; attachmentIds?: string[]; clientRequestId?: string; model?: string; fastkoreContext?: unknown; recommendedSpecialistId?: string } }>(chatPath + '/messages', { schema: { body: object({ text: string(60_000), attachmentIds: { type: 'array', items: string(100), maxItems: 8, uniqueItems: true }, clientRequestId: string(100), model: modelSchema, fastkoreContext: { type: 'object' }, recommendedSpecialistId: identifier }, ['text']) } }, async (request, reply) => {

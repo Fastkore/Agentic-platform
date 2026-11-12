@@ -126,6 +126,9 @@ test('three employees share library but private chat metadata, messages, jobs an
     assert.equal((await f.req('GET', route, b.token)).statusCode, 404);
     assert.equal((await f.req('GET', route + '/messages', c.token)).statusCode, 404);
     assert.equal((await f.req('PATCH', route, b.token, { model: '' })).statusCode, 404);
+    assert.equal((await f.req('PATCH', route + '/title', b.token, { title: 'Чужой чат' })).statusCode, 404);
+    assert.equal((await f.req('PATCH', route + '/title', a.token, { title: '  ' })).statusCode, 400);
+    assert.deepEqual((await f.req('PATCH', route + '/title', a.token, { title: '  Новый диалог  ' })).json(), { title: 'Новый диалог' });
     assert.equal((await f.req('POST', route + '/messages', b.token, { text: 'wrong' })).statusCode, 404);
     assert.equal((await f.req('PATCH', route + '/visibility', a.token, { visibility: 'project' })).statusCode, 403);
     assert.equal((await f.req('GET', route, f.admin)).statusCode, 200);
@@ -135,10 +138,14 @@ test('three employees share library but private chat metadata, messages, jobs an
     assert.equal((await f.req('GET', `/api/runs/${run.id}`, b.token)).statusCode, 404);
     assert.equal((await f.req('POST', `/api/runs/${run.id}/cancel`, c.token, {})).statusCode, 404);
     await f.req('POST', `/api/runs/${run.id}/cancel`, a.token, {}); await done(f.workspace);
+    assert.equal((await f.req('GET', route, a.token)).json().title, 'Новый диалог');
     await f.req('PATCH', route + '/visibility', f.admin, { visibility: 'project' });
     assert.equal((await f.req('GET', route + '/messages', b.token)).statusCode, 200);
     assert.equal((await f.req('POST', route + '/messages', b.token, { text: 'read only' })).statusCode, 403);
     assert.equal((await f.req('PATCH', route, b.token, { model: '' })).statusCode, 403);
+    assert.equal((await f.req('PATCH', route + '/title', b.token, { title: 'Общий чат' })).statusCode, 403);
+    assert.equal((await f.req('PATCH', route + '/title', f.admin, { title: 'Обсуждение команды' })).statusCode, 200);
+    assert.equal((await f.req('GET', base + '/chats', a.token)).json().find((item: { id: string }) => item.id === ca.id).title, 'Обсуждение команды');
     const rb = await f.req('POST', base + '/chats/' + cb.id + '/messages', b.token, { text: 'Привет', clientRequestId: 'same-id' }); assert.equal(rb.statusCode, 202); await done(f.workspace);
     assert.equal(f.workspace.chat(f.project.id, cb.id).messages[0].authorId, b.id);
     const bossReply = await f.req('POST', base + '/chats/' + cb.id + '/messages', f.admin, { text: 'Комментарий руководителя' }); assert.equal(bossReply.statusCode, 202); await done(f.workspace);

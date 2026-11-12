@@ -266,7 +266,9 @@ export class Workspace {
     authorize?.();
     const project = this.project(projectId);
     this.corporate.profile(this.store.state.security?.users.find(u => u.id === ownerId), agentProfileId, project);
-    const chat: Chat = { id: randomUUID(), title: title?.trim() || 'Новый диалог', updatedAt: new Date().toISOString(), messages: [], model, agentProfileId, ownerId, visibility: 'private', fastkoreBinding };
+    const customTitle = title?.trim();
+    const chat: Chat = { id: randomUUID(), title: customTitle || 'Новый диалог', titleCustomized: customTitle ? true : undefined,
+      updatedAt: new Date().toISOString(), messages: [], model, agentProfileId, ownerId, visibility: 'private', fastkoreBinding };
     project.chats.unshift(chat);
     try { await this.store.save(); }
     catch (error) { project.chats = project.chats.filter(item => item !== chat); throw error; }
@@ -301,6 +303,22 @@ export class Workspace {
     if (this.active && matches(this.active.run) || this.queuedRuns.some(matches)) {
       throw new BridgeError('Дождитесь завершения заданий в этом диалоге.', 409);
     }
+  }
+  renameChat(title: string, authorize: () => { actor: User; chat: Chat }) {
+    return this.admit(async () => {
+      this.writable();
+      const { actor, chat } = authorize();
+      const name = title.trim();
+      if (!name || /[\r\n]/.test(name)) throw new BridgeError('Введите название чата в одну строку.');
+      if (chat.title === name && chat.titleCustomized) return { title: name };
+      const previous = { title: chat.title, titleCustomized: chat.titleCustomized };
+      chat.title = name;
+      chat.titleCustomized = true;
+      try {
+        await this.store.save({ audit: { id: randomUUID(), actorId: actor.id, action: 'chat.rename', targetId: chat.id, createdAt: new Date().toISOString() } });
+      } catch (error) { Object.assign(chat, previous); throw error; }
+      return { title: name };
+    });
   }
   setChatArchived(projectId: string, chatId: string, archived: boolean, authorize: () => User) {
     return this.admit(async () => {
@@ -749,7 +767,7 @@ export class Workspace {
     chat.messages.push({ id: randomUUID(), role: 'user', text: job.text, status: 'complete', createdAt: run.createdAt, attachments, runId: run.id, authorId: job.authorId, specialistName: job.specialistName });
     const answer: Chat['messages'][number] = { id: randomUUID(), role: 'assistant', text: '', status: 'running', createdAt: new Date().toISOString(), attachments: [], runId: run.id, model: run.model };
     chat.messages.push(answer); chat.updatedAt = new Date().toISOString();
-    if (chat.title === 'Новый диалог') chat.title = job.text.replace(/[\r\n]/g, ' ').slice(0, 48);
+    if (chat.title === 'Новый диалог' && !chat.titleCustomized) chat.title = job.text.replace(/[\r\n]/g, ' ').slice(0, 48);
     await this.store.saveRun(run, chat);
     run.progress = 'Подготовка документов…';
     const workerDirectory = workerWrites ? path.join(await realpath(this.workerFilesRoot!), run.id) : undefined;
