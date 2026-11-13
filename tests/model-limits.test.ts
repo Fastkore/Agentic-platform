@@ -53,12 +53,15 @@ console.log(JSON.stringify({quota:{'gemini-weekly':{remaining_fraction:0.8}}}));
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
-test('model limit requests route to the correct account and share a single quota probe for Google models', async () => {
+test('model limit requests route to the active account and share a single quota probe for Google models', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'bridge-quota-route-'));
   const accounts = new ExecutionAccountStore(root);
   const google = await accounts.create('Google', 'antigravity');
   await writeFile(path.join(root, 'auth.json'), JSON.stringify({ tokens: { access_token: 'secret' } }));
   await writeFile(path.join(accounts.home(google.id), '.antigravity-connected.json'), JSON.stringify({ session: 'test-session' }));
+  // Only the Google executor stays active: the connected-but-inactive Codex must stay hidden.
+  await accounts.deactivate('default');
+  await accounts.activate(google.id);
   const calls = new Map<string, number>();
   accounts.runner = (id = accounts.active) => ({
     inspect: async () => ({ path: '', version: 'test', authentication: id === 'default' ? 'chatgpt' : 'google', status: '' }),
@@ -77,13 +80,14 @@ test('model limit requests route to the correct account and share a single quota
     assert.equal(gemini.provider, 'antigravity');
     assert.equal(gemini.buckets[0].name, 'gemini-weekly');
     assert.equal(claude.buckets[0].name, 'claude-weekly');
-    assert.equal(codex.provider, 'codex');
-    assert.equal(codex.buckets[0].windows[0].usedPercent, 20);
+    assert.equal(codex, null, 'a connected-but-inactive provider reports no limits');
+    assert.equal(calls.get('default'), undefined);
     assert.equal(calls.get(google.id), 1);
-    assert.equal(calls.get('default'), 1);
     await worker.inject('/limits?model=antigravity/gemini-3.8-flash-low');
     assert.equal(calls.get(google.id), 1);
     await accounts.remove('default');
     assert.equal((await worker.inject('/limits?model=codex/gpt-test')).json().limits, null);
+    await worker.inject({ method: 'POST', url: '/accounts/' + google.id + '/deactivate', payload: {} });
+    assert.equal((await worker.inject('/limits?model=antigravity/gemini-3.8-flash-high')).json().limits, null);
   } finally { await worker.close(); await rm(root, { recursive: true, force: true }); }
 });

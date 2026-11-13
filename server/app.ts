@@ -21,7 +21,7 @@ import { chatBinding, migrateFastkoreChatBindings } from './fastkore-chat.js';
 import { FastkoreMcp } from './fastkore-mcp.js';
 import { FastkoreCli } from './fastkore-cli.js';
 import { RemoteCodexRunner } from './codex-remote.js';
-import { erpRoleCatalog, restoreErpRoles } from './erp-roles.js';
+import { erpRoleCatalog, restoreErpRoles, erpRolePermissions, erpCredentialPermissions } from './erp-roles.js';
 import { withFastkoreCliDescription, withFastkoreCliReads } from './codex-tools.js';
 import { withFastkoreCliCommands } from './fastkore-cli-tools.js';
 import type { AgentProfile, Dataset, FastkoreAuthentication, FastkoreInstallation, FastkoreKeyIssue, FileStorageProvider, ProjectAgentPolicy, ProjectAgentSettings, Settings, User, WorkRole } from '../shared/types.js';
@@ -93,22 +93,31 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
   };
   workspace.prepareFastkoreTools = async (credentialId, context, authorize, signal, run) => {
     if (!fastkoreMcp) return {};
-    const current = () => {
+    const session = () => {
       authorize();
       return access.authenticateCredential(credentialId).credential;
     };
-    const credential = current();
+    const credential = session();
+    const permissions = erpCredentialPermissions(workspace.store.state, credential);
+    if (!permissions.mcp && !permissions.cli) return { problem: credential.source === 'fastkore'
+      ? 'Fastkore MCP и CLI отключены разрешениями ролей сотрудника.' : 'Для инструментов ERP откройте помощника из Fastkore под своей учётной записью.' };
+    const checkPermission = (kind: 'mcp' | 'cli') => {
+      const active = session();
+      if (!erpCredentialPermissions(workspace.store.state, active)[kind]) throw new BridgeError(`Доступ к Fastkore ${kind.toUpperCase()} отключён разрешениями ролей сотрудника.`, 403);
+      return active;
+    };
+    const current = () => checkPermission('cli');
     const audit = (action: string, targetId: string, details: AuditEvent['details']) => {
       workspace.store.recordAudit({ actorId: credential.userId, action, targetId, details: {
         sessionId: credential.id, installationId: credential.installationId, runId: run?.id, chatId: run?.chatId, ...details,
       } });
     };
-    const integration = await fastkoreMcp.prepare(credential, context, authorize, signal, ({ tool, parameters, ...details }) =>
-      audit('erp.mcp.call', tool, { ...details, objectIds: erpAuditIds(parameters) }), true);
-    if (!fastkoreCli || !sso || credential.source !== 'fastkore' || sso.delegationBinding(credential)?.cliEnabled === false) return integration;
+    const integration = permissions.mcp ? await fastkoreMcp.prepare(credential, context, () => { checkPermission('mcp'); }, signal, ({ tool, parameters, ...details }) =>
+      audit('erp.mcp.call', tool, { ...details, objectIds: erpAuditIds(parameters) }), true) : {};
+    if (!permissions.cli || !fastkoreCli || !sso || credential.source !== 'fastkore' || sso.delegationBinding(credential)?.cliEnabled === false) return integration;
     const tools = withFastkoreCliDescription(integration.tools ?? {
       definitions: [], call: async () => ({ success: false, text: 'Инструмент Fastkore недоступен.' }),
-    }, (command, callSignal) => fastkoreCli.describe(command, callSignal), authorize);
+    }, (command, callSignal) => fastkoreCli.describe(command, callSignal), () => { current(); });
     const active = current();
     const binding = cliTicketsEnabled ? sso.delegationBinding(active) : undefined;
     if (!binding || !sso.openDelegation(active, binding.revision)) return { ...integration, tools };
@@ -148,7 +157,7 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
           const text = JSON.stringify({ exitCode: result.exitCode, data: result.data });
           return { success, text: text.length <= 96000 ? text : 'Ответ CLI слишком большой. Сохраните результат в файл или уменьшите выборку.' };
         } finally { audit('erp.cli.command', command, { success, elapsedMs: Date.now() - started }); }
-      }, authorize) : reads;
+      }, () => { current(); }) : reads;
     return { tools: commands, problem: reads.scopedReadAvailable ? undefined : integration.problem };
   };
   migrateFastkoreChatBindings(workspace.store.state);
@@ -364,6 +373,24 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
     admin(request);
     return erpRoleCatalog(workspace.store.state);
   });
+  app.patch<{ Params: { installationId: string; roleId: string }; Body: { mcp: boolean; cli: boolean; revision: number } }>(
+    '/api/admin/erp-roles/:installationId/:roleId/permissions', { schema: { body: object({ mcp: { type: 'boolean' }, cli: { type: 'boolean' },
+      revision: { type: 'integer', minimum: 0 } }, ['mcp', 'cli', 'revision']) } }, async request => {
+      admin(request);
+      return workspace.store.changeAccess(draft => {
+        const actor = admin(request), { installationId, roleId } = request.params;
+        if (!draft.sso?.roles?.some(role => role.installationId === installationId && role.id === roleId)) throw new BridgeError('Роль не найдена.', 404);
+        const previous = erpRolePermissions(draft, installationId, roleId);
+        if (previous.revision !== request.body.revision) throw new BridgeError('Разрешения изменены. Откройте настройки роли заново.', 409);
+        const records = draft.sso.rolePermissions ??= [];
+        const value = { installationId, roleId, mcp: request.body.mcp, cli: request.body.cli, revision: previous.revision + 1 };
+        const index = records.findIndex(item => item.installationId === installationId && item.roleId === roleId);
+        if (index < 0) records.push(value); else records[index] = value;
+        draft.security?.audit.unshift({ id: randomUUID(), actorId: actor.id, action: 'erp.role.permissions', targetId: installationId + '/' + roleId, createdAt: new Date().toISOString() });
+        draft.security?.audit.splice(1000);
+        return { mcp: value.mcp, cli: value.cli, revision: value.revision };
+      });
+    });
   app.delete<{ Params: { installationId: string; roleId: string } }>('/api/admin/erp-roles/:installationId/:roleId', async request => {
     admin(request);
     return workspace.store.changeAccess(draft => {
@@ -476,10 +503,10 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
     const cli = await workspace.codexConnection();
     const { user: u, credential } = principal(request);
     const settings = workspace.store.state.settings;
-    let activeRun = workspace.activeRun;
-    if (activeRun) { try { access.run(u, activeRun.id); } catch { activeRun = null; } }
+    const activeRuns = workspace.activeRuns.filter(r => { try { access.run(u, r.id); return true; } catch { return false; } });
+    const activeRun = activeRuns[0] ?? null;
     const queuedRuns = workspace.queuedRuns.filter(r => { try { access.run(u, r.id); return true; } catch { return false; } });
-    return { version: '0.6.0', activeRun, queuedRuns, busy: workspace.busy, user: publicUser(u), setupRequired: access.setupRequired, canCreateProject: canCreateProject(u),
+    return { version: '0.6.0', activeRun, activeRuns, queuedRuns, busy: workspace.busy, user: publicUser(u), setupRequired: access.setupRequired, canCreateProject: canCreateProject(u),
       cli: u.role === 'admin' ? cli : cli && { ...cli, path: '', status: '' },
       isolatedCodex: workspace.isolatedCodex, workerFilesAvailable: workspace.workerFilesAvailable, codexLimitsRevision: workspace.codexLimitsRevision,
       settings: { ...settings, cliPath: u.role === 'admin' ? settings.cliPath : '',
@@ -575,12 +602,13 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
   app.delete<{ Params: { id: string } }>('/api/admin/execution/accounts/:id', async request => {
     const result = await accountAccess(request, true).accountAction('remove', request.params.id);
     workspace.resetExecutionConnection();
+    await workspace.pruneDefaultModel(result?.accounts);
     return result;
   });
-  app.post<{ Body: { name: string; provider?: 'codex' | 'gemini' | 'antigravity' } }>('/api/admin/execution/accounts', {
-    schema: { body: object({ name: string(100), provider: { enum: ['codex', 'gemini', 'antigravity'] } }, ['name']) },
+  app.post<{ Body: { name: string; provider?: 'codex' | 'gemini' | 'antigravity' | 'glm' } }>('/api/admin/execution/accounts', {
+    schema: { body: object({ name: string(100), provider: { enum: ['codex', 'gemini', 'antigravity', 'glm'] } }, ['name']) },
   }, request => accountAccess(request, true).accountAction('create', undefined, request.body.name, request.body.provider));
-  for (const action of ['login', 'activate'] as const) {
+  for (const action of ['login', 'activate', 'deactivate'] as const) {
     app.post<{ Params: { id: string } }>('/api/admin/execution/accounts/:id/' + action, async request => {
       const worker = accountAccess(request, true);
       const result = await worker.accountAction(action, request.params.id);
@@ -591,6 +619,13 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
   app.post<{ Params: { id: string }; Body: { code: string } }>('/api/admin/execution/accounts/:id/code', {
     schema: { body: object({ code: string(2048) }, ['code']) },
   }, request => accountAccess(request, true).accountAction('code', request.params.id, request.body.code));
+  app.post<{ Params: { id: string }; Body: { key: string } }>('/api/admin/execution/accounts/:id/key', {
+    schema: { body: object({ key: string(2048) }, ['key']) },
+  }, async request => {
+    const result = await accountAccess(request, true).accountAction('key', request.params.id, request.body.key);
+    workspace.resetExecutionConnection();
+    return result;
+  });
   app.get('/api/projects', async request => {
     const u = user(request); return workspace.store.state.projects.filter(p => u.role === 'admin' || p.memberIds?.includes(u.id)).map(p => ({ id: p.id, name: p.name, directory: p.directory, chatCount: p.chats.filter(c => !c.archivedAt && access.canChat(u, c)).length }));
   });
@@ -758,7 +793,10 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
     if (chat.fastkoreBinding) {
       const installationId = p.credential.installationId;
       const binding = parsed && installationId && chatBinding(installationId, parsed);
-      if (p.credential.source !== 'fastkore' || p.user.id !== chat.ownerId || !binding || binding.installationId !== chat.fastkoreBinding.installationId || binding.key !== chat.fastkoreBinding.key) {
+      // Outside Fastkore the chat owner may continue a bound chat; a mismatching ERP context
+      // still refuses the write so answers never land on the wrong card.
+      const continuesWithoutContext = !parsed && (user(request).role === 'admin' || p.user.id === chat.ownerId);
+      if (!continuesWithoutContext && (p.credential.source !== 'fastkore' || p.user.id !== chat.ownerId || !binding || binding.installationId !== chat.fastkoreBinding.installationId || binding.key !== chat.fastkoreBinding.key)) {
         throw new BridgeError('Откройте в Fastkore карточку или список, к которым привязан этот чат.', 409);
       }
     }

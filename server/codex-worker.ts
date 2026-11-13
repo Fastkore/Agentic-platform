@@ -25,6 +25,7 @@ const runSchema = {
     model: { type: 'string', pattern: '^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,127}$' },
     ephemeral: { type: 'boolean' },
     consultation: { type: 'boolean' },
+    consultationKey: { type: 'string', pattern: '^[0-9a-f-]{36}$' },
     workDirectoryId: { type: 'string', pattern: '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' },
     reasoningEffort: { enum: ['low', 'medium', 'high', 'xhigh'] },
     toolDefinitions: { type: 'array', maxItems: 200, items: {
@@ -38,9 +39,9 @@ const runSchema = {
 export function createCodexWorker(codex: CodexRunner = new CodexClient([], 'worker'), jobsRoot = process.env.BRIDGE_CODEX_JOB_FILES,
   accounts?: ExecutionAccountStore) {
   const app = Fastify({ logger: false, bodyLimit: 800_000, ajv: { customOptions: { removeAdditional: false, coerceTypes: false } } });
-  let active: AbortController | undefined;
-  let consulting = false;
-  let consultationCall: AbortSignal | undefined;
+  // One concurrent run per executor provider; different providers run in parallel.
+  const activeLanes = new Map<string, AbortController>();
+  const consultations = new Map<string, { signal: AbortSignal; controller: AbortController; lane: string; running: boolean }>();
   let changingAccount = false;
   const runner = async (model?: string) => accounts ? accounts.runner((await accounts.select(model)).account.id) : codex;
   const pendingTools = new Map<string, (result: CodexToolResult) => void>();
@@ -87,40 +88,51 @@ export function createCodexWorker(codex: CodexRunner = new CodexClient([], 'work
   });
   app.get('/accounts', async () => { if (!accounts) throw new BridgeError('Управление аккаунтами недоступно.', 503); return accounts.list(); });
   async function changeAccount<T>(work: () => Promise<T>) {
-    if (!accounts || active || consulting || changingAccount) throw new BridgeError('Дождитесь завершения задания.', 409);
+    if (!accounts || activeLanes.size || changingAccount) throw new BridgeError('Дождитесь завершения задания.', 409);
     changingAccount = true;
     try { return await work(); } finally { changingAccount = false; }
   }
-  app.post<{ Body: { name: string; provider?: 'codex' | 'gemini' | 'antigravity' } }>('/accounts', { schema: { body: {
-    type: 'object', additionalProperties: false, required: ['name'], properties: { name: { type: 'string', minLength: 1, maxLength: 100 }, provider: { enum: ['codex', 'gemini', 'antigravity'] } },
+  app.post<{ Body: { name: string; provider?: 'codex' | 'gemini' | 'antigravity' | 'glm' } }>('/accounts', { schema: { body: {
+    type: 'object', additionalProperties: false, required: ['name'], properties: { name: { type: 'string', minLength: 1, maxLength: 100 }, provider: { enum: ['codex', 'gemini', 'antigravity', 'glm'] } },
   } } }, request => changeAccount(() => accounts!.create(request.body.name, request.body.provider)));
   app.post<{ Params: { id: string } }>('/accounts/:id/login', request => changeAccount(() => accounts!.login(request.params.id)));
   app.post<{ Params: { id: string } }>('/accounts/:id/activate', request => changeAccount(() => accounts!.activate(request.params.id)));
+  app.post<{ Params: { id: string } }>('/accounts/:id/deactivate', request => changeAccount(() => accounts!.deactivate(request.params.id)));
   app.post<{ Params: { id: string } }>('/accounts/:id/remove', request => changeAccount(() => accounts!.remove(request.params.id)));
   app.post<{ Params: { id: string }; Body: { code: string } }>('/accounts/:id/code', { schema: { body: {
     type: 'object', additionalProperties: false, required: ['code'], properties: { code: { type: 'string', minLength: 1, maxLength: 2048 } },
   } } }, request => changeAccount(async () => accounts!.authorizationCode(request.params.id, request.body.code)));
+  app.post<{ Params: { id: string }; Body: { key: string } }>('/accounts/:id/key', { schema: { body: {
+    type: 'object', additionalProperties: false, required: ['key'], properties: { key: { type: 'string', minLength: 1, maxLength: 2048 } },
+  } } }, request => changeAccount(() => accounts!.setKey(request.params.id, request.body.key)));
   app.post<{ Body: WorkerToolResult }>('/tool-result', { schema: { body: {
     type: 'object', additionalProperties: false, required: ['id', 'success', 'text'],
     properties: { id: { type: 'string', maxLength: 36 }, success: { type: 'boolean' }, text: { type: 'string', maxLength: 96_000 } },
   } } }, async request => {
     const resolve = pendingTools.get(request.body.id);
-    if (!active || !resolve) throw new BridgeError('Вызов инструмента завершён.', 409);
+    if (!activeLanes.size || !resolve) throw new BridgeError('Вызов инструмента завершён.', 409);
     pendingTools.delete(request.body.id);
     resolve({ success: request.body.success, text: request.body.text });
     return { ok: true };
   });
   app.post<{ Body: WorkerRun }>('/run', { schema: { body: runSchema } }, async (request, reply) => {
     const consultation = request.body.consultation === true;
+    const selection = accounts ? await accounts.select(request.body.model).catch((error: Error) => ({ error })) : undefined;
+    const lane = selection && !('error' in selection) ? selection.account.provider : 'codex';
+    const parent = consultation && request.body.consultationKey ? consultations.get(request.body.consultationKey) : undefined;
     if (consultation) {
-      if (!active || !consultationCall || consultationCall.aborted || consulting ||
+      if (!parent || parent.signal.aborted || parent.running || activeLanes.get(parent.lane) !== parent.controller ||
+        (activeLanes.has(lane) && lane !== parent.lane) ||
         !request.body.ephemeral || request.body.sessionId || request.body.workDirectoryId ||
         request.body.toolDefinitions?.some(tool => tool.name === 'consult_specialist')) throw new BridgeError('Консультация недоступна.', 409);
-    } else if (active || consulting || changingAccount) throw new BridgeError('Исполнитель занят.', 409);
+    } else if (activeLanes.has(lane) || changingAccount) {
+      // Sent directly: a pre-hijack throw would lose the specific reason to the generic handler.
+      return reply.code(409).send({ error: 'Исполнитель этого провайдера занят. Дождитесь завершения задания.' });
+    }
     const controller = new AbortController();
-    if (consultation) consulting = true;
-    else active = controller;
-    const runSignal = consultation ? AbortSignal.any([controller.signal, consultationCall!]) : controller.signal;
+    if (parent) parent.running = true;
+    if (!activeLanes.has(lane)) activeLanes.set(lane, controller);
+    const runSignal = parent ? AbortSignal.any([controller.signal, parent.signal]) : controller.signal;
     let provider = 'Исполнитель модели';
     const { raw } = reply;
     raw.once('close', () => controller.abort());
@@ -133,9 +145,9 @@ export function createCodexWorker(codex: CodexRunner = new CodexClient([], 'work
     try {
       await requireLogin(runSignal, request.body.model);
       const { toolDefinitions, workDirectoryId, ...body } = request.body;
-      const selected = accounts && await accounts.select(body.model);
+      const selected = selection && !('error' in selection) ? selection : undefined;
       if (selected) body.model = selected.model;
-      provider = selected?.account.provider === 'antigravity' ? 'Antigravity CLI' : selected?.account.provider === 'gemini' ? 'Gemini CLI' : 'Codex';
+      provider = selected?.account.provider === 'antigravity' ? 'Antigravity CLI' : selected?.account.provider === 'gemini' ? 'Gemini CLI' : selected?.account.provider === 'glm' ? 'GLM (Z.ai)' : 'Codex';
       let directory = workspace;
       if (workDirectoryId) {
         if (!jobsRoot || !path.isAbsolute(jobsRoot)) throw new BridgeError('Рабочая папка Codex не настроена.', 503);
@@ -150,7 +162,7 @@ export function createCodexWorker(codex: CodexRunner = new CodexClient([], 'work
           if (!toolDefinitions.some(tool => tool.name === name)) return { success: false, text: 'Инструмент не разрешён для этого запроса.' };
           const id = randomUUID();
           const stop = AbortSignal.any([signal, runSignal, AbortSignal.timeout(name === 'consult_specialist' ? 195_000 : 45_000)]);
-          if (name === 'consult_specialist') consultationCall = stop;
+          if (name === 'consult_specialist') consultations.set(id, { signal: stop, controller, lane, running: false });
           const result = new Promise<CodexToolResult>(resolve => pendingTools.set(id, resolve));
           const cancel = () => pendingTools.get(id)?.({ success: false, text: 'Вызов инструмента не завершён.' });
           stop.addEventListener('abort', cancel, { once: true });
@@ -159,7 +171,7 @@ export function createCodexWorker(codex: CodexRunner = new CodexClient([], 'work
             await write({ toolCall: { id, name, args } });
             return await result;
           } finally {
-            if (consultationCall === stop) consultationCall = undefined;
+            consultations.delete(id);
             stop.removeEventListener('abort', cancel); pendingTools.delete(id);
           }
         } } } : {}),
@@ -170,12 +182,12 @@ export function createCodexWorker(codex: CodexRunner = new CodexClient([], 'work
         await write({ error: error instanceof BridgeError && error.statusCode === 503 ? error.message : `${provider} не смог выполнить запрос. Проверьте подключение и лимиты.` }).catch(() => {});
       }
     } finally {
-      if (consultation) consulting = false;
-      else active = undefined;
+      if (parent) parent.running = false;
+      if (activeLanes.get(lane) === controller) activeLanes.delete(lane);
       raw.end();
     }
   });
-  app.addHook('preClose', async () => { active?.abort(); });
+  app.addHook('preClose', async () => { for (const controller of activeLanes.values()) controller.abort(); });
   app.addHook('onClose', async () => { accounts?.close(); });
   return app;
 }

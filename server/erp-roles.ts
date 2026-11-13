@@ -1,6 +1,20 @@
-import type { FastkoreRole, FastkoreRoleSummary, State, TeamUser } from '../shared/types.js';
+import type { Credential, FastkoreRole, FastkoreRoleSummary, State, TeamUser } from '../shared/types.js';
 
 type RoleState = Pick<State, 'sso' | 'externalIdentities' | 'security'>;
+
+export function erpRolePermissions(state: RoleState, installationId: string, roleId: string) {
+  const saved = state.sso?.rolePermissions?.find(item => item.installationId === installationId && item.roleId === roleId);
+  return { mcp: saved?.mcp ?? true, cli: saved?.cli ?? true, revision: saved?.revision ?? 0 };
+}
+
+export function erpCredentialPermissions(state: RoleState, credential: Credential) {
+  if (credential.source !== 'fastkore' || !credential.installationId) return { mcp: false, cli: false };
+  const roles = credential.externalRoles;
+  // Preserve existing access for older ERP servers and employees without role metadata.
+  if (!roles?.length) return { mcp: true, cli: true };
+  const permissions = roles.map(role => erpRolePermissions(state, credential.installationId!, role.id));
+  return { mcp: permissions.some(role => role.mcp), cli: permissions.some(role => role.cli) };
+}
 
 export function observeErpRoles(state: RoleState, installationId: string, externalUserId: string,
   roles: FastkoreRole[] | undefined, updatedAt: string) {
@@ -53,6 +67,7 @@ export function erpRoleCatalog(state: RoleState): FastkoreRoleSummary[] {
   }
   return (state.sso?.roles ?? []).map(role => {
     return { ...role, installationName: state.sso?.installations?.find(item => item.id === role.installationId)?.name ?? role.installationId,
-      userCount: members.get(role.installationId + '/' + role.id)?.size ?? 0 };
+      userCount: members.get(role.installationId + '/' + role.id)?.size ?? 0,
+      permissions: erpRolePermissions(state, role.installationId, role.id) };
   }).sort((a, b) => a.name.localeCompare(b.name, 'ru'));
 }

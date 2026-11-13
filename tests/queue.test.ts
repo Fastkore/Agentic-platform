@@ -77,6 +77,48 @@ test('queued work survives shutdown; cancelled queue entries never execute', asy
     assert.deepEqual(calls, ['resume after restart']); assert.equal(workspace.getRun(b.id).status, 'complete'); assert.equal(workspace.getRun(c.id).status, 'cancelled');
   } finally { await workspace.shutdown(); }
 });
+
+test('provider lanes run different chats concurrently but preserve FIFO across models in the same chat', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'bridge-chat-lanes-'));
+  const store = new Store(root), started: string[] = [];
+  const releases = new Map<string, () => void>();
+  const fake: CodexRunner = {
+    inspect: async (_path, _signal, model) => ({ path: process.execPath, version: 'fake', authentication: 'chatgpt', status: '',
+      accountId: model?.startsWith('glm') ? 'glm-account' : 'google-account' }),
+    run: async (request, _event, signal) => {
+      started.push(request.prompt);
+      await new Promise<void>((resolve, reject) => {
+        releases.set(request.prompt, resolve);
+        signal.addEventListener('abort', () => reject(Error('cancelled')), { once: true });
+      });
+      return { response: request.prompt };
+    },
+  };
+  const workspace = new Workspace(store, fake);
+  try {
+    await workspace.settings({ cliPath: process.execPath });
+    const project = await workspace.addProject(root);
+    const a = await workspace.addChat(project.id), b = await workspace.addChat(project.id), c = await workspace.addChat(project.id);
+    a.model = 'glm/model'; b.model = 'glm/model'; c.model = 'antigravity/model';
+    const first = await workspace.send(project.id, a.id, 'first', []);
+    await until(() => started.includes('first'));
+    const queued = await workspace.send(project.id, b.id, 'second', []); // GLM lane occupied.
+    b.model = 'antigravity/model';
+    const later = await workspace.send(project.id, b.id, 'third', []); // Cannot leapfrog second.
+    const independent = await workspace.send(project.id, c.id, 'independent', []);
+    await until(() => started.includes('independent'));
+    assert.equal(queued.status, 'queued'); assert.equal(later.status, 'queued');
+    releases.get('independent')!(); await until(() => independent.status === 'complete');
+    assert.ok(!started.includes('third'));
+    releases.get('first')!(); await until(() => started.includes('second'));
+    assert.equal(first.status, 'complete'); assert.ok(!started.includes('third'));
+    releases.get('second')!(); await until(() => started.includes('third'));
+    assert.equal(queued.status, 'complete');
+    releases.get('third')!(); await until(() => !workspace.busy);
+    assert.deepEqual(workspace.chat(project.id, b.id).messages.map(message => message.text), ['second', 'second', 'third', 'third']);
+    assert.match(b.sessionScope!, /google-account/);
+  } finally { for (const release of releases.values()) release(); await workspace.shutdown(); }
+});
 test('failed SQLite transaction does not partially overwrite persisted history', async () => {
   const f = await fixture(); const original = f.project.id;
   f.store.state.projects.push(structuredClone(f.project));

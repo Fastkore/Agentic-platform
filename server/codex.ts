@@ -8,7 +8,7 @@ import type { CliInfo, CodexLimits, LimitWindow, ModelCatalog, ModelOption, Usag
 import type { CodexTools } from './codex-tools.js';
 
 export interface CodexEvent { kind: 'session' | 'message' | 'progress' | 'usage'; text?: string; usage?: Usage }
-export interface CodexRequest { cliPath: string; workspace: string; prompt: string; developerInstructions?: string; tools?: CodexTools; sessionId?: string; allowWrite: boolean; workDirectoryId?: string; ephemeral?: boolean; consultation?: boolean; model?: string; reasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh' }
+export interface CodexRequest { cliPath: string; workspace: string; prompt: string; developerInstructions?: string; tools?: CodexTools; sessionId?: string; allowWrite: boolean; workDirectoryId?: string; ephemeral?: boolean; consultation?: boolean; consultationKey?: string; model?: string; reasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh' }
 export interface CodexResult { sessionId?: string; response: string; usage?: Usage }
 export interface CodexRunner { readonly isolated?: boolean; inspect(cliPath: string, signal?: AbortSignal, model?: string): Promise<CliInfo>; listModels?(cliPath: string): Promise<ModelCatalog>; readLimits?(cliPath: string, model?: string): Promise<CodexLimits | null>; run(request: CodexRequest, onEvent: (event: CodexEvent) => Promise<void>, signal: AbortSignal): Promise<CodexResult> }
 type RateWindow = { usedPercent?: number; windowDurationMins?: number | null; resetsAt?: number | null };
@@ -33,11 +33,13 @@ function workerWriteConfig(workspace: string) {
     '-c', 'features.shell_tool=true'];
 }
 
-export function buildArguments(r: CodexRequest, mode: 'local' | 'worker' = 'local') {
+export function buildArguments(r: CodexRequest, mode: 'local' | 'worker' = 'local', provider = 'openai') {
+  // Non-OpenAI providers read their credentials from the platform-written config.toml in
+  // CODEX_HOME, so user config skipping stays limited to the default OpenAI provider.
   const sandbox = mode === 'worker'
-    ? ['--ignore-user-config', '--ignore-rules', ...(r.allowWrite ? workerWriteConfig(r.workspace) : [])]
+    ? [...(provider === 'openai' ? ['--ignore-user-config'] : []), '--ignore-rules', ...(r.allowWrite ? workerWriteConfig(r.workspace) : [])]
     : ['--sandbox', r.allowWrite ? 'workspace-write' : 'read-only'];
-  const args = ['-a', 'never', '-c', 'model_provider="openai"', 'exec', ...sandbox, '--cd', path.resolve(r.workspace), '--skip-git-repo-check', '--json', '--color', 'never'];
+  const args = ['-a', 'never', '-c', `model_provider="${provider}"`, 'exec', ...sandbox, '--cd', path.resolve(r.workspace), '--skip-git-repo-check', '--json', '--color', 'never'];
   if (r.developerInstructions) {
     const instructions = r.developerInstructions.replace(/[\ud800-\udfff]/gu, '\ufffd');
     const setting = 'developer_instructions=' + JSON.stringify(instructions).replace(/\x7f/g, '\\u007f');
@@ -90,7 +92,7 @@ async function killTree(child: ChildProcess) {
 }
 export class CodexClient implements CodexRunner {
   // Prefix is injected by process integration tests only. No HTTP route can change it.
-  constructor(private readonly testPrefix: string[] = [], private readonly mode: 'local' | 'worker' = 'local', private readonly codexHome?: string) {}
+  constructor(private readonly testPrefix: string[] = [], private readonly mode: 'local' | 'worker' = 'local', private readonly codexHome?: string, private readonly provider = 'openai') {}
   private start(exe: string, args: string[], cwd?: string) {
     if (!existsSync(exe) || (process.platform === 'win32' && path.extname(exe).toLowerCase() !== '.exe')) throw new BridgeError('Укажите существующий исполняемый файл Codex CLI.');
     const env = this.mode === 'worker' ? {
@@ -119,7 +121,7 @@ export class CodexClient implements CodexRunner {
     return { path: cliPath, version: version.text.trim(), authentication: authentication(status.text, status.code), status: status.text.trim() };
   }
   private appServer(cliPath: string, experimental = false, timeout = 25_000, config: string[] = []) {
-    const child = this.start(cliPath, ['-c', 'model_provider="openai"', ...config, 'app-server', '--listen', 'stdio://']);
+    const child = this.start(cliPath, ['-c', `model_provider="${this.provider}"`, ...config, 'app-server', '--listen', 'stdio://']);
     let timedOut = false;
     const closed = new Promise<void>((resolve, reject) => { child.once('error', reject); child.once('close', () => resolve()); });
     void closed.catch(() => {});
@@ -200,7 +202,7 @@ export class CodexClient implements CodexRunner {
       if (this.mode !== 'worker' && request.tools?.definitions.some(tool => tool.name !== 'consult_specialist')) throw new BridgeError('Эти инструменты доступны только в изолированном исполнителе.', 403);
       return this.runWithTools(request, request.tools, onEvent, signal);
     }
-    const child = this.start(request.cliPath, buildArguments(request, this.mode), request.workspace);
+    const child = this.start(request.cliPath, buildArguments(request, this.mode, this.provider), request.workspace);
     let stderr = '', response = '', sessionId = request.sessionId, usage: Usage | undefined, completed = false, failed = false, error = '';
     const seen = new Set<string>();
     const closed = new Promise<number | null>((resolve, reject) => { child.on('error', reject); child.on('close', resolve); });

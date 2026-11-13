@@ -13,9 +13,9 @@ export interface DictationModels {
   models: { id: DictationModelId; name: string; installed: boolean }[];
 }
 export interface ModelOption { id: string; name: string; description: string; isDefault: boolean }
-export interface ModelCatalog { models: ModelOption[]; fetchedAt: string; source: 'codex' | 'gemini' | 'antigravity' | 'combined' }
+export interface ModelCatalog { models: ModelOption[]; fetchedAt: string; source: 'codex' | 'gemini' | 'antigravity' | 'glm' | 'combined' }
 export interface LimitWindow { usedPercent: number; windowDurationMins: number | null; resetsAt: number | null; label?: string }
-export interface CodexLimits { buckets: { name: string; windows: LimitWindow[]; modelIds?: string[] }[]; resetsAvailable: number | null; provider?: 'codex' | 'gemini' | 'antigravity'; unavailableReason?: string }
+export interface CodexLimits { buckets: { name: string; windows: LimitWindow[]; modelIds?: string[] }[]; resetsAvailable: number | null; provider?: 'codex' | 'gemini' | 'antigravity' | 'glm'; unavailableReason?: string }
 export interface Usage { inputTokens: number; cachedInputTokens: number; outputTokens: number }
 export interface TokenActivityDay { date: string; tokens: number }
 export interface TokenActivityReport {
@@ -40,7 +40,7 @@ export interface ProjectAgentSettings {
   isolated: boolean;
 }
 export interface Project { id: string; name: string; directory: string; chats: Chat[]; attachments: Attachment[]; memberIds?: string[]; agentPolicy?: ProjectAgentPolicy }
-export interface Run { id: string; projectId?: string; chatId?: string; status: RunStatus; progress: string; createdAt: string; startedAt?: string; completedAt?: string; response?: string; error?: string; usage?: Usage; usageOnly?: true; clientRequestId?: string; requestHash?: string; model?: string; ownerId?: string; agentProfileId?: string; profileRevision?: number }
+export interface Run { id: string; projectId?: string; chatId?: string; status: RunStatus; progress: string; createdAt: string; startedAt?: string; completedAt?: string; response?: string; error?: string; usage?: Usage; usageOnly?: true; clientRequestId?: string; requestHash?: string; model?: string; executionProvider?: CliInfo['provider']; ownerId?: string; agentProfileId?: string; profileRevision?: number }
 /** Trusted queue input. Never return this record from HTTP handlers. */
 export interface Job { runId: string; kind: 'chat' | 'subscription'; text: string; attachmentIds: string[]; authorId?: string; credentialId?: string; scope?: string; fastkoreContext?: FastkoreContext; recommendedSpecialistId?: string; specialistName?: string; specialistScope?: string }
 export interface User { id: string; username: string; name: string; role: 'admin' | 'employee'; roleId?: string; disabled: boolean }
@@ -58,7 +58,8 @@ export interface StoredErpDelegation { sealedGrant: string; expiresAt: number; r
 export interface FastkoreRole { id: string; name: string }
 export interface FastkoreRoleRecord extends FastkoreRole { installationId: string; lastSeenAt: string }
 export interface FastkoreRoleSnapshot { installationId: string; externalUserId: string; roles?: FastkoreRole[]; updatedAt: string }
-export interface FastkoreRoleSummary extends FastkoreRoleRecord { installationName: string; userCount: number }
+export interface FastkoreRolePermissions { mcp: boolean; cli: boolean; revision: number }
+export interface FastkoreRoleSummary extends FastkoreRoleRecord { installationName: string; userCount: number; permissions: FastkoreRolePermissions }
 export interface TeamUser extends User { erpRoles: { installationId: string; roles?: FastkoreRole[] }[] }
 export interface Credential { id: string; userId: string; kind: 'session' | 'api'; hash: string; name: string; createdAt: string; expiresAt?: string; source?: 'local' | 'fastkore'; installationId?: string; externalUserId?: string; externalDisplayName?: string; externalRoles?: FastkoreRole[]; erpDelegation?: StoredErpDelegation; erpDelegationRevoked?: true }
 export interface AuditEvent {
@@ -84,10 +85,10 @@ export interface StoredFastkoreInstallation extends Omit<FastkoreInstallation, '
   pairing?: { required: boolean; binding?: { origin: string; pairedAt: string }; attempt?: FastkorePairingAttempt };
   tls?: { trust?: FastkoreTlsTrust };
 }
-export interface State { schemaVersion: 1; settings: Settings; projects: Project[]; runs: Run[]; jobs?: Job[]; externalIdentities?: ExternalIdentity[]; sso?: { installations?: StoredFastkoreInstallation[]; roles?: FastkoreRoleRecord[]; roleSnapshots?: FastkoreRoleSnapshot[] }; security?: Security; corporate?: Corporate }
-export interface CliInfo { provider?: 'codex' | 'gemini' | 'antigravity'; accountId?: string; path: string; version: string; authentication: 'chatgpt' | 'google' | 'api-key' | 'signed-out' | 'unknown'; status: string }
+export interface State { schemaVersion: 1; settings: Settings; projects: Project[]; runs: Run[]; jobs?: Job[]; externalIdentities?: ExternalIdentity[]; sso?: { installations?: StoredFastkoreInstallation[]; roles?: FastkoreRoleRecord[]; roleSnapshots?: FastkoreRoleSnapshot[]; rolePermissions?: (FastkoreRolePermissions & { installationId: string; roleId: string })[] }; security?: Security; corporate?: Corporate }
+export interface CliInfo { provider?: 'codex' | 'gemini' | 'antigravity' | 'glm'; accountId?: string; path: string; version: string; authentication: 'chatgpt' | 'google' | 'glm' | 'api-key' | 'signed-out' | 'unknown'; status: string }
 export interface ProjectSummary { id: string; name: string; directory: string; chatCount: number }
 export interface ChatSummary { id: string; title: string; updatedAt: string; messageCount: number; ownerId?: string; ownerName?: string; visibility?: 'private' | 'project'; linkedToFastkore?: true }
 export interface ArchivedChatSummary extends ChatSummary { projectId: string; projectName: string; archivedAt: string }
 export interface RelatedChatSummary extends ChatSummary { projectId: string; projectName: string }
-export interface Status { version: string; activeRun: Run | null; queuedRuns: Run[]; busy: boolean; executionDisabled?: boolean; isolatedCodex?: boolean; workerFilesAvailable?: boolean; codexLimitsRevision?: number; user: User; setupRequired: boolean; canCreateProject?: boolean; dictationAvailable?: boolean; dictationEnabled?: boolean; fastkoreToolsStatus?: 'unavailable' | 'ready' | 'reauth'; cli: CliInfo | null; settings: Settings; addresses: string[]; port: number; lan: boolean; storageWarning?: string; fileStorage?: FileStorageStatus }
+export interface Status { version: string; activeRun: Run | null; activeRuns?: Run[]; queuedRuns: Run[]; busy: boolean; executionDisabled?: boolean; isolatedCodex?: boolean; workerFilesAvailable?: boolean; codexLimitsRevision?: number; user: User; setupRequired: boolean; canCreateProject?: boolean; dictationAvailable?: boolean; dictationEnabled?: boolean; fastkoreToolsStatus?: 'unavailable' | 'ready' | 'reauth'; cli: CliInfo | null; settings: Settings; addresses: string[]; port: number; lan: boolean; storageWarning?: string; fileStorage?: FileStorageStatus }

@@ -36,6 +36,26 @@ async function fixture(respond?: (request: CodexRequest, signal: AbortSignal) =>
 }
 async function idle(workspace: Workspace) { const deadline = Date.now() + 6000; while (workspace.busy) { if (Date.now() > deadline) throw Error('timeout'); await new Promise(r => setTimeout(r, 10)); } }
 
+test('ERP role permissions require an administrator, reject stale saves and survive role renaming', async () => {
+  const f = await fixture();
+  try {
+    const installationId = f.store.state.sso!.installations![0].id;
+    f.store.state.sso!.roles = [{ id: 'leader', name: 'Руководитель', installationId, lastSeenAt: new Date().toISOString() }];
+    await f.store.save();
+    const route = '/api/admin/erp-roles/' + installationId + '/leader/permissions';
+    const payload = { mcp: false, cli: true, revision: 0 };
+    assert.equal((await f.req('PATCH', route, f.token, payload)).statusCode, 403);
+    const saved = await f.req('PATCH', route, f.admin, payload);
+    assert.equal(saved.statusCode, 200, saved.body);
+    assert.deepEqual(saved.json(), { mcp: false, cli: true, revision: 1 });
+    assert.equal((await f.req('PATCH', route, f.admin, payload)).statusCode, 409);
+    f.store.state.sso!.roles[0].name = 'Новое название';
+    const rows = (await f.req('GET', '/api/admin/erp-roles', f.admin)).json();
+    assert.equal(rows[0].permissions.mcp, false);
+    assert.equal(rows[0].name, 'Новое название');
+  } finally { await f.app.close(); }
+});
+
 test('administrators archive, restore and permanently delete chats without losing token totals', async () => {
   const f = await fixture();
   try {

@@ -143,14 +143,16 @@ function App() {
   const selectedProject = projects.find(p => p.id === projectId), draft = drafts[draftSlot] ?? '', attachments = files[chatId] ?? [];
   const specialistKey = draftSlot || 'new:' + projectId;
   const specialistId = specialists[specialistKey];
-  const active = status?.activeRun, busy = status?.busy ?? !!active;
+  const activeRuns = status?.activeRuns ?? (status?.activeRun ? [status.activeRun] : []);
+  const active = activeRuns[0], busy = status?.busy ?? activeRuns.length > 0;
   const isAdmin = user?.role === 'admin';
   const matchesErpChat = !!erpChatKey && relatedChats?.key === erpChatKey && relatedChats.list.some(item => item.id === chatId);
   const relatedLoading = !!erpChatKey && relatedChats?.key !== erpChatKey;
-  const canEdit = !!chat && !chat.archivedAt && (!chat.linkedToFastkore || matchesErpChat) && (isAdmin || chat.ownerId === user?.id);
+  const canEdit = !!chat && !chat.archivedAt && (isAdmin || chat.ownerId === user?.id) && (!chat.linkedToFastkore || matchesErpChat || !erpChatKey);
   const codexUnavailable = status?.isolatedCodex && !executionConnected(status.cli);
   const codexNotice = status?.executionDisabled ? 'Выполнение Codex отключено на сервере.' : codexUnavailable
-    ? status.cli?.authentication === 'signed-out' ? 'Требуется вход в аккаунт на исполнителе.' : 'Исполнитель модели недоступен.'
+    ? /активный аккаунт|Модель недоступна/.test(status.cli?.status ?? '') ? status.cli!.status
+      : status.cli?.authentication === 'signed-out' ? 'Требуется вход в аккаунт на исполнителе.' : 'Исполнитель модели недоступен.'
     : '';
   const canCreateProject = isAdmin || status?.canCreateProject === true;
   const canStartWithoutProject = !projectId && projects.length === 0 && canCreateProject;
@@ -537,7 +539,7 @@ function App() {
         setDrafts(old => old[conversation]?.trim() === text ? { ...old, [conversation]: '' } : old);
         setSpecialists(old => old[conversation] === specialistId ? { ...old, [conversation]: undefined } : old);
         setFiles(old => ({ ...old, [conversation]: (old[conversation] ?? []).filter(a => !attachmentIds.includes(a.id)) }));
-        setStatus(old => old ? { ...old, ...(run.status === 'queued' ? { queuedRuns: [...(old.queuedRuns ?? []).filter(r => r.id !== run.id), run] } : run.status === 'running' ? { activeRun: run } : {}) } : old);
+        setStatus(old => old ? { ...old, ...(run.status === 'queued' ? { queuedRuns: [...(old.queuedRuns ?? []).filter(r => r.id !== run.id), run] } : run.status === 'running' ? { activeRuns: [...(old.activeRuns ?? []).filter(r => r.id !== run.id), run], activeRun: run } : {}) } : old);
         stick.current = true;
       });
     } finally {
@@ -672,7 +674,7 @@ function App() {
       </article>)}
   </>;
   const composer = <div className="bridge-composer">
-    {chat && !canEdit && <p className="composer-status">{chat.linkedToFastkore && chat.ownerId === user.id ? 'Чтобы продолжить чат, откройте связанную карточку или список в Fastkore.' : 'Чат доступен для чтения'}</p>}
+    {chat && !canEdit && <p className={'composer-status' + (chat.linkedToFastkore && chat.ownerId === user.id ? ' composer-lock' : '')} role="alert">{chat.linkedToFastkore && chat.ownerId === user.id ? 'Этот чат привязан к карточке Fastkore — писать в нём можно только из неё. Откройте связанную карточку или список в Fastkore.' : 'Чат доступен для чтения'}</p>}
     {codexNotice && draftEditable && <p className="composer-status" role="status">{codexNotice} Можно подготовить черновик.</p>}
     {canReadFastkore && contextProblem && <p className="composer-status" role="alert">{contextProblem}</p>}
     {!!attachments.length && !canAttach && <p className="composer-status" role="status">Удалите вложения из черновика. Агенту сейчас не разрешено их читать.</p>}
@@ -685,10 +687,10 @@ function App() {
       <LoaderCircle size={14} className="spin" /><span>В очереди</span>
       <button onClick={() => void action(async () => { await post('/api/runs/' + run.id + '/cancel'); })}>Отменить</button>
     </div>)}
-    {active && (active.chatId === chatId || isAdmin) && <div className="bridge-progress">
+    {activeRuns.filter(run => run.chatId === chatId || isAdmin).map(run => <div className="bridge-progress" key={run.id}>
       <span role="status"><LoaderCircle size={14} className="spin" aria-hidden="true" /><span className="sr-only">Ответ готовится</span></span>
-      {(isAdmin || (active.chatId === chatId && canEdit)) && <button onClick={() => void action(async () => { await post('/api/runs/' + active.id + '/cancel'); })}><Square size={12} />Остановить</button>}
-    </div>}
+      {(isAdmin || (run.chatId === chatId && canEdit)) && <button onClick={() => void action(async () => { await post('/api/runs/' + run.id + '/cancel'); })}><Square size={12} />Остановить</button>}
+    </div>)}
     {!hasMessages && <div className="composer-project">
       <Folder size={17} />
       <Select label="Проект" placeholder="Выберите проект" value={projectId} onChange={project => currentErpContext.current.active ? navigateTo(project) : navigateWorkspace(project)} disabled={pending}
@@ -986,7 +988,7 @@ function App() {
               {status?.addresses.map(url => <button key={url} className="copy-row" onClick={() => void copyItem(url, url)}><code>{url}</code>{copied === url ? <Check size={14} /> : <Copy size={14} />}</button>)}
             </section>
             <section className="setting-section"><h3>Исполнитель модели</h3>
-              <p className="settings-status">{status?.cli?.authentication === 'google' ? 'Подключён Gemini CLI через Google' : status?.cli?.authentication === 'chatgpt' ? 'Подключён через ChatGPT' : status?.cli?.authentication === 'api-key' ? 'API-ключ · выполнение отключено' : 'Исполнитель не подключён'}</p>
+              <p className="settings-status">{status?.cli?.authentication === 'google' ? 'Подключён Gemini CLI через Google' : status?.cli?.authentication === 'chatgpt' ? 'Подключён через ChatGPT' : status?.cli?.authentication === 'glm' ? 'Подключён GLM (Z.ai) по ключу Coding Plan' : status?.cli?.authentication === 'api-key' ? 'API-ключ · выполнение отключено' : 'Исполнитель не подключён'}</p>
               {status?.isolatedCodex ? <p className="help">Отдельный исполнитель</p>
                 : <><label htmlFor="cli-path">Путь к Codex CLI</label><input id="cli-path" value={cliPath} onChange={e => setCliPath(e.target.value)} placeholder="Автоопределение" disabled={busy} /></>}
               <div className="settings-actions">
@@ -1112,8 +1114,8 @@ function LimitsButton({ limits, loading, refresh, unavailableReason, model }: {
   const windows = unavailableReason ? [] : limits?.buckets.flatMap(bucket => bucket.windows) ?? [];
   const remaining = windows.length ? Math.min(...windows.map(window => remainingPercent(window.usedPercent))) : null;
   const remainingLabel = remaining === null ? '' : `Осталось ${limitPercentFormat.format(remaining)}%`;
-  const provider = limits?.provider || (model.startsWith('antigravity') ? 'antigravity' : model.startsWith('gemini') ? 'gemini' : 'codex');
-  const heading = provider === 'codex' ? 'Лимиты Codex' : 'Лимиты Google';
+  const provider = limits?.provider || (model.startsWith('antigravity') ? 'antigravity' : model.startsWith('glm') ? 'glm' : model.startsWith('gemini') ? 'gemini' : 'codex');
+  const heading = provider === 'codex' ? 'Лимиты Codex' : provider === 'glm' ? 'Лимиты Z.ai' : 'Лимиты Google';
   const title = remainingLabel ? `${heading} · ${remainingLabel.toLowerCase()}` : heading;
   return <details className="limits-control"
     onToggle={e => { if (e.currentTarget.open) void refresh(); }}

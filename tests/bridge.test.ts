@@ -99,6 +99,17 @@ test('HTTP model selection validates catalog, changes chat and handles per-reque
     assert.equal((await app.inject({ method: 'PATCH', url: route, headers, payload: { model: '' } })).json().model, '');
   } finally { await app.close(); }
 });
+test('a stale default model clears itself once no connected provider offers it', async () => {
+  const { workspace, store } = await fixture();
+  try {
+    await workspace.settings({ model: 'test-a' });
+    store.state.settings.model = 'gemini-auto'; await store.save(); // The provider account is gone.
+    const catalog = await workspace.models(true);
+    assert.equal(catalog.models.length, 2);
+    assert.equal(store.state.settings.model, '');
+    assert.equal((await workspace.models(true)).models.length, 2); // The healed setting persists.
+  } finally { await workspace.shutdown(); }
+});
 test('legacy 0.2 state without model fields loads without losing chats or session IDs', async () => {
   const { workspace, store, project, chat } = await fixture(); await workspace.shutdown();
   const state: any = structuredClone(store.state); delete state.settings.model; delete state.projects[0].chats[0].model;

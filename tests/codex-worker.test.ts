@@ -142,3 +142,106 @@ test('CLI tools expose only fixed offline descriptions and recheck the session',
   await assert.rejects(tools.call('fastkore_cli_describe', { command: 'data get' }, signal), /Session ended/);
   assert.deepEqual(calls, ['data-query']);
 });
+
+test('different providers run in parallel; the same provider serializes with a clear refusal', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'bridge-parallel-'));
+  const { mkdir, writeFile } = await import('node:fs/promises');
+  const { ExecutionAccountStore } = await import('../server/execution-accounts.js');
+  const store = new ExecutionAccountStore(root);
+  const gemini = await store.create('Google', 'gemini');
+  await mkdir(path.join(store.home(gemini.id), '.gemini'), { recursive: true });
+  await writeFile(path.join(store.home(gemini.id), '.gemini', 'oauth_creds.json'), JSON.stringify({ refresh_token: 'private-google' }));
+  const glm = await store.create('GLM', 'glm');
+  await writeFile(path.join(store.home(glm.id), 'config.toml'), 'model_provider = "ZAI"\nexperimental_bearer_token = "zai-key-1234567890abcdef1234567890"\n');
+  await store.activate(gemini.id);
+  await store.activate(glm.id);
+  const sessionId = randomUUID();
+  const gates = new Map<string, () => void>();
+  const started = new Set<string>();
+  store.runner = (id = store.active) => {
+    const provider = id === gemini.id ? 'gemini' : 'glm';
+    return {
+      inspect: async () => ({ path: '', version: 'fake', authentication: provider === 'gemini' ? 'google' as const : 'glm' as const, status: '', provider }),
+      listModels: async () => ({ models: [{ id: 'gm-x', name: 'X', description: '', isDefault: true }], fetchedAt: new Date().toISOString(), source: provider as 'gemini' | 'glm' }),
+      readLimits: async () => null,
+      run: async (request: { prompt: string }, event: (input: unknown) => Promise<void>) => {
+        started.add(provider);
+        await new Promise<void>(resolve => gates.set(provider, resolve));
+        await event({ kind: 'session', text: sessionId });
+        return { sessionId, response: 'OK-' + provider };
+      },
+    } as unknown as ReturnType<typeof store.runner>;
+  };
+  const socket = process.platform === 'win32' ? '\\\\.\\pipe\\bridge-par-' + randomUUID() : path.join(root, 'worker.sock');
+  const worker = createCodexWorker(undefined, undefined, store);
+  try {
+    await worker.listen({ path: socket });
+    const pendingGemini = worker.inject({ method: 'POST', url: '/run', payload: { prompt: 'Первый', model: 'gemini/gm-x' } });
+    await new Promise(resolve => setTimeout(resolve, 60));
+    const pendingGlm = worker.inject({ method: 'POST', url: '/run', payload: { prompt: 'Второй', model: 'glm/gm-x' } });
+    await new Promise(resolve => setTimeout(resolve, 60));
+    assert.ok(started.has('gemini') && started.has('glm'), 'both providers must be running at the same time');
+    const blocked = await worker.inject({ method: 'POST', url: '/run', payload: { prompt: 'Третий', model: 'gemini/gm-x' } });
+    assert.equal(blocked.statusCode, 409);
+    assert.match(JSON.parse(blocked.body).error, /занят/);
+    gates.get('gemini')!(); gates.get('glm')!();
+    const first = await pendingGemini, second = await pendingGlm;
+    assert.equal(JSON.parse(first.body.trim().split('\n').at(-1)!).result.response, 'OK-gemini');
+    assert.equal(JSON.parse(second.body.trim().split('\n').at(-1)!).result.response, 'OK-glm');
+  } finally { await worker.close(); store.close(); await rm(root, { recursive: true, force: true }); }
+});
+
+test('parallel specialist consultations keep their parent cancellation and tool results separate', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'bridge-consult-parallel-'));
+  const { mkdir, writeFile } = await import('node:fs/promises');
+  const { ExecutionAccountStore } = await import('../server/execution-accounts.js');
+  const accounts = new ExecutionAccountStore(root);
+  const google = await accounts.create('Google', 'gemini');
+  await mkdir(path.join(accounts.home(google.id), '.gemini'));
+  await writeFile(path.join(accounts.home(google.id), '.gemini', 'oauth_creds.json'), '{"refresh_token":"fixture"}');
+  await writeFile(path.join(root, 'auth.json'), '{"tokens":{"access_token":"fixture"}}');
+  await accounts.activate(google.id); await accounts.activate('default');
+  const children = new Map<string, { signal: AbortSignal; release: () => void }>();
+  accounts.runner = (id = accounts.active) => ({
+    inspect: async () => ({ path: '', version: 'fake', authentication: id === 'default' ? 'chatgpt' : 'google', status: '' }),
+    run: async (request, _event, signal) => {
+      if (request.consultation) {
+        await new Promise<void>((resolve, reject) => {
+          children.set(id, { signal, release: resolve });
+          signal.addEventListener('abort', () => reject(Error('cancelled')), { once: true });
+        });
+        return { response: id };
+      }
+      const result = await request.tools!.call('consult_specialist', {}, signal);
+      return { response: result.text };
+    },
+  });
+  const socket = process.platform === 'win32' ? '\\\\.\\pipe\\consult-' + randomUUID() : path.join(root, 'worker.sock');
+  const worker = createCodexWorker(undefined, undefined, accounts), remote = new RemoteCodexRunner(socket);
+  const stopA = new AbortController();
+  const base = { cliPath: '', workspace: root, allowWrite: false, prompt: 'Test' };
+  const parent = (model: string, signal: AbortSignal) => remote.run({ ...base, model, tools: {
+    definitions: [{ type: 'function', name: 'consult_specialist', description: '', inputSchema: { type: 'object' } }],
+    call: async (_name, _args, childSignal) => {
+      const result = await remote.run({ ...base, model, consultation: true, ephemeral: true }, async () => {}, childSignal);
+      return { success: true, text: result.response };
+    },
+  } }, async () => {}, signal);
+  const until = async (check: () => boolean) => {
+    const deadline = Date.now() + 5000;
+    while (!check()) { if (Date.now() > deadline) throw Error('timeout'); await new Promise(resolve => setTimeout(resolve, 10)); }
+  };
+  try {
+    await worker.listen({ path: socket });
+    const a = parent('codex/test', stopA.signal).then(() => 'completed', () => 'cancelled');
+    const b = parent('gemini/test', AbortSignal.timeout(10000));
+    await until(() => children.size === 2);
+    stopA.abort(); await until(() => children.get('default')!.signal.aborted);
+    assert.equal(children.get(google.id)!.signal.aborted, false);
+    children.get(google.id)!.release();
+    assert.equal((await b).response, google.id);
+    assert.equal(await a, 'cancelled');
+  } finally {
+    stopA.abort(); for (const child of children.values()) child.release(); await worker.close(); await rm(root, { recursive: true, force: true });
+  }
+});

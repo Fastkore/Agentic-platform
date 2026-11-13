@@ -3,14 +3,23 @@ import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
-import type { ExecutionAccount, ExecutionAccounts, ExecutionProvider } from '../shared/execution-accounts.js';
+import { providerForModel, type ExecutionAccount, type ExecutionAccounts, type ExecutionProvider } from '../shared/execution-accounts.js';
 import { CodexClient, type CodexRunner } from './codex.js';
 import { BridgeError } from './store.js';
 import { GeminiClient, AntigravityClient } from './gemini.js';
+import { GlmClient, readGlmKey, writeGlmConfig } from './glm.js';
 import type { ModelCatalog } from '../shared/types.js';
 
 type RecordAccount = Pick<ExecutionAccount, 'id' | 'name' | 'provider'>;
-type Manifest = { active: string; accounts: RecordAccount[] };
+// Several accounts may stay active at once: users see the models of every active account,
+// inactive ones stay hidden. `active` in accounts.json is a list; a legacy string is upgraded on load.
+type Manifest = { active: string[]; accounts: RecordAccount[] };
+function normalizeManifest(parsed: Partial<Manifest> & { active?: string[] | string }): Manifest {
+  const active = Array.isArray(parsed.active) ? parsed.active.filter(item => typeof item === 'string')
+    : typeof parsed.active === 'string' ? [parsed.active] : ['default'];
+  // An explicitly empty account list stays empty; the default account seeds only fresh stores.
+  return { active: [...new Set(active)], accounts: parsed.accounts ?? [{ id: 'default', name: 'Основной Codex', provider: 'codex' }] };
+}
 export class ExecutionAccountStore {
   private state: Manifest;
   private readonly file: string;
@@ -25,9 +34,7 @@ export class ExecutionAccountStore {
   constructor(readonly root: string) {
     mkdirSync(root, { recursive: true, mode: 0o700 });
     this.file = path.join(root, 'accounts.json');
-    this.state = existsSync(this.file) ? JSON.parse(readFileSync(this.file, 'utf8')) : {
-      active: 'default', accounts: [{ id: 'default', name: 'Основной Codex', provider: 'codex' }],
-    };
+    this.state = existsSync(this.file) ? normalizeManifest(JSON.parse(readFileSync(this.file, 'utf8'))) : normalizeManifest({});
   }
   private find(id: string) {
     const account = this.state.accounts.find(item => item.id === id);
@@ -38,36 +45,44 @@ export class ExecutionAccountStore {
     this.find(id);
     return id === 'default' ? this.root : path.join(this.root, 'accounts', id);
   }
-  get active() { return this.state.active; }
+  // The most recently activated account is the primary: it serves auto-resolved runs.
+  get active() { return this.state.active.at(-1) ?? ''; }
+  private get activeSet() { return new Set(this.state.active); }
   runner(id = this.active): CodexRunner {
     const provider = this.find(id).provider;
-    return provider === 'antigravity' ? new AntigravityClient(this.home(id)) : provider === 'gemini' ? new GeminiClient(this.home(id)) : new CodexClient([], 'worker', this.home(id));
+    return provider === 'antigravity' ? new AntigravityClient(this.home(id)) : provider === 'gemini' ? new GeminiClient(this.home(id))
+      : provider === 'glm' ? new GlmClient(this.home(id)) : new CodexClient([], 'worker', this.home(id));
   }
-  get provider() { return this.find(this.active).provider; }
-  async select(model?: string) {
+  get provider() { return [...this.state.active].reverse().map(id => this.state.accounts.find(item => item.id === id)).find(Boolean)?.provider ?? 'codex'; }
+  private async activeAccounts() {
     const { accounts } = await this.list();
-    const provider = model?.startsWith('antigravity/') || model === 'antigravity-auto' ? 'antigravity' : model?.startsWith('gemini/') || model?.startsWith('gemini-') ? 'gemini' : model ? 'codex' : undefined;
-    const candidates = accounts.filter(account => account.signedIn && (!provider || account.provider === provider));
-    const account = candidates.find(account => account.active) ?? candidates[0];
-    if (!account) throw new BridgeError(provider ? `Выполните вход в ${provider === 'antigravity' ? 'Antigravity CLI' : provider === 'gemini' ? 'Gemini CLI' : 'Codex'}.` : 'Подключите аккаунт исполнителя.', 503);
-    return { account, model: model?.replace(/^(codex|gemini|antigravity)\//, '') };
+    const signedIn = new Map(accounts.filter(account => account.signedIn).map(account => [account.id, account]));
+    return [...this.state.active].reverse().map(id => signedIn.get(id)).filter((account): account is NonNullable<typeof account> => !!account);
+  }
+  async select(model?: string) {
+    const provider = providerForModel(model);
+    // Active accounts serve users; connected-but-inactive accounts stay hidden.
+    const active = await this.activeAccounts();
+    if (!active.length) throw new BridgeError('Включите хотя бы один активный аккаунт исполнителя в настройках сервера.', 503);
+    const account = provider ? active.find(item => item.provider === provider) : active[0];
+    if (!account) throw new BridgeError('Этот исполнитель не активен. Включите его аккаунт в настройках сервера.', 503);
+    return { account, model: model?.replace(/^(codex|gemini|antigravity|glm)\//, '') };
   }
   async models(cli: string): Promise<ModelCatalog> {
-    const { accounts } = await this.list();
-    const connected = accounts.filter(account => account.signedIn).sort((a, b) => Number(b.active) - Number(a.active));
-    const preferred = (await this.select()).account;
-    // Try every signed-in connection; deduplicate models without exposing account identities.
-    const catalogs = await Promise.allSettled(connected.map(account => this.runner(account.id).listModels!(cli)));
+    const active = await this.activeAccounts();
+    if (!active.length) throw new BridgeError('Включите хотя бы один активный аккаунт исполнителя в настройках сервера.', 503);
+    // Every active account contributes models; deduplicate without exposing account identities.
+    const catalogs = await Promise.allSettled(active.map(account => this.runner(account.id).listModels!(cli)));
     const models: ModelCatalog['models'] = [];
     catalogs.forEach((result, index) => {
       if (result.status !== 'fulfilled') return;
-      const account = connected[index];
+      const account = active[index];
       for (const model of result.value.models) {
         const id = account.provider + '/' + model.id;
-        if (!models.some(item => item.id === id)) models.push({ ...model, id, isDefault: account.id === preferred.id && model.isDefault });
+        if (!models.some(item => item.id === id)) models.push({ ...model, id, isDefault: index === 0 && model.isDefault });
       }
     });
-    if (!models.length) throw new BridgeError('Не удалось получить модели подключённых исполнителей.', 502);
+    if (!models.length) throw new BridgeError('Активные аккаунты исполнителя не вернули модели.', 502);
     return { models, source: 'combined', fetchedAt: new Date().toISOString() };
   }
   async executionKey(id = this.active) {
@@ -75,7 +90,8 @@ export class ExecutionAccountStore {
     const home = this.home(account.id);
     let identity = account.id;
     try {
-      if (account.provider === 'antigravity') {
+      if (account.provider === 'glm') identity = readGlmKey(home) ?? identity;
+      else if (account.provider === 'antigravity') {
         const marker = JSON.parse(await readFile(path.join(home, '.antigravity-connected.json'), 'utf8'));
         return account.id + ':' + marker.session;
       }
@@ -104,6 +120,8 @@ export class ExecutionAccountStore {
         if (account.provider === 'antigravity') {
           const marker = JSON.parse(await readFile(path.join(this.home(account.id), '.antigravity-connected.json'), 'utf8'));
           signedIn = typeof marker.session === 'string';
+        } else if (account.provider === 'glm') {
+          signedIn = readGlmKey(this.home(account.id)) !== null;
         } else {
         const file = account.provider === 'gemini' ? path.join('.gemini', 'oauth_creds.json') : 'auth.json';
         const auth = JSON.parse(await readFile(path.join(this.home(account.id), file), 'utf8'));
@@ -120,7 +138,7 @@ export class ExecutionAccountStore {
         login.status.needsCode = false;
         this.stopLogin(login.child);
       }
-      return { ...account, email, signedIn, active: account.id === this.active, login: this.logins.get(account.id)?.status };
+      return { ...account, email, signedIn, active: this.activeSet.has(account.id), login: this.logins.get(account.id)?.status };
     })) };
   }
   async create(name: string, provider: ExecutionProvider = 'codex') {
@@ -128,7 +146,7 @@ export class ExecutionAccountStore {
     if (this.state.accounts.length >= 20) throw new BridgeError('Допускается до 20 аккаунтов.');
     const account: RecordAccount = { id: randomUUID(), name: name.trim(), provider };
     await mkdir(path.join(this.root, 'accounts', account.id), { recursive: true, mode: 0o700 });
-    await this.save({ ...this.state, active: this.active || account.id, accounts: [...this.state.accounts, account] });
+    await this.save({ ...this.state, active: this.state.active.length ? this.state.active : [account.id], accounts: [...this.state.accounts, account] });
     return account;
   }
   async remove(id: string) {
@@ -142,14 +160,17 @@ export class ExecutionAccountStore {
       await stopped;
     }
     const remaining = (await this.list()).accounts.filter(account => account.id !== id);
-    const active = this.active === id ? (remaining.find(account => account.signedIn) ?? remaining[0])?.id ?? '' : this.active;
+    // Drop the account from the active set; if it was the last one, promote the first
+    // connected remainder so users do not silently lose their executor.
+    const activeSet = new Set(this.state.active.filter(item => item !== id));
+    if (!activeSet.size) { const next = (remaining.find(account => account.signedIn) ?? remaining[0])?.id; if (next) activeSet.add(next); }
     // The legacy profile shares its root with ALL other accounts. Remove only its credential file.
     const target = id === 'default' ? path.join(home, 'auth.json') : home;
     const staged = target + '.removed-' + randomUUID();
     let moved = false;
     try { await rename(target, staged); moved = true; }
     catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
-    try { await this.save({ active, accounts: remaining.map(({ id, name, provider }) => ({ id, name, provider })) }); }
+    try { await this.save({ active: [...activeSet], accounts: remaining.map(({ id, name, provider }) => ({ id, name, provider })) }); }
     catch (error) { if (moved) await rename(staged, target); throw error; }
     this.logins.delete(id);
     if (moved) await rm(staged, { recursive: id !== 'default', force: true });
@@ -159,11 +180,18 @@ export class ExecutionAccountStore {
     this.find(id);
     const account = (await this.list()).accounts.find(item => item.id === id)!;
     if (!account.signedIn) throw new BridgeError('Сначала выполните вход в аккаунт.', 409);
-    await this.save({ ...this.state, active: id });
+    // Re-activating promotes the account back to the primary position.
+    await this.save({ ...this.state, active: [...this.state.active.filter(item => item !== id), id] });
+    return this.list();
+  }
+  async deactivate(id: string) {
+    this.find(id);
+    await this.save({ ...this.state, active: this.state.active.filter(item => item !== id) });
     return this.list();
   }
   async login(id: string) {
     const account = this.find(id);
+    if (account.provider === 'glm') throw new BridgeError('Для аккаунта GLM сохраните API-ключ вместо входа.', 409);
     const existing = this.logins.get(id);
     if (existing?.status.state === 'waiting') return existing.status;
     const home = this.home(id);
@@ -229,6 +257,13 @@ export class ExecutionAccountStore {
     login.status.needsCode = false;
     if (this.find(id).provider === 'antigravity') void this.completeAntigravityLogin(id, login);
     return { ok: true };
+  }
+  async setKey(id: string, key: string) {
+    const account = this.find(id);
+    if (account.provider !== 'glm') throw new BridgeError('Ключ применяется только к аккаунту GLM.', 409);
+    if (/[\r\n]/.test(key)) throw new BridgeError('Некорректный ключ GLM.');
+    await writeGlmConfig(this.home(id), key);
+    return this.list();
   }
   private async completeAntigravityLogin(id: string, login: { child: ChildProcess; status: NonNullable<ExecutionAccount['login']> }) {
     for (let attempt = 0; attempt < 15 && login.status.state === 'waiting'; attempt++) {

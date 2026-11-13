@@ -28,6 +28,7 @@ services:
     cpus: 2
     environment:
       HTTPS_PROXY: ${BRIDGE_CODEX_HTTPS_PROXY:-}
+      BRIDGE_GLM_BASE_URL: ${BRIDGE_GLM_BASE_URL:-}
       BRIDGE_CODEX_JOB_FILES: /runner/jobs
     volumes:
       - codex_socket:/run/bridge-codex

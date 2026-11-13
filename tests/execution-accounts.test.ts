@@ -7,6 +7,7 @@ import { ExecutionAccountStore } from '../server/execution-accounts.js';
 import { GeminiClient, AntigravityClient, geminiFailure } from '../server/gemini.js';
 import { createCodexWorker } from '../server/codex-worker.js';
 import { BridgeError } from '../server/store.js';
+import { providerForModel } from '../shared/execution-accounts.js';
 import { randomUUID } from 'node:crypto';
 
 test('execution accounts preserve legacy auth, isolate tokens and retain the active selection', async () => {
@@ -92,7 +93,7 @@ test('removing legacy and active accounts preserves other credentials and permit
     await store.remove(gemini.id);
     await assert.rejects(readFile(credentials), { code: 'ENOENT' });
     assert.deepEqual((await new ExecutionAccountStore(root).list()).accounts, []);
-    await assert.rejects(store.select(), /Подключите/);
+    await assert.rejects(store.select(), /активный аккаунт/);
     assert.equal(store.active, '');
     const replacement = await store.create('Новый');
     assert.equal(store.active, replacement.id);
@@ -100,15 +101,12 @@ test('removing legacy and active accounts preserves other credentials and permit
   } finally { store.close(); await rm(root, { recursive: true, force: true }); }
 });
 
-test('combined catalog deduplicates connections and routes native models and errors to the selected provider', async () => {
+test('only the active account serves users; connected-but-inactive accounts stay hidden', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'bridge-routing-'));
   const store = new ExecutionAccountStore(root);
   const gemini = await store.create('Google', 'gemini');
   await mkdir(path.join(store.home(gemini.id), '.gemini'));
   await writeFile(path.join(store.home(gemini.id), '.gemini', 'oauth_creds.json'), JSON.stringify({ refresh_token: 'private-google' }));
-  // Active Codex is signed out; Google must still be usable.
-  assert.equal((await store.select()).account.id, gemini.id);
-  await writeFile(path.join(root, 'auth.json'), JSON.stringify({ tokens: { access_token: 'private-codex' } }));
   const duplicate = await store.create('Second Google', 'gemini');
   await mkdir(path.join(store.home(duplicate.id), '.gemini'));
   await writeFile(path.join(store.home(duplicate.id), '.gemini', 'oauth_creds.json'), JSON.stringify({ refresh_token: 'other-private' }));
@@ -128,24 +126,40 @@ test('combined catalog deduplicates connections and routes native models and err
   });
   const worker = createCodexWorker(undefined, undefined, store);
   try {
+    // Without an active account users see no models at all.
+    assert.equal((await worker.inject('/models')).statusCode, 503);
+    await store.activate(gemini.id);
     const models = (await worker.inject('/models')).json();
-    assert.deepEqual(models.models.map((item: { id: string }) => item.id), ['codex/gpt-test', 'gemini/gemini-test']);
+    assert.deepEqual(models.models.map((item: { id: string }) => item.id), ['gemini/gemini-test']);
     assert.equal(models.models.filter((item: { isDefault: boolean }) => item.isDefault).length, 1);
     assert.ok(!JSON.stringify(models).includes('private'));
     const inspect = (await worker.inject('/inspect?model=gemini/gemini-test')).json();
     assert.equal(inspect.provider, 'gemini');
     assert.equal(inspect.accountId, await store.executionKey(gemini.id));
-    for (const model of ['gemini/gemini-test', 'gemini-test', 'codex/gpt-test', 'gpt-test']) {
+    for (const model of ['gemini/gemini-test', 'gemini-test']) {
       const response = await worker.inject({ method: 'POST', url: '/run', payload: { prompt: 'Test', model } });
       const event = JSON.parse(response.body.trim().split('\n').at(-1)!);
-      assert.equal(event.result.response, (model.startsWith('gemini') ? gemini.id : 'default') + ':' + model.replace(/^(codex|gemini)\//, ''));
+      assert.equal(event.result.response, gemini.id + ':' + model.replace(/^gemini\//, ''));
     }
+    // A model of a connected-but-inactive provider is refused with a clear reason.
+    const hidden = await worker.inject({ method: 'POST', url: '/run', payload: { prompt: 'Test', model: 'codex/gpt-test' } });
+    assert.match(JSON.parse(hidden.body.trim()).error, /исполнитель не активен/);
     failGoogle = true;
     const failed = await worker.inject({ method: 'POST', url: '/run', payload: { prompt: 'Test', model: 'gemini/gemini-test' } });
     assert.match(JSON.parse(failed.body.trim()).error, /UNSUPPORTED_CLIENT/);
     assert.ok(!failed.body.includes('Codex'));
-    await worker.inject({ method: 'POST', url: '/accounts/' + gemini.id + '/activate', payload: {} });
+    failGoogle = false;
+    // Active accounts work together: activating Codex keeps Google visible too; the most
+    // recently activated account becomes the primary and owns the default model.
+    await writeFile(path.join(root, 'auth.json'), JSON.stringify({ tokens: { access_token: 'private-codex' } }));
+    await worker.inject({ method: 'POST', url: '/accounts/default/activate', payload: {} });
+    assert.deepEqual((await worker.inject('/models')).json().models.map((item: { id: string }) => item.id), ['codex/gpt-test', 'gemini/gemini-test']);
+    await worker.inject({ method: 'POST', url: '/accounts/' + gemini.id + '/deactivate', payload: {} });
+    assert.deepEqual((await worker.inject('/models')).json().models.map((item: { id: string }) => item.id), ['codex/gpt-test']);
+    await worker.inject({ method: 'POST', url: '/accounts/default/deactivate', payload: {} });
+    assert.equal((await worker.inject('/models')).statusCode, 503);
     await worker.inject({ method: 'POST', url: '/accounts/' + gemini.id + '/remove', payload: {} });
+    await store.activate(duplicate.id);
     assert.equal((await store.select('gemini-test')).account.id, duplicate.id);
   } finally { await worker.close(); await rm(root, { recursive: true, force: true }); }
 });
@@ -154,7 +168,20 @@ test('Gemini errors do not expose tokens, settings or provider stack traces', ()
   assert.match(geminiFailure('UNSUPPORTED_CLIENT private-token stack path'), /Antigravity/);
   assert.match(geminiFailure('invalid_grant'), /вход Google/);
   assert.match(geminiFailure('RESOURCE_EXHAUSTED'), /лимит/);
+  assert.match(geminiFailure('Account ineligible: not currently available in your location'), /регион/);
   assert.ok(!geminiFailure('unknown private-token stack path').includes('private-token'));
+});
+
+test('provider mapping follows the account selection rules', () => {
+  assert.equal(providerForModel(undefined), undefined);
+  assert.equal(providerForModel(''), undefined);
+  assert.equal(providerForModel('gemini-auto'), 'gemini');
+  assert.equal(providerForModel('gemini/gemini-auto'), 'gemini');
+  assert.equal(providerForModel('antigravity-auto'), 'antigravity');
+  assert.equal(providerForModel('antigravity/gemini-3.8-flash-high'), 'antigravity');
+  assert.equal(providerForModel('glm/glm-5.3'), 'glm');
+  assert.equal(providerForModel('glm-auto'), 'glm');
+  assert.equal(providerForModel('gpt-6.1-sol'), 'codex');
 });
 
 test('Gemini models come from the CLI catalog rather than a hard-coded list', async () => {
@@ -194,6 +221,7 @@ console.log(JSON.stringify({event:'result',result:{status:'SUCCESS',response:'Г
     await writeFile(path.join(home, '.antigravity-connected.json'), JSON.stringify({ session: randomUUID() }));
     const runner = new AntigravityClient(home, process.execPath, [fake]);
     const key = await store.executionKey(account.id);
+    await store.activate(account.id);
     assert.equal((await store.select('antigravity/gemini-test-high')).account.id, account.id);
     assert.ok(store.runner(account.id) instanceof AntigravityClient);
     const models = await runner.listModels();

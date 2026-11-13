@@ -17,6 +17,7 @@ export function geminiFailure(text: string) {
   if (/UNSUPPORTED_CLIENT|This client is no longer supported/.test(text)) return 'Google отклонил Gemini CLI (UNSUPPORTED_CLIENT). Для этого аккаунта требуется переход на Antigravity CLI; повторный вход в Gemini CLI не устранит отказ.';
   if (/invalid_grant|invalid_token|reauthentication|authentication required/i.test(text)) return 'Авторизация Gemini CLI истекла. Выполните вход Google заново в настройках сервера.';
   if (/RESOURCE_EXHAUSTED|quota exceeded|429|exhausted your capacity/i.test(text)) return 'Gemini CLI: исчерпан лимит запросов. Проверьте лимиты аккаунта Google.';
+  if (/ineligible|not (?:currently )?available in your location/i.test(text)) return 'Google отклонил аккаунт: Antigravity недоступен в регионе этого аккаунта Google.';
   return 'Gemini CLI не выполнила запрос. Проверьте доступ аккаунта Google к сервису и лимиты.';
 }
 
@@ -34,6 +35,7 @@ export class GeminiClient implements CodexRunner {
       env: { ...process.env, HOME: this.home, GEMINI_CLI_HOME: this.home, NO_BROWSER: 'true' }, timeout: 30000, maxBuffer: 1_000_000, windowsHide: true,
     });
     if (this.antigravity) {
+      // Every model the CLI reports stays selectable, including non-gemini families.
       const entries = stdout.split(/\r?\n/).flatMap(line => {
         const match = line.trim().match(/^([a-z][a-z0-9._-]+)\s+(.+)$/);
         return match ? [{ id: match[1], name: match[2].trim(), description: 'Antigravity CLI', isDefault: false }] : [];
