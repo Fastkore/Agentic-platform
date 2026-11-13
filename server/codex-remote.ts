@@ -44,11 +44,11 @@ export class RemoteCodexRunner implements CodexRunner {
     }
     return JSON.parse(text) as T;
   }
-  inspect(_path: string, signal?: AbortSignal) { return this.read<CliInfo>('/inspect', signal); }
+  inspect(_path: string, signal?: AbortSignal, model?: string) { return this.read<CliInfo>('/inspect' + (model ? '?model=' + encodeURIComponent(model) : ''), signal); }
   listModels() { return this.read<ModelCatalog>('/models'); }
   async readLimits() { return (await this.read<{ limits: CodexLimits | null }>('/limits')).limits; }
   accounts() { return this.read<ExecutionAccounts>('/accounts'); }
-  async accountAction(action: 'create' | 'login' | 'activate' | 'code', id?: string, name?: string, provider?: ExecutionProvider) {
+  async accountAction(action: 'create' | 'login' | 'activate' | 'code' | 'remove', id?: string, name?: string, provider?: ExecutionProvider) {
     const response = await this.request(action === 'create' ? '/accounts' : '/accounts/' + encodeURIComponent(id!) + '/' + action,
       action === 'create' ? { name: name!, provider } : action === 'code' ? { code: name! } : {});
     let body = '';

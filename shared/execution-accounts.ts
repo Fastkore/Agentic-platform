@@ -1,4 +1,4 @@
-export type ExecutionProvider = 'codex' | 'gemini';
+export type ExecutionProvider = 'codex' | 'gemini' | 'antigravity';
 export interface ExecutionAccount {
   id: string;
   name: string;

@@ -1,0 +1,8 @@
+{
+  "security": { "auth": { "selectedType": "oauth-personal" }, "folderTrust": { "enabled": false } },
+  "tools": { "core": [] },
+  "mcp": { "allowed": ["bridge"] },
+  "context": { "fileName": [] },
+  "experimental": { "enableAgents": false },
+  "hooksConfig": { "enabled": false }
+}

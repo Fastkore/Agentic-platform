@@ -567,16 +567,19 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
     return accountWorker;
   };
   app.get('/api/admin/execution/accounts', request => accountAccess(request).accounts());
-  app.post<{ Body: { name: string; provider?: 'codex' | 'gemini' } }>('/api/admin/execution/accounts', {
-    schema: { body: object({ name: string(100), provider: { enum: ['codex', 'gemini'] } }, ['name']) },
+  app.delete<{ Params: { id: string } }>('/api/admin/execution/accounts/:id', async request => {
+    const result = await accountAccess(request, true).accountAction('remove', request.params.id);
+    workspace.resetExecutionConnection();
+    return result;
+  });
+  app.post<{ Body: { name: string; provider?: 'codex' | 'gemini' | 'antigravity' } }>('/api/admin/execution/accounts', {
+    schema: { body: object({ name: string(100), provider: { enum: ['codex', 'gemini', 'antigravity'] } }, ['name']) },
   }, request => accountAccess(request, true).accountAction('create', undefined, request.body.name, request.body.provider));
   for (const action of ['login', 'activate'] as const) {
     app.post<{ Params: { id: string } }>('/api/admin/execution/accounts/:id/' + action, async request => {
       const worker = accountAccess(request, true);
-      const previousProvider = action === 'activate' ? (await worker.accounts()).accounts.find(account => account.active)?.provider : undefined;
       const result = await worker.accountAction(action, request.params.id);
       workspace.resetExecutionConnection();
-      if (action === 'activate' && result.accounts?.find((account: { active: boolean }) => account.active)?.provider !== previousProvider) await workspace.settings({ model: '' });
       return result;
     });
   }

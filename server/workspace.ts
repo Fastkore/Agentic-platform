@@ -491,11 +491,11 @@ export class Workspace {
     if (pathChanged) { this.cli = null; this.catalog = undefined; this.limitsCache = undefined; }
     await this.store.save(); return this.store.state.settings;
   }
-  async inspect(signal?: AbortSignal) {
+  async inspect(signal?: AbortSignal, model?: string) {
     if (this.cliLockedForSso) this.executionAllowed();
     const cliPath = await this.cliPath();
     if (!cliPath) throw new BridgeError('Codex CLI не найден. Укажите путь к codex.exe в настройках.');
-    const info = await this.codex.inspect(cliPath, signal); this.cli = info; return info;
+    const info = await this.codex.inspect(cliPath, signal, model); this.cli = info; return info;
   }
   async codexConnection(refresh = false) {
     if (!this.isolatedCodex || this.executionDisabled) return this.cli;
@@ -521,8 +521,8 @@ export class Workspace {
     this.limitsCache = undefined;
     this.cli = null;
   }
-  private async requireChatGPT(signal: AbortSignal) {
-    const info = await this.inspect(signal);
+  private async requireChatGPT(signal: AbortSignal, model?: string) {
+    const info = await this.inspect(signal, model);
     if (!executionConnected(info)) throw new BridgeError(info.authentication === 'api-key' ? 'Обнаружен API-ключ. Запрос заблокирован: выполните вход Codex через ChatGPT.' : 'Нужен подтверждённый вход на исполнителе модели.');
     return this.isolatedCodex ? 'codex-worker' : info.path;
   }
@@ -654,16 +654,17 @@ export class Workspace {
       await this.store.saveRun(run);
       revocation = setInterval(() => { try { this.checkJob(job, run); } catch { revoked = true; cancel.abort(); } }, 200);
       const signal = cancel.signal;
-      const cliPath = await this.requireChatGPT(signal); signal.throwIfAborted(); this.checkJob(job, run);
+      const cliPath = await this.requireChatGPT(signal, run.model); signal.throwIfAborted(); this.checkJob(job, run);
+      const executionAccountId = this.cli?.accountId;
       if (job.kind === 'subscription') {
         // Never give this probe the directory containing credentials and the application database.
         const { mkdtemp } = await import('node:fs/promises'), { tmpdir } = await import('node:os');
         const directory = await mkdtemp(path.join(tmpdir(), 'bridge-probe-'));
         const result = await this.codex.run({ cliPath, workspace: directory, prompt: 'Ответь одним словом: OK. Не используй инструменты и не читай файлы.',
           developerInstructions: this.store.state.settings.agentInstructions ?? DEFAULT_AGENT_INSTRUCTIONS, allowWrite: false, ephemeral: true, model: run.model }, async () => {}, signal);
-        run.response = this.cli?.provider === 'gemini' ? 'Gemini CLI: пробный запрос выполнен.' : 'ChatGPT: пробный запрос выполнен. Остаток лимита проверяйте в аккаунте ChatGPT.'; run.usage = result.usage;
+        run.response = this.cli?.provider === 'antigravity' ? 'Antigravity CLI: пробный запрос выполнен.' : this.cli?.provider === 'gemini' ? 'Gemini CLI: пробный запрос выполнен.' : 'ChatGPT: пробный запрос выполнен. Остаток лимита проверяйте в аккаунте ChatGPT.'; run.usage = result.usage;
       } else {
-        await this.executeChat(job, run, cliPath, signal);
+        await this.executeChat(job, run, cliPath, signal, executionAccountId);
       }
       this.checkJob(job, run); signal.throwIfAborted(); run.status = 'complete'; run.progress = 'Задание завершено';
     } catch (error) {
@@ -691,7 +692,7 @@ export class Workspace {
       finally { if (this.active === active) this.active = null; this.pump(); }
     }
   }
-  private async executeChat(job: Job, run: Run, cliPath: string, signal: AbortSignal) {
+  private async executeChat(job: Job, run: Run, cliPath: string, signal: AbortSignal, executionAccountId?: string) {
     const project = this.project(run.projectId!), chat = this.chat(project.id, run.chatId!);
     const security = this.store.state.security;
     const actor = security?.users.find(u => u.id === job.authorId);
@@ -755,7 +756,7 @@ export class Workspace {
     const toolScope = tools ? ':tools:' + createHash('sha256').update(JSON.stringify([
       job.credentialId, tools.definitions, job.specialistScope && specialists.length ? job.specialistScope : undefined, ...(projectFiles.length ? [projectFiles.map(file => file.id)] : []),
     ])).digest('hex') : '';
-    const instructionsScope = ':rules:' + createHash('sha256').update(globalInstructions).digest('hex') + ':account:' + (this.cli?.accountId ?? 'default');
+    const instructionsScope = ':rules:' + createHash('sha256').update(globalInstructions).digest('hex') + ':account:' + (executionAccountId ?? 'default');
     const scope = (workerWrites ? 'isolated-write:' : this.isolatedCodex ? 'isolated:' : '') + this.corporate.scope(actor, profile, project) + erpScope + instructionsScope + toolScope;
     const roleInstructions = this.corporate.instructions(actor, profile);
     const developerInstructions = [

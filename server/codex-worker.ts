@@ -40,39 +40,43 @@ export function createCodexWorker(codex: CodexRunner = new CodexClient([], 'work
   let consulting = false;
   let consultationCall: AbortSignal | undefined;
   let changingAccount = false;
-  const runner = () => accounts?.runner() ?? codex;
+  const runner = async (model?: string) => accounts ? accounts.runner((await accounts.select(model)).account.id) : codex;
   const pendingTools = new Map<string, (result: CodexToolResult) => void>();
-  const inspect = async (signal?: AbortSignal) => {
-    const info = await runner().inspect(cli, signal);
+  const inspect = async (signal?: AbortSignal, model?: string) => {
+    const selection = accounts && await accounts.select(model).catch((error: Error) => ({ error }));
+    if (selection && 'error' in selection) return { path: '', version: '', authentication: 'signed-out' as const, status: selection.error.message };
+    const info = await (selection ? accounts!.runner(selection.account.id) : codex).inspect(cli, signal);
     return {
       path: '', version: info.version, authentication: info.authentication,
       status: info.status,
-      accountId: accounts && await accounts.executionKey(),
-      provider: accounts?.provider,
+      accountId: selection && await accounts!.executionKey(selection.account.id),
+      provider: selection?.account.provider,
     };
   };
-  const requireLogin = async (signal?: AbortSignal) => {
-    if (!executionConnected(await inspect(signal))) throw new BridgeError('Требуется вход в аккаунт на исполнителе.', 503);
+  const requireLogin = async (signal?: AbortSignal, model?: string) => {
+    const info = await inspect(signal, model);
+    if (!executionConnected(info)) throw new BridgeError(info.status, 503);
   };
   app.setErrorHandler((error, _req, reply) => {
     const status = error instanceof BridgeError ? error.statusCode : (error as { validation?: unknown }).validation ? 400 : 502;
     return reply.code(status).send({ error: 'Исполнитель Codex не выполнил запрос.' });
   });
   app.get('/health', async () => ({ ok: true }));
-  app.get('/inspect', () => inspect());
-  app.get('/models', async () => { await requireLogin(); return runner().listModels!(cli); });
-  app.get('/limits', async () => ({ limits: executionConnected(await inspect()) ? await runner().readLimits!(cli) : null }));
+  app.get<{ Querystring: { model?: string } }>('/inspect', request => inspect(undefined, request.query.model));
+  app.get('/models', async () => { await requireLogin(); return accounts ? accounts.models(cli) : (await runner()).listModels!(cli); });
+  app.get('/limits', async () => ({ limits: executionConnected(await inspect()) ? await (await runner()).readLimits!(cli) : null }));
   app.get('/accounts', async () => { if (!accounts) throw new BridgeError('Управление аккаунтами недоступно.', 503); return accounts.list(); });
   async function changeAccount<T>(work: () => Promise<T>) {
     if (!accounts || active || consulting || changingAccount) throw new BridgeError('Дождитесь завершения задания.', 409);
     changingAccount = true;
     try { return await work(); } finally { changingAccount = false; }
   }
-  app.post<{ Body: { name: string; provider?: 'codex' | 'gemini' } }>('/accounts', { schema: { body: {
-    type: 'object', additionalProperties: false, required: ['name'], properties: { name: { type: 'string', minLength: 1, maxLength: 100 }, provider: { enum: ['codex', 'gemini'] } },
+  app.post<{ Body: { name: string; provider?: 'codex' | 'gemini' | 'antigravity' } }>('/accounts', { schema: { body: {
+    type: 'object', additionalProperties: false, required: ['name'], properties: { name: { type: 'string', minLength: 1, maxLength: 100 }, provider: { enum: ['codex', 'gemini', 'antigravity'] } },
   } } }, request => changeAccount(() => accounts!.create(request.body.name, request.body.provider)));
   app.post<{ Params: { id: string } }>('/accounts/:id/login', request => changeAccount(() => accounts!.login(request.params.id)));
   app.post<{ Params: { id: string } }>('/accounts/:id/activate', request => changeAccount(() => accounts!.activate(request.params.id)));
+  app.post<{ Params: { id: string } }>('/accounts/:id/remove', request => changeAccount(() => accounts!.remove(request.params.id)));
   app.post<{ Params: { id: string }; Body: { code: string } }>('/accounts/:id/code', { schema: { body: {
     type: 'object', additionalProperties: false, required: ['code'], properties: { code: { type: 'string', minLength: 1, maxLength: 2048 } },
   } } }, request => changeAccount(async () => accounts!.authorizationCode(request.params.id, request.body.code)));
@@ -97,6 +101,7 @@ export function createCodexWorker(codex: CodexRunner = new CodexClient([], 'work
     if (consultation) consulting = true;
     else active = controller;
     const runSignal = consultation ? AbortSignal.any([controller.signal, consultationCall!]) : controller.signal;
+    let provider = 'Исполнитель модели';
     const { raw } = reply;
     raw.once('close', () => controller.abort());
     reply.hijack();
@@ -106,8 +111,11 @@ export function createCodexWorker(codex: CodexRunner = new CodexClient([], 'work
       if (!raw.write(JSON.stringify(message) + '\n')) await once(raw, 'drain', { signal: runSignal });
     }
     try {
-      await requireLogin(runSignal);
+      await requireLogin(runSignal, request.body.model);
       const { toolDefinitions, workDirectoryId, ...body } = request.body;
+      const selected = accounts && await accounts.select(body.model);
+      if (selected) body.model = selected.model;
+      provider = selected?.account.provider === 'antigravity' ? 'Antigravity CLI' : selected?.account.provider === 'gemini' ? 'Gemini CLI' : 'Codex';
       let directory = workspace;
       if (workDirectoryId) {
         if (!jobsRoot || !path.isAbsolute(jobsRoot)) throw new BridgeError('Рабочая папка Codex не настроена.', 503);
@@ -116,7 +124,8 @@ export function createCodexWorker(codex: CodexRunner = new CodexClient([], 'work
           throw new BridgeError('Рабочая папка задания недоступна.', 503);
         }
       }
-      const result = await runner().run({ ...body, cliPath: cli, workspace: directory, allowWrite: !!workDirectoryId,
+      const executor = selected ? accounts!.runner(selected.account.id) : codex;
+      const result = await executor.run({ ...body, cliPath: cli, workspace: directory, allowWrite: !!workDirectoryId,
         ...(toolDefinitions?.length ? { tools: { definitions: toolDefinitions, async call(name: string, args: unknown, signal: AbortSignal) {
           if (!toolDefinitions.some(tool => tool.name === name)) return { success: false, text: 'Инструмент не разрешён для этого запроса.' };
           const id = randomUUID();
@@ -138,7 +147,7 @@ export function createCodexWorker(codex: CodexRunner = new CodexClient([], 'work
       await write({ result });
     } catch (error) {
       if (!runSignal.aborted) {
-        await write({ error: error instanceof BridgeError && error.statusCode === 503 ? error.message : 'Codex не смог выполнить запрос. Проверьте подключение и лимиты.' }).catch(() => {});
+        await write({ error: error instanceof BridgeError && error.statusCode === 503 ? error.message : `${provider} не смог выполнить запрос. Проверьте подключение и лимиты.` }).catch(() => {});
       }
     } finally {
       if (consultation) consulting = false;

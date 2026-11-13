@@ -10,7 +10,7 @@ import type { CodexTools } from './codex-tools.js';
 export interface CodexEvent { kind: 'session' | 'message' | 'progress' | 'usage'; text?: string; usage?: Usage }
 export interface CodexRequest { cliPath: string; workspace: string; prompt: string; developerInstructions?: string; tools?: CodexTools; sessionId?: string; allowWrite: boolean; workDirectoryId?: string; ephemeral?: boolean; consultation?: boolean; model?: string; reasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh' }
 export interface CodexResult { sessionId?: string; response: string; usage?: Usage }
-export interface CodexRunner { readonly isolated?: boolean; inspect(cliPath: string, signal?: AbortSignal): Promise<CliInfo>; listModels?(cliPath: string): Promise<ModelCatalog>; readLimits?(cliPath: string): Promise<CodexLimits | null>; run(request: CodexRequest, onEvent: (event: CodexEvent) => Promise<void>, signal: AbortSignal): Promise<CodexResult> }
+export interface CodexRunner { readonly isolated?: boolean; inspect(cliPath: string, signal?: AbortSignal, model?: string): Promise<CliInfo>; listModels?(cliPath: string): Promise<ModelCatalog>; readLimits?(cliPath: string): Promise<CodexLimits | null>; run(request: CodexRequest, onEvent: (event: CodexEvent) => Promise<void>, signal: AbortSignal): Promise<CodexResult> }
 type RateWindow = { usedPercent?: number; windowDurationMins?: number | null; resetsAt?: number | null };
 type RateBucket = { limitId?: string | null; limitName?: string | null; primary?: RateWindow | null; secondary?: RateWindow | null };
 type RateResponse = {

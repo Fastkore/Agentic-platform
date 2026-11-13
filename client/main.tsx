@@ -634,7 +634,7 @@ function App() {
   ];
   const serverModel = status?.settings.model ?? '';
   const serverModels = [
-    { value: '', label: 'Автовыбор Codex' },
+    { value: '', label: 'Автовыбор исполнителя' },
     ...(serverModel && !catalogOptions.some(model => model.value === serverModel) ? [{ value: serverModel, label: modelName(serverModel) }] : []),
     ...catalogOptions,
   ];

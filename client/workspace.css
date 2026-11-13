@@ -517,6 +517,7 @@
 .execution-accounts .settings-records li { flex-wrap: wrap; }
 .execution-accounts .settings-records > li > div:first-child { flex: 1; min-width: 180px; }
 .execution-accounts .settings-records small svg { display: inline-block; margin-right: 5px; vertical-align: middle; }
+.execution-accounts .settings-records .settings-actions { flex-wrap: nowrap; align-items: center; }
 .execution-device-code { padding: 10px 12px; margin-top: 10px; background: var(--control); border-radius: 8px; }
 .execution-device-code code { font-size: 20px; font-weight: 650; letter-spacing: 2px; user-select: all; }
 .execution-device-code a { color: var(--accent-strong); }
