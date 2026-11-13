@@ -2,12 +2,13 @@ import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { mkdir, mkdtemp, readFile, realpath, rename, rm, rmdir, stat, unlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
+import { isDeepStrictEqual } from 'node:util';
 import type { AgentProfile, Attachment, Chat, CliInfo, CodexLimits, FastkoreChatBinding, FileStorageProvider, FileStorageStatus, Job, ModelCatalog, Project, Run, Settings, TokenActivityReport, Usage, User } from '../shared/types.js';
 import type { FastkoreContext } from '../shared/fastkore-context.js';
 import { DEFAULT_AGENT_INSTRUCTIONS } from '../shared/agent-instructions.js';
 import type { CodexTools } from './codex-tools.js';
 import { Store, BridgeError, redact } from './store.js';
-import { type CodexRunner, discoverCli } from './codex.js';
+import { type CodexRunner, type SteerTurn, discoverCli } from './codex.js';
 import { attachmentName, buildContext, projectFilePath, publicProjectFile } from './documents.js';
 import { FileStorage } from './file-storage.js';
 import { stageWorkerFiles, workerOutputs } from './worker-files.js';
@@ -50,6 +51,8 @@ export class Workspace {
   cli: CliInfo | null = null;
   // Runs execute in parallel lanes: one concurrent run per executor provider, keyed by run id.
   private active = new Map<string, { run: Run; cancel: AbortController; lane: string; task: Promise<void> }>();
+  private readonly steering = new Map<string, SteerTurn>();
+  private readonly sendingClarifications = new Map<string, Promise<unknown>>();
   private stopping = false;
   private cliLockedForSso = false;
   lockCliForSso() { this.cliLockedForSso = true; }
@@ -616,12 +619,15 @@ export class Workspace {
     // Dispatch across free provider lanes, preserving FIFO order within each lane.
     const fallbackLane = this.cli?.provider ?? 'codex';
     const waitingChats = new Set<string>();
-    for (const run of [...this.queuedRuns]) {
+    const queuedRuns = this.queuedRuns;
+    const deliveringChats = new Set(queuedRuns.filter(run => run.steeringTo).map(run => run.chatId));
+    for (const run of queuedRuns) {
       if (this.active.size >= executorCapacity()) break;
       const lane = run.executionProvider ?? providerForModel(run.model) ?? fallbackLane;
       const chatKey = run.chatId ? run.projectId + ':' + run.chatId : undefined;
       if (chatKey && waitingChats.has(chatKey)) continue;
       if (chatKey) waitingChats.add(chatKey);
+      if (deliveringChats.has(run.chatId)) continue;
       if (run.chatId && [...this.active.values()].some(entry => entry.run.projectId === run.projectId && entry.run.chatId === run.chatId)) continue;
       if ([...this.active.values()].filter(entry => entry.lane === lane).length >= providerCapacity(lane)) continue;
       const entry = { run, cancel: new AbortController(), lane, task: Promise.resolve() };
@@ -726,6 +732,8 @@ export class Workspace {
     } finally {
       clearInterval(revocation); run.completedAt = new Date().toISOString();
       run.tool = undefined;
+      run.canSteer = undefined;
+      this.steering.delete(run.id);
       const chat = run.projectId && run.chatId ? this.chat(run.projectId, run.chatId) : undefined;
       if (job && chat) rememberFastkoreTurn(this.store.state, chat, job, run.status === 'complete');
       this.store.state.jobs = this.store.state.jobs!.filter(item => item.runId !== run.id);
@@ -896,7 +904,11 @@ export class Workspace {
           await this.store.saveRun(run, chat);
           if (['message', 'message-delta', 'message-replace'].includes(event.kind)) lastTextSave = Date.now();
         }
-      }, signal);
+      }, signal, steer => {
+        run.canSteer = steer ? true : undefined;
+        if (steer) this.steering.set(run.id, steer);
+        else this.steering.delete(run.id);
+      });
       this.checkJob(job, run); signal.throwIfAborted();
       if (cliRestored && cliWorkspace && workerDirectory) {
         cliSaveAttempted = true;
@@ -960,8 +972,68 @@ export class Workspace {
     return context.slice(0, 24_000);
   }
   getRun(id: string) { const run = this.store.state.runs.find(r => r.id === id && !r.usageOnly); if (!run) throw new BridgeError('Задание не найдено.', 404); return run; }
+  async sendQueuedNow(id: string, targetId: string, author: { id: string; credentialId: string }, authorize: () => void) {
+    if (this.sendingClarifications.has(targetId)) throw new BridgeError('Дождитесь отправки предыдущего уточнения.', 409);
+    const task = this.deliverClarification(id, targetId, author, authorize);
+    this.sendingClarifications.set(targetId, task);
+    try { return await task; }
+    finally { this.sendingClarifications.delete(targetId); this.pump(); }
+  }
+  private async deliverClarification(id: string, targetId: string, author: { id: string; credentialId: string }, authorize: () => void) {
+    this.writable(); authorize();
+    const queued = this.getRun(id);
+    const target = this.active.get(targetId);
+    const steer = this.steering.get(targetId);
+    if (queued.status !== 'queued' || queued.steeringTo || !target || target.run.status !== 'running' || !steer || target.cancel.signal.aborted ||
+      !queued.projectId || !queued.chatId || queued.projectId !== target.run.projectId || queued.chatId !== target.run.chatId) {
+      throw new BridgeError('Текущий ход уже изменился. Обновите чат и проверьте очередь.', 409);
+    }
+    const jobs = this.store.state.jobs!;
+    const job = jobs.find(item => item.runId === id);
+    const parent = jobs.find(item => item.runId === targetId);
+    if (!job || !parent || job.authorId !== author.id || parent.authorId !== author.id || job.credentialId !== author.credentialId || parent.credentialId !== author.credentialId) {
+      throw new BridgeError('Уточнение можно отправить только в свой текущий запрос из того же сеанса.', 403);
+    }
+    if (job.attachmentIds.length || job.recommendedSpecialistId || queued.model !== target.run.model || !isDeepStrictEqual(job.fastkoreContext, parent.fastkoreContext)) {
+      throw new BridgeError('Это сообщение будет выполнено следующим ходом со своими вложениями, моделью или контекстом.', 409);
+    }
+    this.checkJob(job, queued); this.checkJob(parent, target.run);
+    const chat = this.chat(queued.projectId, queued.chatId);
+    queued.steeringTo = targetId;
+    try {
+      await this.store.saveRun(queued);
+    } catch (error) {
+      queued.steeringTo = undefined;
+      throw error;
+    }
+    let result: Awaited<ReturnType<SteerTurn>> = 'rejected';
+    try {
+      authorize(); this.checkJob(job, queued); this.checkJob(parent, target.run);
+      if (!target.cancel.signal.aborted && this.steering.get(targetId) === steer) {
+        result = await steer(job.text).catch(() => 'unknown' as const);
+      }
+    } finally {
+      queued.steeringTo = undefined;
+      if (result === 'rejected') await this.store.saveRun(queued);
+    }
+    if (result !== 'rejected') {
+      const now = new Date().toISOString();
+      queued.status = result === 'accepted' ? 'complete' : 'interrupted';
+      queued.progress = result === 'accepted' ? 'Уточнение передано' : 'Доставка уточнения не подтверждена';
+      queued.completedAt = now;
+      this.store.state.jobs = this.store.state.jobs!.filter(item => item !== job);
+      const answer = chat.messages.findIndex(message => message.runId === targetId && message.role === 'assistant');
+      chat.messages.splice(answer < 0 ? chat.messages.length : answer, 0, {
+        id: randomUUID(), role: 'user', text: job.text, status: queued.status,
+        createdAt: now, attachments: [], runId: targetId, authorId: author.id,
+      });
+      await this.store.saveRun(queued, chat, targetId);
+    }
+    return { result };
+  }
   async cancel(id: string) {
     const run = this.getRun(id);
+    if (run.steeringTo) throw new BridgeError('Уточнение уже отправляется.', 409);
     if (run.status === 'running') this.active.get(id)?.cancel.abort();
     else if (run.status === 'queued') {
       run.status = 'cancelled'; run.progress = 'Отменено в очереди'; run.completedAt = new Date().toISOString();
@@ -979,7 +1051,9 @@ export class Workspace {
     return this.shutdownPromise = (async () => {
       await this.admissions;
       for (const entry of this.active.values()) entry.cancel.abort();
-      await Promise.allSettled([...this.active.values()].map(entry => entry.task)); await this.fileCleanup;
+      await Promise.allSettled([...this.active.values()].map(entry => entry.task));
+      await Promise.allSettled(this.sendingClarifications.values());
+      await this.fileCleanup;
       await this.store.save(); await this.store.close(); this.files.close(); this.knowledgeBase?.close();
     })();
   }

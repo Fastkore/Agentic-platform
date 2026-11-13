@@ -4,8 +4,8 @@ import { randomUUID } from 'node:crypto';
 import { chmod, lstat, realpath, unlink } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { CodexClient, type CodexRunner } from './codex.js';
-import type { WorkerMessage, WorkerRun, WorkerToolResult } from './codex-remote.js';
+import { CodexClient, type CodexRunner, type SteerTurn } from './codex.js';
+import type { WorkerMessage, WorkerRun, WorkerSteer, WorkerToolResult } from './codex-remote.js';
 import type { CodexToolResult } from './codex-tools.js';
 import { BridgeError } from './store.js';
 import { ExecutionAccountStore } from './execution-accounts.js';
@@ -29,6 +29,7 @@ const runSchema = {
     ephemeral: { type: 'boolean' },
     consultation: { type: 'boolean' },
     consultationKey: { type: 'string', pattern: '^[0-9a-f-]{36}$' },
+    steeringKey: { type: 'string', pattern: '^[0-9a-f-]{36}$' },
     workDirectoryId: { type: 'string', pattern: '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' },
     reasoningEffort: { enum: ['low', 'medium', 'high', 'xhigh'] },
     toolDefinitions: { type: 'array', maxItems: 200, items: {
@@ -48,6 +49,7 @@ export function createCodexWorker(codex: CodexRunner = new CodexClient([], 'work
   let changingAccount = false;
   const runner = async (model?: string) => accounts ? accounts.runner((await accounts.select(model)).account.id) : codex;
   const pendingTools = new Map<string, (result: CodexToolResult) => void>();
+  const steeringTurns = new Map<string, SteerTurn>();
   const inspect = async (signal?: AbortSignal, model?: string) => {
     const selection = accounts && await accounts.select(model).catch((error: Error) => ({ error }));
     if (selection && 'error' in selection) return { path: '', version: '', authentication: 'signed-out' as const, status: selection.error.message };
@@ -128,6 +130,11 @@ export function createCodexWorker(codex: CodexRunner = new CodexClient([], 'work
     resolve({ success: request.body.success, text: request.body.text });
     return { ok: true };
   });
+  app.post<{ Body: WorkerSteer }>('/steer', { schema: { body: {
+    type: 'object', additionalProperties: false, required: ['key', 'text'], properties: {
+      key: { type: 'string', pattern: '^[0-9a-f-]{36}$' }, text: { type: 'string', minLength: 1, maxLength: 60_000 },
+    },
+  } } }, async request => ({ result: await steeringTurns.get(request.body.key)?.(request.body.text) ?? 'rejected' }));
   app.post<{ Body: WorkerRun }>('/run', { schema: { body: runSchema } }, async (request, reply) => {
     const consultation = request.body.consultation === true;
     const selection = accounts ? await accounts.select(request.body.model).catch((error: Error) => ({ error })) : undefined;
@@ -158,7 +165,7 @@ export function createCodexWorker(codex: CodexRunner = new CodexClient([], 'work
     }
     try {
       await requireLogin(runSignal, request.body.model);
-      const { toolDefinitions, workDirectoryId, ...body } = request.body;
+      const { toolDefinitions, workDirectoryId, steeringKey, ...body } = request.body;
       const selected = selection && !('error' in selection) ? selection : undefined;
       if (selected) body.model = selected.model;
       provider = selected?.account.provider === 'antigravity' ? 'Antigravity CLI' : selected?.account.provider === 'gemini' ? 'Gemini CLI' : selected?.account.provider === 'glm' ? 'GLM (Z.ai)' : 'Codex';
@@ -189,13 +196,18 @@ export function createCodexWorker(codex: CodexRunner = new CodexClient([], 'work
             stop.removeEventListener('abort', cancel); pendingTools.delete(id);
           }
         } } } : {}),
-      }, event => write({ event }), runSignal);
+      }, event => write({ event }), runSignal, !consultation && steeringKey ? steer => {
+        if (steer) steeringTurns.set(steeringKey, steer);
+        else steeringTurns.delete(steeringKey);
+        void write({ event: { kind: steer ? 'steer-ready' : 'steer-closed' } }).catch(() => {});
+      } : undefined);
       await write({ result });
     } catch (error) {
       if (!runSignal.aborted) {
         await write({ error: error instanceof BridgeError && error.statusCode === 503 ? error.message : `${provider} не смог выполнить запрос. Проверьте подключение и лимиты.` }).catch(() => {});
       }
     } finally {
+      if (!consultation && request.body.steeringKey) steeringTurns.delete(request.body.steeringKey);
       if (parent) parent.running = false;
       laneControllers.delete(controller);
       if (!laneControllers.size) activeLanes.delete(lane);

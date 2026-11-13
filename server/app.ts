@@ -507,7 +507,12 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
     const settings = workspace.store.state.settings;
     const activeRuns = workspace.activeRuns.filter(r => { try { access.run(u, r.id); return true; } catch { return false; } });
     const activeRun = activeRuns[0] ?? null;
-    const queuedRuns = workspace.queuedRuns.filter(r => { try { access.run(u, r.id); return true; } catch { return false; } });
+    const queuedRuns = workspace.queuedRuns.flatMap(run => {
+      try { access.run(u, run.id); } catch { return []; }
+      const job = workspace.store.state.jobs?.find(item => item.runId === run.id);
+      if (job?.authorId !== u.id) return [run];
+      return [{ ...run, queuedText: job?.text.slice(0, 240), queuedFiles: job?.attachmentIds.length }];
+    });
     return { version: '0.6.0', activeRun, activeRuns, queuedRuns, busy: workspace.busy, user: publicUser(u), setupRequired: access.setupRequired, canCreateProject: canCreateProject(u),
       cli: u.role === 'admin' ? cli : cli && { ...cli, path: '', status: '' },
       isolatedCodex: workspace.isolatedCodex, workerFilesAvailable: workspace.workerFilesAvailable, codexLimitsRevision: workspace.codexLimitsRevision,
@@ -832,6 +837,18 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
     return reply.code(201).send(file);
   });
   app.get<{ Params: { runId: string } }>('/api/runs/:runId', async request => access.run(user(request), request.params.runId));
+  app.post<{ Params: { runId: string }; Body: { targetRunId: string } }>('/api/runs/:runId/send-now', {
+    schema: { body: object({ targetRunId: string(36) }, ['targetRunId']) },
+  }, async request => {
+    const authorize = () => {
+      const actor = user(request);
+      const run = access.run(actor, request.params.runId);
+      if (!run.projectId || !run.chatId) throw new BridgeError('Уточнение должно быть сообщением чата.', 409);
+      access.editChat(actor, run.projectId, run.chatId);
+    };
+    const actor = principal(request);
+    return workspace.sendQueuedNow(request.params.runId, request.body.targetRunId, { id: actor.user.id, credentialId: actor.credential.id }, authorize);
+  });
   app.post<{ Params: { runId: string } }>('/api/runs/:runId/cancel', async request => {
     const u = user(request), run = access.run(u, request.params.runId);
     if (run.projectId && run.chatId) access.editChat(u, run.projectId, run.chatId); return workspace.cancel(run.id);

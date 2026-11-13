@@ -7,10 +7,13 @@ import { BridgeError, redact } from './store.js';
 import type { CliInfo, CodexLimits, LimitWindow, ModelCatalog, ModelOption, Usage } from '../shared/types.js';
 import type { CodexTools } from './codex-tools.js';
 
-export interface CodexEvent { kind: 'session' | 'message' | 'message-delta' | 'message-replace' | 'tool' | 'tool-end' | 'progress' | 'usage'; text?: string; toolCallId?: string; usage?: Usage }
+export interface CodexEvent { kind: 'session' | 'message' | 'message-delta' | 'message-replace' | 'tool' | 'tool-end' | 'progress' | 'usage' | 'steer-ready' | 'steer-closed'; text?: string; toolCallId?: string; usage?: Usage }
+export type SteerResult = 'accepted' | 'rejected' | 'unknown';
+export type SteerTurn = (text: string) => Promise<SteerResult>;
+export type RegisterSteering = (steer: SteerTurn | undefined) => void;
 export interface CodexRequest { cliPath: string; workspace: string; prompt: string; developerInstructions?: string; tools?: CodexTools; sessionId?: string; allowWrite: boolean; workDirectoryId?: string; ephemeral?: boolean; consultation?: boolean; consultationKey?: string; model?: string; reasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh' }
 export interface CodexResult { sessionId?: string; response: string; usage?: Usage }
-export interface CodexRunner { readonly isolated?: boolean; inspect(cliPath: string, signal?: AbortSignal, model?: string): Promise<CliInfo>; listModels?(cliPath: string): Promise<ModelCatalog>; readLimits?(cliPath: string, model?: string): Promise<CodexLimits | null>; run(request: CodexRequest, onEvent: (event: CodexEvent) => Promise<void>, signal: AbortSignal): Promise<CodexResult> }
+export interface CodexRunner { readonly isolated?: boolean; inspect(cliPath: string, signal?: AbortSignal, model?: string): Promise<CliInfo>; listModels?(cliPath: string): Promise<ModelCatalog>; readLimits?(cliPath: string, model?: string): Promise<CodexLimits | null>; run(request: CodexRequest, onEvent: (event: CodexEvent) => Promise<void>, signal: AbortSignal, registerSteering?: RegisterSteering): Promise<CodexResult> }
 type RateWindow = { usedPercent?: number; windowDurationMins?: number | null; resetsAt?: number | null };
 type RateBucket = { limitId?: string | null; limitName?: string | null; primary?: RateWindow | null; secondary?: RateWindow | null };
 type RateResponse = {
@@ -196,11 +199,11 @@ export class CodexClient implements CodexRunner {
       return null;
     } finally { await server.close(); }
   }
-  async run(request: CodexRequest, onEvent: (event: CodexEvent) => Promise<void>, signal: AbortSignal) {
+  async run(request: CodexRequest, onEvent: (event: CodexEvent) => Promise<void>, signal: AbortSignal, registerSteering?: RegisterSteering) {
     signal.throwIfAborted();
-    if (request.tools || request.consultation) {
+    if (request.tools || request.consultation || registerSteering && this.mode === 'worker') {
       if (this.mode !== 'worker' && request.tools?.definitions.some(tool => tool.name !== 'consult_specialist')) throw new BridgeError('Эти инструменты доступны только в изолированном исполнителе.', 403);
-      return this.runWithTools(request, request.tools, onEvent, signal);
+      return this.runWithTools(request, request.tools, onEvent, signal, registerSteering);
     }
     const child = this.start(request.cliPath, buildArguments(request, this.mode, this.provider), request.workspace);
     let stderr = '', response = '', sessionId = request.sessionId, usage: Usage | undefined, completed = false, failed = false, error = '';
@@ -241,7 +244,7 @@ export class CodexClient implements CodexRunner {
     } finally { clearTimeout(timer); signal.removeEventListener('abort', abort); await killTree(child); }
   }
 
-  private async runWithTools(request: CodexRequest, tools: CodexTools | undefined, onEvent: (event: CodexEvent) => Promise<void>, signal: AbortSignal) {
+  private async runWithTools(request: CodexRequest, tools: CodexTools | undefined, onEvent: (event: CodexEvent) => Promise<void>, signal: AbortSignal, registerSteering?: RegisterSteering) {
     const writableWorker = this.mode === 'worker' && request.allowWrite;
     const server = this.appServer(request.cliPath, true, 15 * 60_000, writableWorker ? workerWriteConfig(request.workspace) : []);
     const abort = () => { void server.close(); };
@@ -250,6 +253,27 @@ export class CodexClient implements CodexRunner {
     let toolCalls = 0;
     const seenCalls = new Set<string>(), seenMessages = new Set<string>();
     const publicMessages = new Map<string, { text: string; streamed: boolean }>();
+    let steerId = 100;
+    let pendingSteer: { id: number; finish: (result: SteerResult) => void } | undefined;
+    // A tool call can block the event iterator while the app server acknowledges steering.
+    server.lines.on('line', line => {
+      if (!pendingSteer || line.length > 4_000_000) return;
+      try {
+        const message = JSON.parse(line);
+        if (message.id === pendingSteer.id) pendingSteer.finish(message.error ? 'rejected' : message.result?.turnId === turnId ? 'accepted' : 'unknown');
+      } catch { /* The event iterator handles the normal stream. */ }
+    });
+    const steer: SteerTurn = async text => {
+      if (!sessionId || !turnId || signal.aborted || pendingSteer) return 'rejected';
+      const id = ++steerId;
+      return new Promise(resolve => {
+        const finish = (result: SteerResult) => { clearTimeout(timeout); pendingSteer = undefined; resolve(result); };
+        const timeout = setTimeout(() => finish('unknown'), 12_000).unref();
+        pendingSteer = { id, finish };
+        server.send({ id, method: 'turn/steer', params: { threadId: sessionId, expectedTurnId: turnId,
+          input: [{ type: 'text', text, text_elements: [] }] } });
+      });
+    };
     try {
       for await (const line of server.lines) {
         signal.throwIfAborted();
@@ -274,6 +298,7 @@ export class CodexClient implements CodexRunner {
           server.send({ id: message.id, result: { success: result.success, contentItems: [{ type: 'inputText', text: result.text }] } });
           continue;
         }
+        if (typeof message.id === 'number' && message.id > 100) continue;
         if (message.id !== undefined && message.error) throw new BridgeError('Codex отклонил запуск через App Server.', 502);
         if (message.id === 1) {
           server.send({ method: 'initialized' });
@@ -291,7 +316,8 @@ export class CodexClient implements CodexRunner {
           await onEvent({ kind: 'session', text: id });
           server.send({ id: 3, method: 'turn/start', params: { threadId: id, input: [{ type: 'text', text: request.prompt, text_elements: [] }], effort: request.reasoningEffort } });
         } else if (message.id === 3 || message.method === 'turn/started') {
-          turnId = (message.result ?? message.params)?.turn?.id;
+          const id = (message.result ?? message.params)?.turn?.id;
+          if (typeof id === 'string' && !turnId) { turnId = id; registerSteering?.(steer); }
         } else if (message.method === 'item/agentMessage/delta' && message.params?.threadId === sessionId && typeof message.params?.itemId === 'string' && typeof message.params?.delta === 'string') {
           const { itemId, delta } = message.params;
           if (seenMessages.has(itemId)) continue;
@@ -316,12 +342,18 @@ export class CodexClient implements CodexRunner {
             await onEvent({ kind: 'usage', usage });
           }
         } else if (message.method === 'turn/completed' && message.params?.threadId === sessionId) {
+          registerSteering?.(undefined);
           if (message.params.turn?.status !== 'completed') throw new BridgeError('Codex не завершил запрос через App Server.', 502);
           return { sessionId, response, usage };
         }
       }
       signal.throwIfAborted();
       throw new BridgeError('Исполнитель Codex завершился без готового ответа.', 502);
-    } finally { signal.removeEventListener('abort', abort); await server.close(); }
+    } finally {
+      registerSteering?.(undefined);
+      pendingSteer?.finish('unknown');
+      signal.removeEventListener('abort', abort);
+      await server.close();
+    }
   }
 }

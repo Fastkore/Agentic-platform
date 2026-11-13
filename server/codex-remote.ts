@@ -2,12 +2,14 @@ import { request as httpRequest, type IncomingMessage } from 'node:http';
 import { createInterface } from 'node:readline';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type { CliInfo, CodexLimits, ModelCatalog } from '../shared/types.js';
-import type { CodexEvent, CodexRequest, CodexResult, CodexRunner } from './codex.js';
+import type { CodexEvent, CodexRequest, CodexResult, CodexRunner, RegisterSteering, SteerResult } from './codex.js';
+import { randomUUID } from 'node:crypto';
 import type { CodexToolDefinition, CodexToolResult } from './codex-tools.js';
 import { BridgeError } from './store.js';
 import type { ExecutionAccounts, ExecutionProvider } from '../shared/execution-accounts.js';
 
-export type WorkerRun = Pick<CodexRequest, 'prompt' | 'developerInstructions' | 'sessionId' | 'ephemeral' | 'consultation' | 'consultationKey' | 'model' | 'reasoningEffort' | 'workDirectoryId'> & { toolDefinitions?: CodexToolDefinition[] };
+export type WorkerRun = Pick<CodexRequest, 'prompt' | 'developerInstructions' | 'sessionId' | 'ephemeral' | 'consultation' | 'consultationKey' | 'model' | 'reasoningEffort' | 'workDirectoryId'> & { toolDefinitions?: CodexToolDefinition[]; steeringKey?: string };
+export type WorkerSteer = { key: string; text: string };
 export type WorkerToolResult = CodexToolResult & { id: string };
 export type WorkerMessage = { event: CodexEvent } | { result: CodexResult } | { error: string }
   | { toolCall: { id: string; name: string; args: unknown } };
@@ -17,7 +19,7 @@ export class RemoteCodexRunner implements CodexRunner {
   private readonly consultationContext = new AsyncLocalStorage<string>();
   constructor(private readonly socketPath: string) {}
 
-  private request(path: string, body?: WorkerRun | WorkerToolResult | { name: string; provider?: ExecutionProvider } | { code: string } | { key: string } | { query: string } | Record<string, never>, signal?: AbortSignal): Promise<IncomingMessage> {
+  private request(path: string, body?: WorkerRun | WorkerToolResult | WorkerSteer | { name: string; provider?: ExecutionProvider } | { code: string } | { key: string } | { query: string } | Record<string, never>, signal?: AbortSignal): Promise<IncomingMessage> {
     const timeout = AbortSignal.timeout(body ? 16 * 60_000 : 35_000);
     return new Promise((resolve, reject) => {
       const payload = body && JSON.stringify(body);
@@ -63,9 +65,10 @@ export class RemoteCodexRunner implements CodexRunner {
     for await (const chunk of response) body += chunk;
     return JSON.parse(body);
   }
-  async run(r: CodexRequest, onEvent: (event: CodexEvent) => Promise<void>, signal: AbortSignal) {
+  async run(r: CodexRequest, onEvent: (event: CodexEvent) => Promise<void>, signal: AbortSignal, registerSteering?: RegisterSteering) {
     const { prompt, developerInstructions, sessionId, ephemeral, consultation, model, reasoningEffort, workDirectoryId, tools } = r;
-    const res = await this.request('/run', { prompt, developerInstructions, sessionId, ephemeral, consultation,
+    const steeringKey = registerSteering && !consultation ? randomUUID() : undefined;
+    const res = await this.request('/run', { prompt, developerInstructions, sessionId, ephemeral, consultation, steeringKey,
       consultationKey: consultation ? this.consultationContext.getStore() : undefined, model, reasoningEffort, workDirectoryId, toolDefinitions: tools?.definitions }, signal);
     const stream = createInterface({ input: res, crlfDelay: Infinity });
     try {
@@ -73,7 +76,20 @@ export class RemoteCodexRunner implements CodexRunner {
         signal.throwIfAborted();
         if (line.length > 4_000_000) throw new BridgeError('Событие исполнителя слишком большое.', 502);
         const message = JSON.parse(line) as WorkerMessage;
-        if ('event' in message) await onEvent(message.event);
+        if ('event' in message) {
+          if (message.event.kind === 'steer-ready' && steeringKey) {
+            registerSteering?.(async text => {
+              try {
+                const response = await this.request('/steer', { key: steeringKey, text }, AbortSignal.any([signal, AbortSignal.timeout(15_000)]));
+                let body = '';
+                for await (const chunk of response) body += chunk;
+                const result: SteerResult = JSON.parse(body).result;
+                return result === 'accepted' || result === 'rejected' ? result : 'unknown';
+              } catch { return 'unknown'; }
+            });
+          } else if (message.event.kind === 'steer-closed') registerSteering?.(undefined);
+          else await onEvent(message.event);
+        }
         else if ('toolCall' in message) {
           const { id, name, args } = message.toolCall;
           let result = { success: false, text: 'Инструмент недоступен.' };
@@ -89,6 +105,7 @@ export class RemoteCodexRunner implements CodexRunner {
       }
       throw new BridgeError('Связь с исполнителем Codex прервалась.', 502);
     } finally {
+      registerSteering?.(undefined);
       stream.close();
       res.destroy();
     }

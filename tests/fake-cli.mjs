@@ -5,6 +5,7 @@ const args = process.argv.slice(2);
 if (args[0] === '--version') { console.log('codex mock 1.0'); process.exit(0); }
 if (args[0] === 'login') { console.error('Logged in using ChatGPT'); process.exit(0); }
 if (args.includes('app-server')) {
+  let steeringThread;
   for await (const line of createInterface({ input: process.stdin })) {
     const request = JSON.parse(line);
     if (request.method === 'initialize') console.log(JSON.stringify({ id: request.id, result: { userAgent: 'fake' } }));
@@ -22,6 +23,11 @@ if (args.includes('app-server')) {
     if (request.method === 'turn/start') {
       const threadId = request.params.threadId;
       console.log(JSON.stringify({ id: request.id, result: { turn: { id: 'turn-1' } } }));
+      if (request.params.input[0].text.includes('WAIT_FOR_STEER')) {
+        steeringThread = threadId;
+        console.log(JSON.stringify({ id: 91, method: 'item/tool/call', params: { threadId, turnId: 'turn-1', callId: 'slow-tool', tool: 'knowledge', arguments: {} } }));
+        continue;
+      }
       console.log(JSON.stringify({ method: 'item/reasoning/textDelta', params: { threadId, delta: 'PRIVATE_REASONING' } }));
       console.log(JSON.stringify({ method: 'item/agentMessage/delta', params: { threadId, itemId: 'text-1', delta: 'Проверяю' } }));
       setTimeout(() => {
@@ -29,6 +35,15 @@ if (args.includes('app-server')) {
         console.log(JSON.stringify({ method: 'item/completed', params: { threadId, item: { id: 'text-1', type: 'agentMessage', text: 'Проверяю документы.' } } }));
         console.log(JSON.stringify({ method: 'turn/completed', params: { threadId, turn: { status: 'completed' } } }));
       }, 300);
+    }
+    if (request.method === 'turn/steer') {
+      if (request.params.threadId !== steeringThread || request.params.expectedTurnId !== 'turn-1') {
+        console.log(JSON.stringify({ id: request.id, error: { code: -32602, message: 'Unexpected turn' } }));
+        continue;
+      }
+      console.log(JSON.stringify({ id: request.id, result: { turnId: 'turn-1' } }));
+      console.log(JSON.stringify({ method: 'item/completed', params: { threadId: steeringThread, item: { id: 'steer-text', type: 'agentMessage', text: request.params.input[0].text } } }));
+      console.log(JSON.stringify({ method: 'turn/completed', params: { threadId: steeringThread, turn: { status: 'completed' } } }));
     }
   }
   process.exit(0);

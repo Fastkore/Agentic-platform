@@ -81,8 +81,9 @@ export class Store {
       this.state.settings.model ??= '';
       this.state.settings.agentInstructions ??= DEFAULT_AGENT_INSTRUCTIONS;
       this.state.jobs ??= [];
-      for (const run of this.state.runs) if (run.status === 'running') {
+      for (const run of this.state.runs) if (run.status === 'running' || run.status === 'queued' && run.steeringTo) {
         run.status = 'interrupted'; run.progress = 'Выполнение прервано остановкой сервера'; run.completedAt = new Date().toISOString();
+        run.canSteer = undefined; run.steeringTo = undefined;
         run.response = undefined;
       }
       for (const project of this.state.projects) for (const chat of project.chats)
@@ -185,7 +186,7 @@ export class Store {
       this.scheduleAuditExpiry(audit);
     }
   }
-  saveRun(run: Run, chat?: Chat) {
+  saveRun(run: Run, chat?: Chat, messageRunId = run.id) {
     if (this.closed) return Promise.reject(new BridgeError('Хранилище закрыто.', 503));
     const rows: Rows = new Map();
     const put = (table: Table, id: string, parent: string, position: number, value: unknown) => {
@@ -201,7 +202,7 @@ export class Store {
       const project = this.state.projects.find(item => item.id === run.projectId)!;
       put('chats', chat.id, project.id, project.chats.indexOf(chat), record);
       // New messages for this run are appended and remain at stable positions.
-      for (let i = messages.length - 1; i >= 0 && messages[i].runId === run.id; i--) {
+      for (let i = messages.length - 1; i >= 0 && messages[i].runId === messageRunId; i--) {
         put('messages', messages[i].id, chat.id, i, messages[i]);
       }
     }

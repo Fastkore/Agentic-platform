@@ -149,6 +149,7 @@ function App() {
   const chatActiveRuns = activeRuns.filter(run => run.status === 'running' && run.projectId === projectId && run.chatId === chatId);
   const chatQueuedRuns = queuedRuns.filter(run => run.status === 'queued' && run.projectId === projectId && run.chatId === chatId);
   const chatBusy = chatActiveRuns.length > 0 || chatQueuedRuns.length > 0;
+  const steerTarget = chatActiveRuns.find(run => run.canSteer && run.ownerId === user?.id);
   const isAdmin = user?.role === 'admin';
   const matchesErpChat = !!erpChatKey && relatedChats?.key === erpChatKey && relatedChats.list.some(item => item.id === chatId);
   const relatedLoading = !!erpChatKey && relatedChats?.key !== erpChatKey;
@@ -543,7 +544,7 @@ function App() {
         setDrafts(old => old[conversation]?.trim() === text ? { ...old, [conversation]: '' } : old);
         setSpecialists(old => old[conversation] === specialistId ? { ...old, [conversation]: undefined } : old);
         setFiles(old => ({ ...old, [conversation]: (old[conversation] ?? []).filter(a => !attachmentIds.includes(a.id)) }));
-        setStatus(old => old ? { ...old, ...(run.status === 'queued' ? { queuedRuns: [...(old.queuedRuns ?? []).filter(r => r.id !== run.id), run] } : run.status === 'running' ? { activeRuns: [...(old.activeRuns ?? []).filter(r => r.id !== run.id), run], activeRun: run } : {}) } : old);
+        setStatus(old => old ? { ...old, ...(run.status === 'queued' ? { queuedRuns: [...(old.queuedRuns ?? []).filter(r => r.id !== run.id), { ...run, queuedText: text.slice(0, 240), queuedFiles: attachmentIds.length }] } : run.status === 'running' ? { activeRuns: [...(old.activeRuns ?? []).filter(r => r.id !== run.id), run], activeRun: run } : {}) } : old);
         stick.current = true;
       });
     } finally {
@@ -666,7 +667,7 @@ function App() {
               `/api/projects/${encodeURIComponent(project)}/chats/${encodeURIComponent(conversation.id)}/messages/${encodeURIComponent(message.id)}/files/${encodeURIComponent(file.id)}`, file.name))}
               ><FileText size={16} />{file.name}</button>
             : <span key={file.id}><FileText size={16} />{file.name}</span>)}</div>}
-        {['error', 'cancelled', 'interrupted'].includes(message.status) && <div className="message-note">{message.status === 'error' ? 'Ошибка задания' : message.status === 'cancelled' ? 'Задание остановлено' : 'Задание прервано'}</div>}
+        {['error', 'cancelled', 'interrupted'].includes(message.status) && <div className="message-note">{message.status === 'error' ? 'Ошибка задания' : message.status === 'cancelled' ? 'Задание остановлено' : message.role === 'user' ? 'Доставка уточнения не подтверждена' : 'Задание прервано'}</div>}
         {message.consultedSpecialists?.length ? <div className="message-specialists">Специалисты · {message.consultedSpecialists.join(', ')}</div> : null}
         <div className="message-actions">
           {message.text && <button className="workspace-icon" aria-label="Копировать сообщение" title="Копировать сообщение" onClick={() => void copyItem(message.text, message.id)}>{copied === message.id ? <Check size={14} /> : <Copy size={14} />}</button>}
@@ -687,9 +688,19 @@ function App() {
     {canStartChat && canStartWithoutProject && <p className="composer-status">Первое сообщение создаст проект «Личные чаты».</p>}
     {agentCatalog?.projectId === projectId && chat && canEdit && !currentAgent?.available && <p className="composer-status">{currentAgent?.unavailableReason ?? 'Агент этого чата вам сейчас недоступен.'}</p>}
     {agentCatalog?.projectId === projectId && !chatId && status && (projectId || canCreateProject) && !availableAgents.length && <p className="composer-status">Для нового чата нужен доступ к агенту проекта.</p>}
-    {chatQueuedRuns.map(run => <div className="bridge-progress" key={run.id}>
-      <LoaderCircle size={14} className="spin" /><span>В очереди</span>
-      <button onClick={() => void action(async () => { await post('/api/runs/' + run.id + '/cancel'); })}>Отменить</button>
+    {chatQueuedRuns.map(run => <div className="bridge-progress queued-message" key={run.id}>
+      <span>{run.steeringTo ? 'Отправляется…' : 'В очереди'}</span>
+      {run.queuedText && <span className="queued-message-text" title={run.queuedText}>{run.queuedText}</span>}
+      {canEdit && steerTarget && run.ownerId === user.id && !run.queuedFiles && run.model === steerTarget.model &&
+        <button type="button" disabled={pending || !!run.steeringTo} onClick={() => void action(async () => {
+          const result = await post<{ result: 'accepted' | 'rejected' | 'unknown' }>('/api/runs/' + run.id + '/send-now', { targetRunId: steerTarget.id });
+          if (result.result === 'rejected') throw new Error('Текущий ход не принял уточнение. Сообщение осталось в очереди.');
+          setStatus(old => old && { ...old, queuedRuns: old.queuedRuns.filter(item => item.id !== run.id) });
+        })}>Отправить сейчас</button>}
+      {canEdit && <button type="button" disabled={pending || !!run.steeringTo} onClick={() => void action(async () => {
+        const cancelled = await post<Run>('/api/runs/' + run.id + '/cancel');
+        if (cancelled.status === 'cancelled') setStatus(old => old && { ...old, queuedRuns: old.queuedRuns.filter(item => item.id !== run.id) });
+      })}>Отменить</button>}
     </div>)}
     {chatActiveRuns.map(run => <div className="bridge-progress" key={run.id}>
       <span role="status"><LoaderCircle size={14} className="spin" aria-hidden="true" />{run.tool
@@ -740,7 +751,7 @@ function App() {
               if (shouldSend) void send(content);
               if (!shouldSend) requestAnimationFrame(() => input.current?.focus());
             }} onError={fail} />}
-          <button className="bridge-send" aria-label="Отправить вопрос" title={codexNotice || 'Отправить · Enter'} onClick={() => void send()} disabled={!canSend || !draft.trim() || pending}><ArrowUp size={18} /></button>
+          <button className="bridge-send" aria-label={chatBusy ? 'Добавить в очередь' : 'Отправить вопрос'} title={codexNotice || (chatBusy ? 'В очередь · Enter' : 'Отправить · Enter')} onClick={() => void send()} disabled={!canSend || !draft.trim() || pending}><ArrowUp size={18} /></button>
         </div>
       </div>} />
     </div>

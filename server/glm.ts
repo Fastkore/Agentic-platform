@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { CodexClient, type CodexEvent, type CodexRequest } from './codex.js';
+import { CodexClient, type CodexEvent, type CodexRequest, type RegisterSteering } from './codex.js';
 import type { CliInfo, CodexLimits, ModelCatalog, ModelOption } from '../shared/types.js';
 import { BridgeError } from './store.js';
 
@@ -94,11 +94,11 @@ export class GlmClient extends CodexClient {
   async readLimits(): Promise<CodexLimits> {
     return { provider: 'glm', buckets: [], resetsAvailable: null, unavailableReason: 'Z.ai не отдаёт остаток лимита по API. Проверьте кабинет Z.ai.' };
   }
-  async run(request: CodexRequest, onEvent: (event: CodexEvent) => Promise<void>, signal: AbortSignal) {
+  async run(request: CodexRequest, onEvent: (event: CodexEvent) => Promise<void>, signal: AbortSignal, registerSteering?: RegisterSteering) {
     // glm-auto keeps the provider default model; GLM accepts low/high/max rather than the
     // platform's medium/xhigh scale, so no reasoning effort override is forwarded.
     const model = request.model === 'glm-auto' ? undefined : request.model;
-    try { return await super.run({ ...request, model, reasoningEffort: undefined }, onEvent, signal); }
+    try { return await super.run({ ...request, model, reasoningEffort: undefined }, onEvent, signal, registerSteering); }
     catch (error) {
       if (error instanceof BridgeError && error.statusCode === 502) throw new BridgeError(glmFailure(error.message), 503);
       throw error;
