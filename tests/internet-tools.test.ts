@@ -45,6 +45,10 @@ test('read access never grants API writes, redirects recheck permissions, and re
   assert.equal(reached, 1, 'a redirect must not reach the internal destination');
   requests = true;
   assert.equal((await tools.call('internet_request', { url: 'https://example.test', method: 'POST', body: '{}' }, signal)).success, true);
+  const interrupted = withInternetTools(undefined, () => ({ read, requests }), () => {}, async () => ({ success: false, text: '' }), async () => { throw Error('socket closed after the API accepted the write'); })!;
+  const unknown = await interrupted.call('internet_request', { url: 'https://example.test', method: 'POST', body: '{}' }, signal);
+  assert.equal(unknown.success, false); assert.match(unknown.text, /результат операции не подтверждён/);
+  assert.match(unknown.text, /проверьте фактическое состояние/);
   const revoking = withInternetTools(undefined, () => ({ read, requests }), () => {}, async () => { read = false; return { success: true, text: 'Must not be returned' }; }, http);
   const revoked = await revoking.call('internet_search', { query: 'Docs' }, signal);
   assert.equal(revoked.success, false); assert.ok(!revoked.text.includes('Must not'));

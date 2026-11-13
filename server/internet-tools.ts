@@ -7,7 +7,7 @@ const definitions: CodexToolDefinition[] = [
     inputSchema: { type: 'object', additionalProperties: false, required: ['query'], properties: { query: { type: 'string', minLength: 1, maxLength: 400 } } } },
   { type: 'function', name: 'internet_read', description: 'Прочитать публичную HTTP/HTTPS-страницу методом GET. Внутренние и служебные адреса недоступны.',
     inputSchema: { type: 'object', additionalProperties: false, required: ['url'], properties: { url: { type: 'string', maxLength: 4096 } } } },
-  { type: 'function', name: 'internet_request', description: 'Внешний HTTP-запрос к публичному API, включая POST/PUT/PATCH/DELETE. Используй для действий, которые поручил сотрудник. Заголовки и тело передаются явно; сохранённые учётные данные платформы не подставляются. Редиректы автоматически не выполняются.',
+  { type: 'function', name: 'internet_request', description: 'Внешний HTTP-запрос к публичному API, включая POST/PUT/PATCH/DELETE. Используй для действий, которые поручил сотрудник. Заголовки и тело передаются явно; сохранённые учётные данные платформы не подставляются. Редиректы автоматически не выполняются. Если ответ оборвался, результат записи неизвестен: проверь состояние перед повтором операции.',
     inputSchema: { type: 'object', additionalProperties: false, required: ['url', 'method'], properties: {
       url: { type: 'string', maxLength: 4096 }, method: { enum: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'] },
       headers: { type: 'object', maxProperties: 20, additionalProperties: { type: 'string', maxLength: 4096 } }, body: { type: 'string', maxLength: 64000 },
@@ -55,7 +55,9 @@ export function withInternetTools(other: CodexTools | undefined, permissions: ()
       check(); return result;
     } catch (error) {
       signal.throwIfAborted();
-      return { success: false, text: error instanceof BridgeError ? error.message : 'Внешний запрос не выполнен. Проверьте адрес и доступность сервиса.' };
+      return { success: false, text: error instanceof BridgeError ? error.message
+        : name === 'internet_request' ? 'Ответ внешнего API не получен, результат операции не подтверждён. Перед повтором записи проверьте фактическое состояние в сервисе.'
+          : 'Не удалось получить страницу или результаты поиска. Проверьте адрес и доступность сервиса.' };
     }
   } };
 }
