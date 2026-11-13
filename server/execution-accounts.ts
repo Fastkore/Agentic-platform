@@ -206,7 +206,7 @@ export class ExecutionAccountStore {
           state.url = 'https://auth.openai.com/codex/device'; state.code = code; finish();
         }
         const googleUrl = output.match(/https:\/\/accounts\.google\.com\/[^\s\x1b\x07]+/)?.[0];
-        if (google && googleUrl && (account.provider === 'antigravity' || output.includes('Enter the authorization code:'))) {
+        if (google && googleUrl && !state.url && (account.provider === 'antigravity' || output.includes('Enter the authorization code:'))) {
           state.url = googleUrl; state.needsCode = true; finish();
         }
       };

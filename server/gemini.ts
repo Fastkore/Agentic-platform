@@ -53,6 +53,7 @@ export class GeminiClient implements CodexRunner {
   }
   async readLimits() { return null; }
   async run(request: CodexRequest, onEvent: (event: CodexEvent) => Promise<void>, signal: AbortSignal): Promise<CodexResult> {
+    signal.throwIfAborted();
     if (!this.antigravity && request.model && !request.model.startsWith('gemini-')) throw new BridgeError('Выберите модель Gemini в настройках диалога.', 409);
     const temporary = await mkdtemp(path.join(tmpdir(), 'bridge-gemini-'));
     const cwd = request.consultation ? path.join(temporary, 'runtime') : path.join(this.home, 'runtime');
