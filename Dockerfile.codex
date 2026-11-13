@@ -2,6 +2,7 @@ FROM node:24.19.0-bookworm-slim AS cli
 RUN npm install -g @openai/codex@0.167.1 --no-audit --no-fund \
     && mkdir -p /etc/codex /home/node/.codex /run/bridge-codex /runner \
     && chown node:node /home/node/.codex /run/bridge-codex
+RUN npm install -g @google/gemini-cli@0.68.0 --omit=optional --no-audit --no-fund
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 COPY deploy/codex-runner.toml /etc/codex/config.toml

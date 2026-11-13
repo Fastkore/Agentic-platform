@@ -13,7 +13,7 @@ export interface DictationModels {
   models: { id: DictationModelId; name: string; installed: boolean }[];
 }
 export interface ModelOption { id: string; name: string; description: string; isDefault: boolean }
-export interface ModelCatalog { models: ModelOption[]; fetchedAt: string; source: 'codex' }
+export interface ModelCatalog { models: ModelOption[]; fetchedAt: string; source: 'codex' | 'gemini' }
 export interface LimitWindow { usedPercent: number; windowDurationMins: number | null; resetsAt: number | null }
 export interface CodexLimits { buckets: { name: string; windows: LimitWindow[] }[]; resetsAvailable: number | null }
 export interface Usage { inputTokens: number; cachedInputTokens: number; outputTokens: number }
@@ -85,7 +85,7 @@ export interface StoredFastkoreInstallation extends Omit<FastkoreInstallation, '
   tls?: { trust?: FastkoreTlsTrust };
 }
 export interface State { schemaVersion: 1; settings: Settings; projects: Project[]; runs: Run[]; jobs?: Job[]; externalIdentities?: ExternalIdentity[]; sso?: { installations?: StoredFastkoreInstallation[]; roles?: FastkoreRoleRecord[]; roleSnapshots?: FastkoreRoleSnapshot[] }; security?: Security; corporate?: Corporate }
-export interface CliInfo { path: string; version: string; authentication: 'chatgpt' | 'api-key' | 'signed-out' | 'unknown'; status: string }
+export interface CliInfo { provider?: 'codex' | 'gemini'; accountId?: string; path: string; version: string; authentication: 'chatgpt' | 'google' | 'api-key' | 'signed-out' | 'unknown'; status: string }
 export interface ProjectSummary { id: string; name: string; directory: string; chatCount: number }
 export interface ChatSummary { id: string; title: string; updatedAt: string; messageCount: number; ownerId?: string; ownerName?: string; visibility?: 'private' | 'project'; linkedToFastkore?: true }
 export interface ArchivedChatSummary extends ChatSummary { projectId: string; projectName: string; archivedAt: string }

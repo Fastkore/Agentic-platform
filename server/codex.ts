@@ -90,11 +90,11 @@ async function killTree(child: ChildProcess) {
 }
 export class CodexClient implements CodexRunner {
   // Prefix is injected by process integration tests only. No HTTP route can change it.
-  constructor(private readonly testPrefix: string[] = [], private readonly mode: 'local' | 'worker' = 'local') {}
+  constructor(private readonly testPrefix: string[] = [], private readonly mode: 'local' | 'worker' = 'local', private readonly codexHome?: string) {}
   private start(exe: string, args: string[], cwd?: string) {
     if (!existsSync(exe) || (process.platform === 'win32' && path.extname(exe).toLowerCase() !== '.exe')) throw new BridgeError('Укажите существующий исполняемый файл Codex CLI.');
     const env = this.mode === 'worker' ? {
-      PATH: process.env.PATH, HOME: process.env.HOME, CODEX_HOME: process.env.CODEX_HOME, LANG: process.env.LANG,
+      PATH: process.env.PATH, HOME: process.env.HOME, CODEX_HOME: this.codexHome ?? process.env.CODEX_HOME, LANG: process.env.LANG,
       HTTPS_PROXY: process.env.HTTPS_PROXY,
     } : process.env;
     return spawn(exe, [...this.testPrefix, ...args], { cwd, env, detached: process.platform !== 'win32', windowsHide: true, shell: false, stdio: ['pipe', 'pipe', 'pipe'] });

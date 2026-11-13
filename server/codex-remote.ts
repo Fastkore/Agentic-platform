@@ -4,6 +4,7 @@ import type { CliInfo, CodexLimits, ModelCatalog } from '../shared/types.js';
 import type { CodexEvent, CodexRequest, CodexResult, CodexRunner } from './codex.js';
 import type { CodexToolDefinition, CodexToolResult } from './codex-tools.js';
 import { BridgeError } from './store.js';
+import type { ExecutionAccounts, ExecutionProvider } from '../shared/execution-accounts.js';
 
 export type WorkerRun = Pick<CodexRequest, 'prompt' | 'developerInstructions' | 'sessionId' | 'ephemeral' | 'consultation' | 'model' | 'reasoningEffort' | 'workDirectoryId'> & { toolDefinitions?: CodexToolDefinition[] };
 export type WorkerToolResult = CodexToolResult & { id: string };
@@ -14,7 +15,7 @@ export class RemoteCodexRunner implements CodexRunner {
   readonly isolated = true;
   constructor(private readonly socketPath: string) {}
 
-  private request(path: string, body?: WorkerRun | WorkerToolResult, signal?: AbortSignal): Promise<IncomingMessage> {
+  private request(path: string, body?: WorkerRun | WorkerToolResult | { name: string; provider?: ExecutionProvider } | { code: string } | Record<string, never>, signal?: AbortSignal): Promise<IncomingMessage> {
     const timeout = AbortSignal.timeout(body ? 16 * 60_000 : 35_000);
     return new Promise((resolve, reject) => {
       const payload = body && JSON.stringify(body);
@@ -46,6 +47,14 @@ export class RemoteCodexRunner implements CodexRunner {
   inspect(_path: string, signal?: AbortSignal) { return this.read<CliInfo>('/inspect', signal); }
   listModels() { return this.read<ModelCatalog>('/models'); }
   async readLimits() { return (await this.read<{ limits: CodexLimits | null }>('/limits')).limits; }
+  accounts() { return this.read<ExecutionAccounts>('/accounts'); }
+  async accountAction(action: 'create' | 'login' | 'activate' | 'code', id?: string, name?: string, provider?: ExecutionProvider) {
+    const response = await this.request(action === 'create' ? '/accounts' : '/accounts/' + encodeURIComponent(id!) + '/' + action,
+      action === 'create' ? { name: name!, provider } : action === 'code' ? { code: name! } : {});
+    let body = '';
+    for await (const chunk of response) body += chunk;
+    return JSON.parse(body);
+  }
   async run(r: CodexRequest, onEvent: (event: CodexEvent) => Promise<void>, signal: AbortSignal) {
     const { prompt, developerInstructions, sessionId, ephemeral, consultation, model, reasoningEffort, workDirectoryId, tools } = r;
     const res = await this.request('/run', { prompt, developerInstructions, sessionId, ephemeral, consultation, model, reasoningEffort, workDirectoryId, toolDefinitions: tools?.definitions }, signal);

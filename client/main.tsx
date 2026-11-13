@@ -11,6 +11,8 @@ import { shortUserName } from './user-name';
 import { chatTooltip, dateTooltip, shortDate } from './chat-date';
 import { parseHostTheme, webViewHost, type Theme } from './fastkore';
 import { Select } from './Select';
+import { ExecutionAccountsPanel } from './ExecutionAccountsPanel';
+import { executionConnected } from '../shared/execution-accounts';
 import { SidebarResizeHandle } from './SidebarResizeHandle';
 import { ComposerInput } from './ComposerInput';
 import { WorkspaceDialog } from './WorkspaceDialog';
@@ -146,9 +148,9 @@ function App() {
   const matchesErpChat = !!erpChatKey && relatedChats?.key === erpChatKey && relatedChats.list.some(item => item.id === chatId);
   const relatedLoading = !!erpChatKey && relatedChats?.key !== erpChatKey;
   const canEdit = !!chat && !chat.archivedAt && (!chat.linkedToFastkore || matchesErpChat) && (isAdmin || chat.ownerId === user?.id);
-  const codexUnavailable = status?.isolatedCodex && status.cli?.authentication !== 'chatgpt';
+  const codexUnavailable = status?.isolatedCodex && !executionConnected(status.cli);
   const codexNotice = status?.executionDisabled ? 'Выполнение Codex отключено на сервере.' : codexUnavailable
-    ? status.cli?.authentication === 'signed-out' ? 'Требуется вход в ChatGPT на исполнителе.' : 'Исполнитель Codex недоступен.'
+    ? status.cli?.authentication === 'signed-out' ? 'Требуется вход в аккаунт на исполнителе.' : 'Исполнитель модели недоступен.'
     : '';
   const canCreateProject = isAdmin || status?.canCreateProject === true;
   const canStartWithoutProject = !projectId && projects.length === 0 && canCreateProject;
@@ -976,14 +978,16 @@ function App() {
             </div>
           </form>}
           {settingsSection === 'server' && <>
+            {status?.isolatedCodex && authSource === 'local' && !inFastkore && <ExecutionAccountsPanel request={api} busy={busy || pending}
+              changed={async () => { await post('/api/cli/check'); setStatus(await api('/api/status')); await loadModels(true); }} />}
             {!projects.length && <section className="setting-section"><h3>История настольной версии</h3><button className="secondary w-full" disabled={pending || busy} onClick={() => void action(async () => {
               await post('/api/migrations/desktop'); setProjects(await api('/api/projects')); setStatus(await api('/api/status')); closePanel();
             })}>Перенести проекты и историю</button></section>}
             <section className="setting-section"><h3>Адрес сервера</h3>
               {status?.addresses.map(url => <button key={url} className="copy-row" onClick={() => void copyItem(url, url)}><code>{url}</code>{copied === url ? <Check size={14} /> : <Copy size={14} />}</button>)}
             </section>
-            <section className="setting-section"><h3>Codex CLI</h3>
-              <p className="settings-status">{status?.cli?.authentication === 'chatgpt' ? 'Подключён через ChatGPT' : status?.cli?.authentication === 'api-key' ? 'API-ключ · выполнение отключено' : 'Codex не подключён'}</p>
+            <section className="setting-section"><h3>Исполнитель модели</h3>
+              <p className="settings-status">{status?.cli?.authentication === 'google' ? 'Подключён Gemini CLI через Google' : status?.cli?.authentication === 'chatgpt' ? 'Подключён через ChatGPT' : status?.cli?.authentication === 'api-key' ? 'API-ключ · выполнение отключено' : 'Исполнитель не подключён'}</p>
               {status?.isolatedCodex ? <p className="help">Отдельный исполнитель</p>
                 : <><label htmlFor="cli-path">Путь к Codex CLI</label><input id="cli-path" value={cliPath} onChange={e => setCliPath(e.target.value)} placeholder="Автоопределение" disabled={busy} /></>}
               <div className="settings-actions">

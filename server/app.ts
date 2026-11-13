@@ -20,6 +20,7 @@ import { isFastkoreContextReset, parseFastkoreContext, type FastkoreContext } fr
 import { chatBinding, migrateFastkoreChatBindings } from './fastkore-chat.js';
 import { FastkoreMcp } from './fastkore-mcp.js';
 import { FastkoreCli } from './fastkore-cli.js';
+import { RemoteCodexRunner } from './codex-remote.js';
 import { erpRoleCatalog, restoreErpRoles } from './erp-roles.js';
 import { withFastkoreCliDescription, withFastkoreCliReads } from './codex-tools.js';
 import { withFastkoreCliCommands } from './fastkore-cli-tools.js';
@@ -558,6 +559,30 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
     schema: { body: object({ provider: { enum: ['local', 's3'] } }, ['provider']) },
   }, request => workspace.changeFileStorage(request.body.provider, () => { localAdmin(request); }));
   app.get('/api/diagnostics', async request => { admin(request); return { text: (await readFile(path.join(workspace.store.root, 'diagnostics.log'), 'utf8').catch(() => '')).slice(-12_000) }; });
+  const accountWorker = process.env.BRIDGE_CODEX_SOCKET && new RemoteCodexRunner(process.env.BRIDGE_CODEX_SOCKET);
+  const accountAccess = (request: FastifyRequest, changing = false) => {
+    localAdmin(request);
+    if (!accountWorker) throw new BridgeError('Управление аккаунтами требует отдельного исполнителя.', 503);
+    if (changing && workspace.busy) throw new BridgeError('Дождитесь завершения заданий или остановите их.', 409);
+    return accountWorker;
+  };
+  app.get('/api/admin/execution/accounts', request => accountAccess(request).accounts());
+  app.post<{ Body: { name: string; provider?: 'codex' | 'gemini' } }>('/api/admin/execution/accounts', {
+    schema: { body: object({ name: string(100), provider: { enum: ['codex', 'gemini'] } }, ['name']) },
+  }, request => accountAccess(request, true).accountAction('create', undefined, request.body.name, request.body.provider));
+  for (const action of ['login', 'activate'] as const) {
+    app.post<{ Params: { id: string } }>('/api/admin/execution/accounts/:id/' + action, async request => {
+      const worker = accountAccess(request, true);
+      const previousProvider = action === 'activate' ? (await worker.accounts()).accounts.find(account => account.active)?.provider : undefined;
+      const result = await worker.accountAction(action, request.params.id);
+      workspace.resetExecutionConnection();
+      if (action === 'activate' && result.accounts?.find((account: { active: boolean }) => account.active)?.provider !== previousProvider) await workspace.settings({ model: '' });
+      return result;
+    });
+  }
+  app.post<{ Params: { id: string }; Body: { code: string } }>('/api/admin/execution/accounts/:id/code', {
+    schema: { body: object({ code: string(2048) }, ['code']) },
+  }, request => accountAccess(request, true).accountAction('code', request.params.id, request.body.code));
   app.get('/api/projects', async request => {
     const u = user(request); return workspace.store.state.projects.filter(p => u.role === 'admin' || p.memberIds?.includes(u.id)).map(p => ({ id: p.id, name: p.name, directory: p.directory, chatCount: p.chats.filter(c => !c.archivedAt && access.canChat(u, c)).length }));
   });

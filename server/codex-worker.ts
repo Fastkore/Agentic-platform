@@ -8,6 +8,8 @@ import { CodexClient, type CodexRunner } from './codex.js';
 import type { WorkerMessage, WorkerRun, WorkerToolResult } from './codex-remote.js';
 import type { CodexToolResult } from './codex-tools.js';
 import { BridgeError } from './store.js';
+import { ExecutionAccountStore } from './execution-accounts.js';
+import { executionConnected } from '../shared/execution-accounts.js';
 
 const cli = '/usr/local/bin/codex';
 const workspace = '/runner';
@@ -31,21 +33,26 @@ const runSchema = {
   },
 };
 
-export function createCodexWorker(codex: CodexRunner = new CodexClient([], 'worker'), jobsRoot = process.env.BRIDGE_CODEX_JOB_FILES) {
+export function createCodexWorker(codex: CodexRunner = new CodexClient([], 'worker'), jobsRoot = process.env.BRIDGE_CODEX_JOB_FILES,
+  accounts?: ExecutionAccountStore) {
   const app = Fastify({ logger: false, bodyLimit: 800_000, ajv: { customOptions: { removeAdditional: false, coerceTypes: false } } });
   let active: AbortController | undefined;
   let consulting = false;
   let consultationCall: AbortSignal | undefined;
+  let changingAccount = false;
+  const runner = () => accounts?.runner() ?? codex;
   const pendingTools = new Map<string, (result: CodexToolResult) => void>();
   const inspect = async (signal?: AbortSignal) => {
-    const info = await codex.inspect(cli, signal);
+    const info = await runner().inspect(cli, signal);
     return {
       path: '', version: info.version, authentication: info.authentication,
-      status: info.authentication === 'chatgpt' ? 'Вход через ChatGPT выполнен.' : 'Войдите в ChatGPT в контейнере исполнителя.',
+      status: info.status,
+      accountId: accounts && await accounts.executionKey(),
+      provider: accounts?.provider,
     };
   };
   const requireLogin = async (signal?: AbortSignal) => {
-    if ((await inspect(signal)).authentication !== 'chatgpt') throw new BridgeError('Требуется вход в ChatGPT на исполнителе.', 503);
+    if (!executionConnected(await inspect(signal))) throw new BridgeError('Требуется вход в аккаунт на исполнителе.', 503);
   };
   app.setErrorHandler((error, _req, reply) => {
     const status = error instanceof BridgeError ? error.statusCode : (error as { validation?: unknown }).validation ? 400 : 502;
@@ -53,8 +60,22 @@ export function createCodexWorker(codex: CodexRunner = new CodexClient([], 'work
   });
   app.get('/health', async () => ({ ok: true }));
   app.get('/inspect', () => inspect());
-  app.get('/models', async () => { await requireLogin(); return codex.listModels!(cli); });
-  app.get('/limits', async () => ({ limits: (await inspect()).authentication === 'chatgpt' ? await codex.readLimits!(cli) : null }));
+  app.get('/models', async () => { await requireLogin(); return runner().listModels!(cli); });
+  app.get('/limits', async () => ({ limits: executionConnected(await inspect()) ? await runner().readLimits!(cli) : null }));
+  app.get('/accounts', async () => { if (!accounts) throw new BridgeError('Управление аккаунтами недоступно.', 503); return accounts.list(); });
+  async function changeAccount<T>(work: () => Promise<T>) {
+    if (!accounts || active || consulting || changingAccount) throw new BridgeError('Дождитесь завершения задания.', 409);
+    changingAccount = true;
+    try { return await work(); } finally { changingAccount = false; }
+  }
+  app.post<{ Body: { name: string; provider?: 'codex' | 'gemini' } }>('/accounts', { schema: { body: {
+    type: 'object', additionalProperties: false, required: ['name'], properties: { name: { type: 'string', minLength: 1, maxLength: 100 }, provider: { enum: ['codex', 'gemini'] } },
+  } } }, request => changeAccount(() => accounts!.create(request.body.name, request.body.provider)));
+  app.post<{ Params: { id: string } }>('/accounts/:id/login', request => changeAccount(() => accounts!.login(request.params.id)));
+  app.post<{ Params: { id: string } }>('/accounts/:id/activate', request => changeAccount(() => accounts!.activate(request.params.id)));
+  app.post<{ Params: { id: string }; Body: { code: string } }>('/accounts/:id/code', { schema: { body: {
+    type: 'object', additionalProperties: false, required: ['code'], properties: { code: { type: 'string', minLength: 1, maxLength: 2048 } },
+  } } }, request => changeAccount(async () => accounts!.authorizationCode(request.params.id, request.body.code)));
   app.post<{ Body: WorkerToolResult }>('/tool-result', { schema: { body: {
     type: 'object', additionalProperties: false, required: ['id', 'success', 'text'],
     properties: { id: { type: 'string', maxLength: 36 }, success: { type: 'boolean' }, text: { type: 'string', maxLength: 96_000 } },
@@ -71,7 +92,7 @@ export function createCodexWorker(codex: CodexRunner = new CodexClient([], 'work
       if (!active || !consultationCall || consultationCall.aborted || consulting ||
         !request.body.ephemeral || request.body.sessionId || request.body.workDirectoryId ||
         request.body.toolDefinitions?.some(tool => tool.name === 'consult_specialist')) throw new BridgeError('Консультация недоступна.', 409);
-    } else if (active || consulting) throw new BridgeError('Исполнитель занят.', 409);
+    } else if (active || consulting || changingAccount) throw new BridgeError('Исполнитель занят.', 409);
     const controller = new AbortController();
     if (consultation) consulting = true;
     else active = controller;
@@ -95,7 +116,7 @@ export function createCodexWorker(codex: CodexRunner = new CodexClient([], 'work
           throw new BridgeError('Рабочая папка задания недоступна.', 503);
         }
       }
-      const result = await codex.run({ ...body, cliPath: cli, workspace: directory, allowWrite: !!workDirectoryId,
+      const result = await runner().run({ ...body, cliPath: cli, workspace: directory, allowWrite: !!workDirectoryId,
         ...(toolDefinitions?.length ? { tools: { definitions: toolDefinitions, async call(name: string, args: unknown, signal: AbortSignal) {
           if (!toolDefinitions.some(tool => tool.name === name)) return { success: false, text: 'Инструмент не разрешён для этого запроса.' };
           const id = randomUUID();
@@ -126,6 +147,7 @@ export function createCodexWorker(codex: CodexRunner = new CodexClient([], 'work
     }
   });
   app.addHook('preClose', async () => { active?.abort(); });
+  app.addHook('onClose', async () => { accounts?.close(); });
   return app;
 }
 
@@ -139,7 +161,7 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.a
     await unlink(socket);
   }
   process.umask(0o077);
-  const worker = createCodexWorker();
+  const worker = createCodexWorker(undefined, undefined, new ExecutionAccountStore(process.env.CODEX_HOME!));
   await worker.listen({ path: socket });
   await chmod(socket, 0o600);
   const stop = () => { void worker.close().catch(() => { process.exitCode = 1; }); };

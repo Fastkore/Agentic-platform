@@ -513,6 +513,15 @@
 .settings-server .setting-section + .setting-section { margin-top: 0; }
 .settings-server .setting-section:last-child { margin-bottom: 0; padding-bottom: 0; }
 .settings-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.execution-accounts .settings-records { margin-block: 12px; }
+.execution-accounts .settings-records li { flex-wrap: wrap; }
+.execution-accounts .settings-records > li > div:first-child { flex: 1; min-width: 180px; }
+.execution-accounts .settings-records small svg { display: inline-block; margin-right: 5px; vertical-align: middle; }
+.execution-device-code { padding: 10px 12px; margin-top: 10px; background: var(--control); border-radius: 8px; }
+.execution-device-code code { font-size: 20px; font-weight: 650; letter-spacing: 2px; user-select: all; }
+.execution-device-code a { color: var(--accent-strong); }
+.execution-account-create .settings-actions { align-items: flex-start; }
+.execution-account-create input { flex: 1; min-width: 160px; }
 .settings-model-row { display: flex; align-items: center; gap: 8px; }
 .settings-model-row label { flex: 1; margin: 0; font-size: 14px; font-weight: 600; color: var(--text); }
 .settings-model-row .settings-select { width: min(45%, 240px); min-width: 0; margin: 0; }

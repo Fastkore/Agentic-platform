@@ -162,6 +162,8 @@ test('three employees share library but private chat metadata, messages, jobs an
 test('ERP employees cannot administer the platform or set passwords; disabling access revokes their session', async () => {
   const f = await fixture(); try {
     const a = await f.employee('alice');
+    assert.equal((await f.req('GET', '/api/admin/execution/accounts', a.token)).statusCode, 403);
+    assert.equal((await f.req('POST', '/api/admin/execution/accounts', a.token, { name: 'Other' })).statusCode, 403);
     for (const [method, url, body] of [ ['GET','/api/users',undefined], ['GET','/api/audit',undefined], ['GET','/api/diagnostics',undefined], ['POST','/api/cli/check',{}], ['POST','/api/subscription/check',{}], ['PATCH','/api/settings',{allowWrite:true}], ['POST','/api/projects',{directory:f.root}], ['POST','/api/users',{username:'evil',name:'x',password,role:'admin'}], ['PATCH',`/api/projects/${f.project.id}/members`,{memberIds:[a.id]}] ] as const) assert.equal((await f.req(method,url,a.token,body)).statusCode,403,`${method} ${url}`);
     assert.equal((await f.req('PATCH', '/api/users/' + a.id, f.admin, { password: 'A-new-valid-password-2026' })).statusCode, 403);
     assert.equal((await f.req('POST','/api/auth/password',a.token,{currentPassword:password,password:'Self-changed-password-2026'})).statusCode,403);
