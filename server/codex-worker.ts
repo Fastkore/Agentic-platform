@@ -10,6 +10,8 @@ import type { CodexToolResult } from './codex-tools.js';
 import { BridgeError } from './store.js';
 import { ExecutionAccountStore } from './execution-accounts.js';
 import { executionConnected } from '../shared/execution-accounts.js';
+import type { CodexLimits } from '../shared/types.js';
+import { limitsForModel } from './google-limits.js';
 
 const cli = '/usr/local/bin/codex';
 const workspace = '/runner';
@@ -64,7 +66,25 @@ export function createCodexWorker(codex: CodexRunner = new CodexClient([], 'work
   app.get('/health', async () => ({ ok: true }));
   app.get<{ Querystring: { model?: string } }>('/inspect', request => inspect(undefined, request.query.model));
   app.get('/models', async () => { await requireLogin(); return accounts ? accounts.models(cli) : (await runner()).listModels!(cli); });
-  app.get('/limits', async () => ({ limits: executionConnected(await inspect()) ? await (await runner()).readLimits!(cli) : null }));
+  const quotaCache = new Map<string, { expires: number; promise: Promise<CodexLimits | null> }>();
+  app.get<{ Querystring: { model?: string } }>('/limits', async request => {
+    if (!accounts) return { limits: executionConnected(await inspect()) ? await codex.readLimits!(cli) : null };
+    const selection = await accounts.select(request.query.model).catch(() => null);
+    if (!selection) return { limits: null };
+    const key = await accounts.executionKey(selection.account.id);
+    let entry = quotaCache.get(key);
+    if (!entry || entry.expires < Date.now()) {
+      // One account probe supplies all model rows; concurrent menu requests share this promise.
+      const promise = accounts.runner(selection.account.id).readLimits!(cli).catch(() => null);
+      entry = { promise, expires: Infinity };
+      quotaCache.set(key, entry);
+      const current = entry;
+      void promise.finally(() => { current.expires = Date.now() + 15000; });
+      if (quotaCache.size > 20) for (const [id, cached] of quotaCache) if (cached.expires < Date.now()) quotaCache.delete(id);
+    }
+    const limits = await entry.promise;
+    return { limits: limitsForModel(limits && { ...limits, provider: selection.account.provider }, selection.model) };
+  });
   app.get('/accounts', async () => { if (!accounts) throw new BridgeError('Управление аккаунтами недоступно.', 503); return accounts.list(); });
   async function changeAccount<T>(work: () => Promise<T>) {
     if (!accounts || active || consulting || changingAccount) throw new BridgeError('Дождитесь завершения задания.', 409);

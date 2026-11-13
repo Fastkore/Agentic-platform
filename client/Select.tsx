@@ -2,7 +2,7 @@ import { useEffect, useId, useLayoutEffect, useRef, useState, type CSSProperties
 import { createPortal } from 'react-dom';
 import { Check, ChevronDown } from 'lucide-react';
 
-interface SelectOption { value: string; label: string; disabled?: boolean }
+export interface SelectOption { value: string; label: string; disabled?: boolean; detail?: string; detailTitle?: string }
 interface SelectProps {
   options: SelectOption[];
   value: string;
@@ -13,9 +13,10 @@ interface SelectProps {
   placeholder?: string;
   title?: string;
   disabled?: boolean;
+  fitContent?: boolean;
 }
 
-export function Select({ options, value, onChange, id, label, className = '', placeholder, title, disabled }: SelectProps) {
+export function Select({ options, value, onChange, id, label, className = '', placeholder, title, disabled, fitContent }: SelectProps) {
   const trigger = useRef<HTMLButtonElement>(null);
   const menu = useRef<HTMLDivElement>(null);
   const listId = useId();
@@ -75,8 +76,9 @@ export function Select({ options, value, onChange, id, label, className = '', pl
     const measure = (event?: Event) => {
       if (event?.target === menu.current) return;
       const rect = button.getBoundingClientRect();
-      const width = Math.min(Math.max(180, rect.width), innerWidth - 16);
-      const idealHeight = Math.min(270, options.length * 36 + 10);
+      const width = Math.min(Math.max(fitContent ? 340 : 180, rect.width), innerWidth - 16);
+      const contentHeight = menu.current ? menu.current.scrollHeight + 2 : options.length * 36 + 10;
+      const idealHeight = fitContent ? contentHeight : Math.min(270, contentHeight);
       const below = innerHeight - rect.bottom - 14, above = rect.top - 14;
       const opensUp = idealHeight > below && above > below;
       setPlacement({
@@ -87,10 +89,12 @@ export function Select({ options, value, onChange, id, label, className = '', pl
       });
     };
     measure();
+    const observer = new ResizeObserver(() => measure());
+    if (menu.current) observer.observe(menu.current);
     window.addEventListener('resize', measure);
     document.addEventListener('scroll', measure, true);
-    return () => { window.removeEventListener('resize', measure); document.removeEventListener('scroll', measure, true); };
-  }, [expanded, options.length]);
+    return () => { observer.disconnect(); window.removeEventListener('resize', measure); document.removeEventListener('scroll', measure, true); };
+  }, [expanded, options.length, fitContent, !!placement]);
 
   useEffect(() => {
     if (expanded) menu.current?.children[active]?.scrollIntoView({ block: 'nearest' });
@@ -121,7 +125,7 @@ export function Select({ options, value, onChange, id, label, className = '', pl
         aria-selected={value === option.value} aria-disabled={option.disabled || undefined} data-active={active === index}
         onPointerDown={event => event.preventDefault()} onPointerMove={() => { if (!option.disabled) setActive(index); }}
         onClick={() => choose(index)}>
-        <span>{option.label}</span>{value === option.value && <Check size={15} aria-hidden="true" />}
+        <span>{option.label}</span>{option.detail && <small className="select-option-detail" title={option.detailTitle}>{option.detail}</small>}{value === option.value && <Check size={15} aria-hidden="true" />}
       </div>)}
     </div>, portal)}
   </>;

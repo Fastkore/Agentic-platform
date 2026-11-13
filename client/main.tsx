@@ -711,12 +711,11 @@ function App() {
         {pickerButton}
         <span className={'access-mode' + (writeMode ? ' write' : '')} title={messageAgent?.name}><ShieldCheck size={16} />{writeMode ? 'Запись разрешена' : 'Только чтение'}</span>
         <div className="composer-actions">
-          <LimitsButton request={api} unavailableReason={codexNotice} revision={status?.codexLimitsRevision} />
-          <div className="editor-model">
-            <Select label="Модель диалога" value={chatModel} options={chatModels}
-              disabled={!!messageAgent?.model || !chat || !(isAdmin || chat.ownerId === user.id) || busy || pending || modelsLoading || (!catalog && !chat.model)}
-              onChange={model => void changeModel(model)} title={modelError || undefined} />
-          </div>
+          <ModelPicker key={status?.cli?.accountId} request={api} unavailableReason={codexNotice} revision={status?.codexLimitsRevision}
+            model={messageAgent?.model || chatModel || status?.settings.model || catalog?.models.find(model => model.isDefault)?.id || ''}
+            value={chatModel} options={chatModels} title={modelError || undefined}
+            disabled={!!messageAgent?.model || !chat || !(isAdmin || chat.ownerId === user.id) || busy || pending || modelsLoading || (!catalog && !chat.model)}
+            onChange={model => void changeModel(model)} />
           {canDictate && <VoiceDictation key={JSON.stringify([user.id, projectId, chatId, messageAgent?.id])} canSend={canSend && !pending}
             transcribe={async (wav, signal) => {
               const data = new FormData();
@@ -1051,8 +1050,11 @@ function App() {
 const remainingPercent = (used: number) => Math.min(100, Math.max(0, 100 - used));
 const limitPercentFormat = new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 2 });
 
-function LimitsButton({ request, unavailableReason, revision }: { request: typeof api; unavailableReason: string; revision?: number }) {
-  const [limits, setLimits] = useState<CodexLimits | null>(null);
+function ModelPicker({ request, unavailableReason, revision, model, value, options, title, disabled, onChange }: {
+  request: typeof api; unavailableReason: string; revision?: number; model: string; value: string;
+  options: { value: string; label: string }[]; title?: string; disabled: boolean; onChange: (value: string) => void;
+}) {
+  const [byModel, setByModel] = useState<Record<string, CodexLimits | null>>({});
   const [loading, setLoading] = useState(false);
   const inFlight = useRef<AbortController | null>(null);
   const refresh = useCallback(async () => {
@@ -1061,20 +1063,20 @@ function LimitsButton({ request, unavailableReason, revision }: { request: typeo
     inFlight.current = controller;
     setLoading(true);
     try {
-      const result = await request<{ limits: CodexLimits | null }>('/api/codex/limits', { signal: controller.signal });
-      if (!controller.signal.aborted) setLimits(result.limits);
+      const result = await request<{ models: Record<string, CodexLimits | null> }>('/api/models/limits?model=' + encodeURIComponent(model), { signal: controller.signal });
+      if (!controller.signal.aborted) setByModel(result.models);
     } catch {
-      if (!controller.signal.aborted) setLimits(null);
+      if (!controller.signal.aborted) setByModel({});
     } finally {
       if (inFlight.current === controller) {
         inFlight.current = null;
         setLoading(false);
       }
     }
-  }, [request, unavailableReason]);
+  }, [request, unavailableReason, model]);
   useEffect(() => {
     if (unavailableReason) {
-      setLimits(null);
+      setByModel({});
       setLoading(false);
       return;
     }
@@ -1090,15 +1092,34 @@ function LimitsButton({ request, unavailableReason, revision }: { request: typeo
     };
   }, [refresh, revision, unavailableReason]);
 
+  return <>
+    <LimitsButton limits={byModel[model] ?? null} loading={loading} refresh={refresh} unavailableReason={unavailableReason} model={model} />
+    <div className="editor-model"><Select label="Модель диалога" fitContent value={value} disabled={disabled} title={title} onChange={onChange}
+      options={options.map(option => {
+        const limits = byModel[option.value || model];
+        const windows = limits?.buckets.flatMap(bucket => bucket.windows) ?? [];
+        const remaining = windows.length ? Math.min(...windows.map(window => remainingPercent(window.usedPercent))) : null;
+        return { ...option, detail: remaining === null ? '—' : limitPercentFormat.format(remaining) + '%',
+          detailTitle: limits?.unavailableReason || (remaining === null ? 'Лимиты пока недоступны' : 'Остаток лимита модели') };
+      })} /></div>
+  </>;
+}
+
+function LimitsButton({ limits, loading, refresh, unavailableReason, model }: {
+  limits: CodexLimits | null; loading: boolean; refresh: () => Promise<void>; unavailableReason: string; model: string;
+}) {
+
   const windows = unavailableReason ? [] : limits?.buckets.flatMap(bucket => bucket.windows) ?? [];
   const remaining = windows.length ? Math.min(...windows.map(window => remainingPercent(window.usedPercent))) : null;
   const remainingLabel = remaining === null ? '' : `Осталось ${limitPercentFormat.format(remaining)}%`;
-  const title = remainingLabel ? `Лимиты Codex · ${remainingLabel.toLowerCase()}` : 'Лимиты Codex';
+  const provider = limits?.provider || (model.startsWith('antigravity') ? 'antigravity' : model.startsWith('gemini') ? 'gemini' : 'codex');
+  const heading = provider === 'codex' ? 'Лимиты Codex' : 'Лимиты Google';
+  const title = remainingLabel ? `${heading} · ${remainingLabel.toLowerCase()}` : heading;
   return <details className="limits-control"
     onToggle={e => { if (e.currentTarget.open) void refresh(); }}
     onBlur={e => { if (!e.currentTarget.contains(e.relatedTarget)) e.currentTarget.open = false; }}
     onKeyDown={e => { if (e.key === 'Escape') { e.currentTarget.open = false; e.currentTarget.querySelector('summary')?.focus(); } }}>
-    <summary className="workspace-icon" aria-label="Лимиты Codex" aria-description={remainingLabel || unavailableReason || undefined} title={title}>
+    <summary className="workspace-icon" aria-label={heading} aria-description={remainingLabel || unavailableReason || limits?.unavailableReason || undefined} title={title}>
       <svg className="limit-ring" viewBox="0 0 20 20" width="20" height="20" aria-hidden="true">
         <circle className="limit-ring-track" cx="10" cy="10" r="8" />
         {remaining !== null && remaining > 0 && <circle className="limit-ring-value" cx="10" cy="10" r="8" pathLength="100"
@@ -1106,16 +1127,17 @@ function LimitsButton({ request, unavailableReason, revision }: { request: typeo
       </svg>
     </summary>
     <div className="limits-popover">
-      <header><h3>Лимиты Codex</h3><button className="workspace-icon" title="Обновить лимиты" aria-label="Обновить лимиты" disabled={loading || !!unavailableReason} onClick={() => void refresh()}><RefreshCw size={14} /></button></header>
+      <header><h3>{heading}</h3><button className="workspace-icon" title="Обновить лимиты" aria-label="Обновить лимиты" disabled={loading || !!unavailableReason} onClick={() => void refresh()}><RefreshCw size={14} /></button></header>
       {loading && !limits && <p role="status">Загрузка…</p>}
       {unavailableReason && <p role="status">{unavailableReason}</p>}
-      {!unavailableReason && !loading && !limits && <p role="status">Сервер не получил лимиты от Codex.</p>}
+      {!unavailableReason && limits?.unavailableReason && <p role="status">{limits.unavailableReason}</p>}
+      {!unavailableReason && !loading && !limits && <p role="status">Лимиты выбранной модели пока недоступны.</p>}
       {!unavailableReason && limits?.buckets.map((bucket, index) => <section key={index}>
         {limits.buckets.length > 1 && <b>{bucket.name}</b>}
         {bucket.windows.map((window, row) => {
           const left = remainingPercent(window.usedPercent);
           const mins = window.windowDurationMins;
-          const label = mins ? (mins % 1440 === 0 ? mins / 1440 + ' дн.' : mins % 60 === 0 ? mins / 60 + ' ч' : mins + ' мин') : 'Лимит';
+          const label = window.label ?? (mins ? (mins % 1440 === 0 ? mins / 1440 + ' дн.' : mins % 60 === 0 ? mins / 60 + ' ч' : mins + ' мин') : 'Лимит');
           return <div key={row}><div className="limit-window"><span>{label}</span><span>Осталось {limitPercentFormat.format(left)}%</span></div>
             <progress value={left} max={100} aria-label={'Остаток за ' + label} />
             {!!window.resetsAt && <small>Обновится {new Date(window.resetsAt * 1000).toLocaleString('ru-RU', { dateStyle: 'short', timeStyle: 'short' })}</small>}

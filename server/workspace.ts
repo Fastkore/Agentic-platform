@@ -55,7 +55,7 @@ export class Workspace {
   private authorizer?: (job: Job, run: Run) => void;
   private catalog?: { path: string; value: ModelCatalog };
   private catalogPending?: { path: string; promise: Promise<ModelCatalog> };
-  private limitsCache?: { path: string; expires: number; promise: Promise<CodexLimits | null> };
+  private limitsCache = new Map<string, { expires: number; promise: Promise<CodexLimits | null> }>();
   private limitsRevision = 0;
   private connectionProbe?: { expires: number; promise: Promise<CliInfo> };
   constructor(readonly store: Store, private readonly codex: CodexRunner, readonly files = new FileStorage(), private readonly workerFilesRoot?: string,
@@ -402,18 +402,27 @@ export class Workspace {
     this.catalogPending = { path: cliPath, promise };
     try { return await promise; } finally { if (this.catalogPending?.promise === promise) this.catalogPending = undefined; }
   }
-  async limits(): Promise<CodexLimits | null> {
+  async limits(model?: string): Promise<CodexLimits | null> {
     if (this.executionDisabled || !this.codex.readLimits) return null;
     if (this.isolatedCodex && !executionConnected(await this.codexConnection())) return null;
     const cliPath = await this.cliPath();
     if (!cliPath) return null;
-    if (this.limitsCache?.path === cliPath && Date.now() < this.limitsCache.expires) return this.limitsCache.promise;
-    const promise = this.codex.readLimits(cliPath).catch(() => null).then(limits => {
-      if (this.limitsCache?.promise === promise) this.limitsCache.expires = Date.now() + 15_000;
+    const key = cliPath + ':' + (model ?? '');
+    const cached = this.limitsCache.get(key);
+    if (cached && Date.now() < cached.expires) return cached.promise;
+    if (this.limitsCache.size >= 200) this.limitsCache.delete(this.limitsCache.keys().next().value!);
+    const promise = this.codex.readLimits(cliPath, model).catch(() => null).then(limits => {
+      const entry = this.limitsCache.get(key);
+      if (entry?.promise === promise) entry.expires = Date.now() + 15_000;
       return limits;
     });
-    this.limitsCache = { path: cliPath, expires: Infinity, promise };
+    this.limitsCache.set(key, { expires: Infinity, promise });
     return promise;
+  }
+  async modelLimits(selectedModel?: string) {
+    const catalog = await this.models();
+    const ids = [...new Set([...catalog.models.map(model => model.id), selectedModel || ''])];
+    return Object.fromEntries(await Promise.all(ids.map(async id => [id, await this.limits(id || undefined)])));
   }
   tokenActivity(timeZone: string, users: readonly User[] = []): TokenActivityReport {
     let dates: Intl.DateTimeFormat;
@@ -488,7 +497,7 @@ export class Workspace {
     }
     const pathChanged = settings.cliPath !== undefined && settings.cliPath !== this.store.state.settings.cliPath;
     this.store.state.settings = { ...this.store.state.settings, ...settings };
-    if (pathChanged) { this.cli = null; this.catalog = undefined; this.limitsCache = undefined; }
+    if (pathChanged) { this.cli = null; this.catalog = undefined; this.limitsCache.clear(); }
     await this.store.save(); return this.store.state.settings;
   }
   async inspect(signal?: AbortSignal, model?: string) {
@@ -506,7 +515,7 @@ export class Workspace {
       .then(info => {
         if (previous !== info.authentication || previousAccount !== info.accountId || !executionConnected(info)) {
           this.catalog = undefined;
-          this.limitsCache = undefined;
+          this.limitsCache.clear();
         }
         this.cli = info;
         if (this.connectionProbe?.promise === promise) this.connectionProbe.expires = Date.now() + 5_000;
@@ -518,7 +527,7 @@ export class Workspace {
   resetExecutionConnection() {
     this.connectionProbe = undefined;
     this.catalog = undefined;
-    this.limitsCache = undefined;
+    this.limitsCache.clear();
     this.cli = null;
   }
   private async requireChatGPT(signal: AbortSignal, model?: string) {
@@ -683,7 +692,7 @@ export class Workspace {
       const chat = run.projectId && run.chatId ? this.chat(run.projectId, run.chatId) : undefined;
       if (job && chat) rememberFastkoreTurn(this.store.state, chat, job, run.status === 'complete');
       this.store.state.jobs = this.store.state.jobs!.filter(item => item.runId !== run.id);
-      this.limitsCache = undefined;
+      this.limitsCache.clear();
       this.limitsRevision++;
       try {
         await this.store.saveRun(run, chat); await this.store.log('run', `id=${run.id}; status=${run.status}`);

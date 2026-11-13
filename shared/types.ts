@@ -14,8 +14,8 @@ export interface DictationModels {
 }
 export interface ModelOption { id: string; name: string; description: string; isDefault: boolean }
 export interface ModelCatalog { models: ModelOption[]; fetchedAt: string; source: 'codex' | 'gemini' | 'antigravity' | 'combined' }
-export interface LimitWindow { usedPercent: number; windowDurationMins: number | null; resetsAt: number | null }
-export interface CodexLimits { buckets: { name: string; windows: LimitWindow[] }[]; resetsAvailable: number | null }
+export interface LimitWindow { usedPercent: number; windowDurationMins: number | null; resetsAt: number | null; label?: string }
+export interface CodexLimits { buckets: { name: string; windows: LimitWindow[]; modelIds?: string[] }[]; resetsAvailable: number | null; provider?: 'codex' | 'gemini' | 'antigravity'; unavailableReason?: string }
 export interface Usage { inputTokens: number; cachedInputTokens: number; outputTokens: number }
 export interface TokenActivityDay { date: string; tokens: number }
 export interface TokenActivityReport {

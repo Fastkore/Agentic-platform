@@ -11,6 +11,7 @@ import { createInterface } from 'node:readline';
 import type { CodexEvent, CodexRequest, CodexResult, CodexRunner } from './codex.js';
 import type { CliInfo, ModelCatalog } from '../shared/types.js';
 import { BridgeError, redact } from './store.js';
+import { readGoogleLimits } from './google-limits.js';
 
 export function geminiFailure(text: string) {
   if (/UNSUPPORTED_CLIENT|This client is no longer supported/.test(text)) return 'Google отклонил Gemini CLI (UNSUPPORTED_CLIENT). Для этого аккаунта требуется переход на Antigravity CLI; повторный вход в Gemini CLI не устранит отказ.';
@@ -51,7 +52,11 @@ export class GeminiClient implements CodexRunner {
     return { models,
       fetchedAt: new Date().toISOString(), source: 'gemini' };
   }
-  async readLimits() { return null; }
+  async readLimits() {
+    return this.antigravity ? readGoogleLimits(this.home, this.executable, this.prefix) : {
+      provider: 'gemini' as const, buckets: [], resetsAvailable: null, unavailableReason: 'Лимиты Gemini CLI пока не получены от Google.',
+    };
+  }
   async run(request: CodexRequest, onEvent: (event: CodexEvent) => Promise<void>, signal: AbortSignal): Promise<CodexResult> {
     signal.throwIfAborted();
     if (!this.antigravity && request.model && !request.model.startsWith('gemini-')) throw new BridgeError('Выберите модель Gemini в настройках диалога.', 409);

@@ -46,7 +46,7 @@ export class RemoteCodexRunner implements CodexRunner {
   }
   inspect(_path: string, signal?: AbortSignal, model?: string) { return this.read<CliInfo>('/inspect' + (model ? '?model=' + encodeURIComponent(model) : ''), signal); }
   listModels() { return this.read<ModelCatalog>('/models'); }
-  async readLimits() { return (await this.read<{ limits: CodexLimits | null }>('/limits')).limits; }
+  async readLimits(_path?: string, model?: string) { return (await this.read<{ limits: CodexLimits | null }>('/limits' + (model ? '?model=' + encodeURIComponent(model) : ''))).limits; }
   accounts() { return this.read<ExecutionAccounts>('/accounts'); }
   async accountAction(action: 'create' | 'login' | 'activate' | 'code' | 'remove', id?: string, name?: string, provider?: ExecutionProvider) {
     const response = await this.request(action === 'create' ? '/accounts' : '/accounts/' + encodeURIComponent(id!) + '/' + action,

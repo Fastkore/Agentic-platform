@@ -112,7 +112,8 @@
   min-height: 36px; display: flex; align-items: center; justify-content: space-between; gap: 8px;
   padding: 5px 8px; border-radius: 6px; cursor: pointer; font-size: 13px; line-height: 1.35;
 }
-.workspace-select-menu [role="option"] > span { min-width: 0; overflow-wrap: anywhere; }
+.workspace-select-menu [role="option"] > span { min-width: 0; flex: 1; overflow-wrap: anywhere; }
+.select-option-detail { flex: none; white-space: nowrap; color: var(--text-muted); font-size: 11px; font-variant-numeric: tabular-nums; font-weight: 400; }
 .workspace-select-menu [role="option"] > svg { flex: 0 0 auto; color: var(--accent-strong); }
 .workspace-select-menu [aria-selected="true"] { font-weight: 600; }
 .workspace-select-menu [data-active="true"] { background: var(--selected); }

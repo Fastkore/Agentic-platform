@@ -535,7 +535,12 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
   });
   app.get('/api/models', async () => workspace.models());
   app.post('/api/models/refresh', async () => workspace.models(true));
-  app.get('/api/codex/limits', async () => ({ limits: await workspace.limits() }));
+  app.get<{ Querystring: { model?: string } }>('/api/codex/limits', {
+    schema: { querystring: object({ model: string(128) }) },
+  }, async request => ({ limits: await workspace.limits(request.query.model) }));
+  app.get<{ Querystring: { model?: string } }>('/api/models/limits', {
+    schema: { querystring: object({ model: string(128) }) },
+  }, async request => ({ models: await workspace.modelLimits(request.query.model) }));
   app.get<{ Querystring: { timeZone?: string } }>('/api/codex/activity', {
     schema: { querystring: object({ timeZone: string(80) }) },
   }, async request => {
