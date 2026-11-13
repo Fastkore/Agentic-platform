@@ -113,11 +113,16 @@ export class GeminiClient implements CodexRunner {
         if (rpc.method === 'tools/list') { reply({ tools: definitions.map(({ name, description, inputSchema }) => ({ name, description, inputSchema })) }); return; }
         if (rpc.method !== 'tools/call') throw Error('Unknown method');
         const { name, arguments: args } = rpc.params;
-        if (definitions.some(item => item.name === name)) await onEvent({ kind: 'tool', text: name });
         let result = { success: false, text: 'Инструмент недоступен.' };
         if (definitions.some(item => item.name === name)) {
-          if (name === fileTool) result = { success: true, text: await files(args) };
-          else if (request.tools) result = await request.tools.call(name, args, signal);
+          const toolCallId = randomUUID();
+          await onEvent({ kind: 'tool', text: name, toolCallId });
+          try {
+            if (name === fileTool) result = { success: true, text: await files(args) };
+            else if (request.tools) result = await request.tools.call(name, args, signal);
+          } finally {
+            await onEvent({ kind: 'tool-end', toolCallId });
+          }
         }
         reply({ content: [{ type: 'text', text: result.text }], isError: !result.success });
       } catch { send(200, { jsonrpc: '2.0', id: rpcId, error: { code: -32603, message: 'Не удалось выполнить инструмент.' } }); }

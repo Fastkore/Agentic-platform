@@ -725,6 +725,7 @@ export class Workspace {
         }
     } finally {
       clearInterval(revocation); run.completedAt = new Date().toISOString();
+      run.tool = undefined;
       const chat = run.projectId && run.chatId ? this.chat(run.projectId, run.chatId) : undefined;
       if (job && chat) rememberFastkoreTurn(this.store.state, chat, job, run.status === 'complete');
       this.store.state.jobs = this.store.state.jobs!.filter(item => item.runId !== run.id);
@@ -868,6 +869,7 @@ export class Workspace {
         context && '<local_document_context>\n' + context + '\n</local_document_context>'].filter(Boolean).join('\n\n');
       this.checkJob(job, run); signal.throwIfAborted();
       let lastTextSave = 0;
+      const activeTools = new Map<string, string>();
       const result = await this.codex.run({ cliPath, workspace: project.directory, prompt, developerInstructions, tools, sessionId: chat.sessionId,
         workDirectoryId: workerDirectory ? run.id : undefined, allowWrite: this.isolatedCodex ? workerWrites : writable,
         model: run.model, reasoningEffort: profile.reasoningEffort }, async event => {
@@ -879,8 +881,14 @@ export class Workspace {
         if (event.kind === 'message') answer.text += (answer.text ? '\n\n' : '') + event.text;
         if (event.kind === 'message-delta') answer.text += event.text ?? '';
         if (event.kind === 'message-replace') answer.text = event.text ?? '';
-        if (event.kind === 'tool') run.tool = event.text;
-        if (['message', 'message-delta', 'message-replace'].includes(event.kind)) run.tool = undefined;
+        if (event.kind === 'tool' && event.toolCallId && event.text) {
+          activeTools.set(event.toolCallId, event.text);
+          run.tool = event.text;
+        }
+        if (event.kind === 'tool-end' && event.toolCallId) {
+          activeTools.delete(event.toolCallId);
+          run.tool = [...activeTools.values()].at(-1);
+        }
         if (event.kind === 'usage') { answer.usage = event.usage; run.usage = event.usage; }
         if (event.kind === 'progress') run.progress = event.text ?? 'Выполняется…';
         if (event.kind === 'message-delta' && lastTextSave && Date.now() - lastTextSave < 100) return;

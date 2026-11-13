@@ -7,7 +7,7 @@ import { BridgeError, redact } from './store.js';
 import type { CliInfo, CodexLimits, LimitWindow, ModelCatalog, ModelOption, Usage } from '../shared/types.js';
 import type { CodexTools } from './codex-tools.js';
 
-export interface CodexEvent { kind: 'session' | 'message' | 'message-delta' | 'message-replace' | 'tool' | 'progress' | 'usage'; text?: string; usage?: Usage }
+export interface CodexEvent { kind: 'session' | 'message' | 'message-delta' | 'message-replace' | 'tool' | 'tool-end' | 'progress' | 'usage'; text?: string; toolCallId?: string; usage?: Usage }
 export interface CodexRequest { cliPath: string; workspace: string; prompt: string; developerInstructions?: string; tools?: CodexTools; sessionId?: string; allowWrite: boolean; workDirectoryId?: string; ephemeral?: boolean; consultation?: boolean; consultationKey?: string; model?: string; reasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh' }
 export interface CodexResult { sessionId?: string; response: string; usage?: Usage }
 export interface CodexRunner { readonly isolated?: boolean; inspect(cliPath: string, signal?: AbortSignal, model?: string): Promise<CliInfo>; listModels?(cliPath: string): Promise<ModelCatalog>; readLimits?(cliPath: string, model?: string): Promise<CodexLimits | null>; run(request: CodexRequest, onEvent: (event: CodexEvent) => Promise<void>, signal: AbortSignal): Promise<CodexResult> }
@@ -265,9 +265,10 @@ export class CodexClient implements CodexRunner {
           if (sessionId && threadId === sessionId && (!turnId || toolTurn === turnId) && typeof callId === 'string'
             && !seenCalls.has(callId) && typeof tool === 'string' && ++toolCalls <= 64) {
             seenCalls.add(callId);
-            await onEvent({ kind: 'tool', text: tool });
+            await onEvent({ kind: 'tool', text: tool, toolCallId: callId });
             await onEvent({ kind: 'progress', text: tool === 'consult_specialist' ? 'Codex обращается к специалисту…' : tool === 'knowledge' ? 'Codex читает базу знаний…' : 'Codex обращается к Fastkore…' });
             try { if (tools) result = await tools.call(tool, args, signal); } catch { /* Never forward an upstream exception to the model. */ }
+            await onEvent({ kind: 'tool-end', toolCallId: callId });
           }
           signal.throwIfAborted();
           server.send({ id: message.id, result: { success: result.success, contentItems: [{ type: 'inputText', text: result.text }] } });

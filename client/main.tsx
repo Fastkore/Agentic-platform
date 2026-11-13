@@ -144,7 +144,11 @@ function App() {
   const specialistKey = draftSlot || 'new:' + projectId;
   const specialistId = specialists[specialistKey];
   const activeRuns = status?.activeRuns ?? (status?.activeRun ? [status.activeRun] : []);
-  const active = activeRuns[0], busy = status?.busy ?? activeRuns.length > 0;
+  const busy = status?.busy ?? activeRuns.length > 0;
+  const queuedRuns = status?.queuedRuns ?? [];
+  const chatActiveRuns = activeRuns.filter(run => run.status === 'running' && run.projectId === projectId && run.chatId === chatId);
+  const chatQueuedRuns = queuedRuns.filter(run => run.status === 'queued' && run.projectId === projectId && run.chatId === chatId);
+  const chatBusy = chatActiveRuns.length > 0 || chatQueuedRuns.length > 0;
   const isAdmin = user?.role === 'admin';
   const matchesErpChat = !!erpChatKey && relatedChats?.key === erpChatKey && relatedChats.list.some(item => item.id === chatId);
   const relatedLoading = !!erpChatKey && relatedChats?.key !== erpChatKey;
@@ -683,11 +687,11 @@ function App() {
     {canStartChat && canStartWithoutProject && <p className="composer-status">Первое сообщение создаст проект «Личные чаты».</p>}
     {agentCatalog?.projectId === projectId && chat && canEdit && !currentAgent?.available && <p className="composer-status">{currentAgent?.unavailableReason ?? 'Агент этого чата вам сейчас недоступен.'}</p>}
     {agentCatalog?.projectId === projectId && !chatId && status && (projectId || canCreateProject) && !availableAgents.length && <p className="composer-status">Для нового чата нужен доступ к агенту проекта.</p>}
-    {(status?.queuedRuns ?? []).filter(run => run.chatId === chatId).map(run => <div className="bridge-progress" key={run.id}>
+    {chatQueuedRuns.map(run => <div className="bridge-progress" key={run.id}>
       <LoaderCircle size={14} className="spin" /><span>В очереди</span>
       <button onClick={() => void action(async () => { await post('/api/runs/' + run.id + '/cancel'); })}>Отменить</button>
     </div>)}
-    {activeRuns.filter(run => run.chatId === chatId || isAdmin).map(run => <div className="bridge-progress" key={run.id}>
+    {chatActiveRuns.map(run => <div className="bridge-progress" key={run.id}>
       <span role="status"><LoaderCircle size={14} className="spin" aria-hidden="true" />{run.tool
         ? <span title={run.tool}>{run.tool.startsWith('fastkore_cli_') ? 'Fastkore CLI' : run.tool.startsWith('fastkore_') ? 'Fastkore ERP' : run.tool === 'knowledge' ? 'База знаний' : run.tool === 'internet_search' ? 'Поиск в интернете' : run.tool === 'internet_read' ? 'Чтение страницы' : run.tool === 'internet_request' ? 'Внешний запрос' : run.tool === 'consult_specialist' ? 'Консультация специалиста' : 'Инструмент'}</span>
         : <span className="sr-only">Ответ готовится</span>}</span>
@@ -718,7 +722,7 @@ function App() {
           <ModelPicker key={status?.cli?.accountId} request={api} unavailableReason={codexNotice} revision={status?.codexLimitsRevision}
             model={messageAgent?.model || chatModel || status?.settings.model || catalog?.models.find(model => model.isDefault)?.id || ''}
             value={chatModel} options={chatModels} title={modelError || undefined}
-            disabled={!!messageAgent?.model || !chat || !(isAdmin || chat.ownerId === user.id) || busy || pending || modelsLoading || (!catalog && !chat.model)}
+            disabled={!!messageAgent?.model || !chat || !(isAdmin || chat.ownerId === user.id) || chatBusy || pending || modelsLoading || (!catalog && !chat.model)}
             onChange={model => void changeModel(model)} />
           {canDictate && <VoiceDictation key={JSON.stringify([user.id, projectId, chatId, messageAgent?.id])} canSend={canSend && !pending}
             transcribe={async (wav, signal) => {
@@ -817,7 +821,7 @@ function App() {
               {visible.map(item => <button key={item.id} className="workspace-row chat-row" aria-current={item.id === chatId ? 'page' : undefined}
                 onClick={() => navigateWorkspace(project.id, item.id)} title={chatTooltip(item)}>
                 <span>{item.title}</span>
-                {active?.chatId === item.id ? <LoaderCircle size={13} className="spin" /> : <time dateTime={item.updatedAt}>{shortDate(item.updatedAt)}</time>}
+                {activeRuns.some(run => run.status === 'running' && run.projectId === project.id && run.chatId === item.id) ? <LoaderCircle size={13} className="spin" /> : <time dateTime={item.updatedAt}>{shortDate(item.updatedAt)}</time>}
               </button>)}
               {list.length > 5 && <button className="workspace-row show-chats" onClick={() => setShowAll(old => ({ ...old, [project.id]: !old[project.id] }))}>{showAll[project.id] ? 'Свернуть' : 'Показать ещё'}</button>}
             </div>}
@@ -864,7 +868,7 @@ function App() {
               : <span><LockKeyhole size={13} />{chat.visibility === 'project' ? 'Общий' : 'Личный'}</span>}
           </div>
           {isAdmin && !chat.archivedAt && <button type="button" className="workspace-icon chat-archive-button" aria-label="Перенести чат в архив" title="Перенести чат в архив"
-            disabled={pending || active?.chatId === chat.id || status?.queuedRuns?.some(run => run.chatId === chat.id)} onClick={() => void archiveChat()}><Archive size={17} /></button>}
+            disabled={pending || chatBusy} onClick={() => void archiveChat()}><Archive size={17} /></button>}
         </>}
         {erpChatKey && <div className="related-chat-actions">
           <button type="button" className="workspace-icon" title="Связанные чаты" aria-label="Связанные чаты" onClick={() => { setError(''); setPanel('related'); }}><History size={18} /></button>

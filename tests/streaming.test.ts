@@ -65,3 +65,40 @@ test('the first text fragment is persisted while the job is still running and th
     assert.equal(chat.messages.at(-1)?.text, 'Ответ готов.');
   } finally { release(); await workspace.shutdown(); await rm(root, { recursive: true, force: true }); }
 });
+
+test('a finished tool disappears from run status while another tool is still active', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'bridge-tool-status-'));
+  const store = new Store(path.join(root, 'data'));
+  let emit!: (event: CodexEvent) => Promise<void>;
+  let finish!: () => void;
+  const pending = new Promise<void>(resolve => { finish = resolve; });
+  const workspace = new Workspace(store, {
+    inspect: async () => ({ path: process.execPath, version: 'fake', status: '', authentication: 'chatgpt' }),
+    run: async (_request, onEvent) => {
+      emit = onEvent;
+      await pending;
+      return { response: 'Готово.' };
+    },
+  });
+  try {
+    await workspace.settings({ cliPath: process.execPath });
+    const project = await workspace.addProject(root);
+    const chat = await workspace.addChat(project.id);
+    const run = await workspace.send(project.id, chat.id, 'Question', []);
+    await until(() => !!emit);
+    await emit({ kind: 'tool', text: 'fastkore_read', toolCallId: 'first' });
+    await emit({ kind: 'tool', text: 'knowledge', toolCallId: 'second' });
+    assert.equal(run.tool, 'knowledge');
+    await emit({ kind: 'tool-end', toolCallId: 'second' });
+    assert.equal(run.tool, 'fastkore_read');
+    await emit({ kind: 'tool-end', toolCallId: 'first' });
+    assert.equal(run.tool, undefined);
+    assert.equal(run.status, 'running');
+    finish();
+    await until(() => !workspace.busy);
+  } finally {
+    finish();
+    await workspace.shutdown();
+    await rm(root, { recursive: true, force: true });
+  }
+});
