@@ -23,6 +23,7 @@ test('the isolated worker reads uploaded bytes, returns downloadable files, and 
     async run(request, onEvent) {
       assert.equal(request.allowWrite, true);
       assert.equal(path.dirname(request.workspace), await realpath(jobs));
+      assert.equal(request.workDirectoryId, path.basename(request.workspace));
       assert.match(request.developerInstructions!, /output/);
       const input = calls++ === 0
         ? path.join('input', 'attachments', '1', 'input.txt')

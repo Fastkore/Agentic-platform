@@ -125,7 +125,7 @@ export function createCodexWorker(codex: CodexRunner = new CodexClient([], 'work
         }
       }
       const executor = selected ? accounts!.runner(selected.account.id) : codex;
-      const result = await executor.run({ ...body, cliPath: cli, workspace: directory, allowWrite: !!workDirectoryId,
+      const result = await executor.run({ ...body, workDirectoryId, cliPath: cli, workspace: directory, allowWrite: !!workDirectoryId,
         ...(toolDefinitions?.length ? { tools: { definitions: toolDefinitions, async call(name: string, args: unknown, signal: AbortSignal) {
           if (!toolDefinitions.some(tool => tool.name === name)) return { success: false, text: 'Инструмент не разрешён для этого запроса.' };
           const id = randomUUID();
