@@ -688,7 +688,9 @@ function App() {
       <button onClick={() => void action(async () => { await post('/api/runs/' + run.id + '/cancel'); })}>Отменить</button>
     </div>)}
     {activeRuns.filter(run => run.chatId === chatId || isAdmin).map(run => <div className="bridge-progress" key={run.id}>
-      <span role="status"><LoaderCircle size={14} className="spin" aria-hidden="true" /><span className="sr-only">Ответ готовится</span></span>
+      <span role="status"><LoaderCircle size={14} className="spin" aria-hidden="true" />{run.tool
+        ? <span title={run.tool}>{run.tool.startsWith('fastkore_cli_') ? 'Fastkore CLI' : run.tool.startsWith('fastkore_') ? 'Fastkore ERP' : run.tool === 'knowledge' ? 'База знаний' : run.tool === 'internet_search' ? 'Поиск в интернете' : run.tool === 'internet_read' ? 'Чтение страницы' : run.tool === 'internet_request' ? 'Внешний запрос' : run.tool === 'consult_specialist' ? 'Консультация специалиста' : 'Инструмент'}</span>
+        : <span className="sr-only">Ответ готовится</span>}</span>
       {(isAdmin || (run.chatId === chatId && canEdit)) && <button onClick={() => void action(async () => { await post('/api/runs/' + run.id + '/cancel'); })}><Square size={12} />Остановить</button>}
     </div>)}
     {!hasMessages && <div className="composer-project">

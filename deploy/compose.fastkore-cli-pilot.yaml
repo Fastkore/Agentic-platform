@@ -23,6 +23,7 @@ services:
       FASTKORE_TLS: "true"
       FASTKORE_CA_FILE: /certs/ca.pem
       BRIDGE_CODEX_JOB_FILES: /runner/jobs
+      BRIDGE_FASTKORE_CLI_CONCURRENCY: ${BRIDGE_FASTKORE_CLI_CONCURRENCY:-4}
     volumes:
       - type: bind
         source: ../private/fastkore-ca/ca.pem

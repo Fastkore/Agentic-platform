@@ -4,6 +4,7 @@ import { createServer } from 'node:http';
 import { chmod, lstat, readFile, unlink } from 'node:fs/promises';
 import { promisify } from 'node:util';
 import { commandCatalog, commandArguments, jobDirectory } from './fastkore-cli-commands.mjs';
+import { CliProcessPool } from './cli-process-pool.mjs';
 
 const socket = '/run/fastkore-cli/pilot.sock';
 const serverAddress = process.env.FASTKORE_SERVER;
@@ -37,7 +38,7 @@ if (old) {
   await unlink(socket);
 }
 
-let active = false;
+const pool = new CliProcessPool(Number(process.env.BRIDGE_FASTKORE_CLI_CONCURRENCY ?? 4));
 const commands = new Map([
   ['/describe/data-get', ['agent', 'describe', 'data get', '--json']],
   ['/describe/data-query', ['agent', 'describe', 'data query', '--json']],
@@ -80,7 +81,7 @@ const server = createServer(async (req, res) => {
   res.setHeader('Content-Type', 'application/json');
   res.setHeader('Cache-Control', 'no-store');
   const send = (status, value) => res.writeHead(status).end(JSON.stringify(value));
-  if (req.method === 'GET' && req.url === '/health') { send(200, { ok: true }); return; }
+  if (req.method === 'GET' && req.url === '/health') { send(200, { ok: true, active: pool.active, concurrency: pool.limit }); return; }
   if (req.method === 'GET' && req.url === '/trust') { send(200, trust); return; }
   if (req.method === 'GET' && req.url === '/capabilities') { send(200, { ok: true, authenticated: false, capabilities }); return; }
   let read;
@@ -95,13 +96,13 @@ const server = createServer(async (req, res) => {
   }
   const args = read?.argv ?? describe ?? (req.method === 'GET' ? commands.get(req.url) : undefined);
   if (!args) { send(404, {}); return; }
-  if (active) { send(409, {}); return; }
-  active = true;
-  const stop = new AbortController();
+  const slot = pool.acquire();
+  if (!slot) { send(429, { error: 'Fastkore CLI concurrency limit reached' }); return; }
+  const stop = slot.controller;
   res.once('close', () => { if (!res.writableEnded) stop.abort(); });
   if (res.destroyed) stop.abort();
   const child = execFile(cli, args, { ...cliOptions, cwd: read?.cwd, signal: stop.signal }, (error, stdout, stderr) => {
-    active = false;
+    slot.release();
     if (res.destroyed) return;
     try {
       if (error) {
@@ -131,4 +132,4 @@ const server = createServer(async (req, res) => {
   child.stdin.end(read ? read.ticket + '\n' : undefined, 'ascii');
 });
 server.listen(socket, async () => { await chmod(socket, 0o660); });
-process.once('SIGTERM', () => server.close());
+process.once('SIGTERM', () => { pool.abortAll(); server.close(); });

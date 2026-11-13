@@ -1,0 +1,12 @@
+.workspace-settings input[type="checkbox"].permission-switch {
+  position: relative; appearance: none; display: inline-block; box-sizing: border-box;
+  width: 36px; height: 20px; flex: none; padding: 0; margin: 0;
+  border: 1px solid var(--control-border); border-radius: 99px; background: var(--nav-raised); cursor: pointer;
+}
+.permission-switch::before {
+  content: ''; position: absolute; top: 50%; left: 2px; width: 14px; height: 14px; border-radius: 50%;
+  background: var(--text-muted); transform: translateY(-50%); transition: transform .15s ease;
+}
+.workspace-settings input[type="checkbox"].permission-switch:checked { border-color: var(--accent); background: var(--accent); }
+.permission-switch:checked::before { transform: translate(16px, -50%); background: white; }
+.workspace-settings input[type="checkbox"].permission-switch:disabled { cursor: wait; opacity: .6; }

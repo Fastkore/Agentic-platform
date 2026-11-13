@@ -5,6 +5,8 @@ services:
       BRIDGE_EXECUTION: isolated
       BRIDGE_CODEX_SOCKET: /run/bridge-codex/worker.sock
       BRIDGE_CODEX_JOB_FILES: /run/bridge-work
+      BRIDGE_EXECUTOR_CONCURRENCY: ${BRIDGE_EXECUTOR_CONCURRENCY:-4}
+      BRIDGE_GLM_CONCURRENCY: ${BRIDGE_GLM_CONCURRENCY:-2}
     volumes:
       - codex_socket:/run/bridge-codex:ro
       - codex_job_files:/run/bridge-work
@@ -29,6 +31,8 @@ services:
     environment:
       HTTPS_PROXY: ${BRIDGE_CODEX_HTTPS_PROXY:-}
       BRIDGE_GLM_BASE_URL: ${BRIDGE_GLM_BASE_URL:-}
+      BRIDGE_EXECUTOR_CONCURRENCY: ${BRIDGE_EXECUTOR_CONCURRENCY:-4}
+      BRIDGE_GLM_CONCURRENCY: ${BRIDGE_GLM_CONCURRENCY:-2}
       BRIDGE_CODEX_JOB_FILES: /runner/jobs
     volumes:
       - codex_socket:/run/bridge-codex

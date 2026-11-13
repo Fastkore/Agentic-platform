@@ -1,17 +1,15 @@
 import { useEffect, useState } from 'react';
-import { Clock3, Search, ShieldCheck, SlidersHorizontal, Trash2, Users } from 'lucide-react';
+import { Clock3, Globe, Network, Search, Send, ShieldCheck, Terminal, Trash2, Users } from 'lucide-react';
 import type { FastkoreRoleSummary, FastkoreRolePermissions } from '../shared/types';
 import { Select } from './Select';
 import { SettingsAction } from './SettingsAction';
-import { WorkspaceDialog } from './WorkspaceDialog';
+import { PermissionSwitch } from './PermissionSwitch';
 
 type Request = <T>(url: string, init?: RequestInit) => Promise<T>;
 export function ErpRolesPanel({ request }: { request: Request }) {
   const [roles, setRoles] = useState<FastkoreRoleSummary[]>();
   const [search, setSearch] = useState(''), [installation, setInstallation] = useState('all');
   const [removing, setRemoving] = useState<FastkoreRoleSummary | null>(null);
-  const [editing, setEditing] = useState<FastkoreRoleSummary | null>(null);
-  const [permissions, setPermissions] = useState<FastkoreRolePermissions>({ mcp: true, cli: true, revision: 0 });
   const [error, setError] = useState(''), [busy, setBusy] = useState(false);
   useEffect(() => {
     const controller = new AbortController();
@@ -29,16 +27,15 @@ export function ErpRolesPanel({ request }: { request: Request }) {
     } catch (e) { setError((e as Error).message); }
     finally { setBusy(false); }
   }
-  async function savePermissions() {
-    if (!editing || busy) return;
+  async function savePermission(role: FastkoreRoleSummary, key: 'mcp' | 'cli' | 'webRead' | 'webRequests', enabled: boolean) {
+    if (busy) return;
     setBusy(true); setError('');
     try {
-      const saved = await request<FastkoreRolePermissions>('/api/admin/erp-roles/' + encodeURIComponent(editing.installationId) + '/' + encodeURIComponent(editing.id) + '/permissions', {
-        method: 'PATCH', body: JSON.stringify(permissions),
+      const saved = await request<FastkoreRolePermissions>('/api/admin/erp-roles/' + encodeURIComponent(role.installationId) + '/' + encodeURIComponent(role.id) + '/permissions', {
+        method: 'PATCH', body: JSON.stringify({ ...(role.permissions ?? { mcp: true, cli: true, webRead: false, webRequests: false, revision: 0 }), [key]: enabled }),
       });
-      setRoles(items => items?.map(role => role.id === editing.id && role.installationId === editing.installationId ? { ...role, permissions: saved } : role));
-      setEditing(null);
-    } catch (e) { setError((e as Error).message); }
+      setRoles(items => items?.map(item => item.id === role.id && item.installationId === role.installationId ? { ...item, permissions: saved } : item));
+    } catch (e) { setError((e as Error).message); void request<FastkoreRoleSummary[]>('/api/admin/erp-roles').then(setRoles).catch(() => {}); }
     finally { setBusy(false); }
   }
   const query = search.trim().toLocaleLowerCase('ru-RU');
@@ -64,21 +61,18 @@ export function ErpRolesPanel({ request }: { request: Request }) {
       <ul className="erp-role-cards">{filtered?.map(role => <li key={role.installationId + '/' + role.id}>
         <div className="erp-role-heading"><span className="erp-role-icon"><ShieldCheck size={25} aria-hidden="true" /></span>
           <div><h3>{role.name}</h3><p>{role.installationName}</p></div>
-          <span className="erp-role-permission-summary">MCP {role.permissions?.mcp === false ? 'выключен' : 'включён'} · CLI {role.permissions?.cli === false ? 'выключен' : 'включён'}</span>
-          <button className="secondary" onClick={() => { setEditing(role); setPermissions(role.permissions ?? { mcp: true, cli: true, revision: 0 }); setError(''); }}><SlidersHorizontal size={16} />Настроить разрешения</button>
+          <div className="erp-role-switches" aria-label={'Разрешения · ' + role.name}>
+            {([{ key: 'mcp', name: 'MCP', icon: Network }, { key: 'cli', name: 'CLI', icon: Terminal },
+              { key: 'webRead', name: 'Поиск и чтение', icon: Globe }, { key: 'webRequests', name: 'Внешние запросы', icon: Send }] as const).map(({ key, name, icon: Icon }) =>
+              <label className="erp-role-permission" key={key}><Icon size={16} aria-hidden="true" /><span>{name}</span>
+                <PermissionSwitch name={name + ' · ' + role.name} checked={role.permissions?.[key] ?? (key === 'mcp' || key === 'cli')}
+                  disabled={busy} onChange={enabled => void savePermission(role, key, enabled)} /></label>)}
+          </div>
           <button className="secondary" onClick={() => { setRemoving(role); setError(''); }} aria-label={'Удалить роль ' + role.name}><Trash2 size={16} />Удалить</button>
         </div>
         <div className="erp-role-meta"><span><Users size={16} />Пользователи · {role.userCount}</span><span><Clock3 size={16} />Получено · <time dateTime={role.lastSeenAt}>{new Date(role.lastSeenAt).toLocaleString('ru-RU')}</time></span></div>
       </li>)}</ul>
     </>}
-    {editing && <WorkspaceDialog title={'Разрешения · ' + editing.name} close={() => { if (!busy) setEditing(null); }} className="erp-role-permissions-dialog">
-      <p className="help">Доступ также должен быть включён у специалиста и в проекте. Права на данные и изменения проверяет Fastkore от имени сотрудника.</p>
-      <label className="check-setting"><input type="checkbox" checked={permissions.mcp} disabled={busy} onChange={e => setPermissions(old => ({ ...old, mcp: e.target.checked }))} />Fastkore MCP</label>
-      <label className="check-setting"><input type="checkbox" checked={permissions.cli} disabled={busy} onChange={e => setPermissions(old => ({ ...old, cli: e.target.checked }))} />Fastkore CLI</label>
-      <p className="help">Если у сотрудника несколько ролей, достаточно разрешения в одной из них. Новые роли по умолчанию допускают оба подключения.</p>
-      {error && <p className="inline-error" role="alert">{error}</p>}
-      <div className="settings-dialog-actions"><button className="secondary" disabled={busy} onClick={() => setEditing(null)}>Отмена</button><button className="primary" disabled={busy} onClick={() => void savePermissions()}>Сохранить</button></div>
-    </WorkspaceDialog>}
     {error && <p className="inline-error" role="alert">{error}</p>}
   </div>;
 }

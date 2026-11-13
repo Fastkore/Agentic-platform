@@ -40,7 +40,7 @@ export interface ProjectAgentSettings {
   isolated: boolean;
 }
 export interface Project { id: string; name: string; directory: string; chats: Chat[]; attachments: Attachment[]; memberIds?: string[]; agentPolicy?: ProjectAgentPolicy }
-export interface Run { id: string; projectId?: string; chatId?: string; status: RunStatus; progress: string; createdAt: string; startedAt?: string; completedAt?: string; response?: string; error?: string; usage?: Usage; usageOnly?: true; clientRequestId?: string; requestHash?: string; model?: string; executionProvider?: CliInfo['provider']; ownerId?: string; agentProfileId?: string; profileRevision?: number }
+export interface Run { id: string; projectId?: string; chatId?: string; status: RunStatus; progress: string; tool?: string; createdAt: string; startedAt?: string; completedAt?: string; response?: string; error?: string; usage?: Usage; usageOnly?: true; clientRequestId?: string; requestHash?: string; model?: string; executionProvider?: CliInfo['provider']; ownerId?: string; agentProfileId?: string; profileRevision?: number }
 /** Trusted queue input. Never return this record from HTTP handlers. */
 export interface Job { runId: string; kind: 'chat' | 'subscription'; text: string; attachmentIds: string[]; authorId?: string; credentialId?: string; scope?: string; fastkoreContext?: FastkoreContext; recommendedSpecialistId?: string; specialistName?: string; specialistScope?: string }
 export interface User { id: string; username: string; name: string; role: 'admin' | 'employee'; roleId?: string; disabled: boolean }
@@ -58,7 +58,7 @@ export interface StoredErpDelegation { sealedGrant: string; expiresAt: number; r
 export interface FastkoreRole { id: string; name: string }
 export interface FastkoreRoleRecord extends FastkoreRole { installationId: string; lastSeenAt: string }
 export interface FastkoreRoleSnapshot { installationId: string; externalUserId: string; roles?: FastkoreRole[]; updatedAt: string }
-export interface FastkoreRolePermissions { mcp: boolean; cli: boolean; revision: number }
+export interface FastkoreRolePermissions { mcp: boolean; cli: boolean; webRead?: boolean; webRequests?: boolean; revision: number }
 export interface FastkoreRoleSummary extends FastkoreRoleRecord { installationName: string; userCount: number; permissions: FastkoreRolePermissions }
 export interface TeamUser extends User { erpRoles: { installationId: string; roles?: FastkoreRole[] }[] }
 export interface Credential { id: string; userId: string; kind: 'session' | 'api'; hash: string; name: string; createdAt: string; expiresAt?: string; source?: 'local' | 'fastkore'; installationId?: string; externalUserId?: string; externalDisplayName?: string; externalRoles?: FastkoreRole[]; erpDelegation?: StoredErpDelegation; erpDelegationRevoked?: true }

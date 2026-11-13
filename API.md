@@ -27,7 +27,7 @@ HTTP-маршруты обслуживают веб-интерфейс. Для �
 ## Маршруты
 
 Разрешения ERP-ролей: `PATCH /api/admin/erp-roles/{installationId}/{roleId}/permissions`
-принимает `{mcp, cli, revision}`. Требуется администратор; устаревшая revision возвращает 409.
+принимает `{mcp, cli, webRead?, webRequests?, revision}`. Требуется администратор; устаревшая revision возвращает 409.
 Семантика нескольких ролей и ограничения проекта описаны в [ERP-ROLE-PERMISSIONS.md](docs/ERP-ROLE-PERMISSIONS.md).
 
 | Метод | Путь | Назначение |

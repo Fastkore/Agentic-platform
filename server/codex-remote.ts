@@ -17,7 +17,7 @@ export class RemoteCodexRunner implements CodexRunner {
   private readonly consultationContext = new AsyncLocalStorage<string>();
   constructor(private readonly socketPath: string) {}
 
-  private request(path: string, body?: WorkerRun | WorkerToolResult | { name: string; provider?: ExecutionProvider } | { code: string } | { key: string } | Record<string, never>, signal?: AbortSignal): Promise<IncomingMessage> {
+  private request(path: string, body?: WorkerRun | WorkerToolResult | { name: string; provider?: ExecutionProvider } | { code: string } | { key: string } | { query: string } | Record<string, never>, signal?: AbortSignal): Promise<IncomingMessage> {
     const timeout = AbortSignal.timeout(body ? 16 * 60_000 : 35_000);
     return new Promise((resolve, reject) => {
       const payload = body && JSON.stringify(body);
@@ -50,6 +50,12 @@ export class RemoteCodexRunner implements CodexRunner {
   listModels() { return this.read<ModelCatalog>('/models'); }
   async readLimits(_path?: string, model?: string) { return (await this.read<{ limits: CodexLimits | null }>('/limits' + (model ? '?model=' + encodeURIComponent(model) : ''))).limits; }
   accounts() { return this.read<ExecutionAccounts>('/accounts'); }
+  async searchInternet(query: string, signal: AbortSignal): Promise<CodexToolResult> {
+    const response = await this.request('/internet/search', { query }, signal);
+    let body = '';
+    for await (const chunk of response) { body += chunk; if (body.length > 1_000_000) throw new BridgeError('Ответ поиска слишком большой.', 502); }
+    return JSON.parse(body);
+  }
   async accountAction(action: 'create' | 'login' | 'activate' | 'deactivate' | 'code' | 'key' | 'remove', id?: string, name?: string, provider?: ExecutionProvider) {
     const response = await this.request(action === 'create' ? '/accounts' : '/accounts/' + encodeURIComponent(id!) + '/' + action,
       action === 'create' ? { name: name!, provider } : action === 'code' ? { code: name! } : action === 'key' ? { key: name! } : {});

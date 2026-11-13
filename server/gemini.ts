@@ -113,6 +113,7 @@ export class GeminiClient implements CodexRunner {
         if (rpc.method === 'tools/list') { reply({ tools: definitions.map(({ name, description, inputSchema }) => ({ name, description, inputSchema })) }); return; }
         if (rpc.method !== 'tools/call') throw Error('Unknown method');
         const { name, arguments: args } = rpc.params;
+        if (definitions.some(item => item.name === name)) await onEvent({ kind: 'tool', text: name });
         let result = { success: false, text: 'Инструмент недоступен.' };
         if (definitions.some(item => item.name === name)) {
           if (name === fileTool) result = { success: true, text: await files(args) };
@@ -150,6 +151,7 @@ export class GeminiClient implements CodexRunner {
     });
     let stderr = '', response = '', sessionId: string | undefined, completed = false, failure = false, errorText = '';
     let usage: CodexResult['usage'];
+    let streamed = false;
     const closed = new Promise<number | null>((resolve, reject) => { child.once('error', reject); child.once('close', resolve); });
     void closed.catch(() => {});
     child.stderr.on('data', chunk => { stderr = redact((stderr + chunk.toString()).slice(-5000)); });
@@ -169,6 +171,10 @@ export class GeminiClient implements CodexRunner {
           if (event.event === 'init' && /^[0-9a-f-]{36}$/i.test(event.conversation_id)) {
             sessionId = event.conversation_id; await onEvent({ kind: 'session', text: sessionId });
           }
+          if (event.event === 'step_update' && event.step_update?.step_type === 'agent_response' && typeof event.step_update.text_delta === 'string') {
+            streamed = true; response += event.step_update.text_delta;
+            await onEvent({ kind: 'message-delta', text: event.step_update.text_delta });
+          }
           if (event.event === 'result') {
             const result = event.result;
             completed = result?.status === 'SUCCESS'; failure = !completed;
@@ -181,7 +187,9 @@ export class GeminiClient implements CodexRunner {
         if (event.type === 'init' && /^[0-9a-f-]{36}$/i.test(event.session_id)) {
           sessionId = event.session_id; await onEvent({ kind: 'session', text: sessionId });
         }
-        if (event.type === 'message' && event.role === 'assistant' && typeof event.content === 'string') response += event.content;
+        if (event.type === 'message' && event.role === 'assistant' && typeof event.content === 'string') {
+          response += event.content; streamed = true; await onEvent({ kind: 'message-delta', text: event.content });
+        }
         if (event.type === 'result') {
           completed = event.status === 'success';
           failure = !completed;
@@ -192,7 +200,7 @@ export class GeminiClient implements CodexRunner {
       const code = await closed;
       signal.throwIfAborted();
       if (code !== 0 || !completed || failure) throw new BridgeError(this.antigravity ? geminiFailure(stderr + errorText).replaceAll('Gemini CLI', 'Antigravity CLI') : geminiFailure(stderr + errorText), 503);
-      if (response) await onEvent({ kind: 'message', text: response });
+      if (response) await onEvent({ kind: streamed ? 'message-replace' : 'message', text: response });
       if (usage) await onEvent({ kind: 'usage', usage });
       return { sessionId, response, usage };
     } finally {

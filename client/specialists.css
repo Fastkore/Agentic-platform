@@ -34,17 +34,6 @@
 .specialist-summary .specialist-unavailable { color: var(--text-muted); font-size: 12px; }
 .specialist-row-actions { display: flex; align-items: center; gap: 12px; flex: none; }
 .specialist-row-actions .specialist-configure { display: inline-flex; align-items: center; gap: 7px; min-height: 34px; padding: 6px 9px; font-size: 12px; }
-.workspace-settings input[type="checkbox"].specialist-toggle {
-  position: relative; appearance: none; display: inline-block; box-sizing: border-box; width: 36px; height: 20px; flex: none;
-  padding: 0; margin: 0; border: 1px solid var(--control-border); border-radius: 99px; background: var(--nav-raised); cursor: pointer;
-}
-.specialist-toggle::before {
-  content: ''; position: absolute; top: 50%; left: 2px; width: 14px; height: 14px; border-radius: 50%;
-  background: var(--text-muted); transform: translateY(-50%); transition: transform .15s ease;
-}
-.workspace-settings input[type="checkbox"].specialist-toggle:checked { border-color: var(--accent); background: var(--accent); }
-.specialist-toggle:checked::before { transform: translate(16px, -50%); background: white; }
-.workspace-settings input[type="checkbox"].specialist-toggle:disabled { cursor: wait; opacity: .6; }
 .specialist-back { display: inline-flex; align-items: center; gap: 5px; color: var(--text-muted); padding: 4px 5px; margin: 0 0 12px -5px; border-radius: 6px; }
 .specialist-back:hover { color: var(--text); background: var(--hover); }
 .specialist-form { display: grid; gap: 14px; }

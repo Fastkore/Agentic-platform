@@ -4,6 +4,7 @@ import { agentToolIds, agentTools } from '../shared/agent-tools';
 import { specialistFileLimits, specialistIcons, type AgentProfile, type Dataset, type SpecialistIcon } from '../shared/types';
 import { Checks, operations } from './CorporatePanel';
 import { Select } from './Select';
+import { PermissionSwitch as Toggle } from './PermissionSwitch';
 import './specialists.css';
 
 type Request = <T>(url: string, init?: RequestInit) => Promise<T>;
@@ -21,11 +22,6 @@ function IconTile({ icon }: { icon: SpecialistIcon }) {
   const Icon = icons[icon];
   return <span className="specialist-icon" aria-hidden="true"><Icon size={23} strokeWidth={1.8} /></span>;
 }
-function Toggle({ name, checked, disabled, onChange }: { name: string; checked: boolean; disabled?: boolean; onChange: (checked: boolean) => void }) {
-  return <input className="specialist-toggle" type="checkbox" role="switch" aria-label={name} checked={checked} disabled={disabled}
-    onChange={event => onChange(event.target.checked)} />;
-}
-
 export function SpecialistsPanel({ request, globalInstructions }: { request: Request; globalInstructions: string }) {
   const [profiles, setProfiles] = useState<Profile[]>();
   const [datasets, setDatasets] = useState<Dataset[]>([]);

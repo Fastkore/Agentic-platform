@@ -4,7 +4,8 @@ type RoleState = Pick<State, 'sso' | 'externalIdentities' | 'security'>;
 
 export function erpRolePermissions(state: RoleState, installationId: string, roleId: string) {
   const saved = state.sso?.rolePermissions?.find(item => item.installationId === installationId && item.roleId === roleId);
-  return { mcp: saved?.mcp ?? true, cli: saved?.cli ?? true, revision: saved?.revision ?? 0 };
+  return { mcp: saved?.mcp ?? true, cli: saved?.cli ?? true, webRead: saved?.webRead ?? false,
+    webRequests: saved?.webRequests ?? false, revision: saved?.revision ?? 0 };
 }
 
 export function erpCredentialPermissions(state: RoleState, credential: Credential) {
@@ -14,6 +15,14 @@ export function erpCredentialPermissions(state: RoleState, credential: Credentia
   if (!roles?.length) return { mcp: true, cli: true };
   const permissions = roles.map(role => erpRolePermissions(state, credential.installationId!, role.id));
   return { mcp: permissions.some(role => role.mcp), cli: permissions.some(role => role.cli) };
+}
+
+export function internetCredentialPermissions(state: RoleState, credential: Credential) {
+  const memberships = credential.source === 'fastkore' && credential.installationId
+    ? [{ installationId: credential.installationId, roles: credential.externalRoles }]
+    : erpRolesForUser(state, credential.userId);
+  const policies = memberships.flatMap(item => (item.roles ?? []).map(role => erpRolePermissions(state, item.installationId, role.id)));
+  return { read: policies.some(role => role.webRead), requests: policies.some(role => role.webRequests) };
 }
 
 export function observeErpRoles(state: RoleState, installationId: string, externalUserId: string,

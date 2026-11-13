@@ -17,6 +17,19 @@ if (args.includes('app-server')) {
     } : {
       data: [{ id: 'test-a', model: 'test-a', displayName: 'Test Model A', isDefault: true }, { id: 'hidden', model: 'hidden', hidden: true }], nextCursor: 'next'
     } }));
+    if (request.method === 'thread/start' || request.method === 'thread/resume') console.log(JSON.stringify({ id: request.id,
+      result: { thread: { id: request.params.threadId ?? '87db344a-98f3-42c8-bba8-c7d9f3dcff11' } } }));
+    if (request.method === 'turn/start') {
+      const threadId = request.params.threadId;
+      console.log(JSON.stringify({ id: request.id, result: { turn: { id: 'turn-1' } } }));
+      console.log(JSON.stringify({ method: 'item/reasoning/textDelta', params: { threadId, delta: 'PRIVATE_REASONING' } }));
+      console.log(JSON.stringify({ method: 'item/agentMessage/delta', params: { threadId, itemId: 'text-1', delta: 'Проверяю' } }));
+      setTimeout(() => {
+        console.log(JSON.stringify({ method: 'item/agentMessage/delta', params: { threadId, itemId: 'text-1', delta: ' документы.' } }));
+        console.log(JSON.stringify({ method: 'item/completed', params: { threadId, item: { id: 'text-1', type: 'agentMessage', text: 'Проверяю документы.' } } }));
+        console.log(JSON.stringify({ method: 'turn/completed', params: { threadId, turn: { status: 'completed' } } }));
+      }, 300);
+    }
   }
   process.exit(0);
 }

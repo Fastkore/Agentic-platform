@@ -684,14 +684,15 @@
 .erp-role-cards { list-style: none; padding: 0; margin: 0; display: grid; gap: 16px; }
 .erp-role-cards > li { background: var(--surface); border: 1px solid var(--control-border); border-radius: 14px; padding: 22px; }
 .erp-role-heading { display: flex; align-items: center; gap: 16px; }
-.erp-role-icon { flex: 0 0 52px; height: 52px; display: grid; place-items: center; border-radius: 12px; background: var(--control); color: var(--text-secondary); }
+.erp-role-icon { flex: 0 0 48px; height: 48px; display: grid; place-items: center; border-radius: 12px; background: color-mix(in srgb, var(--accent) 17%, var(--surface)); color: var(--accent-strong); }
 .erp-role-heading > div { flex: 1; min-width: 0; }
-.erp-role-heading h3 { margin: 0; font-size: 21px; font-weight: 600; overflow-wrap: anywhere; }
+.erp-role-heading h3 { margin: 0; font-size: 18px; font-weight: 600; overflow-wrap: anywhere; }
 .erp-role-heading p { margin: 6px 0 0; color: var(--text-muted); }
-.erp-role-permission-summary { color: var(--text-muted); font-size: 12px; white-space: nowrap; }
 .erp-role-heading { flex-wrap: wrap; }
-.erp-role-permissions-dialog > .help, .erp-role-permissions-dialog > .check-setting, .erp-role-permissions-dialog > .inline-error { margin: 14px 22px; }
-.erp-role-permissions-dialog > .settings-dialog-actions { padding: 0 22px 20px; }
+.erp-role-heading > .erp-role-switches { flex: 0 1 auto; display: flex; flex-wrap: wrap; gap: 12px 20px; }
+.erp-role-switches label.erp-role-permission { display: inline-flex; align-items: center; gap: 7px; margin: 0; font-size: 12px; white-space: nowrap; cursor: pointer; }
+.erp-role-permission > svg { color: var(--accent-strong); flex: none; }
+.erp-role-permission > span { margin: 0; color: var(--text-secondary); }
 .erp-role-meta { display: flex; flex-wrap: wrap; gap: 12px 24px; margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--border); color: var(--text-muted); font-size: 12px; }
 .erp-role-meta span { display: inline-flex; align-items: center; gap: 7px; }
 @media (max-width: 580px) {
@@ -701,7 +702,7 @@
   .erp-role-icon { width: 40px; height: 40px; }
   .erp-role-heading h3 { font-size: 18px; }
   .erp-role-heading > button { grid-column: 2; justify-self: start; }
-  .erp-role-permission-summary { grid-column: 2; white-space: normal; }
+  .erp-role-heading > .erp-role-switches { grid-column: 2; gap: 12px; }
 }
 @media (max-width: 1150px) {
   .settings-layout { grid-template-columns: 210px minmax(0,1fr); }

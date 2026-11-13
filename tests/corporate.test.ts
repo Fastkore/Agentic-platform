@@ -47,7 +47,7 @@ test('ERP role permissions require an administrator, reject stale saves and surv
     assert.equal((await f.req('PATCH', route, f.token, payload)).statusCode, 403);
     const saved = await f.req('PATCH', route, f.admin, payload);
     assert.equal(saved.statusCode, 200, saved.body);
-    assert.deepEqual(saved.json(), { mcp: false, cli: true, revision: 1 });
+    assert.deepEqual(saved.json(), { mcp: false, cli: true, webRead: false, webRequests: false, revision: 1 });
     assert.equal((await f.req('PATCH', route, f.admin, payload)).statusCode, 409);
     f.store.state.sso!.roles[0].name = 'Новое название';
     const rows = (await f.req('GET', '/api/admin/erp-roles', f.admin)).json();

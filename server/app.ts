@@ -21,7 +21,8 @@ import { chatBinding, migrateFastkoreChatBindings } from './fastkore-chat.js';
 import { FastkoreMcp } from './fastkore-mcp.js';
 import { FastkoreCli } from './fastkore-cli.js';
 import { RemoteCodexRunner } from './codex-remote.js';
-import { erpRoleCatalog, restoreErpRoles, erpRolePermissions, erpCredentialPermissions } from './erp-roles.js';
+import { erpRoleCatalog, restoreErpRoles, erpRolePermissions, erpCredentialPermissions, internetCredentialPermissions } from './erp-roles.js';
+import { withInternetTools } from './internet-tools.js';
 import { withFastkoreCliDescription, withFastkoreCliReads } from './codex-tools.js';
 import { withFastkoreCliCommands } from './fastkore-cli-tools.js';
 import type { AgentProfile, Dataset, FastkoreAuthentication, FastkoreInstallation, FastkoreKeyIssue, FileStorageProvider, ProjectAgentPolicy, ProjectAgentSettings, Settings, User, WorkRole } from '../shared/types.js';
@@ -373,9 +374,9 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
     admin(request);
     return erpRoleCatalog(workspace.store.state);
   });
-  app.patch<{ Params: { installationId: string; roleId: string }; Body: { mcp: boolean; cli: boolean; revision: number } }>(
+  app.patch<{ Params: { installationId: string; roleId: string }; Body: { mcp: boolean; cli: boolean; webRead?: boolean; webRequests?: boolean; revision: number } }>(
     '/api/admin/erp-roles/:installationId/:roleId/permissions', { schema: { body: object({ mcp: { type: 'boolean' }, cli: { type: 'boolean' },
-      revision: { type: 'integer', minimum: 0 } }, ['mcp', 'cli', 'revision']) } }, async request => {
+      webRead: { type: 'boolean' }, webRequests: { type: 'boolean' }, revision: { type: 'integer', minimum: 0 } }, ['mcp', 'cli', 'revision']) } }, async request => {
       admin(request);
       return workspace.store.changeAccess(draft => {
         const actor = admin(request), { installationId, roleId } = request.params;
@@ -383,12 +384,13 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
         const previous = erpRolePermissions(draft, installationId, roleId);
         if (previous.revision !== request.body.revision) throw new BridgeError('Разрешения изменены. Откройте настройки роли заново.', 409);
         const records = draft.sso.rolePermissions ??= [];
-        const value = { installationId, roleId, mcp: request.body.mcp, cli: request.body.cli, revision: previous.revision + 1 };
+        const value = { installationId, roleId, mcp: request.body.mcp, cli: request.body.cli,
+          webRead: request.body.webRead ?? previous.webRead, webRequests: request.body.webRequests ?? previous.webRequests, revision: previous.revision + 1 };
         const index = records.findIndex(item => item.installationId === installationId && item.roleId === roleId);
         if (index < 0) records.push(value); else records[index] = value;
         draft.security?.audit.unshift({ id: randomUUID(), actorId: actor.id, action: 'erp.role.permissions', targetId: installationId + '/' + roleId, createdAt: new Date().toISOString() });
         draft.security?.audit.splice(1000);
-        return { mcp: value.mcp, cli: value.cli, revision: value.revision };
+        return { mcp: value.mcp, cli: value.cli, webRead: value.webRead, webRequests: value.webRequests, revision: value.revision };
       });
     });
   app.delete<{ Params: { installationId: string; roleId: string } }>('/api/admin/erp-roles/:installationId/:roleId', async request => {
@@ -592,6 +594,10 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
   }, request => workspace.changeFileStorage(request.body.provider, () => { localAdmin(request); }));
   app.get('/api/diagnostics', async request => { admin(request); return { text: (await readFile(path.join(workspace.store.root, 'diagnostics.log'), 'utf8').catch(() => '')).slice(-12_000) }; });
   const accountWorker = process.env.BRIDGE_CODEX_SOCKET && new RemoteCodexRunner(process.env.BRIDGE_CODEX_SOCKET);
+  workspace.prepareInternetTools = (other, credentialId, authorize) => withInternetTools(other,
+    () => { authorize(); return internetCredentialPermissions(workspace.store.state, access.authenticateCredential(credentialId).credential); },
+    authorize, (query, signal) => accountWorker ? accountWorker.searchInternet(query, signal)
+      : Promise.resolve({ success: false, text: 'Интернет-поиск требует отдельного исполнителя.' }));
   const accountAccess = (request: FastifyRequest, changing = false) => {
     localAdmin(request);
     if (!accountWorker) throw new BridgeError('Управление аккаунтами требует отдельного исполнителя.', 503);

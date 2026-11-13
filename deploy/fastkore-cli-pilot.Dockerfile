@@ -9,6 +9,7 @@ COPY --from=cli_package --chmod=755 fastkore-cli /usr/local/bin/fastkore-cli
 COPY --from=node /usr/local/bin/node /usr/local/bin/node
 COPY fastkore-cli-pilot.mjs ./pilot.mjs
 COPY fastkore-cli-commands.mjs ./
+COPY cli-process-pool.mjs ./
 RUN install -d -o app -g app /workspace && install -d -o 1000 -g 1000 -m 0770 /run/fastkore-cli
 ENV HOME=/tmp XDG_DATA_HOME=/tmp/.local/share
 USER $APP_UID:1000

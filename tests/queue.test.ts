@@ -99,7 +99,7 @@ test('provider lanes run different chats concurrently but preserve FIFO across m
     await workspace.settings({ cliPath: process.execPath });
     const project = await workspace.addProject(root);
     const a = await workspace.addChat(project.id), b = await workspace.addChat(project.id), c = await workspace.addChat(project.id);
-    a.model = 'glm/model'; b.model = 'glm/model'; c.model = 'antigravity/model';
+    a.model = 'codex/model'; b.model = 'codex/model'; c.model = 'antigravity/model';
     const first = await workspace.send(project.id, a.id, 'first', []);
     await until(() => started.includes('first'));
     const queued = await workspace.send(project.id, b.id, 'second', []); // GLM lane occupied.
@@ -118,6 +118,36 @@ test('provider lanes run different chats concurrently but preserve FIFO across m
     assert.deepEqual(workspace.chat(project.id, b.id).messages.map(message => message.text), ['second', 'second', 'third', 'third']);
     assert.match(b.sessionScope!, /google-account/);
   } finally { for (const release of releases.values()) release(); await workspace.shutdown(); }
+});
+
+test('two GLM chats overlap and cancelling one releases only its slot', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'bridge-glm-queue-'));
+  const store = new Store(root), started = new Map<string, () => void>();
+  const workspace = new Workspace(store, {
+    inspect: async () => ({ path: process.execPath, version: 'fake', authentication: 'glm', provider: 'glm', status: '' }),
+    run: async (request, _event, signal) => {
+      await new Promise<void>((resolve, reject) => {
+        started.set(request.prompt, resolve);
+        signal.addEventListener('abort', () => reject(Error('cancelled')), { once: true });
+      });
+      return { response: request.prompt };
+    },
+  });
+  try {
+    await workspace.settings({ cliPath: process.execPath });
+    const project = await workspace.addProject(root);
+    const chats = await Promise.all([0, 1, 2].map(() => workspace.addChat(project.id)));
+    for (const chat of chats) chat.model = 'glm/glm-test';
+    const a = await workspace.send(project.id, chats[0].id, 'a', []);
+    const b = await workspace.send(project.id, chats[1].id, 'b', []);
+    const c = await workspace.send(project.id, chats[2].id, 'c', []);
+    await until(() => started.size === 2);
+    assert.equal(a.status, 'running'); assert.equal(b.status, 'running'); assert.equal(c.status, 'queued');
+    await workspace.cancel(a.id); await until(() => started.has('c'));
+    assert.equal(a.status, 'cancelled'); assert.equal(b.status, 'running');
+    started.get('b')!(); started.get('c')!(); await until(() => !workspace.busy);
+    assert.equal(b.status, 'complete'); assert.equal(c.status, 'complete');
+  } finally { for (const release of started.values()) release(); await workspace.shutdown(); }
 });
 test('failed SQLite transaction does not partially overwrite persisted history', async () => {
   const f = await fixture(); const original = f.project.id;

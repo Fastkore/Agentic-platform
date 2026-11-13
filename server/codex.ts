@@ -7,7 +7,7 @@ import { BridgeError, redact } from './store.js';
 import type { CliInfo, CodexLimits, LimitWindow, ModelCatalog, ModelOption, Usage } from '../shared/types.js';
 import type { CodexTools } from './codex-tools.js';
 
-export interface CodexEvent { kind: 'session' | 'message' | 'progress' | 'usage'; text?: string; usage?: Usage }
+export interface CodexEvent { kind: 'session' | 'message' | 'message-delta' | 'message-replace' | 'tool' | 'progress' | 'usage'; text?: string; usage?: Usage }
 export interface CodexRequest { cliPath: string; workspace: string; prompt: string; developerInstructions?: string; tools?: CodexTools; sessionId?: string; allowWrite: boolean; workDirectoryId?: string; ephemeral?: boolean; consultation?: boolean; consultationKey?: string; model?: string; reasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh' }
 export interface CodexResult { sessionId?: string; response: string; usage?: Usage }
 export interface CodexRunner { readonly isolated?: boolean; inspect(cliPath: string, signal?: AbortSignal, model?: string): Promise<CliInfo>; listModels?(cliPath: string): Promise<ModelCatalog>; readLimits?(cliPath: string, model?: string): Promise<CodexLimits | null>; run(request: CodexRequest, onEvent: (event: CodexEvent) => Promise<void>, signal: AbortSignal): Promise<CodexResult> }
@@ -249,6 +249,7 @@ export class CodexClient implements CodexRunner {
     let sessionId = request.sessionId, turnId: string | undefined, response = '', usage: Usage | undefined;
     let toolCalls = 0;
     const seenCalls = new Set<string>(), seenMessages = new Set<string>();
+    const publicMessages = new Map<string, { text: string; streamed: boolean }>();
     try {
       for await (const line of server.lines) {
         signal.throwIfAborted();
@@ -264,6 +265,7 @@ export class CodexClient implements CodexRunner {
           if (sessionId && threadId === sessionId && (!turnId || toolTurn === turnId) && typeof callId === 'string'
             && !seenCalls.has(callId) && typeof tool === 'string' && ++toolCalls <= 64) {
             seenCalls.add(callId);
+            await onEvent({ kind: 'tool', text: tool });
             await onEvent({ kind: 'progress', text: tool === 'consult_specialist' ? 'Codex обращается к специалисту…' : tool === 'knowledge' ? 'Codex читает базу знаний…' : 'Codex обращается к Fastkore…' });
             try { if (tools) result = await tools.call(tool, args, signal); } catch { /* Never forward an upstream exception to the model. */ }
           }
@@ -289,11 +291,22 @@ export class CodexClient implements CodexRunner {
           server.send({ id: 3, method: 'turn/start', params: { threadId: id, input: [{ type: 'text', text: request.prompt, text_elements: [] }], effort: request.reasoningEffort } });
         } else if (message.id === 3 || message.method === 'turn/started') {
           turnId = (message.result ?? message.params)?.turn?.id;
+        } else if (message.method === 'item/agentMessage/delta' && message.params?.threadId === sessionId && typeof message.params?.itemId === 'string' && typeof message.params?.delta === 'string') {
+          const { itemId, delta } = message.params;
+          if (seenMessages.has(itemId)) continue;
+          const item = publicMessages.get(itemId) ?? { text: '', streamed: true };
+          const separator = !publicMessages.has(itemId) && publicMessages.size ? '\n\n' : '';
+          item.text += delta; publicMessages.set(itemId, item);
+          response = [...publicMessages.values()].map(item => item.text).join('\n\n');
+          await onEvent({ kind: 'message-delta', text: separator + delta });
         } else if (message.method === 'item/completed' && message.params?.threadId === sessionId) {
           const item = message.params.item;
           if (item?.type === 'agentMessage' && typeof item.text === 'string' && !seenMessages.has(item.id)) {
-            seenMessages.add(item.id); response += (response ? '\n\n' : '') + item.text;
-            await onEvent({ kind: 'message', text: item.text });
+            seenMessages.add(item.id);
+            const streamed = publicMessages.get(item.id)?.streamed ?? false;
+            publicMessages.set(item.id, { text: item.text, streamed });
+            response = [...publicMessages.values()].map(item => item.text).join('\n\n');
+            await onEvent({ kind: streamed ? 'message-replace' : 'message', text: streamed ? response : item.text });
           }
         } else if (message.method === 'thread/tokenUsage/updated' && message.params?.threadId === sessionId) {
           const last = message.params.tokenUsage?.last;

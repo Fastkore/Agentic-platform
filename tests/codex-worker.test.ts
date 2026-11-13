@@ -245,3 +245,32 @@ test('parallel specialist consultations keep their parent cancellation and tool 
     stopA.abort(); for (const child of children.values()) child.release(); await worker.close(); await rm(root, { recursive: true, force: true });
   }
 });
+
+test('the worker admits two GLM requests and freeing one does not lose the other controller', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'bridge-glm-slots-'));
+  const { writeFile } = await import('node:fs/promises');
+  const { ExecutionAccountStore } = await import('../server/execution-accounts.js');
+  const accounts = new ExecutionAccountStore(root), account = await accounts.create('GLM', 'glm');
+  await writeFile(path.join(accounts.home(account.id), 'config.toml'), 'experimental_bearer_token = "fixture-key-12345678901234567890"\n');
+  await accounts.activate(account.id);
+  const gates = new Map<string, () => void>();
+  accounts.runner = () => ({
+    inspect: async () => ({ path: '', version: 'fake', authentication: 'glm', status: '' }),
+    run: async request => { await new Promise<void>(resolve => gates.set(request.prompt, resolve)); return { response: request.prompt }; },
+  });
+  const worker = createCodexWorker(undefined, undefined, accounts);
+  const run = (prompt: string) => worker.inject({ method: 'POST', url: '/run', payload: { prompt, model: 'glm/glm-test' } });
+  const until = async (check: () => boolean) => {
+    const deadline = Date.now() + 5000;
+    while (!check()) { if (Date.now() > deadline) throw Error('timeout'); await new Promise(resolve => setTimeout(resolve, 10)); }
+  };
+  try {
+    const a = run('a'), b = run('b'); await until(() => gates.size === 2);
+    assert.equal((await run('full')).statusCode, 409);
+    gates.get('a')!(); await a;
+    const c = run('c'); await until(() => gates.has('c'));
+    assert.equal((await run('still-full')).statusCode, 409);
+    gates.get('b')!(); gates.get('c')!();
+    assert.match((await b).body, /"response":"b"/); assert.match((await c).body, /"response":"c"/);
+  } finally { for (const release of gates.values()) release(); await worker.close(); await rm(root, { recursive: true, force: true }); }
+});
