@@ -2,6 +2,7 @@ import { useEffect, useId, useLayoutEffect, useRef, useState, type CSSProperties
 import { createPortal } from 'react-dom';
 import { AtSign, Bot, Check, X } from 'lucide-react';
 import type { AgentSummary } from '../shared/types';
+import { interfaceScale } from './interface-scale';
 
 interface Mention { start: number; end: number; query: string }
 
@@ -49,15 +50,18 @@ export function ComposerInput({ input, draft, placeholder, editable, pickerEnabl
     if (!expanded) return;
     function measure(event?: Event) {
       if (event?.target === menu.current) return;
-      const rect = input.current?.getBoundingClientRect();
-      if (!rect) return;
-      const width = Math.min(340, rect.width, innerWidth - 16);
-      const above = rect.top - 14, below = innerHeight - rect.bottom - 14;
+      const field = input.current;
+      if (!field) return;
+      const rect = field.getBoundingClientRect();
+      const scale = interfaceScale(field);
+      const viewportWidth = innerWidth / scale, viewportHeight = innerHeight / scale;
+      const width = Math.min(340, rect.width / scale, viewportWidth - 16);
+      const above = rect.top / scale - 14, below = viewportHeight - rect.bottom / scale - 14;
       const opensUp = above >= 220 || above >= below;
       setPlacement({
-        width, left: Math.max(8, Math.min(rect.left, innerWidth - width - 8)),
+        width, left: Math.max(8, Math.min(rect.left / scale, viewportWidth - width - 8)),
         maxHeight: Math.max(0, Math.min(260, opensUp ? above : below)),
-        ...(opensUp ? { bottom: innerHeight - rect.top + 6 } : { top: rect.bottom + 6 }),
+        ...(opensUp ? { bottom: viewportHeight - rect.top / scale + 6 } : { top: rect.bottom / scale + 6 }),
       });
     }
     measure();

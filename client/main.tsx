@@ -89,9 +89,15 @@ async function copy(text: string) {
   const ok = document.execCommand('copy'); area.remove(); if (!ok) throw new Error('Выделите и скопируйте текст вручную.');
 }
 const requestId = () => globalThis.crypto?.randomUUID?.() ?? `web-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+const fastkoreScales = ['auto', '0.6', '0.7', '0.8', '0.9', '1'];
+const fastkoreScaleKey = 'bridge-fastkore-scale';
 
 function App() {
   const [embedded] = useState(() => new URLSearchParams(location.search).get('embedded') === 'fastkore');
+  const [fastkoreScale, setFastkoreScale] = useState(() => {
+    const saved = localStorage.getItem(fastkoreScaleKey);
+    return saved && fastkoreScales.includes(saved) ? saved : 'auto';
+  });
   const [browserTheme, setBrowserTheme] = useState<Theme>(() => localStorage.getItem('bridge-theme') === 'light' ? 'light' : 'dark');
   const [initialErpTheme] = useState<Theme>(() => new URLSearchParams(location.search).get('theme') === 'dark' ? 'dark' : 'light');
   const [erpTheme, setErpTheme] = useState<{ theme: Theme } | null>(null);
@@ -758,7 +764,7 @@ function App() {
     {!chatId && canCreate && <button className="empty-new-chat" onClick={() => void newChat()}><SquarePen size={15} />Создать чат</button>}
   </div>;
 
-  return <div className="workspace-shell" data-theme={theme}>
+  return <div className="workspace-shell" data-theme={theme} data-fastkore-scale={inFastkore ? fastkoreScale : undefined}>
     {sidebarOpen && <button className="workspace-scrim" aria-label="Закрыть навигацию" onClick={() => setSidebarOpen(false)} />}
     <aside id="workspace-sidebar" className={'workspace-sidebar' + (sidebarOpen ? ' is-open' : '') + (sidebarCollapsed ? ' is-collapsed' : '')} aria-label="Боковая панель">
       <div className="workspace-brand"><span className="workspace-mark"><Terminal size={16} /></span><b>Agentic Platform</b>
@@ -886,6 +892,14 @@ function App() {
           <button type="button" className="workspace-icon" title="Создать новый чат по этому контексту" aria-label="Создать новый чат по этому контексту"
             disabled={pending || relatedLoading || !newAgent || (!projectId && !canCreateProject)} onClick={() => void newChat(projectId, true)}><SquarePen size={17} /></button>
         </div>}
+        {inFastkore && <select className="workspace-scale" aria-label="Масштаб интерфейса" title="Масштаб интерфейса" value={fastkoreScale}
+          onChange={event => {
+            const scale = event.currentTarget.value;
+            setFastkoreScale(scale);
+            localStorage.setItem(fastkoreScaleKey, scale);
+          }}>
+          {fastkoreScales.map(scale => <option key={scale} value={scale}>{scale === 'auto' ? 'Авто' : `${Math.round(Number(scale) * 100)}%`}</option>)}
+        </select>}
         {themeButton}
       </header>
       {!embedded && chat?.erpContext && <div className="workspace-context">{chat.erpContext.entityType} / {chat.erpContext.entityId}</div>}
