@@ -149,6 +149,7 @@ export class GeminiClient implements CodexRunner {
     })] : ['-p', 'Выполни запрос из stdin.', '--output-format', 'stream-json', '--approval-mode', 'yolo', '--skip-trust'];
     if (request.model && request.model !== 'gemini-auto' && request.model !== 'antigravity-auto') args.push('--model', request.model);
     if (request.sessionId) args.push(this.antigravity ? '--conversation' : '--resume', request.sessionId);
+    if (this.antigravity && request.reasoningEffort) args.push('--effort', request.reasoningEffort);
     const child = spawn(this.executable, [...this.prefix, ...args], {
       cwd, env: { PATH: process.env.PATH, HOME: this.home, GEMINI_CLI_HOME: this.home,
         HTTPS_PROXY: process.env.HTTPS_PROXY, NO_BROWSER: 'true' },

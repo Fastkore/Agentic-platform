@@ -106,7 +106,7 @@ test('glm catalog and connection state come from the platform-written config', a
   } finally { await rm(home, { recursive: true, force: true }); }
 });
 
-test('glm runs through codex with the ZAI provider, no effort override and classified failures', async () => {
+test('glm runs through codex with the ZAI provider, mapped effort and classified failures', async () => {
   const home = await mkdtemp(path.join(tmpdir(), 'bridge-glm-run-'));
   const fake = path.join(home, 'fake-glm.mjs');
   await writeFile(fake, [
@@ -133,7 +133,10 @@ test('glm runs through codex with the ZAI provider, no effort override and class
     assert.ok(args.includes('model_provider="ZAI"'));
     assert.ok(!args.includes('--ignore-user-config'));
     assert.equal(args[args.indexOf('--model') + 1], 'glm-5.3');
-    assert.ok(!args.some(item => item.startsWith('model_reasoning_effort')));
+    assert.ok(args.includes('model_reasoning_effort="max"'));
+    await client.run({ cliPath: process.execPath, workspace: home, prompt: 'OK', allowWrite: false, model: 'glm-5.3', reasoningEffort: 'high' }, async () => {}, AbortSignal.timeout(30_000));
+    const highArgs: string[] = JSON.parse(await readFile(path.join(home, 'last-args.json'), 'utf8'));
+    assert.ok(highArgs.includes('model_reasoning_effort="high"'));
     await assert.rejects(client.run({ cliPath: process.execPath, workspace: home, prompt: 'GLM_FAIL', allowWrite: false },
       async () => {}, AbortSignal.timeout(30_000)), /Z\.ai отклонил ключ GLM/);
     const auto: string[] = JSON.parse(await readFile(path.join(home, 'last-args.json'), 'utf8'));

@@ -15,6 +15,8 @@ import { ExecutionAccountsPanel } from './ExecutionAccountsPanel';
 import { executionConnected } from '../shared/execution-accounts';
 import { SidebarResizeHandle } from './SidebarResizeHandle';
 import { ComposerInput } from './ComposerInput';
+import { ChatAccessPopover } from './ChatAccessPopover';
+import { ChatModelControls, reasoningOptions } from './ChatModelControls';
 import { WorkspaceDialog } from './WorkspaceDialog';
 import { ProjectFilesDialog } from './ProjectFilesDialog';
 import { ProjectAgentsDialog } from './ProjectAgentsDialog';
@@ -22,6 +24,7 @@ import { VoiceDictation } from './VoiceDictation';
 import { DictationModelSettings } from './DictationModelSettings';
 import { DEFAULT_AGENT_INSTRUCTIONS } from '../shared/agent-instructions';
 import { fastkoreChatContextKey, fastkoreContextProblem, isFastkoreContextMessage, isFastkoreContextReset, parseFastkoreContext, type FastkoreContext } from '../shared/fastkore-context';
+import { concreteModel, isAutomaticModel } from '../shared/model-selection';
 
 const AccountPanel = lazy(() => import('./AccessPanel').then(module => ({ default: module.AccountPanel })));
 const TeamPanel = lazy(() => import('./AccessPanel').then(module => ({ default: module.TeamPanel })));
@@ -188,7 +191,7 @@ function App() {
     setPanel('settings');
   }, [loggedIn, isAdmin, authSource, inFastkore, setupRequired]);
   const theme = inFastkore ? erpTheme?.theme ?? initialErpTheme : browserTheme;
-  const modelName = (id?: string) => id ? (catalog?.models.find(m => m.id === id)?.name ?? id) : 'Автовыбор Codex';
+  const modelName = (id?: string) => id ? (catalog?.models.find(m => m.id === id)?.name ?? id) : 'Модель';
   const selected = useRef({ projectId, chatId }); selected.current = { projectId, chatId };
   function toggleTheme() {
     const next = theme === 'dark' ? 'light' : 'dark';
@@ -424,6 +427,13 @@ function App() {
     const p = projectId, c = chatId;
     await action(async () => {
       const updated = await api<Chat>(`/api/projects/${p}/chats/${c}`, { method: 'PATCH', body: JSON.stringify({ model }) });
+      if (selected.current.projectId === p && selected.current.chatId === c) setChat(updated);
+    });
+  }
+  async function changeReasoning(reasoningEffort: Settings['reasoningEffort']) {
+    const p = projectId, c = chatId;
+    await action(async () => {
+      const updated = await api<Chat>(`/api/projects/${p}/chats/${c}`, { method: 'PATCH', body: JSON.stringify({ reasoningEffort }) });
       if (selected.current.projectId === p && selected.current.chatId === c) setChat(updated);
     });
   }
@@ -665,17 +675,16 @@ function App() {
       <p className="help">Доступ показан для основного агента. Права на операции с данными проверяет Fastkore при вызове.</p>
     </div>;
   }
-  const catalogOptions = catalog?.models.map(model => ({ value: model.id, label: model.name })) ?? [];
-  const chatModel = messageAgent?.model ? '' : chat?.model ?? '';
-  const defaultChatModel = modelName(messageAgent?.model || status?.settings.model || catalog?.models.find(model => model.isDefault)?.id);
+  const catalogOptions = catalog?.models.filter(model => !isAutomaticModel(model.id)).map(model => ({ value: model.id, label: model.name })) ?? [];
+  const chatModel = concreteModel(catalog, chat?.model || messageAgent?.model || status?.settings.model);
+  const chatReasoning = chat?.reasoningEffort ?? status?.settings.reasoningEffort ?? 'high';
+  const chatReasoningOptions = chatModel.startsWith('glm') ? reasoningOptions.filter(option => option.value !== 'medium') : reasoningOptions;
   const chatModels = [
-    { value: '', label: defaultChatModel + (catalog && !messageAgent?.model ? ' · авто' : '') },
     ...(chatModel && !catalogOptions.some(model => model.value === chatModel) ? [{ value: chatModel, label: modelName(chatModel) }] : []),
     ...catalogOptions,
   ];
-  const serverModel = status?.settings.model ?? '';
+  const serverModel = concreteModel(catalog, status?.settings.model);
   const serverModels = [
-    { value: '', label: 'Автовыбор исполнителя' },
     ...(serverModel && !catalogOptions.some(model => model.value === serverModel) ? [{ value: serverModel, label: modelName(serverModel) }] : []),
     ...catalogOptions,
   ];
@@ -762,12 +771,12 @@ function App() {
         <input type="file" multiple ref={fileInput} onChange={e => void upload(e.target.files)} />
         <button className="workspace-icon" title={canAttach ? 'Прикрепить файл' : 'Агенту не разрешено читать вложения'} aria-label="Прикрепить файл" onClick={() => fileInput.current?.click()} disabled={!canAttach || pending}><Plus size={19} /></button>
         {pickerButton}
+        <ChatAccessPopover writable={writeMode}>{renderChatAccess()}</ChatAccessPopover>
         <div className="composer-actions">
           <ModelPicker key={status?.cli?.accountId} request={api} unavailableReason={codexNotice} revision={status?.codexLimitsRevision}
-            model={messageAgent?.model || chatModel || status?.settings.model || catalog?.models.find(model => model.isDefault)?.id || ''}
-            value={chatModel} options={chatModels} title={modelError || undefined}
-            disabled={!!messageAgent?.model || !chat || !(isAdmin || chat.ownerId === user.id) || chatBusy || pending || modelsLoading || (!catalog && !chat.model)}
-            onChange={model => void changeModel(model)} />
+            model={chatModel} options={chatModels} effort={chatModel.startsWith('glm') && chatReasoning === 'medium' ? 'high' : chatReasoning}
+            levels={chatReasoningOptions} disabled={!canEdit || chatBusy || pending || modelsLoading}
+            onModel={model => void changeModel(model)} onEffort={value => void changeReasoning(value)} />
           {canDictate && <VoiceDictation key={JSON.stringify([user.id, projectId, chatId, messageAgent?.id])} canSend={canSend && !pending}
             transcribe={async (wav, signal) => {
               const data = new FormData();
@@ -1073,6 +1082,11 @@ function App() {
                 </button>
               </div>
               {modelError && <p role="status">{modelError}</p>}
+              <div className="settings-model-row">
+                <label htmlFor="server-reasoning">Рассуждение по умолчанию</label>
+                <Select id="server-reasoning" className="settings-select" value={status?.settings.reasoningEffort ?? 'high'} options={reasoningOptions}
+                  disabled={busy || pending} onChange={value => void saveSettings({ reasoningEffort: value as Settings['reasoningEffort'] })} />
+              </div>
             </section>
             {!status?.isolatedCodex && <section className="setting-section"><h3>Работа с файлами</h3>
               <Toggle checked={status?.settings.allowWrite ?? false} disabled={busy || pending} title="Разрешить запись в проект" onChange={allowWrite => void saveSettings({ allowWrite })} />
@@ -1116,9 +1130,10 @@ function App() {
 const remainingPercent = (used: number) => Math.min(100, Math.max(0, 100 - used));
 const limitPercentFormat = new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 2 });
 
-function ModelPicker({ request, unavailableReason, revision, model, value, options, title, disabled, onChange }: {
-  request: typeof api; unavailableReason: string; revision?: number; model: string; value: string;
-  options: { value: string; label: string }[]; title?: string; disabled: boolean; onChange: (value: string) => void;
+function ModelPicker({ request, unavailableReason, revision, model, options, effort, levels, disabled, onModel, onEffort }: {
+  request: typeof api; unavailableReason: string; revision?: number; model: string;
+  options: { value: string; label: string }[]; effort: NonNullable<Settings['reasoningEffort']>; levels: typeof reasoningOptions;
+  disabled: boolean; onModel: (model: string) => void; onEffort: (effort: NonNullable<Settings['reasoningEffort']>) => void;
 }) {
   const [byModel, setByModel] = useState<Record<string, CodexLimits | null>>({});
   const [loading, setLoading] = useState(false);
@@ -1160,14 +1175,14 @@ function ModelPicker({ request, unavailableReason, revision, model, value, optio
 
   return <>
     <LimitsButton limits={byModel[model] ?? null} loading={loading} refresh={refresh} unavailableReason={unavailableReason} model={model} />
-    <div className="editor-model"><Select label="Модель диалога" fitContent value={value} disabled={disabled} title={title} onChange={onChange}
-      options={options.map(option => {
+    <ChatModelControls model={model} effort={effort} levels={levels} disabled={disabled} onModel={onModel} onEffort={onEffort}
+      models={options.map(option => {
         const limits = byModel[option.value || model];
         const windows = limits?.buckets.flatMap(bucket => bucket.windows) ?? [];
         const remaining = windows.length ? Math.min(...windows.map(window => remainingPercent(window.usedPercent))) : null;
         return { ...option, detail: remaining === null ? '—' : limitPercentFormat.format(remaining) + '%',
           detailTitle: limits?.unavailableReason || (remaining === null ? 'Лимиты пока недоступны' : 'Остаток лимита модели') };
-      })} /></div>
+      })} />
   </>;
 }
 

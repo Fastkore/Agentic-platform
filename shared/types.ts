@@ -3,7 +3,8 @@ import type { AgentToolId } from './agent-tools.js';
 
 export type FileStorageProvider = 'local' | 's3';
 export interface FileStorageStatus { provider: FileStorageProvider; s3Configured: boolean }
-export interface Settings { cliPath: string; allowWrite: boolean; includePreviews: boolean; model: string; dictationEnabled?: boolean; agentInstructions?: string; fileStorageProvider?: FileStorageProvider }
+export type ReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh';
+export interface Settings { cliPath: string; allowWrite: boolean; includePreviews: boolean; model: string; reasoningEffort?: ReasoningEffort; dictationEnabled?: boolean; agentInstructions?: string; fileStorageProvider?: FileStorageProvider }
 export type DictationModelId = 'turbo' | 'quality';
 export interface DictationModels {
   active: DictationModelId | null;
@@ -30,7 +31,7 @@ export interface Message { id: string; role: 'user' | 'assistant'; text: string;
 export interface ErpContext { installationId: string; entityType: string; entityId: string }
 export interface FastkoreChatBinding { installationId: string; key: string; view: FastkoreContext['view']; entitySetId: string; entityId?: string }
 export interface ExternalIdentity { installationId: string; externalUserId: string; userId: string }
-export interface Chat { id: string; title: string; titleCustomized?: true; sessionId?: string; sessionScope?: string; knowledgeRevision?: string; specialistSessions?: Record<string, Pick<Chat, 'sessionId' | 'sessionScope' | 'knowledgeRevision'>>; updatedAt: string; archivedAt?: string; messages: Message[]; model?: string; agentProfileId?: string; erpContext?: ErpContext; fastkoreBinding?: FastkoreChatBinding; fastkoreHistory?: { binding: FastkoreChatBinding; turns: number } | null; linkedToFastkore?: true; ownerId?: string; ownerName?: string; visibility?: 'private' | 'project' }
+export interface Chat { reasoningEffort?: ReasoningEffort; id: string; title: string; titleCustomized?: true; sessionId?: string; sessionScope?: string; knowledgeRevision?: string; specialistSessions?: Record<string, Pick<Chat, 'sessionId' | 'sessionScope' | 'knowledgeRevision'>>; updatedAt: string; archivedAt?: string; messages: Message[]; model?: string; agentProfileId?: string; erpContext?: ErpContext; fastkoreBinding?: FastkoreChatBinding; fastkoreHistory?: { binding: FastkoreChatBinding; turns: number } | null; linkedToFastkore?: true; ownerId?: string; ownerName?: string; visibility?: 'private' | 'project' }
 export interface ProjectAgentConnection { profileId: string; toolIds: AgentToolId[]; fileIds: string[] | null }
 export interface ProjectAgentPolicy { revision: number; connections: ProjectAgentConnection[] }
 export interface ProjectAgentSettings {
@@ -40,7 +41,21 @@ export interface ProjectAgentSettings {
   isolated: boolean;
 }
 export interface Project { id: string; name: string; directory: string; chats: Chat[]; attachments: Attachment[]; memberIds?: string[]; agentPolicy?: ProjectAgentPolicy }
-export interface Run { id: string; projectId?: string; chatId?: string; status: RunStatus; progress: string; tool?: string; canSteer?: boolean; steeringTo?: string; createdAt: string; startedAt?: string; completedAt?: string; response?: string; error?: string; usage?: Usage; usageOnly?: true; clientRequestId?: string; requestHash?: string; model?: string; executionProvider?: CliInfo['provider']; ownerId?: string; agentProfileId?: string; profileRevision?: number }
+export type RunToolKind = 'cli' | 'mcp' | 'internet' | 'knowledge' | 'specialist' | 'other';
+export interface RunTiming {
+  queueMs: number;
+  connectionMs?: number;
+  erpSetupMs?: number;
+  preparationMs?: number;
+  executorMs?: number;
+  sessionReadyMs?: number;
+  firstTextMs?: number;
+  longestExecutorGapMs?: number;
+  toolWallMs?: number;
+  finalizeMs?: number;
+  tools: Partial<Record<RunToolKind, { calls: number; totalMs: number; maxMs: number; unfinished: number }>>;
+}
+export interface Run { reasoningEffort?: ReasoningEffort; id: string; projectId?: string; chatId?: string; status: RunStatus; progress: string; tool?: string; canSteer?: boolean; steeringTo?: string; createdAt: string; startedAt?: string; completedAt?: string; response?: string; error?: string; usage?: Usage; timing?: RunTiming; usageOnly?: true; clientRequestId?: string; requestHash?: string; model?: string; executionProvider?: CliInfo['provider']; ownerId?: string; agentProfileId?: string; profileRevision?: number }
 export interface QueuedRun extends Run { queuedText?: string; queuedFiles?: number }
 /** Trusted queue input. Never return this record from HTTP handlers. */
 export interface Job { runId: string; kind: 'chat' | 'subscription'; text: string; attachmentIds: string[]; authorId?: string; credentialId?: string; scope?: string; fastkoreContext?: FastkoreContext; recommendedSpecialistId?: string; specialistName?: string; specialistScope?: string }

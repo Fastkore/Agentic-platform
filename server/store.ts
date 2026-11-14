@@ -79,6 +79,7 @@ export class Store {
       }
       this.state = initialized ? this.load() : legacy ?? empty();
       this.state.settings.model ??= '';
+      this.state.settings.reasoningEffort ??= 'high';
       this.state.settings.agentInstructions ??= DEFAULT_AGENT_INSTRUCTIONS;
       this.state.jobs ??= [];
       for (const run of this.state.runs) if (run.status === 'running' || run.status === 'queued' && run.steeringTo) {

@@ -95,10 +95,12 @@ export class GlmClient extends CodexClient {
     return { provider: 'glm', buckets: [], resetsAvailable: null, unavailableReason: 'Z.ai не отдаёт остаток лимита по API. Проверьте кабинет Z.ai.' };
   }
   async run(request: CodexRequest, onEvent: (event: CodexEvent) => Promise<void>, signal: AbortSignal, registerSteering?: RegisterSteering) {
-    // glm-auto keeps the provider default model; GLM accepts low/high/max rather than the
-    // platform's medium/xhigh scale, so no reasoning effort override is forwarded.
+    // GLM's catalog defaults to max. Honor the chosen setting instead of silently
+    // forcing every question onto that slowest tier. Its native scale is low/high/max.
     const model = request.model === 'glm-auto' ? undefined : request.model;
-    try { return await super.run({ ...request, model, reasoningEffort: undefined }, onEvent, signal, registerSteering); }
+    const reasoningEffort = request.reasoningEffort === 'xhigh' || request.reasoningEffort === 'max' ? 'max'
+      : request.reasoningEffort === 'low' ? 'low' : 'high';
+    try { return await super.run({ ...request, model, reasoningEffort }, onEvent, signal, registerSteering); }
     catch (error) {
       if (error instanceof BridgeError && error.statusCode === 502) throw new BridgeError(glmFailure(error.message), 503);
       throw error;

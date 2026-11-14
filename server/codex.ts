@@ -11,7 +11,7 @@ export interface CodexEvent { kind: 'session' | 'message' | 'message-delta' | 'm
 export type SteerResult = 'accepted' | 'rejected' | 'unknown';
 export type SteerTurn = (text: string) => Promise<SteerResult>;
 export type RegisterSteering = (steer: SteerTurn | undefined) => void;
-export interface CodexRequest { cliPath: string; workspace: string; prompt: string; developerInstructions?: string; tools?: CodexTools; sessionId?: string; allowWrite: boolean; workDirectoryId?: string; ephemeral?: boolean; consultation?: boolean; consultationKey?: string; model?: string; reasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh' }
+export interface CodexRequest { cliPath: string; workspace: string; prompt: string; developerInstructions?: string; tools?: CodexTools; sessionId?: string; allowWrite: boolean; workDirectoryId?: string; ephemeral?: boolean; consultation?: boolean; consultationKey?: string; model?: string; reasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max' }
 export interface CodexResult { sessionId?: string; response: string; usage?: Usage }
 export interface CodexRunner { readonly isolated?: boolean; inspect(cliPath: string, signal?: AbortSignal, model?: string): Promise<CliInfo>; listModels?(cliPath: string): Promise<ModelCatalog>; readLimits?(cliPath: string, model?: string): Promise<CodexLimits | null>; run(request: CodexRequest, onEvent: (event: CodexEvent) => Promise<void>, signal: AbortSignal, registerSteering?: RegisterSteering): Promise<CodexResult> }
 type RateWindow = { usedPercent?: number; windowDurationMins?: number | null; resetsAt?: number | null };
@@ -53,7 +53,7 @@ export function buildArguments(r: CodexRequest, mode: 'local' | 'worker' = 'loca
     args.push('-c', setting);
   }
   if (r.model) { if (!/^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,127}$/.test(r.model)) throw new BridgeError('Некорректный идентификатор модели.'); args.push('--model', r.model); }
-  if (r.reasoningEffort) { if (!['low', 'medium', 'high', 'xhigh'].includes(r.reasoningEffort)) throw new BridgeError('Некорректный уровень рассуждения.'); args.push('-c', `model_reasoning_effort="${r.reasoningEffort}"`); }
+  if (r.reasoningEffort) { if (!['low', 'medium', 'high', 'xhigh', 'max'].includes(r.reasoningEffort)) throw new BridgeError('Некорректный уровень рассуждения.'); args.push('-c', `model_reasoning_effort="${r.reasoningEffort}"`); }
   if (r.ephemeral) args.push('--ephemeral');
   if (r.sessionId) { if (!uuid.test(r.sessionId)) throw new BridgeError('Некорректный ID сессии Codex.'); args.push('resume', r.sessionId); }
   return [...args, '-'];

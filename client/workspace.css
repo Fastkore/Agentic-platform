@@ -356,7 +356,38 @@
   min-height: 48px; padding: 5px 12px 10px; display: flex; align-items: center; gap: 8px;
 }
 .composer-actions { display: flex; align-items: center; gap: 9px; min-width: 0; margin-left: auto; }
+.composer-access { position: relative; flex: none; }
+.composer-access-trigger { display: flex; align-items: center; gap: 5px; list-style: none; cursor: pointer; color: var(--text-secondary); font-size: 12px; white-space: nowrap; border-radius: 6px; padding: 5px 2px; }
+.composer-access-trigger::-webkit-details-marker { display: none; }
+.composer-access-trigger.write { color: var(--warning); }
+.composer-access-popover { position: absolute; z-index: 6; left: -28px; bottom: calc(100% + 10px); width: min(380px, calc(100vw - 42px)); max-height: 65dvh; overflow-y: auto; padding: 10px; border: 1px solid var(--control-border); border-radius: 12px; background: var(--elevated); box-shadow: 0 8px 28px #0003; font-size: 12px; }
+.composer-access-popover > header { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
+.composer-access-popover .settings-records > li { padding: 8px; }
+@media (max-width: 460px) { .composer-access-trigger { font-size: 11px; } .composer-access-trigger > span { max-width: 96px; overflow: hidden; text-overflow: ellipsis; } }
 .editor-model { display: flex; align-items: center; min-width: 0; color: var(--text-secondary); }
+.chat-model-control { position: relative; flex: 0 1 auto; min-width: 0; }
+.chat-model-trigger { max-width: min(172px, 32vw); padding: 3px 12px; font-size: 13px; border-radius: 999px; background: var(--control); }
+.chat-model-popover { position: absolute; z-index: 9; right: 0; bottom: calc(100% + 7px); width: min(306px, calc(100vw - 42px)); border: 1px solid var(--border); border-radius: 20px; background: var(--elevated); box-shadow: 0 8px 28px #0003; }
+.effort-popover { padding: 10px 14px 14px; }
+.effort-heading { position: relative; display: flex; justify-content: center; margin-bottom: 13px; }
+.effort-model { display: grid; justify-items: center; gap: 2px; max-width: calc(100% - 65px); padding: 4px 12px; border-radius: 7px; background: var(--selected); }
+.effort-model strong { color: var(--accent-strong); font-size: 15px; font-weight: 600; }
+.effort-model span { display: flex; align-items: center; gap: 3px; min-width: 0; max-width: 100%; color: var(--text-muted); font-size: 12px; overflow-wrap: anywhere; }
+.effort-reset { position: absolute; right: -3px; top: 0; }
+.effort-track { position: relative; height: 30px; border-radius: 999px; background: linear-gradient(to right, var(--accent) var(--effort-fill), var(--selected) var(--effort-fill)); }
+.effort-marks { position: absolute; inset: 0 15px; display: flex; align-items: center; justify-content: space-between; pointer-events: none; }
+.effort-marks span { width: 5px; height: 5px; border-radius: 50%; background: var(--text-muted); opacity: .55; }
+.effort-track input { display: block; position: relative; appearance: none; width: 100%; height: 30px; margin: 0; background: transparent; cursor: pointer; border-radius: inherit; }
+.effort-track input::-webkit-slider-thumb { appearance: none; width: 33px; height: 33px; border-radius: 50%; border: 1px solid #0002; background: white; }
+.effort-track input::-moz-range-thumb { width: 31px; height: 31px; border-radius: 50%; border: 1px solid #0002; background: white; }
+.model-list-popover { max-height: min(370px, 60dvh); overflow: auto; padding: 5px; }
+.model-list-popover p { padding: 8px 9px 6px; font-size: 13px; color: var(--text-muted); }
+.model-list-popover button { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 34px; padding: 5px 9px; text-align: left; border-radius: 10px; }
+.model-list-popover button:hover, .model-list-popover button:focus-visible { background: var(--selected); }
+.model-list-popover button span { flex: 1; }
+.model-list-popover button small { color: var(--text-muted); }
+@media (max-width: 420px) { .chat-model-popover { width: min(306px, calc(100vw - 104px)); } }
+@media (max-width: 720px) { .composer-access-trigger > span { max-width: 72px; overflow: hidden; text-overflow: ellipsis; } }
 .composer-actions .dictation-button { flex: 0 0 auto; }
 .bridge-editor:has(.dictation-strip) > :is(textarea, .attachment-chips, .composer-specialist),
 .bridge-editor-controls:has(.dictation-strip) > :not(.composer-actions),

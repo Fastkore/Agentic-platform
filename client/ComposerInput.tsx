@@ -149,10 +149,10 @@ export function ComposerInput({ input, draft, placeholder, editable, pickerEnabl
         setActive(0);
       }}
       onClick={() => setMention(null)} onBlur={() => setMention(null)} onKeyDown={handleKeys} />
-    {controls(<button type="button" className="workspace-icon composer-mention-button"
+    {controls(agents.length ? <button type="button" className="workspace-icon composer-mention-button"
       aria-label="Выбрать специалиста" title="Выбрать специалиста · @" aria-expanded={expanded}
       aria-controls={expanded ? listId : undefined} disabled={!pickerEnabled || !agents.length}
-      onPointerDown={event => event.preventDefault()} onClick={togglePicker}><AtSign size={17} /></button>)}
+      onPointerDown={event => event.preventDefault()} onClick={togglePicker}><AtSign size={17} /></button> : null)}
     {expanded && shell && placement && createPortal(<div ref={menu} className="workspace-select-menu composer-mention-menu"
       id={listId} role="listbox" aria-label="Специалисты" style={placement} onPointerDown={event => event.preventDefault()}>
       {matches.map((agent, index) => <div key={agent.id} id={listId + '-' + index} role="option"

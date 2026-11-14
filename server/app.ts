@@ -596,7 +596,7 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
   }, async request => workspace.tokenActivity(request.query.timeZone ?? 'UTC', access.users(user(request))));
   app.post('/api/cli/check', async request => { admin(request); return workspace.isolatedCodex ? workspace.codexConnection(true) : workspace.inspect(); });
   app.post('/api/subscription/check', async (request, reply) => { admin(request); const run = await workspace.subscription(); return reply.code(202).header('Location', `/api/runs/${run.id}`).send(run); });
-  app.patch<{ Body: Partial<Settings> }>('/api/settings', { schema: { body: object({ cliPath: { type: 'string', maxLength: 2000 }, allowWrite: { type: 'boolean' }, includePreviews: { type: 'boolean' }, model: modelSchema, dictationEnabled: { type: 'boolean' }, agentInstructions: string(8000) }) } }, async request => {
+  app.patch<{ Body: Partial<Settings> }>('/api/settings', { schema: { body: object({ cliPath: { type: 'string', maxLength: 2000 }, allowWrite: { type: 'boolean' }, includePreviews: { type: 'boolean' }, model: modelSchema, reasoningEffort: { enum: ['low', 'medium', 'high', 'xhigh'] }, dictationEnabled: { type: 'boolean' }, agentInstructions: string(8000) }) } }, async request => {
     admin(request);
     if (request.body.agentInstructions !== undefined) localAdmin(request);
     if (workspace.isolatedCodex && request.body.allowWrite !== undefined) localAdmin(request);
@@ -789,9 +789,9 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
     return reply.type('application/octet-stream').header('Cache-Control', 'private, no-store')
       .header('Content-Disposition', "attachment; filename*=UTF-8''" + name).send(contents);
   });
-  app.patch<{ Params: ChatParams; Body: { model: string } }>(chatPath, { schema: { body: object({ model: modelSchema }, ['model']) } }, async request => {
+  app.patch<{ Params: ChatParams; Body: { model?: string; reasoningEffort?: Settings['reasoningEffort'] } }>(chatPath, { schema: { body: { ...object({ model: modelSchema, reasoningEffort: { enum: ['low', 'medium', 'high', 'xhigh'] } }), minProperties: 1 } } }, async request => {
     const check = () => access.editChat(user(request), request.params.projectId, request.params.chatId); check();
-    return access.viewChat(await workspace.changeChatModel(request.params.projectId, request.params.chatId, request.body.model, check));
+    return access.viewChat(await workspace.changeChatModel(request.params.projectId, request.params.chatId, request.body.model, check, request.body.reasoningEffort));
   });
   app.patch<{ Params: ChatParams; Body: { title: string } }>(chatPath + '/title', { schema: { body: object({ title: string(120) }, ['title']) } }, request =>
     workspace.renameChat(request.body.title, () => {
