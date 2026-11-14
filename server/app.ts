@@ -89,6 +89,7 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
   const cliSocket = process.env.BRIDGE_FASTKORE_CLI_SOCKET;
   const fastkoreCli = cliSocket ? new FastkoreCli(cliSocket) : undefined;
   const cliTicketsEnabled = process.env.BRIDGE_FASTKORE_CLI_TICKETS === '1';
+  const accountWorker = process.env.BRIDGE_CODEX_SOCKET && new RemoteCodexRunner(process.env.BRIDGE_CODEX_SOCKET);
   access.onSessionsRemoved = sessions => {
     for (const session of sessions) void fastkoreMcp?.revoke(session).catch(() => {});
   };
@@ -505,6 +506,15 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
     const cli = await workspace.codexConnection();
     const { user: u, credential } = principal(request);
     const settings = workspace.store.state.settings;
+    const fastkoreToolsStatus = credential.source === 'fastkore' ? fastkoreMcp?.status(credential) : undefined;
+    const isolatedToolsEnabled = workspace.isolatedCodex && !workspace.executionDisabled;
+    const erpPermissions = erpCredentialPermissions(workspace.store.state, credential);
+    const cliBinding = isolatedToolsEnabled && erpPermissions.cli && cliTicketsEnabled && fastkoreCli && sso?.delegationBinding(credential);
+    const toolPermissions = {
+      cli: !!(cliBinding && cliBinding.cliEnabled !== false && cliBinding.ca && sso?.openDelegation(credential, cliBinding.revision)),
+      mcp: isolatedToolsEnabled && erpPermissions.mcp && fastkoreToolsStatus === 'ready',
+      webSearch: !!(isolatedToolsEnabled && accountWorker && internetCredentialPermissions(workspace.store.state, credential).read),
+    };
     const activeRuns = workspace.activeRuns.filter(r => { try { access.run(u, r.id); return true; } catch { return false; } });
     const activeRun = activeRuns[0] ?? null;
     const queuedRuns = workspace.queuedRuns.flatMap(run => {
@@ -520,7 +530,7 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
         agentInstructions: u.role === 'admin' && credential.source !== 'fastkore' ? settings.agentInstructions : undefined },
       addresses: publicOrigin ? [publicOrigin] : addresses(port, lan), port, lan, executionDisabled: workspace.executionDisabled,
       dictationAvailable: !!transcribeDictation, dictationEnabled: dictationEnabled(),
-      fastkoreToolsStatus: credential.source === 'fastkore' ? fastkoreMcp?.status(credential) : undefined,
+      fastkoreToolsStatus, toolPermissions,
       storageWarning: u.role === 'admin' ? workspace.store.warning : undefined,
       fileStorage: u.role === 'admin' && credential.source === 'local' ? workspace.fileStorageStatus : undefined };
   });
@@ -598,7 +608,6 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
     schema: { body: object({ provider: { enum: ['local', 's3'] } }, ['provider']) },
   }, request => workspace.changeFileStorage(request.body.provider, () => { localAdmin(request); }));
   app.get('/api/diagnostics', async request => { admin(request); return { text: (await readFile(path.join(workspace.store.root, 'diagnostics.log'), 'utf8').catch(() => '')).slice(-12_000) }; });
-  const accountWorker = process.env.BRIDGE_CODEX_SOCKET && new RemoteCodexRunner(process.env.BRIDGE_CODEX_SOCKET);
   workspace.prepareInternetTools = (other, credentialId, authorize) => withInternetTools(other,
     () => { authorize(); return internetCredentialPermissions(workspace.store.state, access.authenticateCredential(credentialId).credential); },
     authorize, (query, signal) => accountWorker ? accountWorker.searchInternet(query, signal)

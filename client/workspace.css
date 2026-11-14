@@ -352,14 +352,9 @@
 .composer-mention-menu strong { display: block; font-weight: 600; }
 .composer-mention-menu small, .composer-mention-empty { color: var(--text-muted); font-size: 12px; }
 .composer-mention-empty { padding: 8px 9px; }
-@media (max-width: 375px) {
-  .bridge-editor-controls .access-mode { font-size: 0; gap: 0; }
-}
 .bridge-editor-controls {
   min-height: 48px; padding: 5px 12px 10px; display: flex; align-items: center; gap: 8px;
 }
-.access-mode { display: inline-flex; align-items: center; gap: 5px; color: var(--text-secondary); white-space: nowrap; font-size: 13px; }
-.access-mode.write { color: var(--warning); }
 .composer-actions { display: flex; align-items: center; gap: 9px; min-width: 0; margin-left: auto; }
 .editor-model { display: flex; align-items: center; min-width: 0; color: var(--text-secondary); }
 .composer-actions .dictation-button { flex: 0 0 auto; }
@@ -389,6 +384,7 @@
 .queued-message { flex-wrap: wrap; }
 .queued-message-text { flex: 1 1 100px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
 .queued-message button { margin-left: 0; white-space: nowrap; }
+.queued-message .workspace-icon { width: 28px; height: 28px; justify-content: center; color: var(--text-muted); }
 .queued-message button:first-of-type { margin-left: auto; }
 .empty-new-chat { position: absolute; top: calc(100% + 14px); left: 50%; transform: translateX(-50%); display: flex; align-items: center; gap: 7px; white-space: nowrap; border: 1px solid var(--control-border); border-radius: 8px; padding: 7px 11px; }
 .empty-new-chat:hover { background: var(--hover); }
@@ -507,6 +503,10 @@
 .search-project { color: var(--text); }
 .search-results .chat-row { padding-left: 35px; }
 .workspace-settings { width: min(1400px, calc(100vw - 64px)); height: min(860px, calc(100dvh - 64px)); max-height: none; padding: 0; overflow: hidden; }
+.chat-access-settings .settings-records > li { gap: 8px 16px; flex-wrap: wrap; }
+.chat-permission-state { display: inline-flex; align-items: center; gap: 6px; color: var(--text-muted); font-size: 12px; white-space: nowrap; }
+.chat-permission-state[data-enabled="true"] { color: var(--success); }
+.chat-access-settings > .help { margin-top: 12px; }
 .workspace-settings:open { display: grid; grid-template-rows: auto minmax(0, 1fr); }
 .workspace-settings > header { padding: 17px 24px; min-height: 68px; }
 .settings-layout { display: grid; grid-template: minmax(0, 1fr) / 240px minmax(0, 1fr); border-top: 1px solid var(--border); }
@@ -809,7 +809,6 @@
   .workspace-welcome { width: calc(100% - 24px); padding-bottom: 10vh; }
   .conversation-footer { padding-bottom: max(8px, env(safe-area-inset-bottom)); }
   .bridge-editor-controls { padding-inline: 8px; gap: 4px; }
-  .access-mode { font-size: 11px; gap: 3px; }
   .composer-actions { gap: 3px; }
   .editor-model .workspace-select { font-size: 12px; max-width: 38vw; }
   .limits-popover { right: -67px; }

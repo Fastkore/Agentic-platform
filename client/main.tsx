@@ -37,6 +37,7 @@ let accessKey = sessionStorage.getItem('bridge-key') ?? '';
 const agentsUrl = (projectId: string) => projectId ? '/api/projects/' + encodeURIComponent(projectId) + '/agents' : '/api/agents';
 const settingsSections = {
   team: { label: 'Команда', icon: Users },
+  chatAccess: { label: 'Доступ в чате', icon: ShieldCheck },
   roles: { label: 'Роли', icon: ShieldCheck },
   profiles: { label: 'Специалисты', icon: Bot },
   datasets: { label: 'Источники', icon: Database },
@@ -176,6 +177,8 @@ function App() {
   const canSend = !!status && !(relatedLoading && currentErpContext.current.active) && !status.executionDisabled && !codexUnavailable && (!canReadFastkore || !contextProblem || !!currentErpContext.current.snapshot) && (!attachments.length || canAttach)
     && !!messageAgent?.available && (!specialistId || otherSpecialists.some(agent => agent.id === specialistId)) && (chatId ? canEdit : canStartChat);
   const inFastkore = embedded || (authSource === 'fastkore' && !!webViewHost());
+  const canManageSettings = isAdmin && !inFastkore;
+  const visibleSettingsSections = (Object.keys(settingsSections) as SettingsSection[]).filter(section => canManageSettings || section === 'chatAccess');
   const relatedPanelOpen = panel === 'related';
   useEffect(() => {
     if (!loggedIn || !isAdmin || authSource !== 'local' || inFastkore || setupRequired || openedFastkoreSettings.current) return;
@@ -574,7 +577,7 @@ function App() {
   function showSettings() {
     if (accountMenu.current) accountMenu.current.open = false;
     setSidebarOpen(false);
-    setSettingsSection('team');
+    setSettingsSection(canManageSettings ? 'team' : 'chatAccess');
     setInstructionsDraft(undefined);
     setPanel('settings');
   }
@@ -635,8 +638,33 @@ function App() {
   const draftEditable = !chatId || canEdit;
   const canCreate = !!selectedProject && !!newAgent && !pending;
   const canDictate = status?.dictationEnabled && messageAgent?.available && (chatId ? canEdit : canStartChat);
-  const writeMode = (!status?.isolatedCodex || status.workerFilesAvailable) && !!status?.settings.allowWrite
-    && !!messageAgent?.allowWrite && messageAgent.toolIds.includes('chat-files');
+  const canUseChatTools = !!status && !status.executionDisabled && !codexUnavailable && messageAgent?.available && (chatId ? canEdit : canStartChat);
+  const writeMode = !!(canUseChatTools && status.settings.allowWrite && messageAgent.allowWrite &&
+    (!status.isolatedCodex || status.workerFilesAvailable && messageAgent.toolIds.includes('chat-files')));
+  function renderChatAccess() {
+    if (!status) return <p role="status" className="help">Загрузка…</p>;
+    const permissions = [
+      { name: 'Запись файлов', enabled: writeMode, description: status.isolatedCodex
+        ? 'Создание файлов и сохранение результатов в рабочей папке задания.'
+        : 'Создание и изменение файлов в папке проекта.' },
+      { name: 'Fastkore CLI', enabled: canUseChatTools && canReadFastkore && status.toolPermissions?.cli,
+        description: 'Выполнение команд Fastkore от имени сотрудника.' },
+      { name: 'Fastkore MCP', enabled: canUseChatTools && canReadFastkore && status.toolPermissions?.mcp,
+        description: 'Вызов инструментов ERP от имени сотрудника.' },
+      { name: 'Веб-поиск', enabled: canUseChatTools && status.toolPermissions?.webSearch,
+        description: 'Поиск в интернете. Для него нужен активный аккаунт GLM Coding Plan.' },
+    ];
+    return <div className="chat-access-settings">
+      <ul className="settings-records">{permissions.map(({ name, enabled, description }) => <li key={name}>
+        <div><strong>{name}</strong><small>{description}</small></div>
+        <span className="chat-permission-state" data-enabled={!!enabled}>
+          {enabled ? <Check size={15} aria-hidden="true" /> : <X size={15} aria-hidden="true" />}
+          {enabled ? 'Разрешено' : 'Недоступно'}
+        </span>
+      </li>)}</ul>
+      <p className="help">Доступ показан для основного агента. Права на операции с данными проверяет Fastkore при вызове.</p>
+    </div>;
+  }
   const catalogOptions = catalog?.models.map(model => ({ value: model.id, label: model.name })) ?? [];
   const chatModel = messageAgent?.model ? '' : chat?.model ?? '';
   const defaultChatModel = modelName(messageAgent?.model || status?.settings.model || catalog?.models.find(model => model.isDefault)?.id);
@@ -698,15 +726,15 @@ function App() {
       <span>{run.steeringTo ? 'Отправляется…' : 'В очереди'}</span>
       {run.queuedText && <span className="queued-message-text" title={run.queuedText}>{run.queuedText}</span>}
       {canEdit && steerTarget && run.ownerId === user.id && !run.queuedFiles && run.model === steerTarget.model &&
-        <button type="button" disabled={pending || !!run.steeringTo} onClick={() => void action(async () => {
+        <button type="button" className="workspace-icon" aria-label="Отправить сейчас" title="Отправить сейчас" disabled={pending || !!run.steeringTo} onClick={() => void action(async () => {
           const result = await post<{ result: 'accepted' | 'rejected' | 'unknown' }>('/api/runs/' + run.id + '/send-now', { targetRunId: steerTarget.id });
           if (result.result === 'rejected') throw new Error('Текущий ход не принял уточнение. Сообщение осталось в очереди.');
           setStatus(old => old && { ...old, queuedRuns: old.queuedRuns.filter(item => item.id !== run.id) });
-        })}>Отправить сейчас</button>}
-      {canEdit && <button type="button" disabled={pending || !!run.steeringTo} onClick={() => void action(async () => {
+        })}><ArrowUp size={16} aria-hidden="true" /></button>}
+      {canEdit && <button type="button" className="workspace-icon" aria-label="Отменить отправку" title="Отменить отправку" disabled={pending || !!run.steeringTo} onClick={() => void action(async () => {
         const cancelled = await post<Run>('/api/runs/' + run.id + '/cancel');
         if (cancelled.status === 'cancelled') setStatus(old => old && { ...old, queuedRuns: old.queuedRuns.filter(item => item.id !== run.id) });
-      })}>Отменить</button>}
+      })}><X size={16} aria-hidden="true" /></button>}
     </div>)}
     {chatActiveRuns.map(run => <div className="bridge-progress" key={run.id}>
       <span role="status"><LoaderCircle size={14} className="spin" aria-hidden="true" />{run.tool
@@ -734,7 +762,6 @@ function App() {
         <input type="file" multiple ref={fileInput} onChange={e => void upload(e.target.files)} />
         <button className="workspace-icon" title={canAttach ? 'Прикрепить файл' : 'Агенту не разрешено читать вложения'} aria-label="Прикрепить файл" onClick={() => fileInput.current?.click()} disabled={!canAttach || pending}><Plus size={19} /></button>
         {pickerButton}
-        <span className={'access-mode' + (writeMode ? ' write' : '')} title={messageAgent?.name}><ShieldCheck size={16} />{writeMode ? 'Запись разрешена' : 'Только чтение'}</span>
         <div className="composer-actions">
           <ModelPicker key={status?.cli?.accountId} request={api} unavailableReason={codexNotice} revision={status?.codexLimitsRevision}
             model={messageAgent?.model || chatModel || status?.settings.model || catalog?.models.find(model => model.isDefault)?.id || ''}
@@ -856,7 +883,9 @@ function App() {
             <button className="workspace-row" onClick={showSettings}><Settings2 size={17} />Настройки</button>
             <button className="workspace-row" onClick={logout}><LogOut size={17} />Выйти</button>
           </div>
-        </details> : <div className="workspace-row account-row" title={user.name}><span className="account-initial">{user.name.trim()[0]?.toUpperCase()}</span><span>{shortUserName(user.name)}</span></div>}
+        </details> : <button type="button" className="workspace-row account-row" aria-label="Настройки" title="Настройки" onClick={showSettings}>
+          <span className="account-initial">{user.name.trim()[0]?.toUpperCase()}</span><span>{shortUserName(user.name)}</span><Settings2 size={16} aria-hidden="true" />
+        </button>}
       </div>
       <SidebarResizeHandle />
     </aside>
@@ -970,10 +999,13 @@ function App() {
       <ProjectFilesDialog key={projectActionTarget.id} project={projectActionTarget} request={api} download={url => api<Blob>(url, {}, 'blob')} close={closePanel} />}
     {panel === 'project-agents' && projectActionTarget && isAdmin && authSource === 'local' && !inFastkore &&
       <ProjectAgentsDialog key={projectActionTarget.id} project={projectActionTarget} request={api} close={closePanel} />}
-    {panel === 'settings' && isAdmin && <WorkspaceDialog title="Настройки" className="workspace-settings" close={closePanel}>
+    {panel === 'settings' && !canManageSettings && <WorkspaceDialog title="Доступ в чате" className="workspace-access-dialog" close={closePanel}>
+      {renderChatAccess()}
+    </WorkspaceDialog>}
+    {panel === 'settings' && canManageSettings && <WorkspaceDialog title="Настройки" className="workspace-settings" close={closePanel}>
       <div className="settings-layout">
         <nav aria-label="Разделы настроек" className="settings-nav">
-          {(Object.keys(settingsSections) as SettingsSection[]).map(section => {
+          {visibleSettingsSections.map(section => {
             const { label, icon: Icon } = settingsSections[section];
             return <button key={section} type="button" className="workspace-row" aria-current={settingsSection === section ? 'page' : undefined}
               onClick={() => chooseSettingsSection(section)}><Icon size={16} aria-hidden="true" />{label}</button>;
@@ -981,7 +1013,7 @@ function App() {
         </nav>
         <select className="settings-section-picker" aria-label="Раздел настроек" value={settingsSection}
           onChange={event => chooseSettingsSection(event.target.value as SettingsSection)}>
-          {Object.entries(settingsSections).map(([id, item]) => <option key={id} value={id}>{item.label}</option>)}
+          {visibleSettingsSections.map(id => <option key={id} value={id}>{settingsSections[id].label}</option>)}
         </select>
         <section key={settingsSection} className={'panel-body settings-content' + (settingsSection === 'server' ? ' settings-server' : '')}
           aria-labelledby="settings-section-title">
@@ -989,6 +1021,7 @@ function App() {
           {settingsSection !== 'profiles' && <h2 id="settings-section-title">{settingsSections[settingsSection].label}</h2>}
           {error && <div className="inline-error" role="alert">{error}</div>}
           <Suspense fallback={<p role="status">Загрузка…</p>}>
+          {settingsSection === 'chatAccess' && renderChatAccess()}
           {settingsSection === 'account' && <AccountPanel request={api} renewed={saveToken} fastkore={authSource === 'fastkore'} />}
           {settingsSection === 'team' && <TeamPanel request={api} projectId={projectId} projectName={selectedProject?.name ?? ''} self={user} />}
           {settingsSection === 'roles' && <ErpRolesPanel request={api} />}
