@@ -93,14 +93,14 @@ async function copy(text: string) {
   const ok = document.execCommand('copy'); area.remove(); if (!ok) throw new Error('Выделите и скопируйте текст вручную.');
 }
 const requestId = () => globalThis.crypto?.randomUUID?.() ?? `web-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-const fastkoreScales = ['auto', '0.6', '0.7', '0.8', '0.9', '1'];
+const fastkoreScales = ['0.6', '0.7', '0.8', '0.9', '1'];
 const fastkoreScaleKey = 'bridge-fastkore-scale';
 
 function App() {
   const [embedded] = useState(() => new URLSearchParams(location.search).get('embedded') === 'fastkore');
   const [fastkoreScale, setFastkoreScale] = useState(() => {
     const saved = localStorage.getItem(fastkoreScaleKey);
-    return saved && fastkoreScales.includes(saved) ? saved : 'auto';
+    return saved && fastkoreScales.includes(saved) ? saved : '1';
   });
   const [browserTheme, setBrowserTheme] = useState<Theme>(() => localStorage.getItem('bridge-theme') === 'light' ? 'light' : 'dark');
   const [initialErpTheme] = useState<Theme>(() => new URLSearchParams(location.search).get('theme') === 'dark' ? 'dark' : 'light');
@@ -936,7 +936,7 @@ function App() {
             setFastkoreScale(scale);
             localStorage.setItem(fastkoreScaleKey, scale);
           }}>
-          {fastkoreScales.map(scale => <option key={scale} value={scale}>{scale === 'auto' ? 'Авто' : `${Math.round(Number(scale) * 100)}%`}</option>)}
+          {fastkoreScales.map(scale => <option key={scale} value={scale}>{Math.round(Number(scale) * 100)}%</option>)}
         </select>}
         {themeButton}
       </header>
