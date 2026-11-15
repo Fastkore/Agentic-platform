@@ -1,12 +1,54 @@
 import { createHash } from 'node:crypto';
-import { fastkoreChatContextKey, type FastkoreContext } from '../shared/fastkore-context.js';
+import { fastkoreChatContextKey, fastkoreSelectionChatKey, isFastkoreTileList, parseFastkoreContext, type FastkoreContext } from '../shared/fastkore-context.js';
 import type { Chat, FastkoreChatBinding, Job, State } from '../shared/types.js';
 
-export function chatBinding(installationId: string, context: FastkoreContext): FastkoreChatBinding | undefined {
+const hashKey = (key: string) => createHash('sha256').update(key).digest('hex');
+
+export function chatBinding(installationId: string, context: FastkoreContext, externalUserId?: string): FastkoreChatBinding | undefined {
   const key = fastkoreChatContextKey(context);
   if (!key) return;
-  return { installationId, key: createHash('sha256').update(key).digest('hex'), view: context.view,
-    entitySetId: context.entity_set_id, entityId: context.view === 'card' ? context.entity_id ?? undefined : undefined };
+  if (context.chat_key !== undefined && !externalUserId) return;
+  return { installationId, externalUserId: context.chat_key !== undefined ? externalUserId : undefined,
+    key: hashKey(key), view: context.view, entitySetId: context.view === 'none' ? undefined : context.entity_set_id,
+    entityId: context.view === 'card' ? context.entity_ids[0] : undefined,
+    tileId: isFastkoreTileList(context) ? context.tile_id : undefined };
+}
+
+export function parentFastkoreChatBindings(installationId: string, externalUserId: string | undefined, context: FastkoreContext): FastkoreChatBinding[] {
+  if (context.view === 'link_list' && context.owner_entity_set_id && context.owner_entity_id) {
+    const set = context.owner_entity_set_id, id = context.owner_entity_id;
+    return [
+      ...(externalUserId ? [{ installationId, externalUserId, key: hashKey(`card:${set}:${id}`), view: 'card' as const, entitySetId: set, entityId: id }] : []),
+      { installationId, key: hashKey(JSON.stringify([1, 'card', set, id])), view: 'card', entitySetId: set, entityId: id },
+    ];
+  }
+  if (context.view === 'card' && context.tile_id) {
+    const set = context.entity_set_id, tile = context.tile_id;
+    return [
+      ...(externalUserId ? [{ installationId, externalUserId, key: hashKey(`tile:${tile}`), view: 'list' as const, entitySetId: set, tileId: tile }] : []),
+      { installationId, key: hashKey(JSON.stringify([2, 'list', set, tile])), view: 'list', entitySetId: set, tileId: tile },
+    ];
+  }
+  return [];
+}
+
+export function matchesFastkoreChat(binding: FastkoreChatBinding, installationId: string, context: FastkoreContext, externalUserId?: string) {
+  if (binding.installationId !== installationId) return false;
+  if (matchesLegacyFastkoreList(binding, installationId, context)) return true;
+  if (binding.externalUserId || context.chat_key !== undefined) {
+    const current = chatBinding(installationId, context, externalUserId);
+    return !!current && binding.externalUserId === current.externalUserId && binding.key === current.key;
+  }
+  // Old list chats stored only a hash of the exact selection. Keep them usable
+  // from that selection without assuming which tile to migrate their history to.
+  const key = binding.view === 'list' && !binding.tileId ? fastkoreSelectionChatKey(context) : fastkoreChatContextKey(context);
+  return !!key && binding.key === hashKey(key);
+}
+
+export function matchesLegacyFastkoreList(binding: FastkoreChatBinding, installationId: string, context: FastkoreContext) {
+  return binding.installationId === installationId && !binding.externalUserId && binding.view === 'list' &&
+    context.view === 'list' && context.chat_key !== null && binding.entitySetId === context.entity_set_id &&
+    (!binding.tileId || binding.tileId === context.tile_id);
 }
 
 export function migrateFastkoreChatBindings(state: State) {
@@ -25,17 +67,31 @@ export function migrateFastkoreChatBindings(state: State) {
     chatJobs.push(jobs.get(run.id));
     byChat.set(run.chatId, chatJobs);
   }
-  for (const project of state.projects) for (const chat of project.chats) {
+  const chats = state.projects.flatMap(project => project.chats);
+  const knownTiles = new Set<string>();
+  const tileKey = (owner: string, binding: FastkoreChatBinding) => JSON.stringify([owner, binding.installationId, binding.externalUserId, binding.key]);
+  for (const chat of chats) {
+    if (chat.ownerId && chat.fastkoreBinding?.tileId) knownTiles.add(tileKey(chat.ownerId, chat.fastkoreBinding));
+  }
+  for (const chat of chats.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))) {
     const owner = chat.ownerId;
     if (!owner || chat.fastkoreBinding || chat.visibility === 'project') continue;
+    const bind = (binding: FastkoreChatBinding) => {
+      if (!chat.archivedAt && binding.tileId) {
+        const key = tileKey(owner, binding);
+        if (knownTiles.has(key)) return;
+        knownTiles.add(key);
+      }
+      chat.fastkoreBinding = binding;
+      delete chat.fastkoreHistory;
+    };
     const chatJobs = byChat.get(chat.id);
     const userMessages = chat.messages.filter(message => message.role === 'user');
     if (chat.fastkoreHistory !== undefined) {
       const history = chat.fastkoreHistory;
       if (history && chatJobs?.length === history.turns && userMessages.length === history.turns &&
         userMessages.every(message => message.authorId === owner)) {
-        chat.fastkoreBinding = history.binding;
-        delete chat.fastkoreHistory;
+        bind(history.binding);
       }
       continue;
     }
@@ -47,10 +103,11 @@ export function migrateFastkoreChatBindings(state: State) {
       const installation = credential
         ? credential.source === 'fastkore' && credential.userId === owner && credential.installationId
         : known?.size === 1 ? known.values().next().value : undefined;
-      return installation ? chatBinding(installation, job.fastkoreContext) : undefined;
+      const context = parseFastkoreContext(job.fastkoreContext);
+      return installation && context && context.chat_key === undefined ? chatBinding(installation, context) : undefined;
     });
     const [first] = bindings;
-    if (first && bindings.every(binding => binding?.installationId === first.installationId && binding.key === first.key)) chat.fastkoreBinding = first;
+    if (first && bindings.every(binding => binding?.installationId === first.installationId && binding.key === first.key)) bind(first);
   }
 }
 
@@ -58,8 +115,9 @@ export function migrateFastkoreChatBindings(state: State) {
 export function rememberFastkoreTurn(state: State, chat: Chat, job: Job, completed: boolean) {
   if (chat.fastkoreBinding || chat.visibility === 'project' || chat.fastkoreHistory === null) return;
   const credential = state.security?.credentials.find(item => item.id === job.credentialId && item.userId === chat.ownerId);
-  const binding = completed && job.authorId === chat.ownerId && credential?.source === 'fastkore' && credential.installationId && job.fastkoreContext
-    ? chatBinding(credential.installationId, job.fastkoreContext) : undefined;
+  const context = parseFastkoreContext(job.fastkoreContext);
+  const binding = completed && job.authorId === chat.ownerId && credential?.source === 'fastkore' && credential.installationId && context && context.chat_key === undefined
+    ? chatBinding(credential.installationId, context) : undefined;
   const previous = chat.fastkoreHistory;
   if (!binding || previous && (previous.binding.key !== binding.key || previous.binding.installationId !== binding.installationId)) {
     chat.fastkoreHistory = null;

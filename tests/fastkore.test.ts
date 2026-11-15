@@ -356,7 +356,6 @@ test('a valid SSO grant exposes CLI tools without MCP and only with a trusted ru
     const ready = await prepare();
     assert.equal(ready.problem, undefined);
     assert.deepEqual(ready.tools?.definitions.map(tool => tool.name), [
-      'fastkore_cli_describe', 'fastkore_cli_auth_info', 'fastkore_cli_data_get', 'fastkore_cli_data_query',
       'fastkore_cli_catalog', 'fastkore_cli_command_describe', 'fastkore_cli_execute',
     ]);
     assert.equal(check.mock.callCount(), 2);
@@ -364,15 +363,14 @@ test('a valid SSO grant exposes CLI tools without MCP and only with a trusted ru
     assert.equal((await prepare()).tools, undefined);
     assert.equal((await f.patch({ cliEnabled: true })).statusCode, 200);
     const entitySetId = randomUUID(), entityId = randomUUID();
-    assert.equal((await ready.tools!.call('fastkore_cli_data_get', { entitySetId, entityId, scope: 'erp' }, signal)).success, true);
-    const entry = f.store.auditEvents().find(event => event.action === 'erp.cli.read')!;
+    assert.equal((await ready.tools!.call('fastkore_cli_execute', { command: 'data get', args: ['--entity-set', entitySetId, '--entity', entityId] }, signal)).success, true);
+    const entry = f.store.auditEvents().find(event => event.action === 'erp.cli.command')!;
     assert.equal(entry.actorId, session.user.id);
     assert.equal(entry.details?.sessionId, credential.id);
     assert.equal(entry.details?.installationId, f.id);
     assert.equal(entry.details?.runId, run.id);
     assert.equal(entry.details?.chatId, run.chatId);
-    assert.equal(entry.details?.scope, 'erp');
-    assert.deepEqual(entry.details?.objectIds, { entitysetid: entitySetId, entityid: entityId });
+    assert.equal(entry.details?.scope, undefined);
     assert.doesNotMatch(JSON.stringify(entry), /private ERP content|fkug1/);
     await f.asCookie(session, 'POST', '/api/auth/logout', {});
     await assert.rejects(prepare());

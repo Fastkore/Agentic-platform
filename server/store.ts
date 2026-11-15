@@ -5,6 +5,7 @@ import path from 'node:path';
 import type { Attachment, AuditEvent, Chat, ProjectAgentPolicy, Run, State } from '../shared/types.js';
 import { DEFAULT_AGENT_INSTRUCTIONS } from '../shared/agent-instructions.js';
 import { migrateFastkoreChatBindings } from './fastkore-chat.js';
+import { parseFastkoreContext } from '../shared/fastkore-context.js';
 import { AuditJournal, auditPageSize, compareAudit, publishAudit, type AuditCursor, type NewAuditEvent } from './audit-journal.js';
 
 export class BridgeError extends Error { constructor(message: string, public statusCode = 400) { super(message); } }
@@ -85,11 +86,13 @@ export class Store {
       for (const run of this.state.runs) if (run.status === 'running' || run.status === 'queued' && run.steeringTo) {
         run.status = 'interrupted'; run.progress = 'Выполнение прервано остановкой сервера'; run.completedAt = new Date().toISOString();
         run.canSteer = undefined; run.steeringTo = undefined;
+        run.tool = undefined; run.toolContext = undefined;
         run.response = undefined;
       }
       for (const project of this.state.projects) for (const chat of project.chats)
         for (const message of chat.messages) if (message.status === 'running') message.status = 'interrupted';
       migrateFastkoreChatBindings(this.state);
+      for (const job of this.state.jobs) if (job.fastkoreContext) job.fastkoreContext = parseFastkoreContext(job.fastkoreContext) ?? undefined;
       const queued = new Set(this.state.runs.filter(run => run.status === 'queued').map(run => run.id));
       this.state.jobs = this.state.jobs.filter(job => queued.has(job.runId));
       this.commit(this.state);

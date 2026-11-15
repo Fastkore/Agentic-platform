@@ -12,6 +12,7 @@ import type { CodexEvent, CodexRequest, CodexResult, CodexRunner } from './codex
 import type { CliInfo, ModelCatalog } from '../shared/types.js';
 import { BridgeError, redact } from './store.js';
 import { readGoogleLimits } from './google-limits.js';
+import { describeToolContext } from './tool-context.js';
 
 export function geminiFailure(text: string) {
   if (/UNSUPPORTED_CLIENT|This client is no longer supported/.test(text)) return 'Google отклонил Gemini CLI (UNSUPPORTED_CLIENT). Для этого аккаунта требуется переход на Antigravity CLI; повторный вход в Gemini CLI не устранит отказ.';
@@ -116,7 +117,7 @@ export class GeminiClient implements CodexRunner {
         let result = { success: false, text: 'Инструмент недоступен.' };
         if (definitions.some(item => item.name === name)) {
           const toolCallId = randomUUID();
-          await onEvent({ kind: 'tool', text: name, toolCallId });
+          await onEvent({ kind: 'tool', text: name, toolCallId, toolContext: describeToolContext(name, args) });
           try {
             if (name === fileTool) result = { success: true, text: await files(args) };
             else if (request.tools) result = await request.tools.call(name, args, signal);

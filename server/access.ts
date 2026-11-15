@@ -203,7 +203,10 @@ export class Access {
     const project = this.workspace.project(id);
     if (user.role !== 'admin' && !project.memberIds?.includes(user.id)) throw new BridgeError('Проект не найден.', 404); return project;
   }
-  canChat(user: User, chat: Chat) { return user.role === 'admin' || !chat.archivedAt && (chat.ownerId === user.id || chat.visibility === 'project'); }
+  canChat(user: User, chat: Chat) {
+    return user.role === 'admin' || chat.ownerId === user.id && !!chat.fastkoreBinding
+      || !chat.archivedAt && (chat.ownerId === user.id || chat.visibility === 'project');
+  }
   chat(user: User, projectId: string, chatId: string) {
     this.project(user, projectId); const chat = this.workspace.chat(projectId, chatId);
     if (!this.canChat(user, chat)) throw new BridgeError('Диалог не найден.', 404); return chat;

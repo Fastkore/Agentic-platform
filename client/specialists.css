@@ -37,6 +37,34 @@
 .specialist-back { display: inline-flex; align-items: center; gap: 5px; color: var(--text-muted); padding: 4px 5px; margin: 0 0 12px -5px; border-radius: 6px; }
 .specialist-back:hover { color: var(--text); background: var(--hover); }
 .specialist-form { display: grid; gap: 14px; }
+.specialist-form label.check-setting {
+  display: flex; align-items: center; gap: 12px;
+  margin: 10px 0; padding-block: 4px; line-height: 1.4; cursor: pointer;
+}
+.specialist-form label.check-setting > input[type="checkbox"] {
+  flex: 0 0 16px; width: 16px; height: 16px; min-height: 0;
+  margin: 0; padding: 0; align-self: center;
+}
+.settings-content:has(.specialist-editor) { display: flex; flex-direction: column; overflow: hidden; min-height: 0; }
+.settings-content:has(.specialist-editor) > .settings-pane { display: flex; flex-direction: column; flex: 1; width: 100%; min-height: 0; }
+.specialist-editor { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+.specialist-editor > .specialist-back { align-self: flex-start; flex: none; }
+.specialist-editor > .specialist-header { flex: none; margin-bottom: 14px; }
+.specialist-editor .specialist-editor-form { display: flex; flex-direction: column; flex: 1; min-height: 0; gap: 0; }
+.specialist-tabs { display: flex; flex: none; gap: 4px; overflow-x: auto; border-bottom: 1px solid var(--border); padding: 0 0 8px; }
+.specialist-tabs > button { display: inline-flex; align-items: center; justify-content: center; gap: 7px; padding: 9px 12px; border-radius: 8px; white-space: nowrap; color: var(--text-muted); }
+.specialist-tabs > button[aria-selected="true"] { color: var(--accent-strong); background: var(--accent-soft); }
+.specialist-tabs > button:hover { background: var(--hover); }
+.specialist-tabpanel { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; padding: 14px 6px 10px 0; overscroll-behavior: contain; }
+.specialist-tabpanel[hidden] { display: none; }
+.specialist-tabpanel > .specialist-card + .specialist-card { margin-top: 14px; }
+.specialist-editor-form > .settings-dialog-actions { flex: none; border-top: 1px solid var(--border); margin: 0; padding-top: 12px; }
+.specialist-editor-form > .inline-error { flex: none; margin: 8px 0; max-height: 90px; overflow: auto; }
+@media (max-width: 720px) {
+  .specialist-tabs { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .specialist-tabs > button { padding: 6px; font-size: 13px; }
+  .specialist-editor .specialist-header h2 { font-size: 21px; }
+}
 .specialist-card { min-width: 0; padding: 16px; border-radius: 13px; border: 1px solid var(--border); background: var(--surface); }
 .specialist-card h3 { display: flex; align-items: center; gap: 8px; margin: 0 0 12px; font-size: 16px; font-weight: 650; }
 .specialist-card h3 > svg { flex: none; color: var(--text-muted); }
@@ -53,7 +81,7 @@
 .specialist-instructions textarea { flex: 1; min-height: 140px; resize: vertical; }
 .specialist-tool-list { display: grid; gap: 6px; margin-top: 9px; }
 .specialist-tool-list label {
-  display: flex; gap: 9px; align-items: center; padding: 8px 9px; margin: 0; border: 1px solid var(--border);
+  display: flex; gap: 12px; align-items: center; padding: 8px 9px; margin: 0; border: 1px solid var(--border);
   border-radius: 8px; background: var(--control); cursor: pointer;
 }
 .workspace-settings .specialist-tool-list input { flex: none; margin: 0; accent-color: var(--accent); }

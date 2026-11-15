@@ -10,12 +10,17 @@ test('timings count overlapping tools once in wall time and separate model gaps'
   now = 100; trace.event({ kind: 'session' });
   now = 600; trace.event({ kind: 'tool', toolCallId: 'a', text: 'fastkore_cli_execute' });
   now = 700; trace.event({ kind: 'tool', toolCallId: 'b', text: 'knowledge' });
+  now = 750; trace.event({ kind: 'tool', toolCallId: 'c', text: 'fastkore_GetOrder' });
   now = 900; trace.event({ kind: 'tool-end', toolCallId: 'a' });
+  now = 950; trace.event({ kind: 'tool-end', toolCallId: 'c' });
+  assert.equal(timing.outsideToolsMs, 600);
   now = 1000; trace.event({ kind: 'tool-end', toolCallId: 'b' });
   now = 1400; trace.event({ kind: 'message-delta', text: 'Ответ' });
   now = 1500; trace.finish();
   assert.equal(timing.executorMs, 1500);
   assert.equal(timing.toolWallMs, 400);
+  assert.equal(timing.erpToolWallMs, 350);
+  assert.equal(timing.outsideToolsMs, 1100);
   assert.equal(timing.tools.cli?.totalMs, 300);
   assert.equal(timing.tools.knowledge?.totalMs, 300);
   assert.equal(timing.firstTextMs, 1400);
@@ -30,5 +35,6 @@ test('unfinished tools are timed on failure without including arguments or respo
   trace.event({ kind: 'tool', toolCallId: 'a', text: 'fastkore_GetOrders' });
   now = 210; trace.finish();
   assert.deepEqual(timing.tools.mcp, { calls: 1, totalMs: 200, maxMs: 200, unfinished: 1 });
+  assert.equal(timing.outsideToolsMs, 0);
   assert.equal(JSON.stringify(timing).includes('GetOrders'), false);
 });

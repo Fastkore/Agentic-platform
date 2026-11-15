@@ -4,10 +4,11 @@ import { readdir, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { createInterface } from 'node:readline';
 import { BridgeError, redact } from './store.js';
-import type { CliInfo, CodexLimits, LimitWindow, ModelCatalog, ModelOption, Usage } from '../shared/types.js';
+import type { CliInfo, CodexLimits, LimitWindow, ModelCatalog, ModelOption, RunToolContext, Usage } from '../shared/types.js';
 import type { CodexTools } from './codex-tools.js';
+import { describeToolContext } from './tool-context.js';
 
-export interface CodexEvent { kind: 'session' | 'message' | 'message-delta' | 'message-replace' | 'tool' | 'tool-end' | 'progress' | 'usage' | 'steer-ready' | 'steer-closed'; text?: string; toolCallId?: string; usage?: Usage }
+export interface CodexEvent { kind: 'session' | 'message' | 'message-delta' | 'message-replace' | 'tool' | 'tool-end' | 'progress' | 'usage' | 'steer-ready' | 'steer-closed'; text?: string; toolCallId?: string; toolContext?: RunToolContext; usage?: Usage }
 export type SteerResult = 'accepted' | 'rejected' | 'unknown';
 export type SteerTurn = (text: string) => Promise<SteerResult>;
 export type RegisterSteering = (steer: SteerTurn | undefined) => void;
@@ -289,7 +290,7 @@ export class CodexClient implements CodexRunner {
           if (sessionId && threadId === sessionId && (!turnId || toolTurn === turnId) && typeof callId === 'string'
             && !seenCalls.has(callId) && typeof tool === 'string' && ++toolCalls <= 64) {
             seenCalls.add(callId);
-            await onEvent({ kind: 'tool', text: tool, toolCallId: callId });
+            await onEvent({ kind: 'tool', text: tool, toolCallId: callId, toolContext: describeToolContext(tool, args) });
             await onEvent({ kind: 'progress', text: tool === 'consult_specialist' ? 'Codex обращается к специалисту…' : tool === 'knowledge' ? 'Codex читает базу знаний…' : 'Codex обращается к Fastkore…' });
             try { if (tools) result = await tools.call(tool, args, signal); } catch { /* Never forward an upstream exception to the model. */ }
             await onEvent({ kind: 'tool-end', toolCallId: callId });

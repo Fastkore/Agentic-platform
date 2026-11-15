@@ -3,16 +3,16 @@ import assert from 'node:assert/strict';
 import { createServer } from 'node:https';
 import { randomUUID } from 'node:crypto';
 import type { Credential } from '../shared/types.js';
-import { parseFastkoreContext } from '../shared/fastkore-context.js';
 import { FastkoreMcp } from '../server/fastkore-mcp.js';
 import { testCertificate } from './test-certificate.js';
 
-test('Fastkore MCP scopes tokens to two SSO sessions, blocks writes and handles revocation without replay', async () => {
+test('Fastkore MCP forwards native tool schemas and arguments, isolates SSO sessions and handles revocation without replay', async () => {
   const tls = testCertificate(), installationId = randomUUID(), key = 'fkap1.' + installationId + '.example';
   const credentials: Credential[] = ['alice', 'boris'].map(userId => ({ id: randomUUID(), userId, kind: 'session',
     hash: '', name: 'Fastkore', createdAt: new Date().toISOString(), source: 'fastkore', installationId, externalUserId: randomUUID() }));
   const issued = new Map<string, number>(), revoked = new Set<string>();
-  const calls: { user: string; name: string }[] = [];
+  const calls: { user: string; name: string; args: unknown }[] = [];
+  const orderSchema = { type: 'object', properties: { guid: { type: 'string', format: 'uuid' } }, required: ['guid'], additionalProperties: false };
   let denyNext = false;
   const server = createServer(tls, async (req, res) => {
     let body = ''; for await (const chunk of req) body += chunk;
@@ -50,12 +50,12 @@ test('Fastkore MCP scopes tokens to two SSO sessions, blocks writes and handles 
     if (value.method === 'notifications/initialized') { send(202); return; }
     if (value.method === 'tools/list') {
       const inputSchema = { type: 'object', properties: {} };
-      if (value.params.cursor === 'next') rpc({ tools: [{ name: 'GetOrders', inputSchema }] });
+      if (value.params.cursor === 'next') rpc({ tools: [{ name: 'GetOrders', inputSchema }, { name: 'GetOrder', inputSchema: orderSchema }] });
       else rpc({ tools: [{ name: 'GetCurrentUserInfo', inputSchema }, { name: 'CreateTask', inputSchema }], nextCursor: 'next' });
       return;
     }
     assert.equal(value.method, 'tools/call');
-    calls.push({ user, name: value.params.name });
+    calls.push({ user, name: value.params.name, args: value.params.arguments });
     if (denyNext) { denyNext = false; send(401); return; }
     rpc({ content: [{ type: 'text', text: `user=${user}; fkua1.${user}.should-redact` }], isError: false });
   });
@@ -77,17 +77,15 @@ test('Fastkore MCP scopes tokens to two SSO sessions, blocks writes and handles 
     c.erpDelegation = { sealedGrant: 'test', expiresAt, revision: binding.revision };
   };
   const signal = new AbortController().signal;
-  const prepare = (c: Credential) => mcp.prepare(c, undefined, () => {}, signal);
+  const prepare = (c: Credential) => mcp.prepare(c, () => {}, signal);
   try {
     assert.equal((await prepare(alice)).tools, undefined);
     attach(alice); attach(boris);
     const [a, b] = await Promise.all([prepare(alice), prepare(boris)]);
     assert.ok(a.tools && b.tools);
-    const full = await mcp.prepare(alice, undefined, () => {}, signal, undefined, true);
-    assert.ok(full.tools?.definitions.some(tool => tool.name === 'fastkore_CreateTask'));
-    assert.deepEqual(a.tools.definitions.map(tool => tool.name), ['fastkore_GetCurrentUserInfo', 'fastkore_GetOrders']);
-    assert.ok(!a.tools.definitions.some(tool => tool.name.includes('CreateTask')));
-    assert.equal((await a.tools.call('fastkore_CreateTask', {}, signal)).success, false);
+    assert.deepEqual(a.tools.definitions.map(tool => tool.name), ['fastkore_GetCurrentUserInfo', 'fastkore_CreateTask', 'fastkore_GetOrders', 'fastkore_GetOrder']);
+    assert.deepEqual(a.tools.definitions.find(tool => tool.name === 'fastkore_GetOrder')?.inputSchema, orderSchema);
+    assert.equal((await a.tools.call('fastkore_UnknownTool', {}, signal)).success, false);
     assert.match((await a.tools.call('fastkore_GetCurrentUserInfo', {}, signal)).text, /user=alice/);
     assert.doesNotMatch((await b.tools.call('fastkore_GetCurrentUserInfo', {}, signal)).text, /fkua1/);
     assert.deepEqual([...issued.values()], [1, 1]);
@@ -97,24 +95,18 @@ test('Fastkore MCP scopes tokens to two SSO sessions, blocks writes and handles 
     assert.equal(calls.length, 3);
     await a.tools.call('fastkore_GetOrders', {}, signal);
     assert.equal(issued.get('alice'), 2);
-    const context = parseFastkoreContext({ type: 'fastkore.context', version: 1, view: 'list', entity_set_id: randomUUID(),
-      filter_status: 'included', filter_xml: '<Filter/>', scope_reproducible: true });
-    assert.ok(context);
-    const scoped = await mcp.prepare(alice, context, () => {}, signal);
-    assert.match(scoped.problem!, /Текущая выборка/);
-    assert.deepEqual(scoped.tools?.definitions.map(tool => tool.name), ['fastkore_GetCurrentUserInfo', 'fastkore_GetOrders']);
-    assert.equal((await scoped.tools!.call('fastkore_GetOrders', { scope: 'current', arguments: {} }, signal)).success, false);
-    assert.equal((await scoped.tools!.call('fastkore_GetOrders', { scope: 'erp', arguments: {} }, signal)).success, true);
-    assert.equal(calls.at(-1)?.user, 'alice');
+    const args = { guid: randomUUID() };
+    assert.equal((await a.tools.call('fastkore_GetOrder', args, signal)).success, true);
+    assert.deepEqual(calls.at(-1), { user: 'alice', name: 'GetOrder', args });
     await mcp.revoke(alice);
     assert.ok(revoked.has('alice'));
     assert.equal((await a.tools.call('fastkore_GetOrders', {}, signal)).success, false);
     assert.equal(calls.length, 5);
     const restarted = manager();
-    assert.ok((await restarted.prepare(boris, undefined, () => {}, signal)).tools);
+    assert.ok((await restarted.prepare(boris, () => {}, signal)).tools);
     assert.equal(issued.get('boris'), 2, 'restart obtains a fresh token for the same ERP user');
     revoked.add('boris');
-    const denied = await manager().prepare(boris, undefined, () => {}, signal);
+    const denied = await manager().prepare(boris, () => {}, signal);
     assert.match(denied.problem!, /доступ к ERP завершён или отозван/i);
     assert.equal(boris.erpDelegation, undefined);
     assert.equal(manager().status(boris), 'reauth');

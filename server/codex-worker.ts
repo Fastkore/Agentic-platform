@@ -52,13 +52,15 @@ export function createCodexWorker(codex: CodexRunner = new CodexClient([], 'work
   const steeringTurns = new Map<string, SteerTurn>();
   const inspect = async (signal?: AbortSignal, model?: string) => {
     const selection = accounts && await accounts.select(model).catch((error: Error) => ({ error }));
-    if (selection && 'error' in selection) return { path: '', version: '', authentication: 'signed-out' as const, status: selection.error.message };
+    if (selection && 'error' in selection) return { path: '', version: '', authentication: 'signed-out' as const,
+      status: selection.error.message, catalogRevision: accounts?.catalogRevision };
     const info = await (selection ? accounts!.runner(selection.account.id) : codex).inspect(cli, signal);
     return {
       path: '', version: info.version, authentication: info.authentication,
       status: info.status,
       accountId: selection && await accounts!.executionKey(selection.account.id),
       provider: selection?.account.provider,
+      catalogRevision: accounts?.catalogRevision,
     };
   };
   const requireLogin = async (signal?: AbortSignal, model?: string) => {

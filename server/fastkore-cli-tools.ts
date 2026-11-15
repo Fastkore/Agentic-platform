@@ -8,10 +8,10 @@ export function withFastkoreCliCommands(tools: CodexTools, catalog: () => Promis
   const definitions: CodexToolDefinition[] = [
     { type: 'function', name: 'fastkore_cli_catalog', description: 'Каталог всех команд установленной Fastkore CLI с назначением и параметрами.',
       inputSchema: { type: 'object', additionalProperties: false, properties: {} } },
-    { type: 'function', name: 'fastkore_cli_command_describe', description: 'Офлайн-контракт любой команды Fastkore CLI. Прочитай перед первым использованием команды.',
+    { type: 'function', name: 'fastkore_cli_command_describe', description: 'Штатное agent describe для команды установленной Fastkore CLI.',
       inputSchema: { type: 'object', additionalProperties: false, required: ['command'], properties: { command: { type: 'string' } } } },
     { type: 'function', name: 'fastkore_cli_execute',
-      description: 'Выполняет команду CLI с правами текущего сотрудника ERP. command — имя из каталога, args — массив опций и значений. Рабочая папка cli общая для агента и CLI. Относительные пути отсчитываются от cli. Исходники source, бэкапы backups, временные файлы tmp. Каталог сохраняется между вопросами этого чата. Соединение и билет задаёт сервер. Изменения выполняй по явному запросу сотрудника, проверяй guards и результат. Не повторяй неуспешную запись автоматически.',
+      description: 'Запускает Fastkore CLI. command — команда, например data query, args — штатные параметры CLI отдельными строками. Полный снимок вопроса доступен по --context context.json. Пути относительны рабочей папке cli этого чата; файлы сохраняются между вопросами. Соединение и одноразовый билет текущего сотрудника передаёт исполнитель.',
       inputSchema: { type: 'object', additionalProperties: false, required: ['command', 'args'],
         properties: { command: { type: 'string' }, args: { type: 'array', maxItems: 160, items: { type: 'string', maxLength: 32000 } } } } },
   ];

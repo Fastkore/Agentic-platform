@@ -26,6 +26,32 @@ async function authorizedApp(workspace: Workspace) {
   return { app, headers: { authorization: `Bearer ${setup.json().token}` } };
 }
 async function temp() { return mkdtemp(path.join(tmpdir(), 'bridge-web-')); }
+test('a connected account revision replaces a model catalog even when the primary account stays the same', async () => {
+  const store = new Store(await temp());
+  let revision = 'first';
+  let catalogReads = 0;
+  const workspace = new Workspace(store, {
+    isolated: true,
+    inspect: async () => ({ path: '', version: '', authentication: 'chatgpt', status: '', accountId: 'same-account', catalogRevision: revision }),
+    listModels: async () => {
+      catalogReads++;
+      return { source: 'combined', fetchedAt: new Date().toISOString(), models: [
+        { id: revision, name: revision, description: '', isDefault: true },
+      ] };
+    },
+    run: async () => ({ response: '' }),
+  });
+  try {
+    await workspace.codexConnection();
+    assert.equal((await workspace.models()).models[0].id, 'first');
+    assert.equal((await workspace.models()).models[0].id, 'first');
+    assert.equal(catalogReads, 1);
+    revision = 'additional-model';
+    assert.equal((await workspace.codexConnection(true))?.catalogRevision, revision);
+    assert.equal((await workspace.models()).models[0].id, revision);
+    assert.equal(catalogReads, 2);
+  } finally { await workspace.shutdown(); }
+});
 async function fixture() {
   const root = await temp(), folder = path.join(root, 'Проект с пробелами'); await mkdir(folder);
   const store = new Store(path.join(root, 'state')), workspace = new Workspace(store, new CodexClient([fakeFile]));

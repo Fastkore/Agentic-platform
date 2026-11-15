@@ -29,7 +29,7 @@ export interface ProjectFile { id: string; name: string; size: number; uploadedA
 export interface Attachment { id: string; name: string; path?: string; storage?: 's3'; size: number; ownerId?: string; libraryUploadedAt?: string; uploadedAt?: string }
 export interface Message { id: string; role: 'user' | 'assistant'; text: string; status: RunStatus; createdAt: string; attachments: Attachment[]; usage?: Usage; runId?: string; model?: string; authorId?: string; authorName?: string; fileScope?: string; specialistName?: string; consultedSpecialists?: string[] }
 export interface ErpContext { installationId: string; entityType: string; entityId: string }
-export interface FastkoreChatBinding { installationId: string; key: string; view: FastkoreContext['view']; entitySetId: string; entityId?: string }
+export interface FastkoreChatBinding { installationId: string; externalUserId?: string; key: string; view: FastkoreContext['view']; entitySetId?: string; entityId?: string; tileId?: string }
 export interface ExternalIdentity { installationId: string; externalUserId: string; userId: string }
 export interface Chat { reasoningEffort?: ReasoningEffort; id: string; title: string; titleCustomized?: true; sessionId?: string; sessionScope?: string; knowledgeRevision?: string; specialistSessions?: Record<string, Pick<Chat, 'sessionId' | 'sessionScope' | 'knowledgeRevision'>>; updatedAt: string; archivedAt?: string; messages: Message[]; model?: string; agentProfileId?: string; erpContext?: ErpContext; fastkoreBinding?: FastkoreChatBinding; fastkoreHistory?: { binding: FastkoreChatBinding; turns: number } | null; linkedToFastkore?: true; ownerId?: string; ownerName?: string; visibility?: 'private' | 'project' }
 export interface ProjectAgentConnection { profileId: string; toolIds: AgentToolId[]; fileIds: string[] | null }
@@ -46,16 +46,22 @@ export interface RunTiming {
   queueMs: number;
   connectionMs?: number;
   erpSetupMs?: number;
+  mcpSetupMs?: number;
+  cliSetupMs?: number;
   preparationMs?: number;
+  totalMs?: number;
   executorMs?: number;
   sessionReadyMs?: number;
   firstTextMs?: number;
   longestExecutorGapMs?: number;
   toolWallMs?: number;
+  outsideToolsMs?: number;
+  erpToolWallMs?: number;
   finalizeMs?: number;
   tools: Partial<Record<RunToolKind, { calls: number; totalMs: number; maxMs: number; unfinished: number }>>;
 }
-export interface Run { reasoningEffort?: ReasoningEffort; id: string; projectId?: string; chatId?: string; status: RunStatus; progress: string; tool?: string; canSteer?: boolean; steeringTo?: string; createdAt: string; startedAt?: string; completedAt?: string; response?: string; error?: string; usage?: Usage; timing?: RunTiming; usageOnly?: true; clientRequestId?: string; requestHash?: string; model?: string; executionProvider?: CliInfo['provider']; ownerId?: string; agentProfileId?: string; profileRevision?: number }
+export interface RunToolContext { operation?: string; scope?: 'current' | 'erp'; selection?: true; pageSize?: number; continuation?: true }
+export interface Run { reasoningEffort?: ReasoningEffort; id: string; projectId?: string; chatId?: string; status: RunStatus; progress: string; tool?: string; toolContext?: RunToolContext; canSteer?: boolean; steeringTo?: string; createdAt: string; startedAt?: string; completedAt?: string; response?: string; error?: string; usage?: Usage; timing?: RunTiming; usageOnly?: true; clientRequestId?: string; requestHash?: string; model?: string; executionProvider?: CliInfo['provider']; ownerId?: string; agentProfileId?: string; profileRevision?: number }
 export interface QueuedRun extends Run { queuedText?: string; queuedFiles?: number }
 /** Trusted queue input. Never return this record from HTTP handlers. */
 export interface Job { runId: string; kind: 'chat' | 'subscription'; text: string; attachmentIds: string[]; authorId?: string; credentialId?: string; scope?: string; fastkoreContext?: FastkoreContext; recommendedSpecialistId?: string; specialistName?: string; specialistScope?: string }
@@ -83,6 +89,8 @@ export interface AuditEvent {
   details?: {
     sessionId?: string; installationId?: string; runId?: string; chatId?: string;
     scope?: 'current' | 'erp'; objectIds?: Record<string, string>; success?: boolean; status?: number; elapsedMs?: number;
+    trustMs?: number; ticketMs?: number; ticketStatus?: number; cliRpcMs?: number; cliProcessMs?: number; exitCode?: number;
+    mcpTokenMs?: number; mcpHttpMs?: number;
     section?: 'fastkore' | 'company'; previousRevision?: string; revision?: string;
   };
 }
@@ -102,10 +110,10 @@ export interface StoredFastkoreInstallation extends Omit<FastkoreInstallation, '
   tls?: { trust?: FastkoreTlsTrust };
 }
 export interface State { schemaVersion: 1; settings: Settings; projects: Project[]; runs: Run[]; jobs?: Job[]; externalIdentities?: ExternalIdentity[]; sso?: { installations?: StoredFastkoreInstallation[]; roles?: FastkoreRoleRecord[]; roleSnapshots?: FastkoreRoleSnapshot[]; rolePermissions?: (FastkoreRolePermissions & { installationId: string; roleId: string })[] }; security?: Security; corporate?: Corporate }
-export interface CliInfo { provider?: 'codex' | 'gemini' | 'antigravity' | 'glm'; accountId?: string; path: string; version: string; authentication: 'chatgpt' | 'google' | 'glm' | 'api-key' | 'signed-out' | 'unknown'; status: string }
+export interface CliInfo { provider?: 'codex' | 'gemini' | 'antigravity' | 'glm'; accountId?: string; catalogRevision?: string; path: string; version: string; authentication: 'chatgpt' | 'google' | 'glm' | 'api-key' | 'signed-out' | 'unknown'; status: string }
 export interface ProjectSummary { id: string; name: string; directory: string; chatCount: number }
 export interface ChatSummary { id: string; title: string; updatedAt: string; messageCount: number; ownerId?: string; ownerName?: string; visibility?: 'private' | 'project'; linkedToFastkore?: true }
 export interface ArchivedChatSummary extends ChatSummary { projectId: string; projectName: string; archivedAt: string }
-export interface RelatedChatSummary extends ChatSummary { projectId: string; projectName: string }
+export interface RelatedChatSummary extends ChatSummary { projectId: string; projectName: string; parent?: true; contextMatches?: false; legacyContext?: true }
 export interface ToolPermissions { cli: boolean; mcp: boolean; webSearch: boolean }
 export interface Status { version: string; activeRun: Run | null; activeRuns?: Run[]; queuedRuns: QueuedRun[]; busy: boolean; executionDisabled?: boolean; isolatedCodex?: boolean; workerFilesAvailable?: boolean; codexLimitsRevision?: number; user: User; setupRequired: boolean; canCreateProject?: boolean; dictationAvailable?: boolean; dictationEnabled?: boolean; fastkoreToolsStatus?: 'unavailable' | 'ready' | 'reauth'; toolPermissions?: ToolPermissions; cli: CliInfo | null; settings: Settings; addresses: string[]; port: number; lan: boolean; storageWarning?: string; fileStorage?: FileStorageStatus }

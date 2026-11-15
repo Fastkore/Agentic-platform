@@ -1,4 +1,4 @@
-param([string]$BuildContext)
+param([string]$BuildContext, [ValidatePattern('^\d+\.\d+\.\d+\.\d+$')][string]$CliVersion)
 $ErrorActionPreference = 'Stop'
 Set-Location (Split-Path -Parent $PSScriptRoot)
 
@@ -21,10 +21,22 @@ if ($BuildContext) {
     $buildStack = $stack + @('-f', $overridePath)
 }
 $previousTickets = $env:BRIDGE_FASTKORE_CLI_TICKETS
+$previousCliVersion = $env:BRIDGE_FASTKORE_CLI_PACKAGE_VERSION
 $appStopped = $false
 try {
     Invoke-Docker info --format '{{.ServerVersion}}'
     $env:BRIDGE_FASTKORE_CLI_TICKETS = '1'
+    if ($CliVersion) {
+        if (!(Test-Path -LiteralPath "private/fastkore-cli-pilot/$CliVersion-sso/.agent-platform-import.json")) {
+            throw 'Import the selected CLI package with Import-FastkoreCli.ps1 first.'
+        }
+        $env:BRIDGE_FASTKORE_CLI_PACKAGE_VERSION = $CliVersion
+    } elseif (!$previousCliVersion) {
+        $runningCli = Invoke-Docker ps --filter 'label=com.docker.compose.project=fastkore-cli' --filter 'label=com.docker.compose.service=cli' --format '{{.Image}}'
+        if ($runningCli -match '^fastkore-cli:(\d+\.\d+\.\d+\.\d+)-sso$') {
+            $env:BRIDGE_FASTKORE_CLI_PACKAGE_VERSION = $Matches[1]
+        }
+    }
     Invoke-Docker @stack config --quiet
     Invoke-Docker @cli config --quiet
     Invoke-Docker @buildStack build app codex
@@ -72,4 +84,5 @@ console.log(JSON.stringify({rolesSupported:true,ssoLimitBytes:65536,cliReady:tru
     }
     if ($null -eq $previousTickets) { Remove-Item Env:BRIDGE_FASTKORE_CLI_TICKETS -ErrorAction SilentlyContinue }
     else { $env:BRIDGE_FASTKORE_CLI_TICKETS = $previousTickets }
+    $env:BRIDGE_FASTKORE_CLI_PACKAGE_VERSION = $previousCliVersion
 }

@@ -43,6 +43,10 @@ test('CLI catalog accepts command parameters and keeps file paths inside its job
       ['subject', 'list', '--kind', 'user', '--user-ticket-stdin', '--json']);
     assert.deepEqual(await commandArguments(catalog, 'macro apply', ['--file', 'source/macro.cs', '--element', 'id', '--warnings-as-errors'], directory),
       ['macro', 'apply', '--file', path.join(directory, 'source', 'macro.cs'), '--element', 'id', '--warnings-as-errors', '--user-ticket-stdin', '--json']);
+    assert.deepEqual(await commandArguments(catalog, 'data query', ['--context=context.json', '--after', id, '--page-size', '1000', '--order-by', '$Modified', '--descending'], directory),
+      ['data', 'query', '--context', path.join(directory, 'context.json'), '--after', id, '--page-size', '1000', '--order-by', '$Modified', '--descending', '--user-ticket-stdin', '--json']);
+    assert.deepEqual(await commandArguments(catalog, 'agent describe', ['data query', '--future-parameter', 'value'], directory),
+      ['agent', 'describe', 'data query', '--future-parameter', 'value', '--user-ticket-stdin', '--json']);
     for (const args of [['--server', 'other'], ['--file', '../escape'], ['--file', '-'], ['--password', 'secret'], ['--file=/tmp/escape']]) {
       await assert.rejects(commandArguments(catalog, 'macro apply', args, directory));
     }

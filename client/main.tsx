@@ -2,7 +2,7 @@ import React, { lazy, Suspense, useCallback, useEffect, useRef, useState } from 
 import { createRoot } from 'react-dom/client';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { Archive, ArrowUp, BarChart3, Bot, Check, ChevronDown, ChevronRight, ClipboardList, Copy, Database, EllipsisVertical, FileText, Folder, History, Link2, LoaderCircle, LockKeyhole, LogOut, Menu, Moon, Network, PanelLeftClose, PanelLeftOpen, Pencil, Plus, RefreshCw, Search, Settings2, ShieldCheck, Square, SquarePen, Sun, Terminal, Users, X } from 'lucide-react';
+import { Archive, ArrowUp, BarChart3, Bot, Check, ChevronDown, ChevronRight, ClipboardList, Copy, Database, EllipsisVertical, Eraser, FileText, Folder, History, Link2, LoaderCircle, LockKeyhole, LogOut, Menu, Moon, Network, PanelLeftClose, PanelLeftOpen, Pencil, Plus, RefreshCw, Search, Settings2, ShieldCheck, Square, SquarePen, Sun, Terminal, Users, X } from 'lucide-react';
 import type { AgentSummary, Attachment, Chat, ChatSummary, CodexLimits, FastkoreAuthentication, FileStorageStatus, ModelCatalog, ProjectSummary, RelatedChatSummary, Run, Settings, Status, User } from '../shared/types';
 import './style.css';
 import './workspace.css';
@@ -17,14 +17,15 @@ import { SidebarResizeHandle } from './SidebarResizeHandle';
 import { ComposerInput } from './ComposerInput';
 import { ChatAccessPopover } from './ChatAccessPopover';
 import { ChatModelControls, reasoningOptions } from './ChatModelControls';
+import { runToolLabel } from './run-tool-label';
 import { WorkspaceDialog } from './WorkspaceDialog';
 import { ProjectFilesDialog } from './ProjectFilesDialog';
 import { ProjectAgentsDialog } from './ProjectAgentsDialog';
 import { VoiceDictation } from './VoiceDictation';
 import { DictationModelSettings } from './DictationModelSettings';
 import { DEFAULT_AGENT_INSTRUCTIONS } from '../shared/agent-instructions';
-import { fastkoreChatContextKey, fastkoreContextProblem, isFastkoreContextMessage, isFastkoreContextReset, parseFastkoreContext, type FastkoreContext } from '../shared/fastkore-context';
 import { concreteModel, isAutomaticModel } from '../shared/model-selection';
+import { fastkoreChatContextKey, fastkoreContextProblem, isFastkoreContextMessage, isFastkoreTileList, parseFastkoreContext, type FastkoreContext } from '../shared/fastkore-context';
 
 const AccountPanel = lazy(() => import('./AccessPanel').then(module => ({ default: module.AccountPanel })));
 const TeamPanel = lazy(() => import('./AccessPanel').then(module => ({ default: module.TeamPanel })));
@@ -40,7 +41,6 @@ let accessKey = sessionStorage.getItem('bridge-key') ?? '';
 const agentsUrl = (projectId: string) => projectId ? '/api/projects/' + encodeURIComponent(projectId) + '/agents' : '/api/agents';
 const settingsSections = {
   team: { label: 'Команда', icon: Users },
-  chatAccess: { label: 'Доступ в чате', icon: ShieldCheck },
   roles: { label: 'Роли', icon: ShieldCheck },
   profiles: { label: 'Специалисты', icon: Bot },
   datasets: { label: 'Источники', icon: Database },
@@ -50,29 +50,55 @@ const settingsSections = {
   audit: { label: 'Журнал доступа', icon: ClipboardList },
   usage: { label: 'Использование', icon: BarChart3 },
   fastkore: { label: 'Вход из Fastkore', icon: Link2 },
-  server: { label: 'Сервер', icon: Network },
+  server: { label: 'Сервер и AI', icon: Network },
   account: { label: 'Учётная запись', icon: LockKeyhole },
 };
 type SettingsSection = keyof typeof settingsSections;
 let browserSession = false, csrfToken = '', sessionUserId = '', authEpoch = 0;
-class ApiError extends Error { constructor(message: string, readonly status: number) { super(message); } }
+class ApiError extends Error {
+  constructor(message: string, readonly status: number, readonly transient = false) { super(message); }
+}
+const transientStatus = (status: number) => [408, 502, 503, 504].includes(status);
+async function readApiJson(response: Response) {
+  let value;
+  try { value = await response.json(); }
+  catch (error) {
+    if ((error as Error).name === 'AbortError') throw error;
+    if (response.ok) throw new ApiError('Сервер вернул неполный ответ.', 502, true);
+  }
+  if (!response.ok) {
+    const temporary = transientStatus(response.status);
+    const message = typeof value?.error === 'string' && value.error.trim() ? value.error : temporary ? 'Сервер временно недоступен.' : 'Не удалось выполнить запрос.';
+    throw new ApiError(message, response.status, temporary);
+  }
+  return value;
+}
+async function fetchApi(url: string, init: RequestInit) {
+  try { return await fetch(url, init); }
+  catch (error) {
+    if ((error as Error).name === 'AbortError') throw error;
+    throw new ApiError('Не удалось связаться с сервером.', 0, true);
+  }
+}
 async function api<T>(url: string, init: RequestInit = {}, responseType: 'json' | 'blob' = 'json'): Promise<T> {
   const epoch = authEpoch;
   const headers = new Headers(init.headers);
   if (browserSession && !['GET', 'HEAD'].includes(init.method ?? 'GET')) headers.set('X-CSRF-Token', csrfToken);
   if (!browserSession && accessKey) headers.set('Authorization', `Bearer ${accessKey}`);
   if (init.body && !(init.body instanceof FormData)) headers.set('Content-Type', 'application/json');
-  const response = await fetch(url, { ...init, headers });
-  if (response.ok && responseType === 'blob') {
-    const result = await response.blob();
+  try {
+    const response = await fetchApi(url, { ...init, headers });
+    const blob = response.ok && responseType === 'blob';
+    const result = await (blob ? response.blob() : readApiJson(response));
     if (epoch !== authEpoch) throw new DOMException('Сеанс изменился.', 'AbortError');
+    if (!blob && browserSession && sessionUserId && result?.user?.id && result.user.id !== sessionUserId) {
+      throw new ApiError('Пользователь Fastkore изменился. Откройте помощника заново.', 401);
+    }
     return result as T;
+  } catch (error) {
+    if (epoch !== authEpoch) throw new DOMException('Сеанс изменился.', 'AbortError');
+    throw error;
   }
-  const result = await response.json();
-  if (epoch !== authEpoch) throw new DOMException('Сеанс изменился.', 'AbortError');
-  if (!response.ok) throw new ApiError(result.error ?? 'Не удалось выполнить запрос.', response.status);
-  if (browserSession && sessionUserId && result.user?.id && result.user.id !== sessionUserId) throw new ApiError('Пользователь Fastkore изменился. Откройте помощника заново.', 401);
-  return result;
 }
 const post = <T,>(url: string, body: unknown = {}) => api<T>(url, { method: 'POST', body: JSON.stringify(body) });
 async function downloadChatFile(url: string, name: string) {
@@ -93,15 +119,9 @@ async function copy(text: string) {
   const ok = document.execCommand('copy'); area.remove(); if (!ok) throw new Error('Выделите и скопируйте текст вручную.');
 }
 const requestId = () => globalThis.crypto?.randomUUID?.() ?? `web-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-const fastkoreScales = ['0.6', '0.7', '0.8', '0.9', '1'];
-const fastkoreScaleKey = 'bridge-fastkore-scale';
 
 function App() {
   const [embedded] = useState(() => new URLSearchParams(location.search).get('embedded') === 'fastkore');
-  const [fastkoreScale, setFastkoreScale] = useState(() => {
-    const saved = localStorage.getItem(fastkoreScaleKey);
-    return saved && fastkoreScales.includes(saved) ? saved : '1';
-  });
   const [browserTheme, setBrowserTheme] = useState<Theme>(() => localStorage.getItem('bridge-theme') === 'light' ? 'light' : 'dark');
   const [initialErpTheme] = useState<Theme>(() => new URLSearchParams(location.search).get('theme') === 'dark' ? 'dark' : 'light');
   const [erpTheme, setErpTheme] = useState<{ theme: Theme } | null>(null);
@@ -109,6 +129,8 @@ function App() {
   const [checkingSession, setCheckingSession] = useState(true), [authSource, setAuthSource] = useState<'local' | 'fastkore'>('local');
   const [erpAuth, setErpAuth] = useState<FastkoreAuthentication | null>(null);
   const currentErpContext = useRef<{ snapshot?: FastkoreContext; problem?: string; key?: string; active?: boolean }>({});
+  const contextNavigation = useRef(0);
+  const [contextVersion, setContextVersion] = useState(0);
   const autoOpenRelated = useRef<string | undefined>(undefined);
   const [erpChatKey, setErpChatKey] = useState<string>();
   const [relatedChats, setRelatedChats] = useState<{ key: string; list: RelatedChatSummary[] }>();
@@ -120,10 +142,10 @@ function App() {
   const [projectsExpanded, setProjectsExpanded] = useState(() => localStorage.getItem('bridge-projects-collapsed') !== '1');
   const [openProjects, setOpenProjects] = useState<Record<string, boolean>>({});
   const [showAll, setShowAll] = useState<Record<string, boolean>>({});
-  const [projectId, setProjectId] = useState(localStorage.getItem('bridge-project') ?? ''), [chatId, setChatId] = useState(localStorage.getItem('bridge-chat') ?? '');
+  const [projectId, setProjectId] = useState(localStorage.getItem('bridge-project') ?? ''), [chatId, setChatId] = useState(embedded ? '' : localStorage.getItem('bridge-chat') ?? '');
   const [drafts, setDrafts] = useState<Record<string, string>>({}), [files, setFiles] = useState<Record<string, Attachment[]>>({});
   const [specialists, setSpecialists] = useState<Record<string, string | undefined>>({});
-  const [panel, setPanel] = useState<'settings' | 'project' | 'project-files' | 'project-agents' | 'search' | 'archive' | 'related' | 'rename-chat' | null>(null);
+  const [panel, setPanel] = useState<'settings' | 'project' | 'project-files' | 'project-agents' | 'search' | 'archive' | 'related' | 'rename-chat' | 'reset-chat' | null>(null);
   const [renameDraft, setRenameDraft] = useState<{ projectId: string; chatId: string; title: string }>();
   const [projectActionTarget, setProjectActionTarget] = useState<ProjectSummary | null>(null);
   const [settingsSection, setSettingsSection] = useState<SettingsSection>('team');
@@ -137,12 +159,14 @@ function App() {
   const sidebarCollapseButton = useRef<HTMLButtonElement>(null), sidebarExpandButton = useRef<HTMLButtonElement>(null);
   const accountMenu = useRef<HTMLDetailsElement>(null);
   const [error, setError] = useState(''), [pending, setPending] = useState(false), [copied, setCopied] = useState(''), [folderPath, setFolderPath] = useState(''), [projectName, setProjectName] = useState('');
+  const [reconnecting, setReconnecting] = useState(false);
   const [agentCatalog, setAgentCatalog] = useState<{ projectId: string; list: AgentSummary[] }>();
   const [preferredAgent, setPreferredAgent] = useState('universal');
   const agents = agentCatalog?.projectId === projectId ? agentCatalog.list : [];
   const availableAgents = agents.filter(agent => agent.available);
   const newAgent = (availableAgents.find(agent => agent.id === preferredAgent) ?? availableAgents[0])?.id ?? '';
   const [catalog, setCatalog] = useState<ModelCatalog | null>(null), [modelsLoading, setModelsLoading] = useState(false), [modelError, setModelError] = useState('');
+  const modelLoads = useRef(0);
   const [cliPath, setCliPath] = useState(''), [diagnostics, setDiagnostics] = useState(''), [subscription, setSubscription] = useState<Run | null>(null);
   const input = useRef<HTMLTextAreaElement>(null), fileInput = useRef<HTMLInputElement>(null), end = useRef<HTMLDivElement>(null);
   const scroll = useRef<HTMLDivElement>(null), stick = useRef(true), loadingSettings = useRef(false);
@@ -161,9 +185,13 @@ function App() {
   const chatBusy = chatActiveRuns.length > 0 || chatQueuedRuns.length > 0;
   const steerTarget = chatActiveRuns.find(run => run.canSteer && run.ownerId === user?.id);
   const isAdmin = user?.role === 'admin';
-  const matchesErpChat = !!erpChatKey && relatedChats?.key === erpChatKey && relatedChats.list.some(item => item.id === chatId);
+  const inFastkore = embedded || (authSource === 'fastkore' && !!webViewHost());
+  const matchesErpChat = !!erpChatKey && relatedChats?.key === erpChatKey && relatedChats.list.some(item => item.id === chatId && item.contextMatches !== false);
   const relatedLoading = !!erpChatKey && relatedChats?.key !== erpChatKey;
-  const canEdit = !!chat && !chat.archivedAt && (isAdmin || chat.ownerId === user?.id) && (!chat.linkedToFastkore || matchesErpChat || !erpChatKey);
+  const tileList = !!currentErpContext.current.snapshot && isFastkoreTileList(currentErpContext.current.snapshot);
+  const sharedContextHistory = tileList || typeof currentErpContext.current.snapshot?.chat_key === 'string';
+  const canReset = matchesErpChat && chat?.ownerId === user?.id && !chat?.archivedAt && (chat?.messages.length ?? 0) > 0;
+  const canEdit = !!chat && !chat.archivedAt && (isAdmin || chat.ownerId === user?.id) && (!chat.linkedToFastkore || matchesErpChat || !inFastkore && !erpChatKey);
   const codexUnavailable = status?.isolatedCodex && !executionConnected(status.cli);
   const codexNotice = status?.executionDisabled ? 'Выполнение Codex отключено на сервере.' : codexUnavailable
     ? /активный аккаунт|Модель недоступна/.test(status.cli?.status ?? '') ? status.cli!.status
@@ -179,9 +207,8 @@ function App() {
   const canStartChat = !chatId && !!newAgent && (!!selectedProject || canStartWithoutProject);
   const canSend = !!status && !(relatedLoading && currentErpContext.current.active) && !status.executionDisabled && !codexUnavailable && (!canReadFastkore || !contextProblem || !!currentErpContext.current.snapshot) && (!attachments.length || canAttach)
     && !!messageAgent?.available && (!specialistId || otherSpecialists.some(agent => agent.id === specialistId)) && (chatId ? canEdit : canStartChat);
-  const inFastkore = embedded || (authSource === 'fastkore' && !!webViewHost());
   const canManageSettings = isAdmin && !inFastkore;
-  const visibleSettingsSections = (Object.keys(settingsSections) as SettingsSection[]).filter(section => canManageSettings || section === 'chatAccess');
+  const visibleSettingsSections = (Object.keys(settingsSections) as SettingsSection[]).filter(section => canManageSettings);
   const relatedPanelOpen = panel === 'related';
   useEffect(() => {
     if (!loggedIn || !isAdmin || authSource !== 'local' || inFastkore || setupRequired || openedFastkoreSettings.current) return;
@@ -218,19 +245,19 @@ function App() {
   useEffect(() => {
     let alive = true;
     const endpoint = embedded ? '/api/auth/me' : '/api/auth/browser-session';
-    void fetch(endpoint, { credentials: 'same-origin' }).then(async response => {
-      const value = await response.json();
+    void fetchApi(endpoint, { credentials: 'same-origin' }).then(readApiJson).then(value => {
       if (!alive) return;
-      if (!response.ok) {
-        if (embedded && response.status === 401) webViewHost()?.postMessage({ type: 'fastkore.sso.required', version: 1, reason: 'session_expired' });
-        clearLogin(); throw new Error('Сеанс Fastkore завершён. Откройте помощника из ERP заново.');
-      }
-      if (value.authentication?.source === 'fastkore') {
+      if (value?.authentication?.source === 'fastkore') {
         clearLogin();
         browserSession = true; csrfToken = value.authentication.csrfToken; sessionUserId = value.user.id;
         setErpAuth(value.authentication); setAuthSource('fastkore'); setUser(value.user); setSetupRequired(false); setLoggedIn(true);
       } else if (!embedded) setLoggedIn(!!accessKey);
-    }).catch(e => { if (alive) setError(e.message); }).finally(() => { if (alive) setCheckingSession(false); });
+    }).catch(error => {
+      if (!alive) return;
+      if (embedded && error instanceof ApiError && error.status === 401) {
+        fail(new ApiError('Сеанс Fastkore завершён. Откройте помощника из ERP заново.', 401));
+      } else fail(error);
+    }).finally(() => { if (alive) setCheckingSession(false); });
     return () => { alive = false; };
   }, []);
   async function login(local = false) {
@@ -251,20 +278,26 @@ function App() {
     const receive = (event: { data: unknown }) => {
       const nextTheme = parseHostTheme(event.data);
       if (nextTheme) setErpTheme({ theme: nextTheme });
-      if (erpAuth && isFastkoreContextMessage(event.data) && event.data.version === 1) {
-        const reset = isFastkoreContextReset(event.data);
-        const snapshot = reset ? undefined : parseFastkoreContext(event.data) ?? undefined;
-        const problem = reset ? undefined : snapshot ? fastkoreContextProblem(snapshot) : 'Fastkore передал некорректный снимок. Откройте помощника из нужной карточки или списка.';
+      if (erpAuth && isFastkoreContextMessage(event.data)) {
+        const snapshot = parseFastkoreContext(event.data) ?? undefined;
+        const problem = snapshot ? fastkoreContextProblem(snapshot) : 'Fastkore передал некорректный или неподдерживаемый снимок.';
         const key = snapshot && fastkoreChatContextKey(snapshot);
         const previous = currentErpContext.current;
-        const changed = key !== previous.key;
-        currentErpContext.current = { snapshot, problem, key, active: changed ? !!key : previous.active };
+        const unbound = !key && (snapshot?.chat_key === null || snapshot?.view === 'card' || !snapshot);
+        const changed = unbound || key !== previous.key || (!key && snapshot?.view !== previous.snapshot?.view);
+        currentErpContext.current = { snapshot, problem, key, active: changed ? Boolean(key || unbound) : previous.active };
         if (changed) {
+          contextNavigation.current++;
+          setContextVersion(contextNavigation.current);
           autoOpenRelated.current = key;
           setErpChatKey(key);
           setRelatedChats(undefined);
-          if (key || previous.active) navigateTo(selected.current.projectId);
-          if (!key) setPanel(panel => panel === 'related' ? null : panel);
+          navigateTo(selected.current.projectId);
+          if (!key) {
+            setDrafts(old => ({ ...old, '': '' }));
+            setSpecialists(old => ({ ...old, ['new:' + selected.current.projectId]: undefined }));
+          }
+          setPanel(panel => panel === 'reset-chat' || (!key && panel === 'related') ? null : panel);
         }
         setContextProblem(problem);
       }
@@ -308,24 +341,38 @@ function App() {
   useEffect(() => {
     const context = currentErpContext.current.snapshot;
     if (!erpChatKey || !context) return;
+    const navigation = contextNavigation.current;
     const controller = new AbortController();
-    api<RelatedChatSummary[]>('/api/fastkore/chats/related', {
-      method: 'POST', body: JSON.stringify({ context }), signal: controller.signal,
-    }).then(list => {
-      if (controller.signal.aborted || currentErpContext.current.key !== erpChatKey) return;
-      setRelatedChats({ key: erpChatKey, list });
-      if (autoOpenRelated.current === erpChatKey) {
+    let retry: ReturnType<typeof setTimeout> | undefined;
+    const stillCurrent = () => !controller.signal.aborted && currentErpContext.current.key === erpChatKey && contextNavigation.current === navigation;
+    async function refreshRelated() {
+      if (!stillCurrent()) return;
+      try {
+        const list = await postRelated();
+        if (!stillCurrent()) return;
+        setRelatedChats({ key: erpChatKey!, list });
+        if (autoOpenRelated.current !== erpChatKey) return;
         autoOpenRelated.current = undefined;
-        if (list[0]) navigateToRelated(list[0]);
+        const matching = list.find(item => item.contextMatches !== false && !item.legacyContext)
+          ?? (context?.view === 'list' && !context.tile_id ? list.find(item => item.legacyContext) : undefined);
+        if (matching) navigateToRelated(matching);
+      } catch (error) {
+        if (!stillCurrent()) return;
+        if (error instanceof ApiError && error.transient) {
+          retry = setTimeout(() => void refreshRelated(), 1200);
+          return;
+        }
+        autoOpenRelated.current = undefined;
+        setRelatedChats({ key: erpChatKey!, list: [] });
+        fail(error);
       }
-    }).catch(error => {
-      if (controller.signal.aborted) return;
-      autoOpenRelated.current = undefined;
-      setRelatedChats({ key: erpChatKey, list: [] });
-      fail(error);
+    }
+    const postRelated = () => api<RelatedChatSummary[]>('/api/fastkore/chats/related', {
+      method: 'POST', body: JSON.stringify({ context }), signal: controller.signal,
     });
-    return () => controller.abort();
-  }, [erpChatKey, relatedPanelOpen]);
+    void refreshRelated();
+    return () => { controller.abort(); clearTimeout(retry); };
+  }, [erpChatKey, relatedPanelOpen, contextVersion]);
   async function loadChats(project: string) {
     const credential = accessKey;
     const list = await api<ChatSummary[]>(`/api/projects/${project}/chats`);
@@ -352,8 +399,9 @@ function App() {
     }
   }, [projectId, chatId, loggedIn, authSource, embedded]);
   useEffect(() => {
-    if (!loggedIn || !user || setupRequired) return;
+    if (!loggedIn || !user || setupRequired) { setReconnecting(false); return; }
     let disposed = false, timer: ReturnType<typeof setTimeout>;
+    let consecutiveFailures = 0;
     async function refresh() {
       try {
         const projectAtStart = selected.current.projectId;
@@ -381,7 +429,14 @@ function App() {
             const detail = await api<Chat>(`/api/projects/${p}/chats/${c}`); if (!disposed && selected.current.projectId === p && selected.current.chatId === c) setChat(detail);
           }
         }
-      } catch (e) { if (!disposed) fail(e); }
+        if (!disposed) { consecutiveFailures = 0; setReconnecting(false); }
+      } catch (e) {
+        if (!disposed) {
+          if (e instanceof ApiError && e.transient) {
+            if (++consecutiveFailures >= 3) setReconnecting(true);
+          } else fail(e);
+        }
+      }
       finally { if (!disposed) timer = setTimeout(refresh, 1200); }
     }
     void refresh();
@@ -398,13 +453,16 @@ function App() {
         (previousChat || fallback) && !list.some(c => c.id === previousChat)) {
         navigateTo(projectId, fallback?.id ?? '');
       }
-    }).catch(e => { if (!disposed) fail(e); });
+    }).catch(e => { if (!disposed && !(e instanceof ApiError && e.transient)) fail(e); });
     return () => { disposed = true; };
   }, [projectId, loggedIn, !!selectedProject]);
   useEffect(() => {
     if (!loggedIn || !user || setupRequired || !projectId || !chatId || !selectedProject) return;
     let disposed = false;
-    api<Chat>(`/api/projects/${projectId}/chats/${chatId}`).then(detail => { if (!disposed) setChat(detail); }).catch(error => { if (!disposed) fail(error); });
+    const stillSelected = () => !disposed && selected.current.projectId === projectId && selected.current.chatId === chatId;
+    api<Chat>(`/api/projects/${projectId}/chats/${chatId}`).then(detail => { if (stillSelected()) setChat(detail); }).catch(error => {
+      if (stillSelected() && !(error instanceof ApiError && error.transient)) fail(error);
+    });
     return () => { disposed = true; };
   }, [chatId, projectId, loggedIn, !!selectedProject]);
   useEffect(() => { if (stick.current) end.current?.scrollIntoView({ behavior: 'smooth' }); }, [chat?.messages.length, chat?.messages.at(-1)?.text, chatId]);
@@ -413,16 +471,34 @@ function App() {
     const timer = setInterval(() => { api<Run>(`/api/runs/${subscription.id}`).then(setSubscription).catch(fail); }, 1200);
     return () => clearInterval(timer);
   }, [subscription?.id, subscription?.status]);
-  async function loadModels(refresh = false) {
+  async function loadModels(refresh = false, signal?: AbortSignal) {
+    const load = ++modelLoads.current;
     setModelsLoading(true); setModelError('');
-    try { setCatalog(await (refresh ? post<ModelCatalog>('/api/models/refresh') : api<ModelCatalog>('/api/models'))); }
-    catch (e) { setModelError((e as Error).message); }
-    finally { setModelsLoading(false); }
+    try {
+      const models = await (refresh ? post<ModelCatalog>('/api/models/refresh') : api<ModelCatalog>('/api/models', { signal }));
+      if (!signal?.aborted && modelLoads.current === load) setCatalog(models);
+    } catch (error) {
+      if (signal?.aborted || modelLoads.current !== load || (error as Error).name === 'AbortError') return;
+      setModelError((error as Error).message);
+      return error instanceof ApiError && error.transient;
+    } finally { if (modelLoads.current === load) setModelsLoading(false); }
   }
   useEffect(() => {
-    if (loggedIn && user && !setupRequired && status && !codexUnavailable) void loadModels();
-    else if (codexUnavailable) setCatalog(null);
-  }, [loggedIn, !!user, setupRequired, !!status, codexUnavailable]);
+    if (!loggedIn || !user || setupRequired || !status || codexUnavailable) {
+      modelLoads.current++;
+      setModelsLoading(false);
+      if (codexUnavailable) setCatalog(null);
+      return;
+    }
+    const controller = new AbortController();
+    let retry: ReturnType<typeof setTimeout> | undefined;
+    async function refresh(attempt = 0) {
+      const retryable = await loadModels(false, controller.signal);
+      if (retryable && !controller.signal.aborted && attempt < 2) retry = setTimeout(() => void refresh(attempt + 1), 1200);
+    }
+    void refresh();
+    return () => { controller.abort(); clearTimeout(retry); };
+  }, [loggedIn, !!user, setupRequired, !!status, codexUnavailable, status?.cli?.catalogRevision]);
   async function changeModel(model: string) {
     const p = projectId, c = chatId;
     await action(async () => {
@@ -468,13 +544,14 @@ function App() {
     return created.id;
   }
   async function newChat(project = projectId, linked = !!relatedDraftKey) {
+    const navigation = contextNavigation.current;
     const context = linked ? currentErpContext.current.snapshot : undefined;
     const key = context && currentErpContext.current.key;
     if (!project && !context) { if (canCreateProject) setPanel('project'); return; }
     if (pending || relatedLoading && linked || (project === projectId && !newAgent) || (!project && !canCreateProject)) return;
     await action(async () => {
       const { chat: created, projectId: p } = await createChat(project || await createPersonalProject(), context, true);
-      if (key && currentErpContext.current.key !== key) return;
+      if (contextNavigation.current !== navigation || key && currentErpContext.current.key !== key) return;
       if (!selected.current.chatId) {
         setDrafts(old => old[draftSlot] ? { ...old, [created.id]: old[draftSlot], [draftSlot]: '' } : old);
         if (project === projectId) setSpecialists(old => ({ ...old, [created.id]: old[specialistKey], [specialistKey]: undefined }));
@@ -524,10 +601,35 @@ function App() {
       await loadChats(p);
     });
   }
+  async function resetChat() {
+    const { key, snapshot } = currentErpContext.current;
+    if (!canReset || chatBusy || pending || !key || !snapshot) return;
+    const p = projectId, c = chatId, epoch = authEpoch, navigation = contextNavigation.current;
+    await action(async () => {
+      const replacement = await post<Chat>(`/api/projects/${p}/chats/${c}/reset`, { context: snapshot });
+      if (epoch !== authEpoch) return;
+      const { id, title, updatedAt, ownerId, ownerName, visibility, linkedToFastkore } = replacement;
+      const summary = { id, title, updatedAt, ownerId, ownerName, visibility, linkedToFastkore, messageCount: replacement.messages.length };
+      setChatLists(old => ({ ...old, [p]: [summary, ...(old[p] ?? []).filter(item => item.id !== c && item.id !== id)] }));
+      const entry = { ...summary, projectId: p, projectName: selectedProject?.name ?? 'Личные чаты' };
+      setRelatedChats(old => old?.key === key ? { key, list: [entry, ...old.list.filter(item => item.id !== c && item.id !== id)] } : old);
+      setDrafts(old => ({ ...old, [c]: '' }));
+      setSpecialists(old => ({ ...old, [c]: undefined }));
+      setFiles(old => ({ ...old, [c]: [] }));
+      if (sendAttempt.current?.chatId === c) sendAttempt.current = null;
+      if (contextNavigation.current === navigation && currentErpContext.current.key === key && selected.current.projectId === p && (selected.current.chatId === c || !selected.current.chatId)) {
+        navigateToRelated(entry);
+        setChat(replacement);
+      }
+      setPanel(panel => panel === 'reset-chat' ? null : panel);
+    });
+  }
   async function send(override?: string) {
+    const navigation = contextNavigation.current;
     const text = (override ?? draft).trim();
     const link = relatedDraftKey ? currentErpContext.current : undefined;
-    const { snapshot, problem } = link || chat?.linkedToFastkore || canReadFastkore || otherSpecialists.some(agent => agent.toolIds.includes('fastkore')) ? currentErpContext.current : {};
+    const { snapshot, problem } = currentErpContext.current.active || matchesErpChat || (!chat?.linkedToFastkore &&
+      (canReadFastkore || otherSpecialists.some(agent => agent.toolIds.includes('fastkore')))) ? currentErpContext.current : {};
     if (!canSend || (canReadFastkore && problem && !snapshot) || !text || pending || sending.current) return;
     const attachmentIds = attachments.map(a => a.id);
     sending.current = true;
@@ -540,7 +642,7 @@ function App() {
           project = p;
           conversation = created.id;
           const pSelected = selected.current.projectId;
-          const shouldOpen = (pSelected === projectId || pSelected === targetProject) && !selected.current.chatId
+          const shouldOpen = contextNavigation.current === navigation && (pSelected === projectId || pSelected === targetProject) && !selected.current.chatId
             && (!link || currentErpContext.current.key === link.key && currentErpContext.current.active);
           setDrafts(old => ({
             ...old,
@@ -587,7 +689,13 @@ function App() {
   function showSettings() {
     if (accountMenu.current) accountMenu.current.open = false;
     setSidebarOpen(false);
-    setSettingsSection(canManageSettings ? 'team' : 'chatAccess');
+    if (!canManageSettings) {
+      setSidebarOpen(false);
+      const access = document.querySelector<HTMLDetailsElement>('.composer-access');
+      if (access) { access.open = true; access.querySelector('summary')?.focus(); }
+      return;
+    }
+    setSettingsSection('team');
     setInstructionsDraft(undefined);
     setPanel('settings');
   }
@@ -722,7 +830,10 @@ function App() {
       </article>)}
   </>;
   const composer = <div className="bridge-composer">
-    {chat && !canEdit && <p className={'composer-status' + (chat.linkedToFastkore && chat.ownerId === user.id ? ' composer-lock' : '')} role="alert">{chat.linkedToFastkore && chat.ownerId === user.id ? 'Этот чат привязан к карточке Fastkore — писать в нём можно только из неё. Откройте связанную карточку или список в Fastkore.' : 'Чат доступен для чтения'}</p>}
+    {chat && !canEdit && <p className="composer-status" role={relatedLoading ? 'status' : 'alert'}>
+      {relatedLoading ? 'Проверяем связь чата с открытым окном Fastkore…' : chat.linkedToFastkore && chat.ownerId === user.id && !chat.archivedAt
+        ? 'Чат связан с другим окном Fastkore. Откройте связанный список или карточку, чтобы продолжить.' : 'Чат доступен для чтения'}
+    </p>}
     {codexNotice && draftEditable && <p className="composer-status" role="status">{codexNotice} Можно подготовить черновик.</p>}
     {canReadFastkore && contextProblem && <p className="composer-status" role="alert">{contextProblem}</p>}
     {!!attachments.length && !canAttach && <p className="composer-status" role="status">Удалите вложения из черновика. Агенту сейчас не разрешено их читать.</p>}
@@ -747,7 +858,7 @@ function App() {
     </div>)}
     {chatActiveRuns.map(run => <div className="bridge-progress" key={run.id}>
       <span role="status"><LoaderCircle size={14} className="spin" aria-hidden="true" />{run.tool
-        ? <span title={run.tool}>{run.tool.startsWith('fastkore_cli_') ? 'Fastkore CLI' : run.tool.startsWith('fastkore_') ? 'Fastkore ERP' : run.tool === 'knowledge' ? 'База знаний' : run.tool === 'internet_search' ? 'Поиск в интернете' : run.tool === 'internet_read' ? 'Чтение страницы' : run.tool === 'internet_request' ? 'Внешний запрос' : run.tool === 'consult_specialist' ? 'Консультация специалиста' : 'Инструмент'}</span>
+        ? <span title={run.tool}>{runToolLabel(run.tool, run.toolContext)}</span>
         : <span className="sr-only">Ответ готовится</span>}</span>
       {(isAdmin || (run.chatId === chatId && canEdit)) && <button onClick={() => void action(async () => { await post('/api/runs/' + run.id + '/cancel'); })}><Square size={12} />Остановить</button>}
     </div>)}
@@ -800,7 +911,7 @@ function App() {
     {!chatId && canCreate && <button className="empty-new-chat" onClick={() => void newChat()}><SquarePen size={15} />Создать чат</button>}
   </div>;
 
-  return <div className="workspace-shell" data-theme={theme} data-fastkore-scale={inFastkore ? fastkoreScale : undefined}>
+  return <div className="workspace-shell" data-theme={theme} data-fastkore={inFastkore ? '' : undefined}>
     {sidebarOpen && <button className="workspace-scrim" aria-label="Закрыть навигацию" onClick={() => setSidebarOpen(false)} />}
     <aside id="workspace-sidebar" className={'workspace-sidebar' + (sidebarOpen ? ' is-open' : '') + (sidebarCollapsed ? ' is-collapsed' : '')} aria-label="Боковая панель">
       <div className="workspace-brand"><span className="workspace-mark"><Terminal size={16} /></span><b>Agentic Platform</b>
@@ -810,7 +921,7 @@ function App() {
         <button type="button" className="workspace-icon workspace-mobile-close" aria-label="Закрыть боковую панель" onClick={() => setSidebarOpen(false)}><X size={18} /></button>
       </div>
       <div className="workspace-start">
-        <button className="workspace-row new-conversation" onClick={() => void newChat()} disabled={pending || (projectId ? !newAgent : !canCreateProject)}><SquarePen size={17} />Новый чат</button>
+        <button className="workspace-row new-conversation" onClick={() => void newChat()} disabled={pending || (projectId ? !newAgent : !canCreateProject) || !!(sharedContextHistory && relatedDraftKey && matchesErpChat)}><SquarePen size={17} />{sharedContextHistory && relatedDraftKey ? (tileList ? 'Чат плитки' : 'Чат Fastkore') : 'Новый чат'}</button>
         {availableAgents.length > 1 && <Select className="workspace-agent" label="Агент нового чата"
           value={newAgent} onChange={setPreferredAgent} options={availableAgents.map(agent => ({ value: agent.id, label: agent.name }))} />}
         {availableAgents.length === 1 && <p className="workspace-agent-current"><Bot size={15} aria-hidden="true" />{availableAgents[0].name}</p>}
@@ -881,7 +992,7 @@ function App() {
           </div>;
         })}
       </nav>
-      {isAdmin && <div className="archive-nav"><button type="button" className="workspace-row" onClick={() => { setSidebarOpen(false); setPanel('archive'); }}>
+      {(isAdmin || erpAuth) && <div className="archive-nav"><button type="button" className="workspace-row" onClick={() => { setSidebarOpen(false); setPanel('archive'); }}>
         <Archive size={17} aria-hidden="true" />Архив чатов
       </button></div>}
       <div className="workspace-account">
@@ -922,26 +1033,21 @@ function App() {
               options={[{ value: 'private', label: 'Личный' }, { value: 'project', label: 'Общий' }]} />
               : <span><LockKeyhole size={13} />{chat.visibility === 'project' ? 'Общий' : 'Личный'}</span>}
           </div>
-          {isAdmin && !chat.archivedAt && <button type="button" className="workspace-icon chat-archive-button" aria-label="Перенести чат в архив" title="Перенести чат в архив"
+          {isAdmin && !matchesErpChat && !chat.archivedAt && <button type="button" className="workspace-icon chat-archive-button" aria-label="Перенести чат в архив" title="Перенести чат в архив"
             disabled={pending || chatBusy} onClick={() => void archiveChat()}><Archive size={17} /></button>}
         </>}
         {erpChatKey && <div className="related-chat-actions">
           <button type="button" className="workspace-icon" title="Связанные чаты" aria-label="Связанные чаты" onClick={() => { setError(''); setPanel('related'); }}><History size={18} /></button>
-          <button type="button" className="workspace-icon" title="Создать новый чат по этому контексту" aria-label="Создать новый чат по этому контексту"
-            disabled={pending || relatedLoading || !newAgent || (!projectId && !canCreateProject)} onClick={() => void newChat(projectId, true)}><SquarePen size={17} /></button>
+          {canReset && <button type="button" className="workspace-icon" title="Очистить чат" aria-label="Очистить чат"
+            disabled={pending || chatBusy} onClick={() => { setError(''); setPanel('reset-chat'); }}><Eraser size={17} /></button>}
+          {!sharedContextHistory && <button type="button" className="workspace-icon" title="Создать новый чат по этому контексту" aria-label="Создать новый чат по этому контексту"
+            disabled={pending || relatedLoading || !newAgent || (!projectId && !canCreateProject)} onClick={() => void newChat(projectId, true)}><SquarePen size={17} /></button>}
         </div>}
-        {inFastkore && <select className="workspace-scale" aria-label="Масштаб интерфейса" title="Масштаб интерфейса" value={fastkoreScale}
-          onChange={event => {
-            const scale = event.currentTarget.value;
-            setFastkoreScale(scale);
-            localStorage.setItem(fastkoreScaleKey, scale);
-          }}>
-          {fastkoreScales.map(scale => <option key={scale} value={scale}>{Math.round(Number(scale) * 100)}%</option>)}
-        </select>}
         {themeButton}
       </header>
       {!embedded && chat?.erpContext && <div className="workspace-context">{chat.erpContext.entityType} / {chat.erpContext.entityId}</div>}
       {error && !panel && <div className="workspace-error" role="alert"><span>{error}</span><button className="workspace-icon" onClick={() => setError('')} aria-label="Закрыть ошибку"><X size={17} /></button></div>}
+      {reconnecting && !error && !panel && <p className="workspace-connection-status" role="status">Восстанавливаем связь с сервером…</p>}
       {hasMessages && chat ? <>
         <div ref={scroll} className="conversation-scroll" onScroll={() => { const el = scroll.current; if (el) stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 120; }}>
           <div className="conversation-lane conversation-history">
@@ -967,18 +1073,26 @@ function App() {
         </div>
       </form>
     </WorkspaceDialog>}
-    {panel === 'archive' && isAdmin && <ChatArchiveDialog request={api} close={closePanel} renderChat={renderHistory}
+    {panel === 'reset-chat' && canReset && <WorkspaceDialog title="Очистить чат?" className="workspace-chat-rename" close={() => { if (!pending) closePanel(); }}>
+      <p>Текущий чат сохранится в архиве. Здесь откроется пустой чат.</p>
+      {error && <p className="inline-error" role="alert">{error}</p>}
+      <div className="settings-dialog-actions">
+        <button type="button" className="secondary" data-dialog-focus disabled={pending} onClick={closePanel}>Отмена</button>
+        <button type="button" className="primary" disabled={pending || chatBusy} onClick={() => void resetChat()}>Очистить чат</button>
+      </div>
+    </WorkspaceDialog>}
+    {panel === 'archive' && (isAdmin || erpAuth) && <ChatArchiveDialog request={api} close={closePanel} renderChat={renderHistory} manage={isAdmin}
       onRestore={project => void loadChats(project).catch(fail)} />}
     {relatedPanelOpen && erpChatKey && <WorkspaceDialog title="Связанные чаты" className="related-chats-dialog" close={closePanel}>
       {error && <p className="inline-error" role="alert">{error}</p>}
       {relatedLoading ? <p className="help" role="status">Загрузка…</p> : <div className="archive-list">
         {relatedChats?.list.map(item => <button type="button" className="workspace-row archive-row" key={item.id} aria-current={item.id === chatId ? 'page' : undefined}
-          onClick={() => { navigateToRelated(item); closePanel(); }} title={chatTooltip(item)}><span><strong>{item.title}</strong><small>{item.projectName}</small></span>
+          onClick={() => { navigateToRelated(item); closePanel(); }} title={chatTooltip(item)}><span><strong>{item.title}</strong><small>{item.parent ? 'Исходный чат · ' : ''}{item.projectName}</small></span>
           <time dateTime={item.updatedAt}>{shortDate(item.updatedAt)}</time></button>)}
         {!relatedChats?.list.length && !error && <p className="help">По этой карточке или списку пока нет чатов.</p>}
       </div>}
-      <div className="archive-actions related-dialog-actions"><button type="button" className="secondary" disabled={pending || relatedLoading || !newAgent || (!projectId && !canCreateProject)}
-        onClick={() => void newChat(projectId, true)}><SquarePen size={16} />Создать новый чат</button></div>
+      {(!sharedContextHistory || !relatedChats?.list.some(item => item.contextMatches !== false)) && <div className="archive-actions related-dialog-actions"><button type="button" className="secondary" disabled={pending || relatedLoading || !newAgent || (!projectId && !canCreateProject)}
+        onClick={() => void newChat(projectId, true)}><SquarePen size={16} />Создать новый чат</button></div>}
     </WorkspaceDialog>}
     {panel === 'search' && <WorkspaceDialog title="Поиск" className="workspace-search" close={closePanel}>
       <input type="search" aria-label="Поиск по проектам и чатам" placeholder="Поиск по проектам и чатам" value={searchQuery} onChange={e => setSearchQuery(e.target.value)} autoFocus />
@@ -1008,9 +1122,6 @@ function App() {
       <ProjectFilesDialog key={projectActionTarget.id} project={projectActionTarget} request={api} download={url => api<Blob>(url, {}, 'blob')} close={closePanel} />}
     {panel === 'project-agents' && projectActionTarget && isAdmin && authSource === 'local' && !inFastkore &&
       <ProjectAgentsDialog key={projectActionTarget.id} project={projectActionTarget} request={api} close={closePanel} />}
-    {panel === 'settings' && !canManageSettings && <WorkspaceDialog title="Доступ в чате" className="workspace-access-dialog" close={closePanel}>
-      {renderChatAccess()}
-    </WorkspaceDialog>}
     {panel === 'settings' && canManageSettings && <WorkspaceDialog title="Настройки" className="workspace-settings" close={closePanel}>
       <div className="settings-layout">
         <nav aria-label="Разделы настроек" className="settings-nav">
@@ -1030,7 +1141,6 @@ function App() {
           {settingsSection !== 'profiles' && <h2 id="settings-section-title">{settingsSections[settingsSection].label}</h2>}
           {error && <div className="inline-error" role="alert">{error}</div>}
           <Suspense fallback={<p role="status">Загрузка…</p>}>
-          {settingsSection === 'chatAccess' && renderChatAccess()}
           {settingsSection === 'account' && <AccountPanel request={api} renewed={saveToken} fastkore={authSource === 'fastkore'} />}
           {settingsSection === 'team' && <TeamPanel request={api} projectId={projectId} projectName={selectedProject?.name ?? ''} self={user} />}
           {settingsSection === 'roles' && <ErpRolesPanel request={api} />}

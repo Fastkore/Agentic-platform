@@ -7,9 +7,7 @@ import { once } from 'node:events';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import type { Credential } from '../shared/types.js';
-import { parseFastkoreContext } from '../shared/fastkore-context.js';
-import { withFastkoreCliReads } from '../server/codex-tools.js';
-import { FastkoreCli } from '../server/fastkore-cli.js';
+import { FastkoreCli, type FastkoreCliTiming } from '../server/fastkore-cli.js';
 import { testCertificate } from './test-certificate.js';
 
 async function requestJson(req: IncomingMessage) {
@@ -58,6 +56,7 @@ test('Fastkore CLI uses a fresh ticket per command and stops after ERP revokes t
     used.push(input.operation);
     const data = input.operation === 'auth-info' ? { user: { guid: wrongUser ? randomUUID() : externalUserId } }
       : { entitySetId: input.entitySetId, entityId: input.entityId, note: input.ticket };
+    res.setHeader('X-Fastkore-Cli-Process-Ms', '3');
     res.end(JSON.stringify({ success: true, exitCode: 0, data }));
   });
   runner.listen(socket);
@@ -67,13 +66,18 @@ test('Fastkore CLI uses a fresh ticket per command and stops after ERP revokes t
     delegationBinding: () => ({ origin: 'https://' + authority, ca: tls.cert, revision: '1', key, mcpUrl: undefined, mcpCa: undefined, cliEnabled }),
     openDelegation: () => forgotten ? undefined : grant,
   };
-  const run = (operation: Parameters<FastkoreCli['run']>[0]) => cli.run(operation, sso, () => credential,
-    async id => { assert.equal(id, credential.id); forgotten = true; }, new AbortController().signal);
+  const run = (operation: Parameters<FastkoreCli['run']>[0], timing?: FastkoreCliTiming) => cli.run(operation, sso, () => credential,
+    async id => { assert.equal(id, credential.id); forgotten = true; }, new AbortController().signal, timing);
   try {
     assert.deepEqual(await run({ operation: 'auth-info' }), {
       success: true, exitCode: 0, data: { user: { guid: externalUserId } },
     });
-    const result = await run({ operation: 'get', entitySetId, entityId });
+    const timing: FastkoreCliTiming = {};
+    const result = await run({ operation: 'get', entitySetId, entityId }, timing);
+    assert.equal(timing.ticketStatus, 200);
+    assert.equal(timing.cliProcessMs, 3);
+    assert.equal(timing.exitCode, 0);
+    assert.ok(timing.trustMs! >= 0 && timing.ticketMs! >= 0 && timing.cliRpcMs! >= 0);
     assert.match(JSON.stringify(result.data), /REDACTED/);
     assert.doesNotMatch(JSON.stringify(result), /fkct1\./);
     assert.equal((await run({ operation: 'query', entitySetId, limit: 2 })).success, true);
@@ -103,32 +107,4 @@ test('Fastkore CLI uses a fresh ticket per command and stops after ERP revokes t
       server.close(() => resolve());
     })));
   }
-});
-
-test('Fastkore CLI arguments cannot change the ERP selection or pass flags', async () => {
-  const entitySetId = randomUUID(), entityId = randomUUID(), signal = new AbortController().signal;
-  const current = { type: 'fastkore.context', version: 1, entity_set_id: entitySetId, scope_reproducible: true };
-  const base = { definitions: [], call: async () => ({ success: false, text: '' }) };
-  let reads = 0;
-  const read = async () => { reads++; return { success: true, text: '' }; };
-  const card = parseFastkoreContext({ ...current, view: 'card', entity_id: entityId, filter_status: 'none' });
-  assert.ok(card);
-  const cardTools = withFastkoreCliReads(base, card, read);
-  assert.deepEqual(cardTools.definitions.map(tool => tool.name), ['fastkore_cli_auth_info', 'fastkore_cli_data_get', 'fastkore_cli_data_query']);
-  assert.equal((await cardTools.call('fastkore_cli_data_get', { entitySetId, entityId }, signal)).success, true);
-  assert.equal((await cardTools.call('fastkore_cli_data_get', { entitySetId, entityId: randomUUID() }, signal)).success, false);
-  const filtered = parseFastkoreContext({ ...current, view: 'list', filter_status: 'included', filter_xml: '<Filter/>' });
-  assert.ok(filtered);
-  const filteredTools = withFastkoreCliReads(base, filtered, read);
-  assert.equal(filteredTools.scopedReadAvailable, false);
-  assert.equal((await filteredTools.call('fastkore_cli_data_query', { entitySetId }, signal)).success, false);
-  assert.equal((await filteredTools.call('fastkore_cli_data_query', { entitySetId: randomUUID(), scope: 'erp', limit: 2 }, signal)).success, true);
-  assert.equal((await filteredTools.call('fastkore_cli_data_query', { entitySetId, scope: 'invalid' }, signal)).success, false);
-  assert.equal((await filteredTools.call('fastkore_cli_auth_info', { entitySetId }, signal)).success, false);
-  assert.equal((await filteredTools.call('fastkore_cli_auth_info', {}, signal)).success, true);
-  const general = withFastkoreCliReads(base, undefined, read);
-  assert.equal((await general.call('fastkore_cli_data_query', { entitySetId, limit: 51 }, signal)).success, false);
-  assert.equal((await general.call('fastkore_cli_data_query', { entitySetId, server: 'grpc://example.test' }, signal)).success, false);
-  assert.equal((await general.call('fastkore_cli_data_query', { entitySetId, limit: 10 }, signal)).success, true);
-  assert.equal(reads, 4);
 });

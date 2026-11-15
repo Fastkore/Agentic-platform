@@ -6,11 +6,12 @@ import { WorkspaceDialog } from './WorkspaceDialog';
 
 type Request = <T>(url: string, init?: RequestInit) => Promise<T>;
 const endpoint = '/api/admin/execution/accounts';
-const providerLabel = (provider: ExecutionProvider) => provider === 'antigravity' ? 'Antigravity CLI' : provider === 'gemini' ? 'Gemini CLI' : provider === 'glm' ? 'GLM · Z.ai' : 'Codex';
+const providerLabel = (provider: ExecutionProvider) => provider === 'antigravity' ? 'Antigravity CLI' : provider === 'gemini' ? 'Gemini CLI' : provider === 'glm' ? 'GLM · Z.ai' : 'ChatGPT';
+const accountName = (account: ExecutionAccount) => account.provider === 'codex' && account.id === 'default' && account.name === 'Основной Codex' ? 'ChatGPT' : account.name;
 // The Gemini CLI type is omitted on purpose: Google has retired it and new logins cannot work.
-const createOptions = [{ value: 'codex', label: 'Codex · ChatGPT' }, { value: 'antigravity', label: 'Antigravity CLI · Google' }, { value: 'glm', label: 'GLM · Z.ai (ключ)' }];
+const createOptions = [{ value: 'codex', label: 'ChatGPT' }, { value: 'antigravity', label: 'Antigravity CLI · Google' }, { value: 'glm', label: 'GLM · Z.ai (ключ)' }];
 
-type Wizard = { id?: string; provider: ExecutionProvider; name: string };
+type Wizard = { id?: string; provider: ExecutionProvider; name: string; submitted?: boolean };
 
 export function ExecutionAccountsPanel({ request, busy, changed }: { request: Request; busy: boolean; changed: () => Promise<void> }) {
   const [data, setData] = useState<ExecutionAccounts>();
@@ -33,15 +34,19 @@ export function ExecutionAccountsPanel({ request, busy, changed }: { request: Re
   }, [waiting, request]);
   // A finished wizard connection activates the account right away and closes the dialog.
   useEffect(() => {
-    if (!wizard?.id || working) return;
+    if (!wizard?.id || !wizard.submitted || working) return;
     const account = data?.accounts.find(item => item.id === wizard.id);
-    if (account?.signedIn && !account.active) {
+    if (account?.signedIn && (account.provider === 'glm' || account.login?.state === 'complete')) {
       setWorking(true);
       void (async () => {
         try {
-          await request(endpoint + '/' + account.id + '/activate', { method: 'POST', body: '{}' });
+          if (!account.active) await request(endpoint + '/' + account.id + '/activate', { method: 'POST', body: '{}' });
+          await load();
           await changed(); setWizard(null); setError('');
-        } catch (e) { setError((e as Error).message); } finally { setWorking(false); }
+        } catch (e) {
+          setError((e as Error).message);
+          setWizard(current => current?.id === account.id ? { ...current, submitted: false } : current);
+        } finally { setWorking(false); }
       })();
     }
   }, [data, wizard, working, request, changed]);
@@ -59,26 +64,26 @@ export function ExecutionAccountsPanel({ request, busy, changed }: { request: Re
     <p className="help">Сотрудникам видны модели всех активных аккаунтов — они работают вместе. Неактивные аккаунты скрыты от сотрудников; в этом списке видны всегда.</p>
     {!data && !error && <p role="status">Загрузка…</p>}
     <ul className="settings-records">{data?.accounts.map(account => <li key={account.id}>
-      <div><strong>{account.name}</strong><small>{providerLabel(account.provider)} · {account.email ?? (account.signedIn ? 'Вход выполнен' : 'Требуется вход')}</small>
+      <div><strong>{accountName(account)}</strong><small>{providerLabel(account.provider)} · {account.email ?? (account.signedIn ? 'Вход выполнен' : 'Требуется вход')}</small>
         {account.login?.state === 'error' && <small role="alert">{account.login.error}</small>}
       </div>
       <div className="settings-actions">
         <label className={'check-setting account-active-status' + (account.active ? ' active' : ' inactive')} title={account.active ? 'Модели видны сотрудникам' : 'Модели скрыты от сотрудников'}>
           <input type="checkbox" checked={account.active} disabled={busy || working || !account.signedIn}
-            aria-label={'Активен · ' + account.name}
+            aria-label={'Активен · ' + accountName(account)}
             onChange={event => void action(async () => {
               await request(endpoint + '/' + account.id + '/' + (event.target.checked ? 'activate' : 'deactivate'), { method: 'POST', body: '{}' });
               await changed();
             })} />
-          {account.active ? 'Активен' : 'Неактивен'}
+          Активен
         </label>
         <button type="button" className="secondary" disabled={busy || working || account.login?.state === 'waiting'}
           onClick={() => { setAuthorizationCodes(old => ({ ...old, [account.id]: '' })); setGlmKeys(old => ({ ...old, [account.id]: '' }));
-            setWizard({ id: account.id, provider: account.provider, name: account.name }); }}>
+            setWizard({ id: account.id, provider: account.provider, name: accountName(account) }); }}>
           {account.provider === 'glm' ? <KeyRound size={15} aria-hidden="true" /> : <LogIn size={15} aria-hidden="true" />}<span>{account.provider === 'glm' ? 'Ключ' : 'Вход'}</span></button>
-        <button type="button" className="workspace-icon" aria-label={'Удалить подключение «' + account.name + '»'} title="Удалить подключение"
+        <button type="button" className="workspace-icon" aria-label={'Удалить подключение «' + accountName(account) + '»'} title="Удалить подключение"
           disabled={busy || working} onClick={() => {
-            if (!window.confirm('Удалить подключение «' + account.name + '» и сохранённый вход? Чаты и файлы проектов сохранятся.')) return;
+            if (!window.confirm('Удалить подключение «' + accountName(account) + '» и сохранённый вход? Чаты и файлы проектов сохранятся.')) return;
             void action(async () => { await request(endpoint + '/' + account.id, { method: 'DELETE' }); await changed(); });
           }}><Trash2 size={16} /></button>
       </div>
@@ -112,6 +117,7 @@ export function ExecutionAccountsPanel({ request, busy, changed }: { request: Re
                 <button type="button" className="primary" disabled={working || !glmKeys[wizardAccount.id]?.trim()} onClick={() => void action(async () => {
                   await request(endpoint + '/' + wizardAccount.id + '/key', { method: 'POST', body: JSON.stringify({ key: glmKeys[wizardAccount.id].trim() }) });
                   setGlmKeys(old => ({ ...old, [wizardAccount.id]: '' }));
+                  setWizard(current => current?.id === wizardAccount.id ? { ...current, submitted: true } : current);
                 })}>Сохранить и подключить</button>
                 <button type="button" className="secondary" onClick={() => setWizard(null)} disabled={working}>Закрыть</button>
               </div>
@@ -135,6 +141,7 @@ export function ExecutionAccountsPanel({ request, busy, changed }: { request: Re
                 : <div className="settings-actions">
                     <button type="button" className="primary" disabled={working} onClick={() => void action(async () => {
                       await request(endpoint + '/' + wizardAccount.id + '/login', { method: 'POST', body: '{}' });
+                      setWizard(current => current?.id === wizardAccount.id ? { ...current, submitted: true } : current);
                     })}>{wizardAccount.signedIn ? 'Войти заново' : 'Начать вход'}</button>
                     <button type="button" className="secondary" onClick={() => setWizard(null)} disabled={working}>Закрыть</button>
                   </div>}

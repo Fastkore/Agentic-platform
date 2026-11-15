@@ -16,6 +16,12 @@ const digest = (value: string | Buffer) => createHash('sha256').update(value).di
 const textFile = (name: string) => /\.(md|txt|json|xml|log|csv|tsv)$/i.test(name);
 const maxKnowledgeBytes = 256 * 1024 * 1024;
 const defaultSummary = 'Fastkore — платформа корпоративных приложений. Business — конфигурация заказов, смет, склада, производства, документов и платежей. Вводная 00-Fastkore-for-Agent-Platform.md описывает сеанс сотрудника и контекст окна. Руководство Platform описывает схему, связи и разработку. Руководство CLI описывает команды. Руководство Business описывает предметные процессы. Доступные операции определяются инструментами текущего сеанса, схема и состояния объектов — целевой установкой.';
+// Replace the prior shipped copies while preserving documents edited or removed by administrators.
+const previousFastkoreDocs = {
+  '00-Fastkore-for-Agent-Platform.md': ['d18b8a51bd2b49d5394632a0db19652eed74257db2129a061d0e524669084d00', 'b8e7f02df61149c41c571052c9102bec8309f0644715cbe01cf237dab0aee89b'],
+  'FastkoreCLI-Agent-Guide.md': ['1142353e5d87f87da348785d900141cd8d86917f7455287f312ca4c858f3f86b'],
+};
+const canonicalText = (bytes: Uint8Array) => Buffer.from(bytes).toString('utf8').replace(/\r\n/g, '\n');
 
 export class KnowledgeBase {
   private readonly db: DatabaseSync;
@@ -31,10 +37,10 @@ export class KnowledgeBase {
         extraction TEXT NOT NULL, content BLOB NOT NULL, UNIQUE(section, name));
       CREATE VIRTUAL TABLE IF NOT EXISTS chunks USING fts5(documentId UNINDEXED, part UNINDEXED, title, text);`);
     this.audit = new AuditJournal(this.db);
+    const source = new URL('../knowledge/fastkore/', import.meta.url);
+    const bundled = existsSync(source) ? source : new URL('../../knowledge/fastkore/', import.meta.url);
     // The seed marker and documents commit together. Local edits survive package upgrades.
     if (!this.db.prepare('SELECT id FROM sections WHERE id = ?').get('fastkore')) {
-      const source = new URL('../knowledge/fastkore/', import.meta.url);
-      const bundled = existsSync(source) ? source : new URL('../../knowledge/fastkore/', import.meta.url);
       const files = readdirSync(bundled).filter(name => name.endsWith('.md')).sort();
       this.db.exec('BEGIN IMMEDIATE');
       try {
@@ -46,6 +52,19 @@ export class KnowledgeBase {
         }
         this.db.exec('COMMIT');
       } catch (error) { this.db.exec('ROLLBACK'); this.db.close(); throw error; }
+    } else {
+      try {
+        this.change(() => {
+          for (const [name, oldDigest] of Object.entries(previousFastkoreDocs)) {
+            const row = this.db.prepare("SELECT id, content FROM documents WHERE section = 'fastkore' AND name = ?").get(name) as Pick<DocumentRow, 'id' | 'content'> | undefined;
+            if (row && oldDigest.includes(digest(canonicalText(row.content)))) {
+              const content = readFileSync(new URL(name, bundled));
+              if (!Buffer.from(row.content).equals(content)) this.write('fastkore', name, content, content.toString('utf8'), 'full', row.id);
+            }
+          }
+          return { value: undefined };
+        });
+      } catch (error) { this.db.close(); throw error; }
     }
   }
   private row(section: KnowledgeSection, id: string): DocumentRow {

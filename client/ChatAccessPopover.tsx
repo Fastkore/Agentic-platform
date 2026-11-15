@@ -1,5 +1,5 @@
 import { useEffect, useRef, type ReactNode } from 'react';
-import { ShieldCheck, X } from 'lucide-react';
+import { Wrench, X } from 'lucide-react';
 
 export function ChatAccessPopover({ writable, children }: { writable: boolean; children: ReactNode }) {
   const ref = useRef<HTMLDetailsElement>(null);
@@ -14,7 +14,7 @@ export function ChatAccessPopover({ writable, children }: { writable: boolean; c
     if (event.key === 'Escape') { event.preventDefault(); event.currentTarget.open = false; event.currentTarget.querySelector('summary')?.focus(); }
   }}>
     <summary className={'composer-access-trigger' + (writable ? ' write' : '')} title="Доступные инструменты чата" aria-label="Доступные инструменты чата">
-      <ShieldCheck size={16} aria-hidden="true" /><span>{writable ? 'Запись разрешена' : 'Только чтение'}</span>
+      <Wrench size={16} aria-hidden="true" /><span>{writable ? 'Запись разрешена' : 'Только чтение'}</span>
     </summary>
     <div className="composer-access-popover" role="region" aria-label="Доступные инструменты чата">
       <header><strong>Доступ в чате</strong><button type="button" className="workspace-icon" aria-label="Закрыть доступы" onClick={() => {

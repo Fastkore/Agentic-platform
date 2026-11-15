@@ -1,5 +1,4 @@
 import { useLayoutEffect, useRef, useState } from 'react';
-import { interfaceScale } from './interface-scale';
 
 const storageKey = 'bridge-sidebar-width';
 const minWidth = 230;
@@ -9,7 +8,7 @@ export function SidebarResizeHandle() {
   const handle = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(minWidth);
   const [maximum, setMaximum] = useState(maxWidth);
-  const drag = useRef<{ id: number; x: number; width: number; scale: number; previous: string } | undefined>(undefined);
+  const drag = useRef<{ id: number; x: number; width: number; previous: string } | undefined>(undefined);
 
   useLayoutEffect(() => {
     const element = handle.current?.parentElement;
@@ -52,18 +51,18 @@ export function SidebarResizeHandle() {
       event.preventDefault();
       event.currentTarget.focus();
       event.currentTarget.setPointerCapture(event.pointerId);
-      drag.current = { id: event.pointerId, x: event.clientX, width: element.offsetWidth, scale: interfaceScale(element),
+      drag.current = { id: event.pointerId, x: event.clientX, width: element.offsetWidth,
         previous: element.style.getPropertyValue('--sidebar-width') };
     }}
     onPointerMove={event => {
       const start = drag.current;
-      if (start?.id === event.pointerId) resize(start.width + (event.clientX - start.x) / start.scale, false);
+      if (start?.id === event.pointerId) resize(start.width + event.clientX - start.x, false);
     }}
     onPointerUp={event => {
       const start = drag.current;
       if (start?.id !== event.pointerId) return;
       drag.current = undefined;
-      resize(start.width + (event.clientX - start.x) / start.scale, true);
+      resize(start.width + event.clientX - start.x, true);
     }}
     onLostPointerCapture={event => {
       const start = drag.current;

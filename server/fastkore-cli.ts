@@ -1,15 +1,23 @@
 import { X509Certificate } from 'node:crypto';
 import { request } from 'node:http';
 import type { Credential } from '../shared/types.js';
+import type { FastkoreContext, FastkoreEntityContext } from '../shared/fastkore-context.js';
 import type { FastkoreCliCommand } from './codex-tools.js';
 import { postErpJson, type FastkoreSso } from './fastkore.js';
 import { BridgeError, redact } from './store.js';
+import { elapsedMs } from './run-timing.js';
 
+export type FastkoreCliPage = { pageSize: number; orderBy?: string; descending?: boolean; after?: string; properties?: string[] };
 export type FastkoreCliRead =
-  | { operation: 'get'; entitySetId: string; entityId: string }
-  | { operation: 'query'; entitySetId: string; limit: number };
+  | { operation: 'get'; entitySetId: string; entityId: string; properties?: string[] }
+  | { operation: 'query'; entitySetId: string; limit: number; filter?: string }
+  | { operation: 'get-many'; entitySetId: string; entityIds: string[]; properties?: string[] }
+  | { operation: 'page'; page: FastkoreCliPage; context: FastkoreEntityContext }
+  | { operation: 'page'; page: FastkoreCliPage; entitySetId: string; filter?: string };
+export type FastkoreCliReadSupport = { contextPaging: boolean; batchGet: boolean };
+export type FastkoreCliTiming = { trustMs?: number; ticketMs?: number; ticketStatus?: number; cliRpcMs?: number; cliProcessMs?: number; exitCode?: number };
 export type FastkoreCliOperation = FastkoreCliRead | { operation: 'auth-info' } |
-  { operation: 'execute'; command: string; args: string[]; workDirectoryId: string };
+  { operation: 'execute'; command: string; args: string[]; workDirectoryId: string; context?: FastkoreContext };
 type Result = { success: boolean; exitCode: number; data?: unknown };
 const audience = 'fastkore-cli';
 const unavailable = 'Исполнитель Fastkore CLI недоступен.';
@@ -19,7 +27,7 @@ const ticketPattern = /^fkct1\.[A-Za-z0-9._-]{1,4096}$(?![\s\S])/;
 export class FastkoreCli {
   constructor(private readonly socketPath: string) {}
 
-  private exchange(path: string, payload?: object, signal?: AbortSignal): Promise<unknown> {
+  private exchange(path: string, payload?: object, signal?: AbortSignal, timing?: FastkoreCliTiming): Promise<unknown> {
     return new Promise((resolve, reject) => {
       const fail = () => new BridgeError(unavailable, 503);
       const body = payload && JSON.stringify(payload);
@@ -30,7 +38,10 @@ export class FastkoreCli {
         signal: signal ? AbortSignal.any([timeout, signal]) : timeout,
       }, async res => {
         try {
-          if (res.statusCode === 409) throw new BridgeError('Исполнитель Fastkore CLI занят. Повторите позже.', 409);
+          const processMs = res.headers['x-fastkore-cli-process-ms'];
+          if (timing && typeof processMs === 'string' && /^\d{1,6}$/.test(processMs)) timing.cliProcessMs = Number(processMs);
+          if (res.statusCode === 409 || res.statusCode === 429) throw new BridgeError('Исполнитель Fastkore CLI занят. Повторите позже.', 429);
+          if (res.statusCode === 422) throw new BridgeError('Установленная Fastkore CLI не поддерживает этот режим чтения.', 422);
           if (res.statusCode === 400) throw new BridgeError('Проверьте имя команды, её параметры и пути. CLI использует подключение текущего сотрудника и рабочую папку cli.', 400);
           if (res.statusCode !== 200) throw fail();
           let body = '';
@@ -63,15 +74,15 @@ export class FastkoreCli {
     const caFingerprint = new X509Certificate(binding.ca).fingerprint256;
     // Verify the runner's fixed address and CA before sending a ticket.
     const trust = await this.exchange('/trust', undefined, AbortSignal.any([signal, AbortSignal.timeout(2000)])) as
-      { authority?: string; caFingerprint?: string } | null;
+      { authority?: string; caFingerprint?: string; contextPaging?: boolean; batchGet?: boolean } | null;
     if (trust?.authority !== authority || trust.caFingerprint !== caFingerprint) {
       throw new BridgeError('Адрес или CA исполнителя Fastkore CLI не совпадает с привязкой ERP.', 424);
     }
-    return { authority, caFingerprint };
+    return { authority, caFingerprint, contextPaging: trust.contextPaging === true, batchGet: trust.batchGet === true };
   }
 
   async run(operation: FastkoreCliOperation, sso: Pick<FastkoreSso, 'delegationBinding' | 'openDelegation'>,
-    current: () => Credential, forget: (id: string) => Promise<void>, signal: AbortSignal): Promise<Result> {
+    current: () => Credential, forget: (id: string) => Promise<void>, signal: AbortSignal, timing?: FastkoreCliTiming): Promise<Result> {
     signal.throwIfAborted();
     const credential = current();
     const binding = sso.delegationBinding(credential);
@@ -89,13 +100,19 @@ export class FastkoreCli {
         throw new BridgeError(reauth, 403);
       }
     };
-    const trust = await this.checkTrust(binding, signal);
+    const trustStarted = performance.now();
+    const { authority, caFingerprint, contextPaging, batchGet } = await this.checkTrust(binding, signal)
+      .finally(() => { if (timing) timing.trustMs = elapsedMs(trustStarted); });
+    if ((operation.operation === 'page' && !contextPaging) || (operation.operation === 'get-many' && !batchGet)) {
+      throw new BridgeError('Установленная Fastkore CLI не поддерживает этот режим чтения.', 422);
+    }
     check();
-    const started = Date.now();
+    const started = Date.now(), ticketStarted = performance.now();
     const failed = () => new BridgeError('ERP не выдала билет Fastkore CLI.', 502);
     const { status, value } = await postErpJson(binding.origin + '/api/ai/cli-ticket',
-      JSON.stringify({ version: 1, delegation: grant.grant }), { ...binding, signal }, failed);
-    if (process.env.NODE_ENV === 'production') console.info(JSON.stringify({ event: 'fastkore.cli.ticket', status, elapsedMs: Date.now() - started }));
+      JSON.stringify({ version: 1, delegation: grant.grant }), { ...binding, signal }, failed)
+      .finally(() => { if (timing) timing.ticketMs = elapsedMs(ticketStarted); });
+    if (timing) timing.ticketStatus = status;
     if (status === 403) {
       await forget(credential.id);
       throw new BridgeError(reauth, 403);
@@ -109,10 +126,13 @@ export class FastkoreCli {
       !ticketPattern.test(ticket.ticket) || !Number.isInteger(ticket.expires_in) || ticket.expires_in! < 1 || ticket.expires_in! > 30 ||
       Date.now() >= started + ticket.expires_in! * 1000) throw failed();
     check();
-    const result = await this.exchange('/read', { ...operation, ticket: ticket.ticket, ...trust }, signal) as Result;
+    const rpcStarted = performance.now();
+    const result = await this.exchange('/read', { ...operation, ticket: ticket.ticket, authority, caFingerprint }, signal, timing)
+      .finally(() => { if (timing) timing.cliRpcMs = elapsedMs(rpcStarted); }) as Result;
     check();
     if (!result || typeof result.success !== 'boolean' || !Number.isInteger(result.exitCode) ||
       (result.success ? result.exitCode !== 0 || !Object.hasOwn(result, 'data') : result.exitCode === 0)) throw new BridgeError(unavailable, 502);
+    if (timing) timing.exitCode = result.exitCode;
     if (operation.operation === 'auth-info' && result.success) {
       const data = result.data as { user?: { guid?: string } } | undefined;
       const guid = data?.user?.guid;

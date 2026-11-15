@@ -14,6 +14,13 @@ const iconLabels: Record<SpecialistIcon, string> = { bot: 'Помощник', me
 const builtInIcons: Partial<Record<string, SpecialistIcon>> = { universal: 'message', estimator: 'calculator', technologist: 'settings', accountant: 'database' };
 const toolIcons = { 'project-files': Folder, 'chat-files': Paperclip, fastkore: Database };
 const newProfile: AgentProfile = { id: '', name: '', description: '', instructions: '', enabled: false, model: '', reasoningEffort: 'high', operationIds: ['chat'], datasetIds: [], skillIds: [], allowWrite: false, outputMode: 'chat', revision: 0, toolIds: [] };
+const editorTabs = [
+  { id: 'general', label: 'Основное', icon: Bot },
+  { id: 'instructions', label: 'Инструкции', icon: FileText },
+  { id: 'tools', label: 'Инструменты', icon: Layers3 },
+  { id: 'model', label: 'Модель', icon: Settings2 },
+] as const;
+type EditorTab = typeof editorTabs[number]['id'];
 
 function profileIcon(profile: AgentProfile): SpecialistIcon {
   return profile.icon ?? (Object.hasOwn(builtInIcons, profile.id) ? builtInIcons[profile.id]! : 'bot');
@@ -31,6 +38,8 @@ export function SpecialistsPanel({ request, globalInstructions }: { request: Req
   const [query, setQuery] = useState('');
   const [filter, setFilter] = useState('all');
   const [sort, setSort] = useState('default');
+  const [tab, setTab] = useState<EditorTab>('general');
+  const tabs = useRef<HTMLDivElement>(null);
   const heading = useRef<HTMLHeadingElement>(null);
   const fileInput = useRef<HTMLInputElement>(null);
   const editingProfile = !!editing;
@@ -55,7 +64,7 @@ export function SpecialistsPanel({ request, globalInstructions }: { request: Req
   if (sort === 'name') visible.sort((left, right) => left.name.localeCompare(right.name, 'ru'));
   if (sort === 'enabled') visible.sort((left, right) => Number(right.enabled) - Number(left.enabled));
 
-  function edit(profile?: Profile) { setError(''); setEditing(profile ? { ...profile } : undefined); }
+  function edit(profile?: Profile) { setError(''); setTab('general'); setEditing(profile ? { ...profile } : undefined); }
   function update(next: Partial<AgentProfile>) { setEditing(profile => profile ? { ...profile, ...next } : profile); }
 
   async function save(profile: Profile, close: boolean) {
@@ -146,14 +155,34 @@ export function SpecialistsPanel({ request, globalInstructions }: { request: Req
   const files = profile.instructionFiles ?? [];
   const selectedTools = profile.toolIds ?? agentToolIds;
   const submit = (event: FormEvent) => { event.preventDefault(); if (!busy) void save(profile, true); };
-  return <div className="specialist-page">
+  return <div className="specialist-page specialist-editor">
     <button type="button" className="specialist-back" disabled={busy} onClick={() => edit()}><ChevronLeft size={17} />Все специалисты</button>
     <header className="specialist-header">
       <IconTile icon={profileIcon(profile)} />
       <div><h2 ref={heading} id="settings-section-title" tabIndex={-1}>{profile.revision ? 'Редактирование специалиста' : 'Новый специалист'}</h2>
         {profile.revision ? <p>{profile.name}</p> : null}</div>
     </header>
-    <form className="specialist-form" onSubmit={submit}>
+    <form className="specialist-form specialist-editor-form" onSubmit={submit} onInvalid={event => {
+      const input = event.target as HTMLInputElement;
+      const panel = input.closest('[role="tabpanel"]');
+      const destination = editorTabs.find(item => panel?.id === 'specialist-panel-' + item.id);
+      if (destination) { setTab(destination.id); requestAnimationFrame(() => input.focus()); }
+    }}>
+      <div ref={tabs} className="specialist-tabs" role="tablist" aria-label="Настройки специалиста" onKeyDown={event => {
+        const current = editorTabs.findIndex(item => item.id === tab);
+        const next = event.key === 'ArrowRight' ? (current + 1) % editorTabs.length : event.key === 'ArrowLeft'
+          ? (current + editorTabs.length - 1) % editorTabs.length : event.key === 'Home' ? 0 : event.key === 'End' ? editorTabs.length - 1 : -1;
+        if (next < 0) return;
+        event.preventDefault();
+        setTab(editorTabs[next].id);
+        tabs.current?.querySelectorAll<HTMLButtonElement>('[role="tab"]')[next]?.focus();
+      }}>
+        {editorTabs.map(({ id, label, icon: Icon }) => <button key={id} id={'specialist-tab-' + id} type="button" role="tab"
+          aria-selected={tab === id} aria-controls={'specialist-panel-' + id} tabIndex={tab === id ? 0 : -1} onClick={() => setTab(id)}>
+          <Icon size={16} aria-hidden="true" />{label}
+        </button>)}
+      </div>
+      <div role="tabpanel" id="specialist-panel-general" aria-labelledby="specialist-tab-general" className="specialist-tabpanel" hidden={tab !== 'general'} tabIndex={0}>
       <section className="specialist-card">
         <h3>Основная информация</h3>
         <div className="specialist-columns">
@@ -161,7 +190,7 @@ export function SpecialistsPanel({ request, globalInstructions }: { request: Req
           <div><label htmlFor="profile-description">Когда подключать специалиста</label>
             <input id="profile-description" maxLength={1000} required value={profile.description} aria-describedby="profile-description-help"
               placeholder="Например, для проверки расчётов" onChange={event => update({ description: event.target.value })} />
-            <p id="profile-description-help" className="help">Codex использует это описание при выборе специалиста.</p>
+            <p id="profile-description-help" className="help">Агент использует это описание при выборе специалиста.</p>
           </div>
           {!profile.revision && <div><label htmlFor="config-id">Идентификатор латиницей</label>
             <input id="config-id" pattern="[a-z][a-z0-9_\-]{1,63}" value={profile.id} required onChange={event => update({ id: event.target.value })} />
@@ -176,27 +205,19 @@ export function SpecialistsPanel({ request, globalInstructions }: { request: Req
           </div>
         </div>
       </section>
-      <div className="specialist-columns">
+      <section className="specialist-card">
+          <label htmlFor="profile-output">Выдача результата</label><Select id="profile-output" className="settings-select" value={profile.outputMode}
+            onChange={outputMode => update({ outputMode: outputMode as AgentProfile['outputMode'] })}
+            options={[{ value: 'chat', label: 'Обычный чат проекта' }, { value: 'restricted', label: 'Проверяемый результат закрытой операции' }]} />
+      </section>
+      </div>
+
+      <div role="tabpanel" id="specialist-panel-instructions" aria-labelledby="specialist-tab-instructions" className="specialist-tabpanel" hidden={tab !== 'instructions'} tabIndex={0}>
         <section className="specialist-card specialist-instructions">
           <h3><FileText size={18} aria-hidden="true" /><label htmlFor="config-rules">Инструкции специалиста</label></h3>
           <textarea id="config-rules" rows={6} maxLength={20000} value={profile.instructions}
             placeholder="Опишите задачу, порядок действий и ожидаемый результат." onChange={event => update({ instructions: event.target.value })} />
         </section>
-        <section className="specialist-card">
-          <h3><Layers3 size={19} aria-hidden="true" />Инструменты специалиста</h3>
-          <p className="help">Доступ к источникам уточняется в настройках проекта.</p>
-          <div className="specialist-tool-list">
-            {agentTools.map(tool => {
-              const Tool = toolIcons[tool.id];
-              return <label key={tool.id}>
-                <input type="checkbox" checked={selectedTools.includes(tool.id)}
-                  onChange={event => update({ toolIds: event.target.checked ? [...selectedTools, tool.id] : selectedTools.filter(id => id !== tool.id) })} />
-                <Tool size={20} aria-hidden="true" /><span><strong>{tool.name}</strong><small>{tool.description}</small></span>
-              </label>;
-            })}
-          </div>
-        </section>
-      </div>
       <section className="specialist-card specialist-files">
         <div className="specialist-file-header">
           <div><h3><Paperclip size={18} aria-hidden="true" />Файлы инструкций</h3><p className="help">До пяти файлов Markdown или TXT, всего до 6 000 символов.</p></div>
@@ -213,23 +234,45 @@ export function SpecialistsPanel({ request, globalInstructions }: { request: Req
         <summary><ChevronDown size={17} aria-hidden="true" />Общие инструкции</summary>
         <pre>{globalInstructions}</pre>
       </details>
-      <details className="specialist-card specialist-disclosure">
-        <summary><ChevronDown size={17} aria-hidden="true" />Модель и дополнительные настройки</summary>
-        <div className="specialist-advanced">
+      <section className="specialist-card">
+          <label htmlFor="profile-skills">Идентификаторы утверждённых Skills через запятую</label>
+          <input id="profile-skills" value={profile.skillIds.join(', ')} onChange={event => update({ skillIds: event.target.value.split(',').map(value => value.trim()).filter(Boolean) })} />
+      </section>
+      </div>
+
+      <div role="tabpanel" id="specialist-panel-tools" aria-labelledby="specialist-tab-tools" className="specialist-tabpanel" hidden={tab !== 'tools'} tabIndex={0}>
+        <section className="specialist-card">
+          <h3><Layers3 size={19} aria-hidden="true" />Инструменты специалиста</h3>
+          <p className="help">Доступ к источникам уточняется в настройках проекта.</p>
+          <div className="specialist-tool-list">
+            {agentTools.map(tool => {
+              const Tool = toolIcons[tool.id];
+              return <label key={tool.id}>
+                <input type="checkbox" checked={selectedTools.includes(tool.id)}
+                  onChange={event => update({ toolIds: event.target.checked ? [...selectedTools, tool.id] : selectedTools.filter(id => id !== tool.id) })} />
+                <Tool size={20} aria-hidden="true" /><span><strong>{tool.name}</strong><small>{tool.description}</small></span>
+              </label>;
+            })}
+          </div>
+        </section>
+      <section className="specialist-card">
+          <label className="check-setting"><input type="checkbox" checked={profile.allowWrite} onChange={event => update({ allowWrite: event.target.checked })} />Разрешить запись, если она включена на сервере</label>
+      <p className="help">Доступ к Fastkore также учитывает разрешения роли сотрудника и подключение к проекту. Права на данные проверяет ERP.</p>
+          <Checks label="Разрешённые операции" values={profile.operationIds} options={Object.entries(operations).map(([id, name]) => ({ id, name }))} change={operationIds => update({ operationIds })} />
+          <Checks label="Библиотеки специалиста" values={profile.datasetIds} options={datasets} change={datasetIds => update({ datasetIds })} />
+      </section>
+      </div>
+
+      <div role="tabpanel" id="specialist-panel-model" aria-labelledby="specialist-tab-model" className="specialist-tabpanel" hidden={tab !== 'model'} tabIndex={0}>
+      <section className="specialist-card">
           <label htmlFor="profile-model">Модель</label><input id="profile-model" maxLength={128} value={profile.model} placeholder="Модель диалога" onChange={event => update({ model: event.target.value })} />
           <label htmlFor="profile-effort">Уровень рассуждения</label><Select id="profile-effort" className="settings-select" value={profile.reasoningEffort}
             onChange={reasoningEffort => update({ reasoningEffort: reasoningEffort as AgentProfile['reasoningEffort'] })}
             options={[{ value: 'low', label: 'Низкий' }, { value: 'medium', label: 'Средний' }, { value: 'high', label: 'Высокий' }, { value: 'xhigh', label: 'Очень высокий' }]} />
-          <Checks label="Разрешённые операции" values={profile.operationIds} options={Object.entries(operations).map(([id, name]) => ({ id, name }))} change={operationIds => update({ operationIds })} />
-          <label htmlFor="profile-output">Выдача результата</label><Select id="profile-output" className="settings-select" value={profile.outputMode}
-            onChange={outputMode => update({ outputMode: outputMode as AgentProfile['outputMode'] })}
-            options={[{ value: 'chat', label: 'Обычный чат проекта' }, { value: 'restricted', label: 'Проверяемый результат закрытой операции' }]} />
-          <label className="check-setting"><input type="checkbox" checked={profile.allowWrite} onChange={event => update({ allowWrite: event.target.checked })} />Разрешить запись, если она включена на сервере</label>
-          <Checks label="Библиотеки специалиста" values={profile.datasetIds} options={datasets} change={datasetIds => update({ datasetIds })} />
-          <label htmlFor="profile-skills">Идентификаторы утверждённых Skills через запятую</label>
-          <input id="profile-skills" value={profile.skillIds.join(', ')} onChange={event => update({ skillIds: event.target.value.split(',').map(value => value.trim()).filter(Boolean) })} />
-        </div>
-      </details>
+      <p className="help">Выбор модели и уровня рассуждения в чате имеет приоритет.</p>
+      </section>
+      </div>
+
       {error && <div className="inline-error" role="alert">{error}</div>}
       <div className="settings-dialog-actions"><button type="button" className="secondary" onClick={() => edit()} disabled={busy}>Отмена</button>
         <button type="submit" className="primary" disabled={busy}>Сохранить</button></div>

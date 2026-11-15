@@ -16,17 +16,18 @@ import { UploadAdmission } from './upload-admission.js';
 import { loadDictation, maxDictationBytes, validateDictation, type TranscribeDictation } from './dictation.js';
 import { specialistFileLimits, specialistIcons } from '../shared/types.js';
 import type { DictationModelId } from '../shared/types.js';
-import { isFastkoreContextReset, parseFastkoreContext, type FastkoreContext } from '../shared/fastkore-context.js';
-import { chatBinding, migrateFastkoreChatBindings } from './fastkore-chat.js';
+import { parseFastkoreContext } from '../shared/fastkore-context.js';
+import { chatBinding, matchesFastkoreChat, migrateFastkoreChatBindings, parentFastkoreChatBindings } from './fastkore-chat.js';
 import { FastkoreMcp } from './fastkore-mcp.js';
-import { FastkoreCli } from './fastkore-cli.js';
+import { FastkoreCli, type FastkoreCliTiming } from './fastkore-cli.js';
+import { elapsedMs } from './run-timing.js';
 import { RemoteCodexRunner } from './codex-remote.js';
 import { erpRoleCatalog, restoreErpRoles, erpRolePermissions, erpCredentialPermissions, internetCredentialPermissions } from './erp-roles.js';
 import { withInternetTools } from './internet-tools.js';
-import { withFastkoreCliDescription, withFastkoreCliReads } from './codex-tools.js';
+import { withFastkoreCliDescription } from './codex-tools.js';
 import { withFastkoreCliCommands } from './fastkore-cli-tools.js';
 import type { AgentProfile, Dataset, FastkoreAuthentication, FastkoreInstallation, FastkoreKeyIssue, FileStorageProvider, ProjectAgentPolicy, ProjectAgentSettings, Settings, User, WorkRole } from '../shared/types.js';
-import type { AuditEvent } from '../shared/types.js';
+import type { AuditEvent, RelatedChatSummary, Run } from '../shared/types.js';
 import { agentToolIds } from '../shared/agent-tools.js';
 import { operationIds } from './corporate.js';
 import { FastkoreSso, loadSsoKey, cookieToken, csrfFor, validCsrf, setSessionCookie, setStartCookie, startCookie, normalizeTheme, uuid, type InstallationPatch, type PairingClient, type Theme, type TicketValidator } from './fastkore.js';
@@ -114,53 +115,45 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
         sessionId: credential.id, installationId: credential.installationId, runId: run?.id, chatId: run?.chatId, ...details,
       } });
     };
-    const integration = permissions.mcp ? await fastkoreMcp.prepare(credential, context, () => { checkPermission('mcp'); }, signal, ({ tool, parameters, ...details }) =>
-      audit('erp.mcp.call', tool, { ...details, objectIds: erpAuditIds(parameters) }), true) : {};
+    const mcpStarted = performance.now();
+    const integration = permissions.mcp ? await fastkoreMcp.prepare(credential, () => { checkPermission('mcp'); }, signal, ({ tool, parameters, ...details }) =>
+      audit('erp.mcp.call', tool, { ...details, objectIds: erpAuditIds(parameters) })).finally(() => {
+        if (run?.timing) run.timing.mcpSetupMs ??= elapsedMs(mcpStarted);
+      }) : {};
     if (!permissions.cli || !fastkoreCli || !sso || credential.source !== 'fastkore' || sso.delegationBinding(credential)?.cliEnabled === false) return integration;
-    const tools = withFastkoreCliDescription(integration.tools ?? {
+    const base = integration.tools ?? {
       definitions: [], call: async () => ({ success: false, text: 'Инструмент Fastkore недоступен.' }),
-    }, (command, callSignal) => fastkoreCli.describe(command, callSignal), () => { current(); });
+    };
+    const descriptionOnly = () => withFastkoreCliDescription(base, (command, callSignal) => fastkoreCli.describe(command, callSignal), () => { current(); });
     const active = current();
     const binding = cliTicketsEnabled ? sso.delegationBinding(active) : undefined;
-    if (!binding || !sso.openDelegation(active, binding.revision)) return { ...integration, tools };
+    if (!binding || !sso.openDelegation(active, binding.revision)) return { ...integration, tools: descriptionOnly() };
+    let support;
+    const cliStarted = performance.now();
     try {
-      await fastkoreCli.checkTrust(binding, signal);
+      support = await fastkoreCli.checkTrust(binding, signal);
     } catch (error) {
       signal.throwIfAborted();
       const problem = error instanceof BridgeError ? error.message : 'Исполнитель Fastkore CLI недоступен.';
-      return { tools, problem: [integration.problem, problem].filter(Boolean).join(' ') };
+      return { tools: descriptionOnly(), problem: [integration.problem, problem].filter(Boolean).join(' ') };
+    } finally {
+      if (run?.timing) run.timing.cliSetupMs ??= elapsedMs(cliStarted);
     }
     current();
-    const reads = withFastkoreCliReads(tools, context, async (input, callSignal, scope) => {
-      const started = Date.now();
-      let success = false;
-      try {
-        const result = await fastkoreCli.run(input, sso, current, id => fastkoreMcp.invalidate(id), callSignal);
-        if (!result.success) return { success: false, text: `Fastkore CLI завершила команду с кодом ${result.exitCode}.` };
-        const text = JSON.stringify(result.data);
-        if (text.length > 96_000) return { success: false, text: 'Ответ Fastkore CLI слишком большой. Уменьшите выборку.' };
-        success = true;
-        return { success: true, text };
-      } catch (error) {
-        return { success: false, text: error instanceof BridgeError ? error.message : 'Fastkore CLI не выполнила команду.' };
-      } finally {
-        audit('erp.cli.read', input.operation, { scope, success, elapsedMs: Date.now() - started, objectIds: erpAuditIds(input) });
-      }
-    });
-    const commands = run ? withFastkoreCliCommands(reads, () => fastkoreCli.describe(),
+    const commands = run ? withFastkoreCliCommands(base, () => fastkoreCli.describe(),
       (command, callSignal) => fastkoreCli.describeCommand(command, callSignal),
       async (command, args, callSignal) => {
-        const started = Date.now();
+        const started = performance.now(), timing: FastkoreCliTiming = {};
         let success = false;
         try {
-          const result = await fastkoreCli.run({ operation: 'execute', command, args, workDirectoryId: run.id },
-            sso, current, id => fastkoreMcp.invalidate(id), callSignal);
+          const result = await fastkoreCli.run({ operation: 'execute', command, args, workDirectoryId: run.id, context },
+            sso, current, id => fastkoreMcp.invalidate(id), callSignal, timing);
           success = result.success;
           const text = JSON.stringify({ exitCode: result.exitCode, data: result.data });
           return { success, text: text.length <= 96000 ? text : 'Ответ CLI слишком большой. Сохраните результат в файл или уменьшите выборку.' };
-        } finally { audit('erp.cli.command', command, { success, elapsedMs: Date.now() - started }); }
-      }, () => { current(); }) : reads;
-    return { tools: commands, problem: reads.scopedReadAvailable ? undefined : integration.problem };
+        } finally { audit('erp.cli.command', command, { success, elapsedMs: elapsedMs(started), ...timing }); }
+      }, () => { current(); }) : descriptionOnly();
+    return { tools: commands, problem: integration.problem };
   };
   migrateFastkoreChatBindings(workspace.store.state);
   if (sso) {
@@ -180,6 +173,17 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
     return access.authenticateCredential(p.credential.id);
   };
   const user = (r: FastifyRequest) => principal(r).user;
+  const chatIdentityMatches = (p: Principal, chat: ReturnType<Workspace['chat']>) => {
+    const binding = chat.fastkoreBinding;
+    return p.credential.source !== 'fastkore' || !binding?.externalUserId ||
+      (binding.installationId === p.credential.installationId && binding.externalUserId === p.credential.externalUserId);
+  };
+  const requestRun = (request: FastifyRequest<{ Params: { runId: string } }>) => {
+    const p = principal(request);
+    const run = access.run(p.user, request.params.runId);
+    if (run.projectId && run.chatId && !chatIdentityMatches(p, workspace.chat(run.projectId, run.chatId))) throw new BridgeError('Задание не найдено.', 404);
+    return run;
+  };
   const admin = (r: FastifyRequest) => { const u = user(r); access.admin(u); return u; };
   const localAdmin = (r: FastifyRequest) => {
     const p = principal(r);
@@ -515,10 +519,16 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
       mcp: isolatedToolsEnabled && erpPermissions.mcp && fastkoreToolsStatus === 'ready',
       webSearch: !!(isolatedToolsEnabled && accountWorker && internetCredentialPermissions(workspace.store.state, credential).read),
     };
-    const activeRuns = workspace.activeRuns.filter(r => { try { access.run(u, r.id); return true; } catch { return false; } });
+    const visibleRun = (run: Run) => {
+      try {
+        access.run(u, run.id);
+        return !run.projectId || !run.chatId || chatIdentityMatches({ credential, user: u }, workspace.chat(run.projectId, run.chatId));
+      } catch { return false; }
+    };
+    const activeRuns = workspace.activeRuns.filter(visibleRun);
     const activeRun = activeRuns[0] ?? null;
     const queuedRuns = workspace.queuedRuns.flatMap(run => {
-      try { access.run(u, run.id); } catch { return []; }
+      if (!visibleRun(run)) return [];
       const job = workspace.store.state.jobs?.find(item => item.runId === run.id);
       if (job?.authorId !== u.id) return [run];
       return [{ ...run, queuedText: job?.text.slice(0, 240), queuedFiles: job?.attachmentIds.length }];
@@ -728,27 +738,49 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
     workspace.deleteProjectFile(request.params.projectId, request.params.fileId, () => { localAdmin(request); }));
   app.patch<{ Params: { projectId: string }; Body: { memberIds: string[] } }>('/api/projects/:projectId/members', { schema: { body: object({ memberIds: { type: 'array', maxItems: 1000, uniqueItems: true, items: string(100) } }, ['memberIds']) } }, async request => access.members(user(request), request.params.projectId, request.body.memberIds));
   app.get<{ Params: { projectId: string } }>('/api/projects/:projectId/chats', async request => {
-    const u = user(request); return access.project(u, request.params.projectId).chats.filter(c => !c.archivedAt && access.canChat(u, c)).map(c => access.chatSummary(c));
+    const p = principal(request);
+    return access.project(p.user, request.params.projectId).chats.filter(c => !c.archivedAt && access.canChat(p.user, c) && chatIdentityMatches(p, c)).map(c => access.chatSummary(c));
   });
-  app.get('/api/admin/chats/archive', async request => {
-    admin(request);
-    return workspace.store.state.projects.flatMap(project => project.chats.flatMap(chat => chat.archivedAt
+  const archivedChats = (include: (project: ReturnType<Workspace['project']>, chat: ReturnType<Workspace['chat']>) => boolean) =>
+    workspace.store.state.projects.flatMap(project => project.chats.flatMap(chat => chat.archivedAt && include(project, chat)
       ? [{ ...access.chatSummary(chat), archivedAt: chat.archivedAt, projectId: project.id, projectName: project.name }] : []))
       .sort((a, b) => b.archivedAt.localeCompare(a.archivedAt));
+  app.get('/api/admin/chats/archive', async request => {
+    admin(request);
+    return archivedChats(() => true);
+  });
+  app.get('/api/chats/archive', async request => {
+    const { user: actor, credential } = principal(request);
+    if (credential.source !== 'fastkore' || !credential.installationId) throw new BridgeError('Личный архив доступен в сеансе Fastkore.', 403);
+    return archivedChats((project, chat) => chat.ownerId === actor.id && chat.fastkoreBinding?.installationId === credential.installationId &&
+      (!chat.fastkoreBinding?.externalUserId || chat.fastkoreBinding.externalUserId === credential.externalUserId) &&
+      (actor.role === 'admin' || project.memberIds?.includes(actor.id) === true));
   });
   const relatedChatContext = (request: FastifyRequest, raw: unknown) => {
     const p = principal(request);
     if (p.credential.source !== 'fastkore' || !p.credential.installationId) throw new BridgeError('Связанные чаты доступны в сеансе Fastkore.', 403);
     const context = parseFastkoreContext(raw);
-    const binding = context && chatBinding(p.credential.installationId, context);
-    if (!binding) throw new BridgeError('Для связанных чатов откройте сохранённую карточку или список с доступным фильтром.');
-    return { actor: p.user, binding };
+    const binding = context && chatBinding(p.credential.installationId, context, p.credential.externalUserId);
+    if (!binding || !context) throw new BridgeError('Для этого контекста Fastkore нет ключа истории.');
+    return { actor: p.user, binding, context, parents: parentFastkoreChatBindings(p.credential.installationId, p.credential.externalUserId, context) };
   };
   app.post<{ Body: { context: unknown } }>('/api/fastkore/chats/related', {
     schema: { body: object({ context: { type: 'object' } }, ['context']) },
   }, async request => {
-    const { actor, binding } = relatedChatContext(request, request.body.context);
-    return workspace.relatedFastkoreChats(actor, binding).map(({ project, chat }) => ({ ...access.chatSummary(chat), projectId: project.id, projectName: project.name }));
+    const { actor, binding, context, parents } = relatedChatContext(request, request.body.context);
+    const rows = new Map<string, RelatedChatSummary>();
+    for (const parent of parents) {
+      const source = workspace.relatedFastkoreChats(actor, parent)[0];
+      if (source) rows.set(source.chat.id, { ...access.chatSummary(source.chat), projectId: source.project.id, projectName: source.project.name,
+        parent: true, contextMatches: false });
+    }
+    for (const { project, chat } of workspace.relatedFastkoreChats(actor, binding)) {
+      rows.set(chat.id, { ...access.chatSummary(chat), projectId: project.id, projectName: project.name, parent: rows.get(chat.id)?.parent });
+    }
+    for (const { project, chat } of workspace.relatedFastkoreChats(actor, binding, context)) {
+      if (!rows.has(chat.id)) rows.set(chat.id, { ...access.chatSummary(chat), projectId: project.id, projectName: project.name, legacyContext: true });
+    }
+    return [...rows.values()];
   });
   app.post<{ Body: { context: unknown; projectId: string; fresh?: boolean; agentProfileId?: string } }>('/api/fastkore/chats', {
     schema: { body: object({ context: { type: 'object' }, projectId: string(100), fresh: { type: 'boolean' }, agentProfileId: identifier }, ['context', 'projectId']) },
@@ -768,15 +800,37 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
   });
   type ChatParams = { projectId: string; chatId: string };
   const chatPath = '/api/projects/:projectId/chats/:chatId';
-  app.get<{ Params: ChatParams }>(chatPath, async request => access.viewChat(access.chat(user(request), request.params.projectId, request.params.chatId)));
+  const requestChat = (request: FastifyRequest<{ Params: ChatParams }>, edit = false) => {
+    const p = principal(request), { projectId, chatId } = request.params;
+    const chat = edit ? access.editChat(p.user, projectId, chatId) : access.chat(p.user, projectId, chatId);
+    if (!chatIdentityMatches(p, chat)) throw new BridgeError('Диалог не найден.', 404);
+    return chat;
+  };
+  app.get<{ Params: ChatParams }>(chatPath, async request => access.viewChat(requestChat(request)));
   app.patch<{ Params: ChatParams; Body: { archived: boolean } }>(chatPath + '/archive', {
     schema: { body: object({ archived: { type: 'boolean' } }, ['archived']) },
   }, async request => access.viewChat(await workspace.setChatArchived(request.params.projectId, request.params.chatId, request.body.archived, () => admin(request))));
+  app.post<{ Params: ChatParams; Body: { context: unknown } }>(chatPath + '/reset', {
+    schema: { body: object({ context: { type: 'object' } }, ['context']) },
+  }, async request => {
+    const { projectId, chatId } = request.params;
+    const context = parseFastkoreContext(request.body.context);
+    return access.viewChat(await workspace.resetFastkoreChat(projectId, chatId, () => {
+      const { user: actor, credential } = principal(request);
+      if (credential.source !== 'fastkore' || !credential.installationId) throw new BridgeError('Очистка связанного чата доступна в сеансе Fastkore.', 403);
+      const chat = access.editChat(actor, projectId, chatId);
+      if (chat.ownerId !== actor.id) throw new BridgeError('Очистить связанный чат может только его автор.', 403);
+      if (!chat.fastkoreBinding || !context || !matchesFastkoreChat(chat.fastkoreBinding, credential.installationId, context, credential.externalUserId)) {
+        throw new BridgeError('Откройте в Fastkore карточку или список, к которым привязан этот чат.', 409);
+      }
+      return actor;
+    }));
+  });
   app.delete<{ Params: ChatParams }>(chatPath, request => workspace.deleteArchivedChat(request.params.projectId, request.params.chatId, () => admin(request)));
   app.get<{ Params: ChatParams & { messageId: string; fileId: string } }>(chatPath + '/messages/:messageId/files/:fileId', async (request, reply) => {
     const { projectId, chatId, messageId, fileId } = request.params;
     const findFile = () => {
-      const chat = access.chat(user(request), projectId, chatId);
+      const chat = requestChat(request);
       const file = chat.messages.find(message => message.id === messageId && message.role === 'assistant' && message.status === 'complete')
         ?.attachments.find(item => item.id === fileId);
       if (!file) throw new BridgeError('Файл результата не найден.', 404);
@@ -790,47 +844,44 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
       .header('Content-Disposition', "attachment; filename*=UTF-8''" + name).send(contents);
   });
   app.patch<{ Params: ChatParams; Body: { model?: string; reasoningEffort?: Settings['reasoningEffort'] } }>(chatPath, { schema: { body: { ...object({ model: modelSchema, reasoningEffort: { enum: ['low', 'medium', 'high', 'xhigh'] } }), minProperties: 1 } } }, async request => {
-    const check = () => access.editChat(user(request), request.params.projectId, request.params.chatId); check();
+    const check = () => requestChat(request, true); check();
     return access.viewChat(await workspace.changeChatModel(request.params.projectId, request.params.chatId, request.body.model, check, request.body.reasoningEffort));
   });
   app.patch<{ Params: ChatParams; Body: { title: string } }>(chatPath + '/title', { schema: { body: object({ title: string(120) }, ['title']) } }, request =>
     workspace.renameChat(request.body.title, () => {
       const actor = user(request);
-      return { actor, chat: access.editChat(actor, request.params.projectId, request.params.chatId) };
+      return { actor, chat: requestChat(request, true) };
     }));
-  app.patch<{ Params: ChatParams; Body: { visibility: 'private' | 'project' } }>(chatPath + '/visibility', { schema: { body: object({ visibility: { enum: ['private', 'project'] } }, ['visibility']) } }, async request => access.visibility(user(request), request.params.projectId, request.params.chatId, request.body.visibility));
-  app.get<{ Params: ChatParams }>(chatPath + '/messages', async request => access.chat(user(request), request.params.projectId, request.params.chatId).messages);
+  app.patch<{ Params: ChatParams; Body: { visibility: 'private' | 'project' } }>(chatPath + '/visibility', { schema: { body: object({ visibility: { enum: ['private', 'project'] } }, ['visibility']) } }, async request => {
+    requestChat(request, true);
+    return access.visibility(user(request), request.params.projectId, request.params.chatId, request.body.visibility);
+  });
+  app.get<{ Params: ChatParams }>(chatPath + '/messages', async request => requestChat(request).messages);
   app.post<{ Params: ChatParams; Body: { text: string; attachmentIds?: string[]; clientRequestId?: string; model?: string; fastkoreContext?: unknown; recommendedSpecialistId?: string } }>(chatPath + '/messages', { schema: { body: object({ text: string(60_000), attachmentIds: { type: 'array', items: string(100), maxItems: 8, uniqueItems: true }, clientRequestId: string(100), model: modelSchema, fastkoreContext: { type: 'object' }, recommendedSpecialistId: identifier }, ['text']) } }, async (request, reply) => {
     const check = () => {
-      const u = user(request); access.editChat(u, request.params.projectId, request.params.chatId);
+      const u = user(request); requestChat(request, true);
       const p = access.project(u, request.params.projectId);
       for (const id of request.body.attachmentIds ?? []) if (!p.attachments.some(a => a.id === id && !a.libraryUploadedAt && (u.role === 'admin' || a.ownerId === u.id))) throw new BridgeError('Вложение не найдено.', 404);
     }; check();
     const text = request.body.text.trim(); if (!text) throw new BridgeError('Напишите вопрос.');
     const p = principal(request), { projectId, chatId } = request.params;
-    const project = workspace.project(projectId), chat = workspace.chat(projectId, chatId);
+    const chat = workspace.chat(projectId, chatId);
+    const rawContext = request.body.fastkoreContext;
+    if (rawContext !== undefined && p.credential.source !== 'fastkore') throw new BridgeError('Контекст ERP доступен в сеансе Fastkore.', 403);
     const parsed = parseFastkoreContext(request.body.fastkoreContext);
+    if (rawContext !== undefined && !parsed) throw new BridgeError('Fastkore передал некорректный или неподдерживаемый снимок.');
     if (chat.fastkoreBinding) {
       const installationId = p.credential.installationId;
-      const binding = parsed && installationId && chatBinding(installationId, parsed);
+      const matches = parsed && installationId && matchesFastkoreChat(chat.fastkoreBinding, installationId, parsed, p.credential.externalUserId);
       // Outside Fastkore the chat owner may continue a bound chat; a mismatching ERP context
       // still refuses the write so answers never land on the wrong card.
-      const continuesWithoutContext = !parsed && (user(request).role === 'admin' || p.user.id === chat.ownerId);
-      if (!continuesWithoutContext && (p.credential.source !== 'fastkore' || p.user.id !== chat.ownerId || !binding || binding.installationId !== chat.fastkoreBinding.installationId || binding.key !== chat.fastkoreBinding.key)) {
+      const sameIdentity = !chat.fastkoreBinding.externalUserId || (installationId === chat.fastkoreBinding.installationId && p.credential.externalUserId === chat.fastkoreBinding.externalUserId);
+      const continuesWithoutContext = !parsed && (p.credential.source !== 'fastkore' || sameIdentity) && (p.user.role === 'admin' || p.user.id === chat.ownerId);
+      if (!continuesWithoutContext && (p.credential.source !== 'fastkore' || p.user.id !== chat.ownerId || !matches)) {
         throw new BridgeError('Откройте в Fastkore карточку или список, к которым привязан этот чат.', 409);
       }
     }
-    let snapshot: FastkoreContext | undefined;
-    if (request.body.fastkoreContext !== undefined) {
-      if (p.credential.source !== 'fastkore') throw new BridgeError('Контекст ERP доступен в сеансе Fastkore.', 403);
-      const actor = p.user;
-      const profile = workspace.corporate.profile(actor, chat.agentProfileId, project);
-      const canRead = [profile, ...workspace.corporate.specialists(actor, project, profile.id)].some(item => workspace.corporate.tools(item, project).includes('fastkore'));
-      if (canRead && !isFastkoreContextReset(request.body.fastkoreContext)) {
-        if (!parsed) throw new BridgeError('Fastkore передал некорректный снимок. Откройте помощника из нужной карточки или списка.');
-        snapshot = parsed;
-      }
-    }
+    const snapshot = parsed && (parsed.view !== 'none' || parsed.chat_key === 'home') ? parsed : undefined;
     const run = await workspace.send(request.params.projectId, request.params.chatId, text, request.body.attachmentIds ?? [], request.body.clientRequestId ? `${user(request).id}:${request.body.clientRequestId}` : undefined, request.body.model, check, { id: user(request).id, name: user(request).name, credentialId: principal(request).credential.id }, snapshot, request.body.recommendedSpecialistId);
     return reply.code(202).header('Location', `/api/runs/${run.id}`).send(run);
   });
@@ -845,13 +896,13 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
     const file = await uploads.receive(request, actorId, (name, data) => workspace.addAttachment(projectId, name, data, authorize));
     return reply.code(201).send(file);
   });
-  app.get<{ Params: { runId: string } }>('/api/runs/:runId', async request => access.run(user(request), request.params.runId));
+  app.get<{ Params: { runId: string } }>('/api/runs/:runId', async request => requestRun(request));
   app.post<{ Params: { runId: string }; Body: { targetRunId: string } }>('/api/runs/:runId/send-now', {
     schema: { body: object({ targetRunId: string(36) }, ['targetRunId']) },
   }, async request => {
     const authorize = () => {
       const actor = user(request);
-      const run = access.run(actor, request.params.runId);
+      const run = requestRun(request);
       if (!run.projectId || !run.chatId) throw new BridgeError('Уточнение должно быть сообщением чата.', 409);
       access.editChat(actor, run.projectId, run.chatId);
     };
@@ -859,7 +910,7 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
     return workspace.sendQueuedNow(request.params.runId, request.body.targetRunId, { id: actor.user.id, credentialId: actor.credential.id }, authorize);
   });
   app.post<{ Params: { runId: string } }>('/api/runs/:runId/cancel', async request => {
-    const u = user(request), run = access.run(u, request.params.runId);
+    const u = user(request), run = requestRun(request);
     if (run.projectId && run.chatId) access.editChat(u, run.projectId, run.chatId); return workspace.cancel(run.id);
   });
   if (options.clientRoot) await app.register(fastifyStatic, { root: path.resolve(options.clientRoot), prefix: '/', index: ['index.html'], wildcard: false });

@@ -19,7 +19,11 @@ export function timeExecutor(timing: RunTiming, now = () => performance.now()) {
   let toolsStarted = started;
   let longestGap = 0;
   let toolWallMs = 0;
+  let erpStarted = started;
+  let erpWallMs = 0;
+  let activeErpTools = 0;
   const active = new Map<string, { kind: RunToolKind; started: number }>();
+  const isErp = (kind: RunToolKind) => kind === 'cli' || kind === 'mcp';
 
   function closeTool(id: string, time: number, unfinished: boolean) {
     const tool = active.get(id);
@@ -31,7 +35,16 @@ export function timeExecutor(timing: RunTiming, now = () => performance.now()) {
     stats.totalMs += duration;
     stats.maxMs = Math.max(stats.maxMs, duration);
     if (unfinished) stats.unfinished++;
+    if (isErp(tool.kind) && --activeErpTools === 0) erpWallMs += time - erpStarted;
     if (!active.size) toolWallMs += time - toolsStarted;
+  }
+
+  function updateTotals(time: number) {
+    timing.executorMs = Math.round(time - started);
+    timing.toolWallMs = Math.round(toolWallMs + (active.size ? time - toolsStarted : 0));
+    timing.erpToolWallMs = Math.round(erpWallMs + (activeErpTools ? time - erpStarted : 0));
+    timing.outsideToolsMs = Math.round(time - started - toolWallMs - (active.size ? time - toolsStarted : 0));
+    timing.longestExecutorGapMs = Math.round(longestGap);
   }
 
   return {
@@ -45,17 +58,18 @@ export function timeExecutor(timing: RunTiming, now = () => performance.now()) {
       }
       if (event.kind === 'tool' && event.toolCallId && event.text && !active.has(event.toolCallId)) {
         if (!active.size) toolsStarted = time;
-        active.set(event.toolCallId, { kind: toolKind(event.text), started: time });
+        const kind = toolKind(event.text);
+        if (isErp(kind) && activeErpTools++ === 0) erpStarted = time;
+        active.set(event.toolCallId, { kind, started: time });
       }
       if (event.kind === 'tool-end' && event.toolCallId) closeTool(event.toolCallId, time, false);
+      updateTotals(time);
     },
     finish() {
       const time = now();
       if (!active.size) longestGap = Math.max(longestGap, time - lastEvent);
       for (const id of active.keys()) closeTool(id, time, true);
-      timing.executorMs = Math.round(time - started);
-      timing.toolWallMs = Math.round(toolWallMs);
-      timing.longestExecutorGapMs = Math.round(longestGap);
+      updateTotals(time);
     },
   };
 }

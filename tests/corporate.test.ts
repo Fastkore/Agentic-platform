@@ -36,6 +36,92 @@ async function fixture(respond?: (request: CodexRequest, signal: AbortSignal) =>
 }
 async function idle(workspace: Workspace) { const deadline = Date.now() + 6000; while (workspace.busy) { if (Date.now() > deadline) throw Error('timeout'); await new Promise(r => setTimeout(r, 10)); } }
 
+test('Fastkore v1 history follows the desktop key and keeps queued snapshots on their original question', async () => {
+  let resume!: () => void;
+  const waiting = new Promise<void>(resolve => { resume = resolve; });
+  const f = await fixture(async request => {
+    if (request.prompt.endsWith('Вопрос из папки A')) await waiting;
+    return 'OK';
+  });
+  try {
+    const component = randomUUID(), tile = randomUUID(), entity = randomUUID(), folderA = randomUUID(), folderB = randomUUID();
+    const header = { type: 'fastkore.context', version: 1 };
+    const list = { ...header, view: 'list', entity_set_id: component, entity_ids: [entity], tile_id: tile, chat_key: 'tile:' + tile,
+      folder_id: folderA, filter_status: 'included', filter_xml: '<Filter>XML-A</Filter>', scope_reproducible: true };
+    const moved = { ...list, entity_ids: [], folder_id: folderB, filter_xml: '<Filter>XML-B</Filter>' };
+    const card = { ...header, view: 'card', entity_set_id: component, entity_ids: [entity], chat_key: 'card:' + component + ':' + entity,
+      filter_status: 'none', scope_reproducible: true };
+    const linked = { ...card, view: 'link_list', entity_set_id: randomUUID(), entity_ids: [], owner_entity_set_id: component, owner_entity_id: entity, link_id: randomUUID() };
+    const home = { ...header, view: 'none', entity_ids: [], chat_key: 'home' };
+    const otherTile = randomUUID();
+    const create = (context: object, token = f.token) => f.req('POST', '/api/fastkore/chats', token, { projectId: f.project.id, context, fresh: true });
+    const related = (context: object, token = f.token) => f.req('POST', '/api/fastkore/chats/related', token, { context });
+    const created = await create(list);
+    assert.equal(created.statusCode, 201, created.body);
+    const id = created.json().chat.id;
+    assert.equal((await create(moved)).json().chat.id, id);
+    assert.equal((await related(moved)).json()[0].id, id);
+    assert.deepEqual((await related({ ...list, tile_id: otherTile, chat_key: 'tile:' + otherTile })).json(), []);
+    const cardChat = (await create(card)).json().chat.id;
+    assert.equal((await create(linked)).json().chat.id, cardChat);
+    const linkedRows = (await related(linked)).json();
+    assert.deepEqual(linkedRows.map((row: { id: string; parent?: boolean }) => [row.id, row.parent]), [[cardChat, true]]);
+    const cardRows = (await related({ ...card, tile_id: tile })).json();
+    assert.equal(cardRows[0].id, id);
+    assert.equal(cardRows[0].parent, true);
+    assert.equal(cardRows[0].contextMatches, false);
+    assert.notEqual((await create(home)).json().chat.id, cardChat);
+    assert.equal((await create({ ...card, entity_ids: [], chat_key: null })).statusCode, 400);
+    assert.equal((await create({ ...card, chat_key: 'tile:' + tile })).statusCode, 400);
+    const other = await f.enter('Другой сотрудник');
+    assert.deepEqual((await related(list, other.cookie)).json(), []);
+
+    const url = `/api/projects/${f.project.id}/chats/${id}/messages`;
+    const send = (text: string, context: object) => f.req('POST', url, f.token, { text, fastkoreContext: context });
+    const a = await send('Вопрос из папки A', list);
+    const b = await send('Вопрос из папки B', moved);
+    assert.equal(a.statusCode, 202, a.body);
+    assert.equal(b.statusCode, 202, b.body);
+    assert.equal((await send('Ошибочная версия', { ...list, version: 9 })).statusCode, 400);
+    assert.equal((await send('Другой контекст', card)).statusCode, 409);
+    const snapshots = [a, b].map(response => f.store.state.jobs?.find(j => j.runId === response.json().id)?.fastkoreContext);
+    assert.deepEqual(snapshots.map(s => s?.view === 'list' && [s.folder_id, s.filter_xml, s.entity_ids]), [
+      [folderA, list.filter_xml, [entity]], [folderB, moved.filter_xml, []],
+    ]);
+    resume();
+    await idle(f.workspace);
+    assert.ok(f.calls[0].prompt.includes(folderA) && !f.calls[0].prompt.includes(folderB));
+    assert.ok(f.calls[1].prompt.includes(folderB) && !f.calls[1].prompt.includes(folderA));
+    assert.equal(f.workspace.chat(f.project.id, id).messages.length, 4);
+  } finally { resume(); await f.app.close(); }
+});
+
+test('a legacy list chat keeps its current ERP scope when the selection, folder and catalog change', async () => {
+  const f = await fixture();
+  try {
+    const entitySetId = randomUUID(), tileId = randomUUID();
+    const base = { type: 'fastkore.context', version: 1, view: 'list', entity_set_id: entitySetId, scope_reproducible: true,
+      filter_status: 'included', filter_xml: '<Filter/>' };
+    const endpoint = '/api/fastkore/chats';
+    const projectId = f.project.id;
+    const oldList = await f.req('POST', endpoint, f.token, { projectId, context: base });
+    assert.equal(oldList.statusCode, 201, oldList.body);
+    const chatId = oldList.json().chat.id;
+    f.workspace.chat(projectId, chatId).fastkoreBinding!.key = 'legacy-filter-hash';
+    const chosen = { ...base, chat_key: 'tile:' + tileId, tile_id: tileId, entity_ids: [randomUUID()],
+      filter_xml: '<Filter>new search</Filter>', catalog_id: randomUUID(), folder_id: randomUUID() };
+    const lookup = (context: object) => f.req('POST', endpoint + '/related', f.token, { context });
+    assert.equal((await lookup(chosen)).json()[0].id, chatId);
+    assert.deepEqual((await lookup({ ...chosen, entity_set_id: randomUUID() })).json(), []);
+    const accepted = await f.req('POST', `/api/projects/${projectId}/chats/${chatId}/messages`, f.token, { text: 'По открытому списку', fastkoreContext: chosen });
+    assert.equal(accepted.statusCode, 202, accepted.body);
+    await idle(f.workspace);
+    assert.match(f.calls[0].prompt, new RegExp(chosen.folder_id));
+    assert.match(f.calls[0].prompt, new RegExp(chosen.entity_ids[0]));
+    assert.equal(f.workspace.chat(projectId, chatId).messages.length, 2);
+  } finally { await f.app.close(); }
+});
+
 test('ERP role permissions require an administrator, reject stale saves and survive role renaming', async () => {
   const f = await fixture();
   try {
@@ -119,7 +205,7 @@ test('administrators archive, restore and permanently delete chats without losin
   } finally { await f.app.close(); }
 });
 
-test('Fastkore opens the latest personal chat for a card or list and keeps older related chats', async () => {
+test('Fastkore opens the latest personal chat for a card or tile and reuses the tile across selections', async () => {
   const f = await fixture();
   try {
     const create = '/api/fastkore/chats', related = create + '/related';
@@ -150,19 +236,75 @@ test('Fastkore opens the latest personal chat for a card or list and keeps older
     await idle(f.workspace);
     migrateFastkoreChatBindings(f.store.state);
     const selectedRow = { ...list, entity_id: randomUUID() };
-    assert.deepEqual(await ids(selectedRow), [legacy.id]);
-    assert.deepEqual(await ids({ ...list, filter_xml: '<Filter changed="1"/>' }), []);
-    assert.deepEqual(await ids({ ...list, folder_id: randomUUID() }), []);
-    assert.deepEqual(await ids({ ...list, deleted: true }), []);
+    const changedFilter = { ...list, filter_xml: '<Filter changed="1"/>', folder_id: randomUUID(), deleted: true, control_uid: 'other-view' };
+    for (const context of [selectedRow, changedFilter, { ...list, scope_reproducible: false, filter_status: 'unavailable', filter_xml: null }]) {
+      assert.deepEqual(await ids(context), [legacy.id]);
+    }
+    assert.deepEqual(await ids({ ...list, tile_id: randomUUID() }), []);
+    assert.deepEqual(await ids({ ...list, entity_set_id: randomUUID() }), []);
+    assert.equal((await f.req('POST', create, f.token, { projectId, context: { ...list, entity_set_id: randomUUID(), tile_id: null } })).statusCode, 201);
     const next = await f.req('POST', create, f.token, { projectId, context: selectedRow, fresh: true });
     const nextId = next.json().chat.id;
-    assert.equal(next.statusCode, 201);
+    assert.equal(next.statusCode, 200);
+    assert.equal(nextId, legacy.id);
     for (const context of [list, selectedRow]) {
       assert.equal((await f.req('POST', messages(nextId), f.token, { text: 'Открытый список', fastkoreContext: context })).statusCode, 202);
       await idle(f.workspace);
     }
     assert.ok(f.calls.at(-1)?.sessionId);
-    assert.deepEqual(await ids(list), [nextId, legacy.id]);
+    assert.equal((await f.req('POST', messages(nextId), f.token, { text: 'Изменённая выборка', fastkoreContext: changedFilter })).statusCode, 202);
+    await idle(f.workspace);
+    assert.equal(f.calls.at(-1)?.sessionId, undefined);
+    assert.match(f.calls.at(-1)!.prompt, new RegExp(changedFilter.folder_id));
+    assert.deepEqual(await ids(list), [nextId]);
+
+    const details = { ...list, view: 'link_list', owner_entity_set_id: randomUUID(), owner_entity_id: randomUUID(), link_id: randomUUID() };
+    const detail = await f.req('POST', create, f.token, { projectId, context: details });
+    assert.equal(detail.statusCode, 201);
+    assert.deepEqual(await ids(details), [detail.json().chat.id]);
+    assert.deepEqual(await ids({ ...details, owner_entity_id: randomUUID() }), []);
+    assert.deepEqual(await ids(list), [nextId]);
+  } finally { await f.app.close(); }
+});
+
+test('resetting a tile chat archives the history and opens one empty replacement for the owner', async () => {
+  const f = await fixture();
+  try {
+    const projectId = f.project.id;
+    const context = { type: 'fastkore.context', version: 1, view: 'list', entity_set_id: randomUUID(), tile_id: randomUUID(), scope_reproducible: true, filter_status: 'none' };
+    const create = () => f.req('POST', '/api/fastkore/chats', f.token, { projectId, context, fresh: true });
+    const initial = await Promise.all([create(), create()]);
+    assert.deepEqual(initial.map(result => result.statusCode).sort(), [200, 201]);
+    const { id } = initial[0].json().chat;
+    assert.equal(initial[1].json().chat.id, id);
+    const url = `/api/projects/${projectId}/chats/${id}`, reset = url + '/reset';
+    const other = await f.enter('Другой автор');
+    await f.req('PATCH', `/api/projects/${projectId}/members`, f.admin, { memberIds: [f.employee.id, other.user.id] });
+    assert.equal((await f.req('POST', reset, f.admin, { context })).statusCode, 403);
+    assert.equal((await f.req('POST', reset, other.cookie, { context })).statusCode, 404);
+    assert.equal((await f.req('POST', reset, f.token, { context: { ...context, tile_id: randomUUID() } })).statusCode, 409);
+    const running = await f.req('POST', url + '/messages', f.token, { text: 'BLOCK', fastkoreContext: context });
+    assert.equal(running.statusCode, 202);
+    assert.equal((await f.req('POST', reset, f.token, { context })).statusCode, 409);
+    assert.equal((await f.req('POST', '/api/runs/' + running.json().id + '/cancel', f.token, {})).statusCode, 200);
+    await idle(f.workspace);
+    assert.equal((await f.req('POST', url + '/messages', f.token, { text: 'Сохранённый вопрос', fastkoreContext: context })).statusCode, 202);
+    await idle(f.workspace);
+    const result = await f.req('POST', reset, f.token, { context });
+    assert.equal(result.statusCode, 200, result.body);
+    const replacement = result.json();
+    assert.notEqual(replacement.id, id);
+    assert.deepEqual(replacement.messages, []);
+    assert.equal(replacement.sessionId, undefined);
+    assert.equal((await create()).json().chat.id, replacement.id);
+    assert.equal((await f.req('PATCH', url + '/archive', f.admin, { archived: false })).statusCode, 409);
+    assert.deepEqual((await f.req('GET', '/api/chats/archive', f.token)).json().map((chat: { id: string }) => chat.id), [id]);
+    assert.deepEqual((await f.req('GET', '/api/chats/archive', other.cookie)).json(), []);
+    const archived = (await f.req('GET', url, f.token)).json();
+    assert.ok(archived.archivedAt);
+    assert.ok(archived.messages.some((message: { text: string }) => message.text === 'Сохранённый вопрос'));
+    assert.equal((await f.req('GET', url, other.cookie)).statusCode, 404);
+    assert.equal((await f.req('POST', url + '/messages', f.token, { text: 'В архив', fastkoreContext: context })).statusCode, 409);
   } finally { await f.app.close(); }
 });
 test('token activity groups project usage by day for administrators', async () => {
@@ -336,12 +478,13 @@ test('Fastkore requests preserve selection context while allowing questions abou
     assert.equal(f.calls.length, 0);
     assert.equal((await f.req('POST', route, f.token, { text: 'Покажи выборку', fastkoreContext: filtered })).statusCode, 202);
     await idle(f.workspace);
-    assert.match(f.calls[0].prompt, /EntitySetFilter/);
+    assert.match(f.calls[0].prompt, /"filter_status":"included"/);
+    assert.doesNotMatch(f.calls[0].prompt, /EntitySetFilter/);
     assert.ok(f.calls[0].prompt.includes(folder));
     const unfiltered = { ...base, filter_status: 'none', filter_xml: null, folder_id: null };
     assert.equal((await f.req('POST', route, f.token, { text: 'Новая область', fastkoreContext: unfiltered })).statusCode, 202);
     await idle(f.workspace);
-    assert.match(f.calls[1].prompt, /"filter_xml":null/);
+    assert.match(f.calls[1].prompt, /"filter_status":"none"/);
     assert.match(f.calls[1].prompt, /"folder_id":null/);
     assert.ok(!f.calls[1].prompt.includes(folder));
     assert.equal(f.calls[1].sessionId, undefined);
@@ -354,8 +497,8 @@ test('Fastkore requests preserve selection context while allowing questions abou
     for (const context of [{ ...filtered, scope_reproducible: false }, { ...base, filter_status: 'unavailable', filter_xml: null }]) {
       assert.equal((await f.req('POST', route, f.token, { text: 'Покажи заказы из другого раздела', fastkoreContext: context })).statusCode, 202);
       await idle(f.workspace);
-      assert.match(f.calls.at(-1)!.prompt, /scope=erp/);
-      assert.match(f.calls.at(-1)!.prompt, /scope=current/);
+      assert.match(f.calls.at(-1)!.prompt, /context.json/);
+      assert.doesNotMatch(f.calls.at(-1)!.prompt, /scope=erp|scope=current/);
     }
   } finally { await f.app.close(); }
 });

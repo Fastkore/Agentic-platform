@@ -1,56 +1,23 @@
 import { request } from 'node:https';
-import type { FastkoreContext } from '../shared/fastkore-context.js';
 import type { Credential } from '../shared/types.js';
 import type { CodexTools, CodexToolDefinition } from './codex-tools.js';
 import { postErpJson, type ErpDelegation, type FastkoreSso } from './fastkore.js';
 import { BridgeError, redact } from './store.js';
+import { elapsedMs } from './run-timing.js';
 
 type Binding = NonNullable<ReturnType<FastkoreSso['delegationBinding']>>;
 type Token = { value: string; expiresAt: number };
 type Session = { credential: Credential; delegation: ErpDelegation; revision: string; token?: Token; refresh?: Promise<Token> };
-type Tool = { upstream: string; definition: CodexToolDefinition; fixed?: Record<string, unknown> };
-type ReadAudit = { tool: string; scope?: 'current' | 'erp'; parameters: Record<string, unknown>; status?: number; success: boolean; elapsedMs: number };
+type Tool = { upstream: string; definition: CodexToolDefinition };
+type RpcTiming = { mcpTokenMs?: number; mcpHttpMs?: number };
+type ReadAudit = RpcTiming & { tool: string; parameters: Record<string, unknown>; status?: number; success: boolean; elapsedMs: number };
 const audience = 'fastkore-mcp';
 const reauth = 'Доступ к ERP завершён или отозван. Откройте помощника из Fastkore заново.';
-const scopeError = 'Текущая выборка Fastkore недоступна через этот инструмент. Другие разделы ERP доступны по запросу сотрудника с scope=erp.';
 const unavailable = 'Инструменты Fastkore сейчас недоступны. Чат доступен.';
 const maxResponse = 768 * 1024;
-// The production pilot exposes only methods verified as reads in Fastkore.Business.
-const readTools = new Set([
-  'GetCurrentUserInfo', 'GetOrder', 'GetOrders', 'GetOrderRange', 'GetOrderByCustomer', 'GetOrdersModifiedInPeriod',
-  'GetOrderCommunications', 'GetOrderStageList', 'GetPurchaseOrder', 'GetPurchaseOrders', 'GetPurchaseOrderRange',
-  'GetPurchaseOrderBySupplier', 'GetPurchaseOrdersModifiedInPeriod', 'GetPurchaseOrderStageList',
-  'GetCommunicationEntryBody', 'GetCommunicationEntryRange', 'GetCommunicationEntryStatusList', 'GetCommunicationEntriesModifiedInPeriod',
-  'GetContact', 'GetContactAddresses', 'GetContactCommunications', 'GetContractor', 'GetContractorRange',
-  'GetNomenclature', 'GetNomenclatureById', 'GetNomenclatureByBarCode', 'GetNomenclatureGroup', 'SearchNomenclature',
-  'GetProject', 'GetProjects', 'GetTask', 'GetTasks', 'GetTaskRange', 'GetTasksModifiedInPeriod',
-  'GetEquipment', 'GetEquipmentGroup', 'GetEquipments', 'GetProductionOperation', 'GetProductionOperations',
-  'GetProductionPosition', 'GetProductionPositions', 'GetStoreAction', 'GetStoreActions', 'GetStoreActionItems',
-]);
 
 function record(value: unknown): Record<string, any> | undefined {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
-}
-
-function scopedArguments(context: FastkoreContext | undefined, schema: Record<string, any>, tool: string) {
-  const fixed: Record<string, unknown> = {};
-  if (!context || tool === 'GetCurrentUserInfo') return fixed;
-  if (!context.scope_reproducible || context.filter_status === 'unavailable') return undefined;
-  if (context.view === 'card') return context.entity_id ? fixed : undefined;
-  const restrictions = {
-    filterXml: context.filter_xml, catalogId: context.catalog_id, folderId: context.folder_id,
-    treeParentId: context.tree_parent_id, ownerEntitySetId: context.owner_entity_set_id,
-    ownerEntityId: context.owner_entity_id, linkId: context.link_id, deleted: context.deleted,
-  };
-  if (Object.values(restrictions).every(value => value === null)) return fixed;
-  const properties = record(schema.properties);
-  for (const [key, value] of Object.entries({ entitySetId: context.entity_set_id, ...restrictions })) {
-    if (value === null) continue;
-    const parameter = Object.keys(properties ?? {}).find(name => name.replaceAll('_', '').toLowerCase() === key.toLowerCase());
-    if (!parameter) return undefined;
-    fixed[parameter] = value;
-  }
-  return fixed;
 }
 
 function postMcp(url: string, token: string, ca: string | undefined, body: unknown, headers: Record<string, string>, signal: AbortSignal) {
@@ -169,13 +136,13 @@ export class FastkoreMcp {
     return state.refresh;
   }
 
-  async prepare(credential: Credential, context: FastkoreContext | undefined, authorize: () => void, signal: AbortSignal,
-    audit?: (event: ReadAudit) => void, fullCatalog = false): Promise<{ tools?: CodexTools; problem?: string }> {
+  async prepare(credential: Credential, authorize: () => void, signal: AbortSignal,
+    audit?: (event: ReadAudit) => void): Promise<{ tools?: CodexTools; problem?: string }> {
     const status = this.status(credential);
     if (status === 'reauth') return { problem: reauth };
     const state = status === 'ready' ? this.sessions.get(credential.id) : undefined;
     const binding = state && this.sso.delegationBinding(credential);
-    if (!state || !binding?.mcpUrl) return { problem: context ? 'Доступ к инструментам ERP для этого сеанса не предоставлен. После разрешения доступа откройте помощника из Fastkore заново.' : undefined };
+    if (!state || !binding?.mcpUrl) return {};
     const url = binding.mcpUrl;
     const check = () => {
       authorize();
@@ -186,15 +153,18 @@ export class FastkoreMcp {
     let sessionId: string | undefined;
     let protocol: string | undefined;
     let id = 0;
-    const rpc = async (method: string, params: Record<string, unknown>, signal: AbortSignal) => {
+    const rpc = async (method: string, params: Record<string, unknown>, signal: AbortSignal, timing?: RpcTiming) => {
       check(); signal.throwIfAborted();
-      const token = await this.token(state, binding);
+      const tokenStarted = performance.now();
+      const token = await this.token(state, binding).finally(() => { if (timing) timing.mcpTokenMs = elapsedMs(tokenStarted); });
       check(); signal.throwIfAborted();
       const notification = method === 'notifications/initialized';
       const requestId = ++id;
+      const httpStarted = performance.now();
       const response = await postMcp(url, token.value, binding.mcpCa,
         { jsonrpc: '2.0', ...(notification ? {} : { id: requestId }), method, params },
-        { ...(sessionId ? { 'Mcp-Session-Id': sessionId } : {}), ...(protocol ? { 'MCP-Protocol-Version': protocol } : {}) }, signal);
+        { ...(sessionId ? { 'Mcp-Session-Id': sessionId } : {}), ...(protocol ? { 'MCP-Protocol-Version': protocol } : {}) }, signal)
+        .finally(() => { if (timing) timing.mcpHttpMs = elapsedMs(httpStarted); });
       if (response.status === 401 && state.token === token) state.token = undefined;
       if (response.status < 200 || response.status >= 300) return { status: response.status };
       check();
@@ -221,21 +191,10 @@ export class FastkoreMcp {
         const { result } = await rpc('tools/list', cursor ? { cursor } : {}, signal);
         if (!Array.isArray(result?.tools)) throw new BridgeError(unavailable, 502);
         for (const value of result.tools) {
-          if (typeof value?.name !== 'string' || !/^[a-zA-Z0-9_-]{1,55}$/.test(value.name) ||
-            (!fullCatalog && !readTools.has(value.name)) || !record(value.inputSchema)) continue;
-          const fixed = scopedArguments(context, value.inputSchema, value.name);
+          if (typeof value?.name !== 'string' || !/^[a-zA-Z0-9_-]{1,55}$/.test(value.name) || !record(value.inputSchema)) continue;
           const name = 'fastkore_' + value.name;
-          const upstreamSchema = JSON.parse(redact(JSON.stringify(value.inputSchema)));
-          const inputSchema = context ? {
-            type: 'object', additionalProperties: false, required: ['scope', 'arguments'],
-            properties: {
-              scope: { type: 'string', enum: ['current', 'erp'],
-                description: 'current — открытая карточка или список. erp — другой раздел или самостоятельный запрос сотрудника в пределах его прав.' },
-              arguments: upstreamSchema,
-            },
-          } : upstreamSchema;
           const description = typeof value.description === 'string' && value.description.trim() ? value.description : value.name;
-          tools.set(name, { upstream: value.name, fixed, definition: { type: 'function', name, description: redact(description).slice(0, 4000), inputSchema } });
+          tools.set(name, { upstream: value.name, definition: { type: 'function', name, description: redact(description).slice(0, 4000), inputSchema: value.inputSchema } });
         }
         if (tools.size > 200) throw new BridgeError(unavailable, 502);
         const next = result.nextCursor;
@@ -243,29 +202,18 @@ export class FastkoreMcp {
         if (typeof next !== 'string' || next === cursor || next.length > 512 || page === 7) throw new BridgeError(unavailable, 502);
         cursor = next;
       }
-      if (!tools.size) return { problem: context ? scopeError : unavailable };
-      const cannotReproduce = !!context && [...tools.values()].every(tool => !tool.fixed || tool.upstream === 'GetCurrentUserInfo');
-      return { problem: cannotReproduce ? scopeError : undefined, tools: {
+      if (!tools.size) return { problem: unavailable };
+      return { tools: {
         definitions: [...tools.values()].map(tool => tool.definition),
         async call(name, args, callSignal) {
           const tool = tools.get(name);
           const supplied = record(args);
           if (!tool || !supplied || Buffer.byteLength(JSON.stringify(supplied)) > 128_000) return { success: false, text: 'Инструмент или его аргументы недоступны.' };
-          const wrapped = !!context && Object.hasOwn(supplied, 'scope');
-          if (wrapped && (Object.keys(supplied).length !== 2 || !['current', 'erp'].includes(supplied.scope) || !record(supplied.arguments))) {
-            return { success: false, text: 'Укажите scope current или erp и объект arguments.' };
-          }
-          const fixed = wrapped && supplied.scope === 'erp' ? {} : tool.fixed;
-          if (!fixed) return { success: false, text: scopeError };
-          const parameters = wrapped ? supplied.arguments : supplied;
-          const fixedKeys = new Set(Object.keys(fixed).map(key => key.replaceAll('_', '').toLowerCase()));
-          const forwarded = Object.fromEntries(Object.entries(parameters).filter(([key]) => !fixedKeys.has(key.replaceAll('_', '').toLowerCase())));
-          const effective = { ...forwarded, ...fixed };
-          const started = Date.now();
+          const started = performance.now(), timing: RpcTiming = {};
           let status: number | undefined;
           let success = false;
           try {
-            const result = await rpc('tools/call', { name: tool.upstream, arguments: effective }, callSignal);
+            const result = await rpc('tools/call', { name: tool.upstream, arguments: supplied }, callSignal, timing);
             status = result.status;
             if (result.status === 401) return { success: false, text: 'Fastkore отклонил токен. Повторный вызов не отправлен. Проверьте состояние операции чтением.' };
             if (!result.result) return { success: false, text: 'Fastkore не подтвердил результат операции. Проверьте состояние чтением.' };
@@ -277,8 +225,7 @@ export class FastkoreMcp {
             if (error instanceof BridgeError && error.message === reauth) return { success: false, text: reauth };
             return { success: false, text: 'Fastkore не подтвердил результат операции. Проверьте состояние чтением перед повтором.' };
           } finally {
-            audit?.({ tool: tool.upstream, scope: wrapped && supplied.scope === 'erp' ? 'erp' : context ? 'current' : 'erp',
-              parameters: effective, status, success, elapsedMs: Date.now() - started });
+            audit?.({ tool: tool.upstream, parameters: supplied, status, success, elapsedMs: elapsedMs(started), ...timing });
           }
         },
       } };

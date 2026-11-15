@@ -4,11 +4,12 @@ import type { ArchivedChatSummary, Chat } from '../shared/types';
 import { WorkspaceDialog } from './WorkspaceDialog';
 import { chatTooltip, shortDate } from './chat-date';
 
-export function ChatArchiveDialog({ request, close, renderChat, onRestore }: {
+export function ChatArchiveDialog({ request, close, renderChat, onRestore, manage }: {
   request: <T>(url: string, init?: RequestInit) => Promise<T>;
   close: () => void;
   renderChat: (chat: Chat, projectId: string) => ReactNode;
   onRestore: (projectId: string) => void;
+  manage: boolean;
 }) {
   const [list, setList] = useState<ArchivedChatSummary[]>();
   const [selected, setSelected] = useState<ArchivedChatSummary>();
@@ -20,11 +21,11 @@ export function ChatArchiveDialog({ request, close, renderChat, onRestore }: {
 
   useEffect(() => {
     const controller = new AbortController();
-    request<ArchivedChatSummary[]>('/api/admin/chats/archive', { signal: controller.signal })
+    request<ArchivedChatSummary[]>(manage ? '/api/admin/chats/archive' : '/api/chats/archive', { signal: controller.signal })
       .then(items => { if (!controller.signal.aborted) setList(items); })
       .catch(error => { if (!controller.signal.aborted) setError(error.message); });
     return () => controller.abort();
-  }, [request]);
+  }, [request, manage]);
   useEffect(() => {
     if (!url) return;
     const controller = new AbortController();
@@ -60,7 +61,7 @@ export function ChatArchiveDialog({ request, close, renderChat, onRestore }: {
       <p className="archive-meta">{selected.projectName} · {selected.ownerName}</p>
       {chat ? <>
         <div className="archive-history">{chat.messages.length ? renderChat(chat, selected.projectId) : <p className="help">В чате нет сообщений.</p>}</div>
-        {confirmDelete ? <div className="archive-confirm">
+        {manage && (confirmDelete ? <div className="archive-confirm">
           <p>Удалить этот чат и его сообщения навсегда? Восстановить их будет нельзя.</p>
           <div className="archive-actions">
             <button type="button" className="secondary" disabled={pending} onClick={() => setConfirmDelete(false)}>Отмена</button>
@@ -69,7 +70,7 @@ export function ChatArchiveDialog({ request, close, renderChat, onRestore }: {
         </div> : <div className="archive-actions">
           <button type="button" className="secondary" disabled={pending} onClick={() => void update(false)}><ArchiveRestore size={16} />Восстановить</button>
           <button type="button" className="secondary archive-danger" disabled={pending} onClick={() => setConfirmDelete(true)}><Trash2 size={16} />Удалить</button>
-        </div>}
+        </div>)}
       </> : !error && <p role="status">Загрузка…</p>}
     </> : <div className="archive-list">
       {list?.map(item => <button type="button" className="workspace-row archive-row" key={item.id} title={chatTooltip(item, item.archivedAt)} onClick={() => { setError(''); setSelected(item); }}>

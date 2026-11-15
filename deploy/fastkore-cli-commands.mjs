@@ -15,28 +15,26 @@ export function commandCatalog(commands) {
   return catalog;
 }
 
-const fileOptions = new Set(['--file', '--out', '--spec', '--input', '--workspace', '--plan', '--journal', '--selection-load']);
-const transportOptions = new Set(['--server', '--user-ticket-stdin', '--compare-profile']);
+const fileOptions = new Set(['--file', '--out', '--spec', '--input', '--workspace', '--plan', '--journal', '--selection-load', '--context']);
+const transportOptions = new Set(['--server', '--user-ticket-stdin', '--compare-profile', '--profile', '--user', '--username', '--password']);
 const formatOptions = new Set(['--json', '--agent-compact', '--agent-full']);
 
 export async function commandArguments(catalog, command, args, directory) {
-  const contract = catalog.get(command);
-  if (!contract || !Array.isArray(args) || args.length > 160 ||
-    args.some(value => typeof value !== 'string' || value.length > 32000 || /[\x00\r\n]/.test(value))) throw Error('Invalid CLI command');
-  const options = new Set([...contract.required, ...contract.optional].flatMap(value => value.match(/--[a-z][a-z-]*/g) ?? []));
+  if (typeof command !== 'string' || !/^[a-z][a-z0-9-]*(?: [a-z][a-z0-9-]*)*$/.test(command) || !Array.isArray(args) || args.length > 160 ||
+    args.some(value => typeof value !== 'string' || value.length > 32000 || value.includes('\0'))) throw Error('Invalid CLI command');
   const result = command.split(' ');
   for (let index = 0; index < args.length; index++) {
-    const option = args[index];
+    const raw = args[index];
+    const equal = raw.indexOf('=');
+    const option = equal > 0 ? raw.slice(0, equal) : raw;
     if (formatOptions.has(option)) {
       if (option !== '--json') result.push(option);
       continue;
     }
-    if (!options.has(option) || transportOptions.has(option)) throw Error('Invalid CLI option');
-    result.push(option);
-    const value = args[index + 1];
-    if (value === undefined || value.startsWith('--')) continue;
-    index++;
-    if (!fileOptions.has(option)) { result.push(value); continue; }
+    if (transportOptions.has(option)) throw Error('CLI connection and authentication are supplied by the executor');
+    if (!fileOptions.has(option)) { result.push(raw); continue; }
+    const value = equal > 0 ? raw.slice(equal + 1) : args[++index];
+    if (value === undefined) throw Error('Missing CLI file path');
     if (value === '-' || !value || value.includes('\\') || value.split('/').includes('..')) throw Error('Invalid CLI file path');
     const target = path.resolve(directory, value);
     if (target !== directory && !target.startsWith(directory + path.sep)) throw Error('CLI file outside workspace');
@@ -47,7 +45,7 @@ export async function commandArguments(catalog, command, args, directory) {
       const info = await lstat(current).catch(error => { if (error.code !== 'ENOENT') throw error; });
       if (info?.isSymbolicLink()) throw Error('CLI file links are unavailable');
     }
-    result.push(target);
+    result.push(option, target);
   }
   return [...result, '--user-ticket-stdin', '--json'];
 }

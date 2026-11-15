@@ -1,10 +1,12 @@
 import { execFile } from 'node:child_process';
 import { X509Certificate } from 'node:crypto';
 import { createServer } from 'node:http';
-import { chmod, lstat, readFile, unlink } from 'node:fs/promises';
+import { chmod, lstat, mkdtemp, readFile, rmdir, unlink, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { commandCatalog, commandArguments, jobDirectory } from './fastkore-cli-commands.mjs';
 import { CliProcessPool } from './cli-process-pool.mjs';
+import { readCommandOptions } from './fastkore-cli-reads.mjs';
 
 const socket = '/run/fastkore-cli/pilot.sock';
 const serverAddress = process.env.FASTKORE_SERVER;
@@ -31,6 +33,14 @@ if (capabilities?.success !== true || capabilities.exitCode !== 0 ||
 }
 
 const catalog = commandCatalog(capabilities.data.commands);
+const hasOption = (command, flag) => {
+  const entry = catalog.get(command);
+  return !!entry && [...entry.required, ...entry.optional].some(value => value.split(/\s+/).includes(flag));
+};
+Object.assign(trust, {
+  contextPaging: hasOption('data query', '--context') && hasOption('data query', '--page-size') && hasOption('data query', '--after'),
+  batchGet: hasOption('data get', '--entities'),
+});
 const jobsRoot = process.env.BRIDGE_CODEX_JOB_FILES;
 const old = await lstat(socket).catch(error => { if (error.code !== 'ENOENT') throw error; });
 if (old) {
@@ -44,7 +54,6 @@ const commands = new Map([
   ['/describe/data-query', ['agent', 'describe', 'data query', '--json']],
 ]);
 
-const guid = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$(?![\s\S])/;
 const ticketPattern = /^fkct1\.[A-Za-z0-9._-]{1,4096}$(?![\s\S])/;
 
 async function readCommand(req) {
@@ -53,29 +62,27 @@ async function readCommand(req) {
   req.setEncoding('utf8');
   for await (const chunk of req) {
     body += chunk;
-    if (Buffer.byteLength(body) > 131072) return;
+    if (Buffer.byteLength(body) > 384 * 1024) return;
   }
   const input = JSON.parse(body);
   if (!input || typeof input !== 'object' || Array.isArray(input)) return;
   const { operation, ticket, authority, caFingerprint, ...args } = input;
   if (authority !== trust.authority || caFingerprint !== trust.caFingerprint ||
     typeof ticket !== 'string' || !ticketPattern.test(ticket)) return;
-  const flags = ['--user-ticket-stdin', '--json'];
-  if (operation === 'execute' && Object.keys(args).length === 3 && jobsRoot) {
+  if (operation === 'execute' && Object.keys(args).every(key => ['command', 'args', 'workDirectoryId', 'context'].includes(key)) && jobsRoot) {
     const cwd = await jobDirectory(jobsRoot, args.workDirectoryId);
     const argv = await commandArguments(catalog, args.command, args.args, cwd);
-    return { argv, ticket, cwd };
+    const contextPath = join(cwd, 'context.json');
+    const usesContext = argv.some((value, index) => value === '--context' && argv[index + 1] === contextPath);
+    if (usesContext && (!args.context || args.context.type !== 'fastkore.context' || args.context.version !== 1)) return;
+    return { argv, ticket, cwd, context: usesContext ? args.context : undefined, contextPath: usesContext ? contextPath : undefined };
   }
-  if (operation === 'auth-info' && Object.keys(args).length === 0) return { argv: ['auth', 'info', ...flags], ticket };
-  if (typeof args.entitySetId !== 'string' || !guid.test(args.entitySetId) || Object.keys(args).length !== 2) return;
-  const entitySet = ['--entity-set', args.entitySetId];
-  if (operation === 'get' && typeof args.entityId === 'string' && guid.test(args.entityId)) {
-    return { argv: ['data', 'get', ...entitySet, '--entity', args.entityId, ...flags], ticket };
-  }
-  if (operation === 'query' && Number.isInteger(args.limit) && args.limit >= 1 && args.limit <= 50) {
-    return { argv: ['data', 'query', ...entitySet, '--limit', String(args.limit), ...flags], ticket };
-  }
+  if ((operation === 'page' && !trust.contextPaging) || (operation === 'get-many' && !trust.batchGet)) return { unsupported: true };
+  const command = readCommandOptions(operation, args, trust);
+  if (command) return { ...command, ticket };
 }
+
+function json(text) { try { return JSON.parse(text); } catch { return undefined; } }
 
 const server = createServer(async (req, res) => {
   res.setHeader('Content-Type', 'application/json');
@@ -88,11 +95,12 @@ const server = createServer(async (req, res) => {
   if (req.method === 'POST' && req.url === '/read') {
     try { read = await readCommand(req); } catch { /* A malformed payload never starts a process. */ }
     if (!read) { send(400, {}); return; }
+    if (read.unsupported) { send(422, {}); return; }
   }
   let describe;
   if (req.method === 'GET' && req.url?.startsWith('/command-description?')) {
     const name = new URL(req.url, 'http://localhost').searchParams.get('name');
-    if (catalog.has(name)) describe = ['agent', 'describe', name, '--json'];
+    if (typeof name === 'string' && /^[a-z][a-z0-9-]*(?: [a-z][a-z0-9-]*)*$/.test(name)) describe = ['agent', 'describe', name, '--json'];
   }
   const args = read?.argv ?? describe ?? (req.method === 'GET' ? commands.get(req.url) : undefined);
   if (!args) { send(404, {}); return; }
@@ -101,14 +109,39 @@ const server = createServer(async (req, res) => {
   const stop = slot.controller;
   res.once('close', () => { if (!res.writableEnded) stop.abort(); });
   if (res.destroyed) stop.abort();
-  const child = execFile(cli, args, { ...cliOptions, cwd: read?.cwd, signal: stop.signal }, (error, stdout, stderr) => {
+  let snapshotDir;
+  async function dispose() {
+    if (snapshotDir) {
+      await unlink(join(snapshotDir, 'context.json')).catch(() => {});
+      await rmdir(snapshotDir).catch(() => {});
+    }
     slot.release();
+  }
+  try {
+    if (read?.context) {
+      snapshotDir = await mkdtemp('/tmp/fastkore-context-');
+      const file = join(snapshotDir, 'context.json');
+      await writeFile(file, JSON.stringify(read.context), { mode: 0o400, flag: 'wx' });
+      if (read.contextPath) {
+        for (let index = 0; index < args.length - 1; index++) if (args[index] === '--context' && args[index + 1] === read.contextPath) args[index + 1] = file;
+      } else args.push('--context', file);
+    }
+    stop.signal.throwIfAborted();
+  } catch {
+    await dispose();
+    if (!res.destroyed) send(502, {});
+    return;
+  }
+  const processStarted = performance.now();
+  const onExit = async (error, stdout, stderr) => {
+    const processMs = Math.round(performance.now() - processStarted);
+    await dispose();
     if (res.destroyed) return;
+    res.setHeader('X-Fastkore-Cli-Process-Ms', String(processMs));
     try {
       if (error) {
         if (read && Number.isInteger(error.code) && error.code > 0 && error.code <= 5) {
-          let reported;
-          try { reported = JSON.parse(stderr); } catch { /* Exit status is sufficient for an unstructured error. */ }
+          const reported = json(stdout) ?? json(stderr);
           if (reported?.exitCode !== undefined && reported.exitCode !== error.code) throw new Error();
           send(200, { success: false, exitCode: error.code, data: reported });
           return;
@@ -127,7 +160,14 @@ const server = createServer(async (req, res) => {
         contract: { name, purpose, operation, required, optional, returns } });
     }
     catch { send(502, {}); }
-  });
+  };
+  let child;
+  try { child = execFile(cli, args, { ...cliOptions, cwd: read?.cwd, signal: stop.signal }, onExit); }
+  catch {
+    await dispose();
+    if (!res.destroyed) send(502, {});
+    return;
+  }
   child.stdin.on('error', () => {});
   child.stdin.end(read ? read.ticket + '\n' : undefined, 'ascii');
 });

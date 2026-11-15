@@ -121,6 +121,14 @@ export function AuditPanel({ request }: { request: Request }) {
             {event.details?.scope && <><dt>Область запроса</dt><dd>{event.details.scope}</dd></>}
             {Object.entries(event.details?.objectIds ?? {}).map(([field, id]) => <div key={field}><dt>{field}</dt><dd>{id}</dd></div>)}
             {event.details?.success !== undefined && <><dt>Результат</dt><dd>{event.details.success ? 'Успешно' : 'Ошибка'}{event.details.status ? ` · HTTP ${event.details.status}` : ''}</dd></>}
+            {event.details?.elapsedMs !== undefined && <div><dt>Весь вызов</dt><dd>{event.details.elapsedMs.toLocaleString('ru-RU')} мс</dd></div>}
+            {event.details?.trustMs !== undefined && <div><dt>Проверка исполнителя CLI</dt><dd>{event.details.trustMs.toLocaleString('ru-RU')} мс</dd></div>}
+            {event.details?.ticketMs !== undefined && <div><dt>Билет ERP</dt><dd>{event.details.ticketMs.toLocaleString('ru-RU')} мс{event.details.ticketStatus ? ` · HTTP ${event.details.ticketStatus}` : ''}</dd></div>}
+            {event.details?.cliRpcMs !== undefined && <div><dt>Запрос к исполнителю CLI</dt><dd>{event.details.cliRpcMs.toLocaleString('ru-RU')} мс</dd></div>}
+            {event.details?.cliProcessMs !== undefined && <div><dt>Процесс CLI, включая gRPC</dt><dd>{event.details.cliProcessMs.toLocaleString('ru-RU')} мс</dd></div>}
+            {event.details?.exitCode !== undefined && <div><dt>Код завершения CLI</dt><dd>{event.details.exitCode}</dd></div>}
+            {event.details?.mcpTokenMs !== undefined && <div><dt>Получение токена MCP</dt><dd>{event.details.mcpTokenMs.toLocaleString('ru-RU')} мс</dd></div>}
+            {event.details?.mcpHttpMs !== undefined && <div><dt>HTTP-запрос к MCP</dt><dd>{event.details.mcpHttpMs.toLocaleString('ru-RU')} мс</dd></div>}
             {event.details?.section && <><dt>Раздел</dt><dd>{event.details.section}</dd></>}
             {event.details?.previousRevision && <><dt>Предыдущая версия</dt><dd>{event.details.previousRevision}</dd></>}
             {event.details?.revision && <><dt>Новая версия</dt><dd>{event.details.revision}</dd></>}

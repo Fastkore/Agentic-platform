@@ -22,6 +22,8 @@ function normalizeManifest(parsed: Partial<Manifest> & { active?: string[] | str
 }
 export class ExecutionAccountStore {
   private state: Manifest;
+  private modelRevision = randomUUID();
+  get catalogRevision() { return this.modelRevision; }
   private readonly file: string;
   private readonly logins = new Map<string, { child: ChildProcess; status: NonNullable<ExecutionAccount['login']> }>();
   private stopLogin(child: ChildProcess) {
@@ -112,6 +114,7 @@ export class ExecutionAccountStore {
     await writeFile(temporary, JSON.stringify(next), { mode: 0o600 });
     await rename(temporary, this.file);
     this.state = next;
+    this.modelRevision = randomUUID();
   }
   async list(): Promise<ExecutionAccounts> {
     return { accounts: await Promise.all(this.state.accounts.map(async account => {
@@ -136,6 +139,7 @@ export class ExecutionAccountStore {
       if (signedIn && account.provider === 'gemini' && login?.status.state === 'waiting') {
         login.status.state = 'complete';
         login.status.needsCode = false;
+        this.modelRevision = randomUUID();
         this.stopLogin(login.child);
       }
       return { ...account, email, signedIn, active: this.activeSet.has(account.id), login: this.logins.get(account.id)?.status };
@@ -206,6 +210,7 @@ export class ExecutionAccountStore {
         security: { auth: { selectedType: 'oauth-personal' } }, tools: { core: [] },
       }), { mode: 0o600 });
     }
+    if (account.provider !== 'codex') this.modelRevision = randomUUID();
     const google = account.provider !== 'codex';
     const child = spawn(google ? '/usr/bin/script' : '/usr/local/bin/codex',
       google ? ['-q', '-f', '-c', account.provider === 'antigravity' ? 'stty cols 200 rows 60; exec /usr/local/bin/agy' : '/usr/local/bin/gemini --skip-trust', '/dev/null'] : ['login', '--device-auth'], {
@@ -243,6 +248,7 @@ export class ExecutionAccountStore {
       child.once('close', code => {
         if (state.state === 'complete') { finish(); return; }
         state.state = code === 0 ? 'complete' : 'error';
+        if (state.state === 'complete') this.modelRevision = randomUUID();
         if (code !== 0) state.error = 'Вход не завершён. Запросите новый код.';
         delete state.code;
         finish();
@@ -263,6 +269,7 @@ export class ExecutionAccountStore {
     if (account.provider !== 'glm') throw new BridgeError('Ключ применяется только к аккаунту GLM.', 409);
     if (/[\r\n]/.test(key)) throw new BridgeError('Некорректный ключ GLM.');
     await writeGlmConfig(this.home(id), key);
+    this.modelRevision = randomUUID();
     return this.list();
   }
   private async completeAntigravityLogin(id: string, login: { child: ChildProcess; status: NonNullable<ExecutionAccount['login']> }) {
@@ -273,6 +280,7 @@ export class ExecutionAccountStore {
         if (login.status.state !== 'waiting') return;
         await writeFile(path.join(this.home(id), '.antigravity-connected.json'), JSON.stringify({ session: randomUUID() }), { mode: 0o600 });
         login.status.state = 'complete';
+        this.modelRevision = randomUUID();
         this.stopLogin(login.child);
         return;
       } catch { /* OAuth can take a few seconds to persist the native credentials. */ }
