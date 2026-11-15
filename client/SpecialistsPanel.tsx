@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
-import { BarChart3, Bot, Calculator, ChevronDown, ChevronLeft, Database, FileText, Folder, Layers3, MessageCircle, Paperclip, Pencil, Plus, Search, Settings2, X } from 'lucide-react';
+import { BarChart3, Bot, Calculator, ChevronDown, ChevronLeft, Database, FileText, Folder, Layers3, MessageCircle, Paperclip, Pencil, Plus, RefreshCw, Search, Settings2, X } from 'lucide-react';
 import { agentToolIds, agentTools } from '../shared/agent-tools';
-import { specialistFileLimits, specialistIcons, type AgentProfile, type Dataset, type SpecialistIcon } from '../shared/types';
+import { specialistFileLimits, specialistIcons, type AgentProfile, type Dataset, type ModelCatalog, type SpecialistIcon } from '../shared/types';
+import { isAutomaticModel } from '../shared/model-selection';
 import { Checks, operations } from './CorporatePanel';
 import { Select } from './Select';
 import { PermissionSwitch as Toggle } from './PermissionSwitch';
@@ -39,6 +40,10 @@ export function SpecialistsPanel({ request, globalInstructions }: { request: Req
   const [filter, setFilter] = useState('all');
   const [sort, setSort] = useState('default');
   const [tab, setTab] = useState<EditorTab>('general');
+  const [models, setModels] = useState<ModelCatalog>();
+  const [modelError, setModelError] = useState('');
+  const [modelsLoading, setModelsLoading] = useState(false);
+  const [modelRefresh, setModelRefresh] = useState(0);
   const tabs = useRef<HTMLDivElement>(null);
   const heading = useRef<HTMLHeadingElement>(null);
   const fileInput = useRef<HTMLInputElement>(null);
@@ -55,6 +60,20 @@ export function SpecialistsPanel({ request, globalInstructions }: { request: Req
     return () => controller.abort();
   }, [request]);
   useEffect(() => { if (editingProfile) heading.current?.focus(); }, [editingProfile]);
+  useEffect(() => {
+    if (!editingProfile || tab !== 'model') return;
+    const controller = new AbortController();
+    setModelsLoading(true);
+    setModelError('');
+    request<ModelCatalog>(modelRefresh ? '/api/models/refresh' : '/api/models', {
+      signal: controller.signal, ...(modelRefresh ? { method: 'POST', body: '{}' } : {}),
+    }).then(value => {
+      if (!controller.signal.aborted) setModels(value);
+    }).catch(error => {
+      if (!controller.signal.aborted) setModelError(error.message);
+    }).finally(() => { if (!controller.signal.aborted) setModelsLoading(false); });
+    return () => controller.abort();
+  }, [request, editingProfile, tab, modelRefresh]);
 
   const visible = (profiles ?? []).filter(profile => {
     const search = query.trim().toLocaleLowerCase('ru');
@@ -154,13 +173,19 @@ export function SpecialistsPanel({ request, globalInstructions }: { request: Req
   const profile = editing;
   const files = profile.instructionFiles ?? [];
   const selectedTools = profile.toolIds ?? agentToolIds;
+  const availableModels = models?.models.filter(model => !isAutomaticModel(model.id)) ?? [];
+  const modelOptions = [
+    { value: '', label: 'Модель диалога' },
+    ...(profile.model && !availableModels.some(model => model.id === profile.model)
+      ? [{ value: profile.model, label: profile.model + (models ? ' · недоступна' : '') }] : []),
+    ...availableModels.map(model => ({ value: model.id, label: model.name })),
+  ];
   const submit = (event: FormEvent) => { event.preventDefault(); if (!busy) void save(profile, true); };
   return <div className="specialist-page specialist-editor">
-    <button type="button" className="specialist-back" disabled={busy} onClick={() => edit()}><ChevronLeft size={17} />Все специалисты</button>
     <header className="specialist-header">
+      <button type="button" className="workspace-icon" disabled={busy} onClick={() => edit()} title="Все специалисты" aria-label="Все специалисты"><ChevronLeft size={18} /></button>
       <IconTile icon={profileIcon(profile)} />
-      <div><h2 ref={heading} id="settings-section-title" tabIndex={-1}>{profile.revision ? 'Редактирование специалиста' : 'Новый специалист'}</h2>
-        {profile.revision ? <p>{profile.name}</p> : null}</div>
+      <div><h2 ref={heading} id="settings-section-title" tabIndex={-1}>{profile.name || 'Новый специалист'}</h2></div>
     </header>
     <form className="specialist-form specialist-editor-form" onSubmit={submit} onInvalid={event => {
       const input = event.target as HTMLInputElement;
@@ -265,7 +290,15 @@ export function SpecialistsPanel({ request, globalInstructions }: { request: Req
 
       <div role="tabpanel" id="specialist-panel-model" aria-labelledby="specialist-tab-model" className="specialist-tabpanel" hidden={tab !== 'model'} tabIndex={0}>
       <section className="specialist-card">
-          <label htmlFor="profile-model">Модель</label><input id="profile-model" maxLength={128} value={profile.model} placeholder="Модель диалога" onChange={event => update({ model: event.target.value })} />
+          <label htmlFor="profile-model">Модель</label>
+          <div className="specialist-model-picker">
+            <Select id="profile-model" label="Модель специалиста" className="settings-select" value={profile.model}
+              options={modelOptions} disabled={busy} onChange={model => update({ model })} />
+            <button type="button" className="workspace-icon" aria-label="Обновить модели" title="Обновить модели" disabled={modelsLoading}
+              onClick={() => setModelRefresh(value => value + 1)}><RefreshCw size={16} className={modelsLoading ? 'spin' : undefined} /></button>
+          </div>
+          {modelsLoading && <p className="help" role="status">Загрузка моделей…</p>}
+          {modelError && <p className="inline-error" role="alert">{modelError}</p>}
           <label htmlFor="profile-effort">Уровень рассуждения</label><Select id="profile-effort" className="settings-select" value={profile.reasoningEffort}
             onChange={reasoningEffort => update({ reasoningEffort: reasoningEffort as AgentProfile['reasoningEffort'] })}
             options={[{ value: 'low', label: 'Низкий' }, { value: 'medium', label: 'Средний' }, { value: 'high', label: 'Высокий' }, { value: 'xhigh', label: 'Очень высокий' }]} />
