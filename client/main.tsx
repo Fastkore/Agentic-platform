@@ -132,6 +132,7 @@ function App() {
   const contextNavigation = useRef(0);
   const [contextVersion, setContextVersion] = useState(0);
   const autoOpenRelated = useRef<string | undefined>(undefined);
+  const contextProject = useRef<Promise<string> | undefined>(undefined);
   const [erpChatKey, setErpChatKey] = useState<string>();
   const [relatedChats, setRelatedChats] = useState<{ key: string; list: RelatedChatSummary[] }>();
   const [contextProblem, setContextProblem] = useState<string>();
@@ -342,20 +343,49 @@ function App() {
     const context = currentErpContext.current.snapshot;
     if (!erpChatKey || !context) return;
     const navigation = contextNavigation.current;
+    const epoch = authEpoch;
     const controller = new AbortController();
     let retry: ReturnType<typeof setTimeout> | undefined;
-    const stillCurrent = () => !controller.signal.aborted && currentErpContext.current.key === erpChatKey && contextNavigation.current === navigation;
+    const stillCurrent = () => !controller.signal.aborted && authEpoch === epoch && currentErpContext.current.key === erpChatKey && contextNavigation.current === navigation;
     async function refreshRelated() {
       if (!stillCurrent()) return;
       try {
         const list = await postRelated();
         if (!stillCurrent()) return;
-        setRelatedChats({ key: erpChatKey!, list });
-        if (autoOpenRelated.current !== erpChatKey) return;
-        autoOpenRelated.current = undefined;
+        if (autoOpenRelated.current !== erpChatKey) { setRelatedChats({ key: erpChatKey!, list }); return; }
         const matching = list.find(item => item.contextMatches !== false && !item.legacyContext)
           ?? (context?.view === 'list' && !context.tile_id ? list.find(item => item.legacyContext) : undefined);
-        if (matching) navigateToRelated(matching);
+        if (matching) {
+          setRelatedChats({ key: erpChatKey!, list });
+          navigateToRelated(matching);
+          return;
+        }
+        const availableProjects = await api<ProjectSummary[]>('/api/projects', { signal: controller.signal });
+        if (!stillCurrent() || autoOpenRelated.current !== erpChatKey) return;
+        let project = availableProjects.find(item => item.id === selected.current.projectId)?.id ?? availableProjects[0]?.id;
+        if (!project) {
+          if (!contextProject.current) contextProject.current = createPersonalProject().finally(() => { contextProject.current = undefined; });
+          project = await contextProject.current;
+        }
+        if (!stillCurrent() || autoOpenRelated.current !== erpChatKey) return;
+        const choices = await api<AgentSummary[]>(agentsUrl(project), { signal: controller.signal });
+        if (!stillCurrent() || autoOpenRelated.current !== erpChatKey) return;
+        const agent = choices.find(item => item.available && item.id === preferredAgent) ?? choices.find(item => item.available);
+        if (!agent) throw new Error('В этом проекте пока нет доступного специалиста.');
+        const result = await api<{ projectId: string; chat: Chat }>('/api/fastkore/chats', {
+          method: 'POST', body: JSON.stringify({ projectId: project, context, agentProfileId: agent.id }), signal: controller.signal,
+        });
+        if (!stillCurrent() || autoOpenRelated.current !== erpChatKey) return;
+        const { id, title, updatedAt, ownerId, ownerName, visibility, linkedToFastkore } = result.chat;
+        const summary = { id, title, updatedAt, ownerId, ownerName, visibility, linkedToFastkore, messageCount: result.chat.messages.length };
+        const entry = { ...summary, projectId: result.projectId, projectName: availableProjects.find(item => item.id === result.projectId)?.name ?? 'Личные чаты' };
+        setChatLists(old => ({ ...old, [result.projectId]: [summary, ...(old[result.projectId] ?? []).filter(item => item.id !== id)] }));
+        setRelatedChats({ key: erpChatKey!, list: [entry, ...list.filter(item => item.id !== id)] });
+        const draftKey = 'erp:' + erpChatKey;
+        setDrafts(old => ({ ...old, [id]: old[draftKey] ?? old[id] ?? '', [draftKey]: '' }));
+        setSpecialists(old => ({ ...old, [id]: old[draftKey] ?? old[id], [draftKey]: undefined }));
+        navigateToRelated(entry);
+        setChat(result.chat);
       } catch (error) {
         if (!stillCurrent()) return;
         if (error instanceof ApiError && error.transient) {
