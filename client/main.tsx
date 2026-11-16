@@ -888,6 +888,8 @@ function App() {
         </div>
       </article>)}
   </>;
+  const createProjectOption = '+project';
+  const showChatConsultants = !!chat && (canEdit || chatConsultants.length > 0);
   const composer = <div className="bridge-composer">
     {chat && !canEdit && <p className="composer-status" role={relatedLoading ? 'status' : 'alert'}>
       {relatedLoading ? 'Проверяем связь чата с открытым окном Fastkore…' : chat.linkedToFastkore && chat.ownerId === user.id && !chat.archivedAt
@@ -920,17 +922,21 @@ function App() {
         : <span className="sr-only">Ответ готовится</span>}</span>
       {(isAdmin || (run.chatId === chatId && canEdit)) && <button onClick={() => void action(async () => { await post('/api/runs/' + run.id + '/cancel'); })}><Square size={12} />Остановить</button>}
     </div>)}
-    {!hasMessages && <div className="composer-project">
-      <Folder size={17} />
-      <Select label="Проект" placeholder="Выберите проект" value={projectId} onChange={project => currentErpContext.current.active ? navigateTo(project) : navigateWorkspace(project)} disabled={pending}
-        options={projects.map(project => ({ value: project.id, label: project.name }))} />
-      {canCreateProject && <button type="button" className="workspace-icon" title="Новый проект" aria-label="Новый проект" onClick={() => setPanel('project')}><Plus size={17} /></button>}
-    </div>}
-    <div className="bridge-editor">
-      {attachments.length > 0 && <div className="attachment-chips">{attachments.map(attachment => <span key={attachment.id}>
-        <FileText size={14} />{attachment.name}<button aria-label={'Убрать ' + attachment.name} onClick={() => setFiles(old => ({ ...old, [chatId]: (old[chatId] ?? []).filter(item => item.id !== attachment.id) }))}><X size={13} /></button>
-      </span>)}</div>}
-      {chat && (canEdit || chatConsultants.length > 0) && <div key={'consultants:' + chat.id} className="chat-consultants">
+    {(!hasMessages || showChatConsultants) && <div className="composer-project">
+      {!hasMessages && <div className="composer-project-picker">
+        <Folder size={17} aria-hidden="true" />
+        <Select label="Проект" placeholder="Выберите проект" value={projectId} disabled={pending}
+          onChange={project => {
+            if (project === createProjectOption) setPanel('project');
+            else if (currentErpContext.current.active) navigateTo(project);
+            else navigateWorkspace(project);
+          }}
+          options={[
+            ...projects.map(project => ({ value: project.id, label: project.name })),
+            ...(canCreateProject ? [{ value: createProjectOption, label: '+ Создать проект' }] : []),
+          ]} />
+      </div>}
+      {showChatConsultants && <div key={'consultants:' + chat.id} className="chat-consultants">
         {chatConsultants.map(agent => <span key={agent.id} className="chat-consultant">
           <Bot size={14} aria-hidden="true" />
           {agent.name}
@@ -946,6 +952,11 @@ function App() {
             value: 'unavailable', disabled: true, label: otherSpecialists.length ? 'Все специалисты подключены' : 'Нет доступных дополнительных специалистов',
           }]} />}
       </div>}
+    </div>}
+    <div className="bridge-editor">
+      {attachments.length > 0 && <div className="attachment-chips">{attachments.map(attachment => <span key={attachment.id}>
+        <FileText size={14} />{attachment.name}<button aria-label={'Убрать ' + attachment.name} onClick={() => setFiles(old => ({ ...old, [chatId]: (old[chatId] ?? []).filter(item => item.id !== attachment.id) }))}><X size={13} /></button>
+      </span>)}</div>}
       <ComposerInput key={specialistKey} input={input} draft={draft}
         placeholder={hasMessages ? 'Продолжить разговор…' : 'Напишите сообщение…'}
         editable={draftEditable} pickerEnabled={draftEditable && !pending && (chatId ? canEdit : !!selectedProject)}

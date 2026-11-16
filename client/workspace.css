@@ -307,9 +307,10 @@
 
 .bridge-composer { position: relative; }
 .composer-project {
-  display: flex; align-items: center; gap: 7px; min-height: 45px; padding: 0 14px; color: var(--text-secondary);
+  display: flex; align-items: center; flex-wrap: wrap; gap: 4px 16px; min-height: 45px; padding: 0 14px; color: var(--text-secondary);
 }
-.composer-project .workspace-select, .editor-model .workspace-select { max-width: min(220px, 35vw); }
+.composer-project-picker { display: flex; align-items: center; gap: 7px; }
+.composer-project-picker .workspace-select, .editor-model .workspace-select { max-width: min(220px, 35vw); }
 .composer-project svg { flex: 0 0 auto; }
 .bridge-editor {
   border: 1px solid var(--control-border); border-radius: 19px; background: var(--control);
@@ -655,7 +656,7 @@
 .workspace-dialog .secondary:hover:not(:disabled) { background: var(--nav-raised); border-color: var(--focus-border); }
 .workspace-dialog .primary { border-radius: 9px; min-height: 38px; }
 .workspace-dialog :is(button,input,textarea,select) { transition: background-color .15s, border-color .15s; }
-.chat-consultants { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; padding: 6px 10px 0; }
+.chat-consultants { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; min-width: 0; }
 .chat-consultant, .chat-consultants .chat-consultants-select {
   display: inline-flex; align-items: center; gap: 5px; min-height: 25px; padding: 2px 7px;
   border: 1px solid var(--border); border-radius: 7px; color: var(--text-muted); font-size: .9em;
