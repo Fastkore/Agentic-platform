@@ -930,7 +930,7 @@ function App() {
       {attachments.length > 0 && <div className="attachment-chips">{attachments.map(attachment => <span key={attachment.id}>
         <FileText size={14} />{attachment.name}<button aria-label={'Убрать ' + attachment.name} onClick={() => setFiles(old => ({ ...old, [chatId]: (old[chatId] ?? []).filter(item => item.id !== attachment.id) }))}><X size={13} /></button>
       </span>)}</div>}
-      {chat && (canEdit || chatConsultants.length > 0) && <div key={chat.id} className="chat-consultants">
+      {chat && (canEdit || chatConsultants.length > 0) && <div key={'consultants:' + chat.id} className="chat-consultants">
         {chatConsultants.map(agent => <span key={agent.id} className="chat-consultant">
           <Bot size={14} aria-hidden="true" />
           {agent.name}
