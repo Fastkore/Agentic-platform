@@ -36,6 +36,60 @@ async function fixture(respond?: (request: CodexRequest, signal: AbortSignal) =>
 }
 async function idle(workspace: Workspace) { const deadline = Date.now() + 6000; while (workspace.busy) { if (Date.now() > deadline) throw Error('timeout'); await new Promise(r => setTimeout(r, 10)); } }
 
+test('moving a chat requires access to the destination and preserves its history and files', async () => {
+  const f = await fixture();
+  try {
+    const directory = path.join(f.root, 'destination');
+    await mkdir(directory);
+    const destination = await f.workspace.addProject(directory);
+    const chats = `/api/projects/${f.project.id}/chats`;
+    const created = await f.req('POST', chats, f.token, { title: 'Исходный чат' });
+    assert.equal(created.statusCode, 201, created.body);
+    const { id } = created.json();
+    const source = f.workspace.chat(f.project.id, id);
+    const result = await f.workspace.files.upload('local', f.project, 'result.txt', Buffer.from('Содержимое'));
+    source.messages.push({
+      id: randomUUID(), role: 'assistant', status: 'complete', text: 'Результат',
+      createdAt: new Date().toISOString(), attachments: [result],
+    });
+    await f.store.save();
+
+    const move = `${chats}/${id}/move`, body = { projectId: destination.id, title: 'Новое название' };
+    assert.equal((await f.req('PATCH', move, f.token, body)).statusCode, 404);
+    assert.equal((await f.req('PATCH', `/api/projects/${destination.id}/members`, f.admin, {
+      memberIds: [f.employee.id],
+    })).statusCode, 200);
+    const saved = await f.req('PATCH', move, f.token, body);
+    assert.equal(saved.statusCode, 200, saved.body);
+    assert.equal((await f.req('GET', `${chats}/${id}`, f.token)).statusCode, 404);
+    const moved = f.workspace.chat(destination.id, id);
+    assert.equal(moved.title, body.title);
+    assert.equal(moved.ownerId, source.ownerId);
+    assert.equal(moved.messages[0].text, 'Результат');
+    assert.equal((await f.workspace.files.read(destination, moved.messages[0].attachments[0])).toString(), 'Содержимое');
+  } finally { await f.app.close(); }
+});
+
+test('chat consultants persist and exclude the base assistant', async () => {
+  const f = await fixture();
+  try {
+    const base = f.workspace.corporate.data.profiles.find(profile => profile.id === 'universal')!;
+    assert.equal(base.name, 'Помощник Фасткор');
+    const specialist = { ...base, id: 'reviewer', name: 'Рецензент' };
+    f.workspace.corporate.data.profiles.push(specialist);
+    const chats = `/api/projects/${f.project.id}/chats`;
+    const created = await f.req('POST', chats, f.admin, { title: 'Консультация' });
+    assert.equal(created.statusCode, 201, created.body);
+    const chat = `${chats}/${created.json().id}`;
+    assert.equal((await f.req('PATCH', chat + '/specialists', f.admin, { consultantIds: [base.id] })).statusCode, 403);
+    const saved = await f.req('PATCH', chat + '/specialists', f.admin, { consultantIds: [specialist.id] });
+    assert.equal(saved.statusCode, 200, saved.body);
+    assert.deepEqual((await f.req('GET', chat, f.admin)).json().consultantIds, [specialist.id]);
+    assert.equal((await f.req('PATCH', chat + '/specialists', f.admin, { consultantIds: [] })).statusCode, 200);
+    assert.deepEqual((await f.req('GET', chat, f.admin)).json().consultantIds, []);
+  } finally { await f.app.close(); }
+});
+
 test('Fastkore v1 history follows the desktop key and keeps queued snapshots on their original question', async () => {
   let resume!: () => void;
   const waiting = new Promise<void>(resolve => { resume = resolve; });

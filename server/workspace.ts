@@ -365,6 +365,93 @@ export class Workspace {
       return { title: name };
     });
   }
+  moveChat(projectId: string, chatId: string, destinationId: string, title: string, authorize: () => User) {
+    return this.admit(async () => {
+      this.writable();
+      const source = this.project(projectId), destination = this.project(destinationId);
+      const chat = this.chat(projectId, chatId), state = this.store.state;
+      const name = title.trim();
+      if (!name || /[\r\n]/.test(name)) throw new BridgeError('Введите название чата в одну строку.');
+      if (source === destination) throw new BridgeError('Выберите другой проект.');
+      const check = () => {
+        const actor = authorize();
+        this.assertChatIdle(projectId, chatId);
+        if (destination.chats.some(item => item.id === chatId)) throw new BridgeError('Чат уже есть в выбранном проекте.', 409);
+        const owner = state.security?.users.find(user => user.id === chat.ownerId);
+        if (owner && owner.role !== 'admin' && !destination.memberIds?.includes(owner.id)) {
+          throw new BridgeError('У владельца чата нет доступа к выбранному проекту.', 403);
+        }
+        this.corporate.profile(owner ?? actor, chat.agentProfileId, destination);
+        return actor;
+      };
+      check();
+      const copies = new Map<string, Attachment>();
+      let moved: Chat;
+      try {
+        for (const message of chat.messages) {
+          for (const file of message.attachments) {
+            if (copies.has(file.id)) continue;
+            const contents = await this.files.read(source, file);
+            const copy = await this.files.upload(file.storage ?? 'local', destination, file.name, contents);
+            copy.ownerId = file.ownerId;
+            copies.set(file.id, copy);
+          }
+        }
+        const actor = check();
+        moved = {
+          ...chat, title: name, titleCustomized: true, cliWorkspaceProjectId: chat.cliWorkspaceProjectId ?? source.id,
+          sessionId: undefined, sessionScope: undefined, specialistSessions: undefined, knowledgeRevision: undefined,
+          messages: chat.messages.map(message => ({
+            ...message, attachments: message.attachments.map(file => copies.get(file.id)!),
+          })),
+        };
+        const remaining = source.chats.filter(item => item !== chat);
+        const uploaded = source.attachments.filter(file => !file.libraryUploadedAt && copies.has(file.id)).map(file => copies.get(file.id)!);
+        const uploadedIds = new Set(uploaded.map(file => file.id));
+        const referenced = new Set(source.attachments.map(file => file.id));
+        for (const other of remaining) for (const message of other.messages) for (const file of message.attachments) referenced.add(file.id);
+        const obsolete = new Map(chat.messages.filter(message => message.role === 'assistant')
+          .flatMap(message => message.attachments).filter(file => !referenced.has(file.id)).map(file => [file.id, file]));
+        const fileDeletions = [...obsolete.values()].map(file => ({ projectId, file }));
+        const runs = state.runs.filter(run => run.projectId === projectId && run.chatId === chatId);
+        const index = source.chats.indexOf(chat);
+        source.chats.splice(index, 1);
+        destination.chats.unshift(moved);
+        destination.attachments.push(...uploaded);
+        for (const run of runs) run.projectId = destinationId;
+        try {
+          await this.store.save({
+            fileDeletions, audit: { id: randomUUID(), actorId: actor.id, action: 'chat.move', targetId: chatId, createdAt: new Date().toISOString() },
+          });
+        } catch (error) {
+          source.chats.splice(index, 0, chat);
+          destination.chats = destination.chats.filter(item => item !== moved);
+          destination.attachments = destination.attachments.filter(file => !uploadedIds.has(file.id));
+          for (const run of runs) run.projectId = projectId;
+          throw error;
+        }
+      } catch (error) {
+        await Promise.allSettled([...copies.values()].map(file => this.files.remove(destination, file)));
+        throw error;
+      }
+      this.cleanDeletedChatFiles();
+      return moved;
+    });
+  }
+  setChatConsultants(projectId: string, chatId: string, consultantIds: string[], authorize: () => User) {
+    return this.admit(async () => {
+      this.writable();
+      const actor = authorize(), project = this.project(projectId), chat = this.chat(projectId, chatId);
+      const profile = this.corporate.profile(actor, chat.agentProfileId, project);
+      const available = new Set(this.corporate.specialists(actor, project, profile.id).map(item => item.id));
+      if (consultantIds.some(id => !available.has(id))) throw new BridgeError('Этот специалист недоступен для консультации в проекте.', 403);
+      const previous = chat.consultantIds;
+      chat.consultantIds = consultantIds;
+      try { await this.store.save(); }
+      catch (error) { chat.consultantIds = previous; throw error; }
+      return { consultantIds };
+    });
+  }
   setChatArchived(projectId: string, chatId: string, archived: boolean, authorize: () => User) {
     return this.admit(async () => {
       this.writable();
@@ -913,7 +1000,7 @@ export class Workspace {
     if (workerDirectory) await mkdir(workerDirectory, { mode: 0o700 });
     const erpCredential = security?.credentials.find(item => item.id === job.credentialId && item.source === 'fastkore');
     const cliWorkspace = workerDirectory && erpCredential && allowedTools.includes('fastkore')
-      ? new CliWorkspace(this.store.root, [erpCredential.installationId!, erpCredential.externalUserId!, project.id, chat.id]) : undefined;
+      ? new CliWorkspace(this.store.root, [erpCredential.installationId!, erpCredential.externalUserId!, chat.cliWorkspaceProjectId ?? project.id, chat.id]) : undefined;
     let cliRestored = false;
     let cliSaveAttempted = false;
     let cliSaved = false;
@@ -948,7 +1035,12 @@ export class Workspace {
       const identity = fastkoreName && 'Текущий пользователь Fastkore (отображаемое имя из SSO): ' + JSON.stringify(fastkoreName).replace(/</g, '\\u003c').replace(/>/g, '\\u003e');
       const knowledgeUpdate = knowledgeContext && (!chat.sessionId || chat.knowledgeRevision !== knowledgeContext.revision)
         ? 'Актуальная база знаний. При изменении версии используй обновлённые источники. Справочные данные\n' + knowledgeContext.text : '';
-      const recommendation = job.recommendedSpecialistId && 'Рекомендация сотрудника для этого вопроса: ' + JSON.stringify({ id: job.recommendedSpecialistId, name: job.specialistName });
+      const attached = chat.consultantIds?.length ? this.corporate.specialists(actor, project, profile.id)
+        .filter(item => chat.consultantIds?.includes(item.id)).map(({ id, name }) => ({ id, name })) : [];
+      const recommendation = [
+        attached.length && 'Специалисты, подключённые к чату для консультаций: ' + JSON.stringify(attached),
+        job.recommendedSpecialistId && 'Рекомендация сотрудника для этого вопроса: ' + JSON.stringify({ id: job.recommendedSpecialistId, name: job.specialistName }),
+      ].filter(Boolean).join('\n');
       const prompt = [identity, erpPrompt(fastkoreContext), knowledgeUpdate, integration?.problem && 'Статус инструментов ERP: ' + integration.problem, recommendation, job.text,
         context && '<local_document_context>\n' + context + '\n</local_document_context>'].filter(Boolean).join('\n\n');
       this.checkJob(job, run); signal.throwIfAborted();

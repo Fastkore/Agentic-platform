@@ -647,14 +647,25 @@
 .settings-nav svg { width: 20px; height: 20px; color: var(--text-secondary); stroke-width: 1.65; }
 .settings-nav .workspace-row[aria-current="page"] { border-color: var(--control-border); box-shadow: inset 0 1px 0 #ffffff08; font-weight: 600; }
 .workspace-dialog .secondary, .workspace-select.settings-select,
-.workspace-dialog input:not([type="checkbox"]), .workspace-dialog textarea {
+.workspace-dialog input:not([type="checkbox"]), .workspace-dialog textarea, .workspace-chat-rename select {
   border: 1px solid var(--control-border); border-radius: 9px; background: var(--control);
   box-shadow: inset 0 1px 0 #ffffff06; color: var(--text);
 }
 .workspace-dialog .secondary { min-height: 38px; padding: 8px 14px; font-weight: 550; }
 .workspace-dialog .secondary:hover:not(:disabled) { background: var(--nav-raised); border-color: var(--focus-border); }
 .workspace-dialog .primary { border-radius: 9px; min-height: 38px; }
-.workspace-dialog :is(button,input,textarea) { transition: background-color .15s, border-color .15s; }
+.workspace-dialog :is(button,input,textarea,select) { transition: background-color .15s, border-color .15s; }
+.chat-consultants { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; padding: 6px 10px 0; }
+.chat-consultant, .chat-consultants .chat-consultants-select {
+  display: inline-flex; align-items: center; gap: 5px; min-height: 25px; padding: 2px 7px;
+  border: 1px solid var(--border); border-radius: 7px; color: var(--text-muted); font-size: .9em;
+}
+.chat-consultant .workspace-icon { width: 19px; height: 19px; }
+.workspace-shell .bridge-editor textarea {
+  max-height: max(72px, min(70vh, calc(100vh - 160px)));
+  max-height: max(72px, min(70dvh, calc(100dvh - 160px)));
+  overflow-y: auto;
+}
 .workspace-dialog input[type="checkbox"] { accent-color: var(--text-secondary); width: 16px; height: 16px; }
 .settings-content .setting-section { border-bottom: 0; }
 .settings-section-heading { margin-bottom: 20px; gap: 14px; }

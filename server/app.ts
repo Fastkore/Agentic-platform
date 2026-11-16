@@ -807,6 +807,26 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
     return chat;
   };
   app.get<{ Params: ChatParams }>(chatPath, async request => access.viewChat(requestChat(request)));
+  app.patch<{ Params: ChatParams; Body: { consultantIds: string[] } }>(chatPath + '/specialists', {
+    schema: { body: object({ consultantIds: { type: 'array', uniqueItems: true, items: identifier } }, ['consultantIds']) },
+  }, request => workspace.setChatConsultants(request.params.projectId, request.params.chatId, request.body.consultantIds, () => {
+    requestChat(request, true);
+    return user(request);
+  }));
+  app.patch<{ Params: ChatParams; Body: { projectId: string; title: string } }>(chatPath + '/move', {
+    schema: { body: object({ projectId: string(100), title: string(120) }, ['projectId', 'title']) },
+  }, async request => {
+    const { projectId, chatId } = request.params;
+    const destinationId = request.body.projectId;
+    const check = () => {
+      requestChat(request, true);
+      const actor = user(request);
+      access.project(actor, destinationId);
+      return actor;
+    };
+    check();
+    return access.viewChat(await workspace.moveChat(projectId, chatId, destinationId, request.body.title, check));
+  });
   app.patch<{ Params: ChatParams; Body: { archived: boolean } }>(chatPath + '/archive', {
     schema: { body: object({ archived: { type: 'boolean' } }, ['archived']) },
   }, async request => access.viewChat(await workspace.setChatArchived(request.params.projectId, request.params.chatId, request.body.archived, () => admin(request))));

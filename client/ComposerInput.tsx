@@ -5,6 +5,14 @@ import type { AgentSummary } from '../shared/types';
 
 interface Mention { start: number; end: number; query: string }
 
+function resizeComposer(textarea: HTMLTextAreaElement) {
+  const scrollTop = textarea.scrollTop;
+  textarea.style.height = 'auto';
+  const borderHeight = textarea.offsetHeight - textarea.clientHeight;
+  textarea.style.height = `${textarea.scrollHeight + borderHeight}px`;
+  textarea.scrollTop = scrollTop;
+}
+
 function mentionAt(text: string, caret: number): Mention | null {
   const match = /(?:^|\s)@([\p{L}\p{N}_-]*)$/u.exec(text.slice(0, caret));
   if (!match) return null;
@@ -40,6 +48,24 @@ export function ComposerInput({ input, draft, placeholder, editable, pickerEnabl
   const specialist = agents.find(agent => agent.id === specialistId);
 
   useLayoutEffect(() => {
+    if (input.current) resizeComposer(input.current);
+  }, [draft, input]);
+
+  useLayoutEffect(() => {
+    const textarea = input.current;
+    if (!textarea) return;
+    let width = textarea.offsetWidth;
+    const observer = new ResizeObserver(() => {
+      const nextWidth = textarea.offsetWidth;
+      if (nextWidth === width) return;
+      width = nextWidth;
+      resizeComposer(textarea);
+    });
+    observer.observe(textarea);
+    return () => observer.disconnect();
+  }, [input]);
+
+  useLayoutEffect(() => {
     if (nextCaret.current === null) return;
     input.current?.setSelectionRange(nextCaret.current, nextCaret.current);
     nextCaret.current = null;
@@ -65,7 +91,7 @@ export function ComposerInput({ input, draft, placeholder, editable, pickerEnabl
     window.addEventListener('resize', measure);
     document.addEventListener('scroll', measure, true);
     return () => { window.removeEventListener('resize', measure); document.removeEventListener('scroll', measure, true); };
-  }, [expanded, input]);
+  }, [draft, expanded, input]);
 
   useEffect(() => {
     if (expanded && activeIndex >= 0) menu.current?.children[activeIndex]?.scrollIntoView({ block: 'nearest' });

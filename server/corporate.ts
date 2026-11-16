@@ -7,14 +7,22 @@ import type { AgentProfile, AgentSummary, Corporate, Dataset, Project, ProjectAg
 import { BridgeError, Store } from './store.js';
 
 export const operationIds = ['chat', 'estimate', 'technology', 'accounting'] as const;
+const baseAssistantName = 'Помощник Фасткор';
+function baseAssistant(): AgentProfile {
+  return { id: 'universal', name: baseAssistantName, description: 'Обсуждение файлов и вопросов проекта', instructions: '', enabled: true,
+    model: '', reasoningEffort: 'high', operationIds: ['chat'], datasetIds: [], skillIds: [], allowWrite: false, outputMode: 'chat', revision: 1 };
+}
 export function initializeCorporate(state: State): Corporate {
   if (!state.corporate) state.corporate = {
     roles: [{ id: 'employee', name: 'Сотрудник', enabled: true, profileIds: ['universal'], operationIds: ['chat'], readDatasetIds: [], instructions: '', revision: 1 }],
     profiles: [
-      { id: 'universal', name: 'Универсальный помощник', description: 'Обсуждение файлов и вопросов проекта', instructions: '', enabled: true, model: '', reasoningEffort: 'high', operationIds: ['chat'], datasetIds: [], skillIds: [], allowWrite: false, outputMode: 'chat', revision: 1 },
+      baseAssistant(),
       ...[['estimator', 'Оценщик', 'Подготовка расчёта и коммерческого предложения', 'estimate'], ['technologist', 'Технолог', 'Подготовка технологии изготовления', 'technology'], ['accountant', 'Бухгалтер', 'Работа с согласованными бухгалтерскими операциями', 'accounting']].map(([id, name, description, operation]): AgentProfile => ({ id, name, description, instructions: '', enabled: false, model: '', reasoningEffort: 'high', operationIds: [operation], datasetIds: [], skillIds: [], allowWrite: false, outputMode: 'restricted', revision: 1 }))
     ], datasets: []
   };
+  const base = state.corporate.profiles.find(profile => profile.id === 'universal');
+  if (base) Object.assign(base, { name: baseAssistantName, enabled: true });
+  else state.corporate.profiles.unshift(baseAssistant());
   for (const user of state.security?.users ?? []) user.roleId ??= 'employee';
   for (const project of state.projects) for (const chat of project.chats) chat.agentProfileId ??= 'universal';
   return state.corporate;
@@ -73,7 +81,7 @@ export class CorporateAccess {
       });
   }
   specialists(user: User | undefined, project: Project, mainProfileId: string) {
-    return this.data.profiles.filter(profile => user && profile.id !== mainProfileId && this.canUse(user, profile)
+    return this.data.profiles.filter(profile => user && profile.id !== 'universal' && profile.id !== mainProfileId && this.canUse(user, profile)
       && (!project.agentPolicy || this.connection(profile, project)) && !this.unavailable(profile, project));
   }
   defaultProjectPolicy(includeFastkore: boolean): ProjectAgentPolicy {
@@ -130,6 +138,7 @@ export class CorporateAccess {
   }
   async saveProfile(actor: User, input: Omit<AgentProfile, 'revision'> & { revision?: number }) {
     this.admin(actor);
+    if (input.id === 'universal') input = { ...input, name: baseAssistantName, enabled: true };
     if (input.operationIds.some(id => !operationIds.includes(id as typeof operationIds[number])) || input.datasetIds.some(id => !this.data.datasets.some(d => d.id === id))) throw new BridgeError('Выберите существующие операции и источники.');
     if (input.model && !/^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,127}$/.test(input.model)) throw new BridgeError('Некорректная модель.');
     const old = this.data.profiles.find(p => p.id === input.id); if (old && old.revision !== input.revision) throw new BridgeError('Профиль изменён. Обновите настройки.', 409);
