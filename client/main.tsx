@@ -664,18 +664,17 @@ function App() {
       }
     });
   }
-  async function toggleChatPin() {
-    if (!selectedChatSummary || pending) return;
-    const project = projectId, conversation = selectedChatSummary.id;
+  async function toggleChatPin(project = projectId, summary = selectedChatSummary) {
+    if (!summary || pending) return;
+    const conversation = summary.id;
     await action(async () => {
       const { pinned } = await api<{ pinned: boolean }>(`/api/projects/${project}/chats/${conversation}/pin`, {
-        method: 'PATCH', body: JSON.stringify({ pinned: !selectedChatSummary.pinned }),
+        method: 'PATCH', body: JSON.stringify({ pinned: !summary.pinned }),
       });
       setChatLists(old => ({ ...old, [project]: (old[project] ?? []).map(item => item.id === conversation ? { ...item, pinned } : item) }));
     });
   }
-  async function archiveChat() {
-    const p = projectId, c = chatId;
+  async function archiveChat(p = projectId, c = chatId) {
     await action(async () => {
       await api(`/api/projects/${p}/chats/${c}/archive`, { method: 'PATCH', body: JSON.stringify({ archived: true }) });
       setChatLists(old => ({ ...old, [p]: (old[p] ?? []).filter(item => item.id !== c) }));
@@ -1096,12 +1095,22 @@ function App() {
               </details>}
             </div>
             {open && <div className="project-chat-list" id={'chats-' + project.id}>
-              {visible.map(item => <button key={item.id} className="workspace-row chat-row" aria-current={item.id === chatId ? 'page' : undefined}
+              {visible.map(item => <div key={item.id} className="chat-row-container">
+                <button type="button" className="workspace-row chat-row" aria-current={item.id === chatId ? 'page' : undefined}
                 onClick={() => navigateWorkspace(project.id, item.id)} title={chatTooltip(item)}>
                 {item.pinned && <Pin size={13} className="chat-row-pin" aria-label="Закреплённый чат" />}
                 <span>{item.title}</span>
-                {activeRuns.some(run => run.status === 'running' && run.projectId === project.id && run.chatId === item.id) ? <LoaderCircle size={13} className="spin" /> : <time dateTime={item.updatedAt}>{shortDate(item.updatedAt)}</time>}
-              </button>)}
+                <span className="chat-row-time">{activeRuns.some(run => run.status === 'running' && run.projectId === project.id && run.chatId === item.id) ? <LoaderCircle size={13} className="spin" /> : <time dateTime={item.updatedAt}>{shortDate(item.updatedAt)}</time>}</span>
+                </button>
+                <div className="chat-row-actions">
+                  <button type="button" className="workspace-icon" title={item.pinned ? 'Открепить чат' : 'Закрепить чат'}
+                    aria-label={(item.pinned ? 'Открепить чат «' : 'Закрепить чат «') + item.title + '»'} aria-pressed={!!item.pinned}
+                    disabled={pending} onClick={() => void toggleChatPin(project.id, item)}><Pin size={14} /></button>
+                  {isAdmin && <button type="button" className="workspace-icon" title="Архивировать чат" aria-label={'Архивировать чат «' + item.title + '»'}
+                    disabled={pending || [...activeRuns, ...queuedRuns].some(run => run.projectId === project.id && run.chatId === item.id)}
+                    onClick={() => void archiveChat(project.id, item.id)}><Archive size={14} /></button>}
+                </div>
+              </div>)}
               {recent.length > 5 && <button className="workspace-row show-chats" onClick={() => setShowAll(old => ({ ...old, [project.id]: !old[project.id] }))}>{showAll[project.id] ? 'Свернуть' : 'Показать ещё'}</button>}
             </div>}
           </div>;

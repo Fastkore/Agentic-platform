@@ -188,6 +188,19 @@
 .chat-row { gap: 8px; }
 .chat-row > span { flex: 1; }
 .chat-row time { flex: 0 0 auto; color: var(--nav-muted); }
+.chat-row-container { position: relative; border-radius: 8px; }
+.chat-row-container:hover, .chat-row-container:focus-within { background: var(--selected); }
+.chat-row-container .chat-row > .chat-row-time { display: flex; align-items: center; justify-content: flex-end; flex: 0 0 54px; min-width: 54px; }
+.chat-row-actions { position: absolute; inset: 0 7px 0 auto; display: flex; align-items: center; justify-content: flex-end; width: 54px; opacity: 0; pointer-events: none; }
+.chat-row-actions > .workspace-icon { width: 27px; height: 26px; }
+.chat-row-actions > [aria-pressed="true"] { color: var(--accent-strong); }
+.chat-row-container:hover .chat-row-time, .chat-row-container:focus-within .chat-row-time { opacity: 0; }
+.chat-row-container:hover .chat-row-actions, .chat-row-container:focus-within .chat-row-actions { opacity: 1; pointer-events: auto; }
+@media (hover: none) {
+  .chat-row-container .chat-row-time { opacity: 0; }
+  .chat-row-container .chat-row-actions { opacity: 1; pointer-events: auto; }
+}
+
 .chat-row-pin, .chat-pin-button[aria-pressed="true"] { color: var(--accent-strong); }
 .show-chats { min-height: 32px; padding-left: 35px; color: var(--text-muted); }
 .workspace-account { position: relative; margin-top: auto; padding: 6px 10px 10px; flex: 0 0 auto; }
