@@ -9,7 +9,7 @@ function Invoke-Docker {
 
 $stack = @('compose', '-p', 'agentic-platformin',
     '-f', 'compose.yaml', '-f', 'compose.codex.yaml', '-f', 'compose.sso.yaml',
-    '-f', 'compose.fastkore-cli-worker.yaml', '-f', 'compose.minio.yaml')
+    '-f', 'compose.fastkore-cli-worker.yaml', '-f', 'compose.minio.yaml', '-f', 'compose.sources.yaml')
 $cli = @('compose', '-p', 'fastkore-cli', '-f', 'deploy/compose.fastkore-cli-pilot.yaml')
 $buildStack = $stack
 if ($BuildContext) {

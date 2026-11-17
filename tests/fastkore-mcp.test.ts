@@ -77,7 +77,8 @@ test('Fastkore MCP forwards native tool schemas and arguments, isolates SSO sess
     c.erpDelegation = { sealedGrant: 'test', expiresAt, revision: binding.revision };
   };
   const signal = new AbortController().signal;
-  const prepare = (c: Credential) => mcp.prepare(c, () => {}, signal);
+  let readOnly = false;
+  const prepare = (c: Credential) => mcp.prepare(c, () => {}, signal, undefined, () => readOnly);
   try {
     assert.equal((await prepare(alice)).tools, undefined);
     attach(alice); attach(boris);
@@ -96,6 +97,15 @@ test('Fastkore MCP forwards native tool schemas and arguments, isolates SSO sess
     await a.tools.call('fastkore_GetOrders', {}, signal);
     assert.equal(issued.get('alice'), 2);
     const args = { guid: randomUUID() };
+    readOnly = true;
+    const restricted = await prepare(alice);
+    assert.deepEqual(restricted.tools?.definitions.map(tool => tool.name),
+      ['fastkore_GetCurrentUserInfo', 'fastkore_GetOrders', 'fastkore_GetOrder']);
+    const beforeBlockedCall = calls.length;
+    const blockedWrite = await a.tools.call('fastkore_CreateTask', {}, signal);
+    assert.equal(blockedWrite.success, false);
+    assert.match(blockedWrite.text, /только чтение/);
+    assert.equal(calls.length, beforeBlockedCall);
     assert.equal((await a.tools.call('fastkore_GetOrder', args, signal)).success, true);
     assert.deepEqual(calls.at(-1), { user: 'alice', name: 'GetOrder', args });
     await mcp.revoke(alice);

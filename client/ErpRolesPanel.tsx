@@ -1,11 +1,19 @@
 import { useEffect, useState } from 'react';
-import { Clock3, Globe, Network, Search, Send, ShieldCheck, Terminal, Trash2, Users } from 'lucide-react';
+import { Clock3, FolderPlus, Globe, LockKeyhole, Network, Search, Send, ShieldCheck, Terminal, Trash2, Users } from 'lucide-react';
 import type { FastkoreRoleSummary, FastkoreRolePermissions } from '../shared/types';
 import { Select } from './Select';
 import { SettingsAction } from './SettingsAction';
 import { PermissionSwitch } from './PermissionSwitch';
 
 type Request = <T>(url: string, init?: RequestInit) => Promise<T>;
+const permissionColumns = [
+  [{ key: 'mcp', name: 'MCP', icon: Network }, { key: 'cli', name: 'CLI', icon: Terminal }],
+  [{ key: 'webSearch', name: 'Веб-поиск', icon: Search }, { key: 'webRead', name: 'Чтение страниц', icon: Globe }],
+  [{ key: 'webRequests', name: 'Внешние запросы', icon: Send }],
+  [{ key: 'createProjects', name: 'Создание проектов', icon: FolderPlus },
+    { key: 'readOnly', name: 'Только чтение в Fastkore', icon: LockKeyhole }],
+] as const;
+
 export function ErpRolesPanel({ request }: { request: Request }) {
   const [roles, setRoles] = useState<FastkoreRoleSummary[]>();
   const [search, setSearch] = useState(''), [installation, setInstallation] = useState('all');
@@ -27,12 +35,12 @@ export function ErpRolesPanel({ request }: { request: Request }) {
     } catch (e) { setError((e as Error).message); }
     finally { setBusy(false); }
   }
-  async function savePermission(role: FastkoreRoleSummary, key: 'mcp' | 'cli' | 'webRead' | 'webRequests', enabled: boolean) {
+  async function savePermission(role: FastkoreRoleSummary, key: Exclude<keyof FastkoreRolePermissions, 'revision'>, enabled: boolean) {
     if (busy) return;
     setBusy(true); setError('');
     try {
       const saved = await request<FastkoreRolePermissions>('/api/admin/erp-roles/' + encodeURIComponent(role.installationId) + '/' + encodeURIComponent(role.id) + '/permissions', {
-        method: 'PATCH', body: JSON.stringify({ ...(role.permissions ?? { mcp: true, cli: true, webRead: false, webRequests: false, revision: 0 }), [key]: enabled }),
+        method: 'PATCH', body: JSON.stringify({ ...(role.permissions ?? { mcp: true, cli: true, readOnly: false, webRead: false, webRequests: false, revision: 0 }), [key]: enabled }),
       });
       setRoles(items => items?.map(item => item.id === role.id && item.installationId === role.installationId ? { ...item, permissions: saved } : item));
     } catch (e) { setError((e as Error).message); void request<FastkoreRoleSummary[]>('/api/admin/erp-roles').then(setRoles).catch(() => {}); }
@@ -62,11 +70,10 @@ export function ErpRolesPanel({ request }: { request: Request }) {
         <div className="erp-role-heading"><span className="erp-role-icon"><ShieldCheck size={25} aria-hidden="true" /></span>
           <div><h3>{role.name}</h3><p>{role.installationName}</p></div>
           <div className="erp-role-switches" aria-label={'Разрешения · ' + role.name}>
-            {([{ key: 'mcp', name: 'MCP', icon: Network }, { key: 'cli', name: 'CLI', icon: Terminal },
-              { key: 'webRead', name: 'Поиск и чтение', icon: Globe }, { key: 'webRequests', name: 'Внешние запросы', icon: Send }] as const).map(({ key, name, icon: Icon }) =>
+            {permissionColumns.map(column => <div className="erp-role-switch-column" key={column[0].key}>{column.map(({ key, name, icon: Icon }) =>
               <label className="erp-role-permission" key={key}><Icon size={16} aria-hidden="true" /><span>{name}</span>
                 <PermissionSwitch name={name + ' · ' + role.name} checked={role.permissions?.[key] ?? (key === 'mcp' || key === 'cli')}
-                  disabled={busy} onChange={enabled => void savePermission(role, key, enabled)} /></label>)}
+                  disabled={busy} onChange={enabled => void savePermission(role, key, enabled)} /></label>)}</div>)}
           </div>
           <button className="secondary" onClick={() => { setRemoving(role); setError(''); }} aria-label={'Удалить роль ' + role.name}><Trash2 size={16} />Удалить</button>
         </div>

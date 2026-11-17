@@ -18,6 +18,7 @@ export function runToolLabel(tool: string, context?: RunToolContext) {
   if (tool.startsWith('fastkore_cli_')) return `Fastkore CLI · ${context?.operation ?? 'выполнение команды'}`;
   if (tool.startsWith('fastkore_')) return `Fastkore MCP · ${tool.slice('fastkore_'.length)}`;
   if (tool === 'knowledge') return 'База знаний';
+  if (tool === 'my_instructions') return 'Мои инструкции';
   if (tool === 'internet_search') return 'Поиск в интернете';
   if (tool === 'internet_read') return 'Чтение страницы';
   if (tool === 'internet_request') return 'Внешний запрос';

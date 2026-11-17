@@ -4,6 +4,7 @@ import { DatabaseSync } from 'node:sqlite';
 import path from 'node:path';
 import type { Attachment, AuditEvent, Chat, ProjectAgentPolicy, Run, State } from '../shared/types.js';
 import { DEFAULT_AGENT_INSTRUCTIONS } from '../shared/agent-instructions.js';
+import type { PersonalInstructions, WorkNote } from '../shared/personal-instructions.js';
 import { migrateFastkoreChatBindings } from './fastkore-chat.js';
 import { parseFastkoreContext } from '../shared/fastkore-context.js';
 import { AuditJournal, auditPageSize, compareAudit, publishAudit, type AuditCursor, type NewAuditEvent } from './audit-journal.js';
@@ -60,6 +61,7 @@ export class Store {
       this.db.exec('CREATE TABLE IF NOT EXISTS external_identities (installation_id TEXT NOT NULL, external_user_id TEXT NOT NULL, user_id TEXT NOT NULL, PRIMARY KEY(installation_id,external_user_id));');
       this.db.exec('CREATE TABLE IF NOT EXISTS launch_ticket_uses (hash TEXT PRIMARY KEY, expires_at INTEGER NOT NULL);');
       this.db.exec('CREATE TABLE IF NOT EXISTS chat_file_deletions (project_id TEXT NOT NULL, file_id TEXT NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(project_id,file_id));');
+      this.db.exec('CREATE TABLE IF NOT EXISTS personal_instructions (user_id TEXT PRIMARY KEY, revision INTEGER NOT NULL, payload TEXT NOT NULL CHECK(json_valid(payload)));');
       this.detailedAudit = new AuditJournal(this.db);
       for (const table of tables) this.db.exec(`CREATE TABLE IF NOT EXISTS ${table} (id TEXT PRIMARY KEY, parent TEXT NOT NULL, position INTEGER NOT NULL, payload TEXT NOT NULL CHECK(json_valid(payload))); CREATE INDEX IF NOT EXISTS ${table}_parent ON ${table}(parent,position);`);
       this.db.exec('PRAGMA user_version=2;');
@@ -270,6 +272,33 @@ export class Store {
   pendingChatFileDeletions(): ChatFileDeletion[] {
     const rows = this.db.prepare('SELECT project_id,payload FROM chat_file_deletions').all() as { project_id: string; payload: string }[];
     return rows.map(row => ({ projectId: row.project_id, file: JSON.parse(row.payload) }));
+  }
+  personalInstructions(userId: string): PersonalInstructions {
+    const row = this.db.prepare('SELECT revision,payload FROM personal_instructions WHERE user_id=?').get(userId) as
+      { revision: number; payload: string } | undefined;
+    return row ? { ...JSON.parse(row.payload), revision: row.revision } : { text: '', autoInstructions: true, notes: [], revision: 0 };
+  }
+  personalInstructionAuthors() {
+    return (this.db.prepare('SELECT user_id FROM personal_instructions').all() as { user_id: string }[]).map(row => row.user_id);
+  }
+  sharedInstructionNotes(userId: string, roleId: string | undefined): { authorId: string; note: WorkNote }[] {
+    if (!roleId) return [];
+    const rows = this.db.prepare(`
+      SELECT user_id, note.value AS payload
+      FROM personal_instructions, json_each(personal_instructions.payload, '$.notes') AS note
+      WHERE user_id <> ? AND (json_extract(note.value, '$.common') = 1 OR json_extract(note.value, '$.roleId') = ?)
+      ORDER BY user_id, note.key
+    `).all(userId, roleId) as { user_id: string; payload: string }[];
+    return rows.map(row => ({ authorId: row.user_id, note: JSON.parse(row.payload) }));
+  }
+  savePersonalInstructions(userId: string, value: PersonalInstructions): PersonalInstructions {
+    const { revision, ...document } = value;
+    const payload = JSON.stringify(document);
+    const saved = revision === 0
+      ? this.db.prepare('INSERT OR IGNORE INTO personal_instructions(user_id,revision,payload) VALUES(?,1,?)').run(userId, payload)
+      : this.db.prepare('UPDATE personal_instructions SET revision=revision+1,payload=? WHERE user_id=? AND revision=?').run(payload, userId, revision);
+    if (!saved.changes) throw new BridgeError('Инструкции изменились. Откройте актуальную версию и повторите правку.', 409);
+    return { ...document, revision: revision + 1 };
   }
   finishChatFileDeletion(projectId: string, fileId: string) {
     this.db.prepare('DELETE FROM chat_file_deletions WHERE project_id=? AND file_id=?').run(projectId, fileId);

@@ -1,8 +1,10 @@
-import { useEffect, useId, useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent } from 'react';
+import { useEffect, useId, useImperativeHandle, useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type Ref } from 'react';
 import { createPortal } from 'react-dom';
 import { Check, ChevronDown } from 'lucide-react';
+import { interfaceScale } from './interface-scale';
 
 export interface SelectOption { value: string; label: string; disabled?: boolean; detail?: string; detailTitle?: string }
+export interface SelectHandle { open(): void }
 interface SelectProps {
   options: SelectOption[];
   value: string;
@@ -14,9 +16,10 @@ interface SelectProps {
   title?: string;
   disabled?: boolean;
   fitContent?: boolean;
+  ref?: Ref<SelectHandle>;
 }
 
-export function Select({ options, value, onChange, id, label, className = '', placeholder, title, disabled, fitContent }: SelectProps) {
+export function Select({ options, value, onChange, id, label, className = '', placeholder, title, disabled, fitContent, ref }: SelectProps) {
   const trigger = useRef<HTMLButtonElement>(null);
   const menu = useRef<HTMLDivElement>(null);
   const listId = useId();
@@ -32,6 +35,13 @@ export function Select({ options, value, onChange, id, label, className = '', pl
     setActive(enabled.includes(index) ? index : enabled[0] ?? -1);
     setOpen(true);
   }
+  useImperativeHandle(ref, () => ({
+    open() {
+      if (disabled || !enabled.length) return;
+      trigger.current?.focus();
+      reveal();
+    },
+  }));
   function choose(index: number) {
     const option = options[index];
     if (!option || option.disabled) return;
@@ -76,16 +86,18 @@ export function Select({ options, value, onChange, id, label, className = '', pl
     const measure = (event?: Event) => {
       if (event?.target === menu.current) return;
       const rect = button.getBoundingClientRect();
-      const width = Math.min(Math.max(fitContent ? 340 : 180, rect.width), innerWidth - 16);
+      const scale = interfaceScale(button);
+      const viewportWidth = innerWidth / scale, viewportHeight = innerHeight / scale;
+      const width = Math.min(Math.max(fitContent ? 340 : 180, rect.width / scale), viewportWidth - 16);
       const contentHeight = menu.current ? menu.current.scrollHeight + 2 : options.length * 36 + 10;
       const idealHeight = fitContent ? contentHeight : Math.min(270, contentHeight);
-      const below = innerHeight - rect.bottom - 14, above = rect.top - 14;
+      const below = viewportHeight - rect.bottom / scale - 14, above = rect.top / scale - 14;
       const opensUp = idealHeight > below && above > below;
       setPlacement({
         width,
-        left: Math.max(8, Math.min(rect.left, innerWidth - width - 8)),
+        left: Math.max(8, Math.min(rect.left / scale, viewportWidth - width - 8)),
         maxHeight: Math.max(0, Math.min(idealHeight, opensUp ? above : below)),
-        ...(opensUp ? { bottom: innerHeight - rect.top + 6 } : { top: rect.bottom + 6 }),
+        ...(opensUp ? { bottom: viewportHeight - rect.top / scale + 6 } : { top: rect.bottom / scale + 6 }),
       });
     };
     measure();

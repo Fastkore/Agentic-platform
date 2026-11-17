@@ -1,7 +1,9 @@
 import { useEffect, useId, useRef, type ReactNode } from 'react';
-import { Settings, X } from 'lucide-react';
+import { ArrowLeft, Settings, X } from 'lucide-react';
 
-export function WorkspaceDialog({ title, className, close, children }: { title: string; className: string; close: () => void; children: ReactNode }) {
+export function WorkspaceDialog({ title, className, close, back, children }: {
+  title: string; className: string; close: () => void; back?: () => void; children: ReactNode;
+}) {
   const ref = useRef<HTMLDialogElement>(null);
   const heading = useId();
   useEffect(() => {
@@ -20,7 +22,15 @@ export function WorkspaceDialog({ title, className, close, children }: { title: 
     const rect = e.currentTarget.getBoundingClientRect();
     if (e.clientX < rect.left || e.clientX > rect.right || e.clientY < rect.top || e.clientY > rect.bottom) close();
   }}>
-    <header><h2 id={heading}>{className === 'workspace-settings' && <Settings size={23} aria-hidden="true" />}{title}</h2><button type="button" className="workspace-icon" onClick={close} aria-label="Закрыть"><X size={19} /></button></header>
+    <header>
+      <div className="workspace-dialog-heading">
+        {back && <button type="button" className="workspace-icon" onClick={back} title="К разделам настроек" aria-label="К разделам настроек">
+          <ArrowLeft size={19} aria-hidden="true" />
+        </button>}
+        <h2 id={heading}>{className.split(' ').includes('workspace-settings') && <Settings size={23} aria-hidden="true" />}{title}</h2>
+      </div>
+      <button type="button" className="workspace-icon" onClick={close} aria-label="Закрыть"><X size={19} /></button>
+    </header>
     {children}
   </dialog>;
 }

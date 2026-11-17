@@ -86,12 +86,13 @@ test('provider lanes run different chats concurrently but preserve FIFO across m
     inspect: async (_path, _signal, model) => ({ path: process.execPath, version: 'fake', authentication: 'chatgpt', status: '',
       accountId: model?.startsWith('glm') ? 'glm-account' : 'google-account' }),
     run: async (request, _event, signal) => {
-      started.push(request.prompt);
+      const question = request.prompt.split('\n\n').at(-1)!;
+      started.push(question);
       await new Promise<void>((resolve, reject) => {
-        releases.set(request.prompt, resolve);
+        releases.set(question, resolve);
         signal.addEventListener('abort', () => reject(Error('cancelled')), { once: true });
       });
-      return { response: request.prompt };
+      return { response: question };
     },
   };
   const workspace = new Workspace(store, fake);

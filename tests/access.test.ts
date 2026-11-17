@@ -11,6 +11,7 @@ import { CodexClient } from '../server/codex.js';
 import { createApp } from '../server/app.js';
 import { csrfFor } from '../server/fastkore.js';
 import type { TranscribeDictation } from '../server/dictation.js';
+import type { FastkoreRole } from '../shared/types.js';
 import { erpBrowser } from './erp-browser.js';
 
 const password = 'Test-password-for-office-2026';
@@ -32,8 +33,8 @@ async function fixture(transcribeDictation?: TranscribeDictation) {
   const setup = await req('POST', '/api/auth/setup', boot.token, { username: 'boss', name: 'Руководитель', password }); assert.equal(setup.statusCode, 200);
   const admin = setup.json().token as string, adminId = setup.json().user.id;
   const enter = await erp.pair(app, admin);
-  async function employee(username: string) {
-    const { user, cookie } = await enter(username);
+  async function employee(username: string, roles?: FastkoreRole[]) {
+    const { user, cookie } = await enter(username, undefined, roles);
     assert.equal((await req('PATCH', '/api/users/' + user.id, admin, { roleId: 'employee' })).statusCode, 200);
     return { id: user.id, token: cookie };
   }
@@ -51,10 +52,19 @@ test('migration keeps session IDs, assigns private legacy chats to boss and reti
     const stored = await readFile(f.store.file, 'utf8'); assert.ok(!stored.includes(password)); assert.ok(!stored.includes(f.admin));
   } finally { await f.app.close(); }
 });
-test('employees can create a managed project without opening access to server folders or other employees', async () => {
+test('ERP role grants control creating an isolated project and can be changed by the administrator', async () => {
   const f = await fixture();
   try {
-    const creator = await f.employee('creator'), colleague = await f.employee('colleague');
+    const leader = { id: randomUUID(), name: 'Руководитель' };
+    const systemAdmin = { id: randomUUID(), name: 'Системный администратор' };
+    const teamRole = { id: randomUUID(), name: 'Отдел внедрения' };
+    const creator = await f.employee('creator', [leader]), colleague = await f.employee('colleague', [teamRole]);
+    const it = await f.employee('it', [systemAdmin]);
+    for (const token of [f.admin, creator.token, it.token]) {
+      assert.equal((await f.req('GET', '/api/status', token)).json().canCreateProject, true);
+    }
+    assert.equal((await f.req('GET', '/api/status', colleague.token)).json().canCreateProject, false);
+    assert.equal((await f.req('POST', '/api/projects', colleague.token, { name: 'Запрещено' })).statusCode, 403);
     const response = await f.req('POST', '/api/projects', creator.token, { name: 'Новый проект' });
     assert.equal(response.statusCode, 201);
     const project = response.json();
@@ -64,6 +74,31 @@ test('employees can create a managed project without opening access to server fo
     assert.equal((await f.req('POST', '/api/projects/' + project.id + '/chats', creator.token, {})).statusCode, 201);
     assert.equal((await f.req('GET', '/api/projects/' + project.id + '/chats', colleague.token)).statusCode, 404);
     assert.equal((await f.req('POST', '/api/projects', creator.token, { name: 'Существующая папка', directory: f.root })).statusCode, 403);
+    const installation = f.store.state.sso!.installations![0].id;
+    const setGrant = (role: FastkoreRole, createProjects: boolean) => f.req('PATCH',
+      `/api/admin/erp-roles/${installation}/${role.id}/permissions`, f.admin, { mcp: true, cli: true, createProjects, revision: 0 });
+    assert.equal((await setGrant(leader, false)).statusCode, 200);
+    assert.equal((await f.req('POST', '/api/projects', creator.token, { name: 'Запрещено после отзыва' })).statusCode, 403);
+    assert.equal((await setGrant(teamRole, true)).statusCode, 200);
+    assert.equal((await f.req('GET', '/api/status', colleague.token)).json().canCreateProject, true);
+    assert.equal((await f.req('POST', '/api/projects', colleague.token, { name: 'После выдачи' })).statusCode, 201);
+  } finally { await f.app.close(); }
+});
+
+test('renaming a project updates its display name and preserves its directory and chats', async () => {
+  const f = await fixture();
+  try {
+    const employee = await f.employee('colleague');
+    const route = '/api/projects/' + f.project.id;
+    const { directory } = f.project;
+    assert.equal((await f.req('PATCH', route, employee.token, { name: 'Другое имя' })).statusCode, 403);
+    assert.equal((await f.req('PATCH', route, f.admin, { name: '   ' })).statusCode, 400);
+    const updated = await f.req('PATCH', route, f.admin, { name: ' Новое имя ' });
+    assert.equal(updated.statusCode, 200, updated.body);
+    assert.deepEqual(updated.json(), { name: 'Новое имя' });
+    assert.equal(f.workspace.project(f.project.id).directory, directory);
+    assert.equal((await f.req('GET', route + '/chats/' + f.legacy.id, f.admin)).statusCode, 200);
+    assert.equal((await f.req('GET', '/api/projects', f.admin)).json()[0].name, 'Новое имя');
   } finally { await f.app.close(); }
 });
 

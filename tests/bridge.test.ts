@@ -7,7 +7,7 @@ import path from 'node:path';
 import { zipSync } from 'fflate';
 import { Store, redact } from '../server/store.js';
 import { Workspace } from '../server/workspace.js';
-import { authentication, buildArguments, CodexClient, type CodexRunner } from '../server/codex.js';
+import { authentication, buildArguments, CodexClient, type CodexRequest, type CodexRunner } from '../server/codex.js';
 import { createApp } from '../server/app.js';
 import { buildContext, documentText, uploadAttachment } from '../server/documents.js';
 
@@ -108,6 +108,70 @@ test('per-chat and default models reach the process, persist after reload and pr
     const inherited = await workspace.send(project.id, other.id, 'Наследование', []); await done(workspace, inherited.id); assert.equal(inherited.model, 'test-a');
   } finally { await workspace.shutdown(); }
 });
+test('a new executor receives the recent conversation once and stops at changes in scope', async () => {
+  const root = await temp();
+  const calls: CodexRequest[] = [];
+  const codexModel = 'codex/test-model', glmModel = 'glm/test-model';
+  const runner: CodexRunner = {
+    isolated: true,
+    inspect: async (_cliPath, _signal, model) => ({
+      path: '', version: 'test', status: '', authentication: model === glmModel ? 'glm' : 'chatgpt',
+      provider: model === glmModel ? 'glm' : 'codex', accountId: model === glmModel ? 'glm:active-key' : 'codex:active-key',
+    }),
+    listModels: async () => ({ source: 'combined', fetchedAt: new Date().toISOString(),
+      models: [codexModel, glmModel].map(id => ({ id, name: id, description: '', isDefault: id === codexModel })) }),
+    async run(request, onEvent) {
+      calls.push(request);
+      const sessionId = request.sessionId ?? (request.model === glmModel ? '11111111-1111-4111-8111-111111111111' : '22222222-2222-4222-8222-222222222222');
+      await onEvent({ kind: 'session', text: sessionId });
+      if (request.prompt.endsWith('Сбой первого запуска')) throw Error('Пробный отказ исполнителя');
+      return { sessionId, response: 'Ответ ' + calls.length };
+    },
+  };
+  const workspace = new Workspace(new Store(root), runner);
+  try {
+    const project = await workspace.createProject('Проект', () => 'admin');
+    const chat = await workspace.addChat(project.id, undefined, undefined, 'admin');
+    const send = async (text: string, status = 'complete') => {
+      const run = await workspace.send(project.id, chat.id, text, [], undefined, undefined, undefined, { id: 'admin', name: 'Тест' });
+      const result = await done(workspace, run.id);
+      assert.equal(result.status, status, result.error);
+      return calls.at(-1)!;
+    };
+    await workspace.changeChatModel(project.id, chat.id, codexModel);
+    await send('Первый вопрос');
+    await send('Второй вопрос');
+    assert.ok(calls[1].sessionId);
+    // Simulate history persisted by the previous release.
+    chat.sessionProvider = undefined;
+    for (const message of chat.messages) delete message.historyScope;
+    await workspace.changeChatModel(project.id, chat.id, glmModel);
+    const failed = await send('Сбой первого запуска', 'error');
+    assert.equal(failed.sessionId, undefined);
+    assert.match(failed.prompt, /Первый вопрос.*Ответ 1.*Второй вопрос.*Ответ 2/s);
+    const replayed = await send('Продолжи на новой модели');
+    assert.equal(replayed.sessionId, undefined);
+    assert.match(replayed.prompt, /Первый вопрос.*Ответ 1.*Второй вопрос.*Ответ 2/s);
+    assert.doesNotMatch(replayed.prompt, /Сбой первого запуска/);
+    assert.equal(replayed.prompt.match(/Продолжи на новой модели/g)?.length, 1);
+    const resumed = await send('Дальше в этой сессии');
+    assert.ok(resumed.sessionId);
+    assert.doesNotMatch(resumed.prompt, /chat_history/);
+
+    await workspace.changeChatModel(project.id, chat.id, codexModel);
+    const returned = await send('Вернёмся на Codex');
+    assert.equal(returned.sessionId, undefined);
+    assert.match(returned.prompt, /Первый вопрос.*Дальше в этой сессии/s);
+
+    await workspace.settings({ agentInstructions: 'Обновлённые правила' });
+    const newScope = await send('Новая область');
+    assert.doesNotMatch(newScope.prompt, /chat_history/);
+    await workspace.changeChatModel(project.id, chat.id, glmModel);
+    const currentScope = await send('Продолжи новую область');
+    assert.match(currentScope.prompt, /Новая область.*Ответ 7/s);
+    assert.doesNotMatch(currentScope.prompt, /Первый вопрос|Дальше в этой сессии/);
+  } finally { await workspace.shutdown(); }
+});
 test('HTTP model selection validates catalog, changes chat and handles per-request model override', async () => {
   const { workspace, project, chat } = await fixture(), { app, headers } = await authorizedApp(workspace);
   try {
@@ -196,6 +260,84 @@ test('API and browser share history; authorization, origins, validation, isolati
     assert.ok(project.attachments.some(a => a.id === attachment.id));
     assert.equal((await app.inject({ method: 'POST', url: route, headers, payload: { text: 'test', attachmentIds: ['does-not-exist'] } })).statusCode, 404);
   } finally { await app.close(); }
+});
+
+test('personal instructions persist per employee and agent edits follow the current settings and chat scope', async () => {
+  const root = await temp();
+  const store = new Store(root);
+  const runner: CodexRunner = {
+    async inspect() { return { path: process.execPath, version: 'test', authentication: 'chatgpt', status: '' }; },
+    async run(request, _onEvent, signal) {
+      if (request.prompt.includes('Общий чат')) {
+        assert.ok(!request.tools?.definitions.some(tool => tool.name === 'my_instructions'));
+        assert.doesNotMatch(request.prompt, /Сверяй итоги/);
+        return { response: 'OK' };
+      }
+      assert.match(request.prompt, /Сверяй итоги/);
+      const call = (args: unknown) => request.tools!.call('my_instructions', args, signal);
+      const append = await call({ action: 'append', text: 'Отмечай источник.' });
+      const remember = await call({ action: 'remember', title: 'Проверка отчёта', text: 'Перед выдачей отчёта сверь контрольный итог.', scope: 'project' });
+      if (request.prompt.includes('Запиши в мою инструкцию')) {
+        assert.equal(append.success, true, append.text);
+        assert.equal(remember.success, true, remember.text);
+        const list = JSON.parse((await call({ action: 'read' })).text);
+        assert.equal(list.notes.length, 1);
+        const note = await call({ action: 'read', noteId: list.notes[0].id });
+        assert.match(note.text, /контрольный итог/);
+      } else {
+        assert.equal(append.success, false);
+        assert.equal(remember.success, false);
+      }
+      return { response: 'OK' };
+    },
+  };
+  const workspace = new Workspace(store, runner);
+  await workspace.settings({ cliPath: process.execPath });
+  const { app, headers } = await authorizedApp(workspace);
+  const url = '/api/me/instructions';
+  const get = async () => (await app.inject({ url, headers })).json();
+  const put = (payload: unknown) => app.inject({ method: 'PUT', url, headers, payload });
+  let userId = '';
+  try {
+    assert.equal((await app.inject(url)).statusCode, 401);
+    const first = await get();
+    assert.deepEqual(first, { text: '', autoInstructions: true, notes: [], revision: 0 });
+    const manual = { ...first, text: 'Сверяй итоги.' };
+    assert.equal((await put(manual)).statusCode, 200);
+    const beforeChat = await get();
+    const other = { username: 'other-admin', name: 'Other', password: 'Test-admin-password-other', role: 'admin' };
+    assert.equal((await app.inject({ method: 'POST', url: '/api/users', headers, payload: other })).statusCode, 201);
+    const login = await app.inject({ method: 'POST', url: '/api/auth/login', payload: { username: other.username, password: other.password } });
+    assert.equal(login.statusCode, 200);
+    assert.deepEqual((await app.inject({ url, headers: { authorization: 'Bearer ' + login.json().token } })).json(), first);
+
+    userId = (await app.inject({ url: '/api/auth/me', headers })).json().user.id;
+    const project = await workspace.addProject(await temp());
+    const chat = await workspace.addChat(project.id, undefined, undefined, userId);
+    const send = async (text: string) => {
+      const sent = await app.inject({ method: 'POST', url: `/api/projects/${project.id}/chats/${chat.id}/messages`, headers, payload: { text } });
+      assert.equal(sent.statusCode, 202, sent.body);
+      const run = await done(workspace, sent.json().id);
+      assert.equal(run.status, 'complete', run.error);
+    };
+    await send('Запиши в мою инструкцию, что нужно отмечать источник.');
+    const afterChat = await get();
+    assert.match(afterChat.text, /Отмечай источник/);
+    assert.equal(afterChat.notes[0].scope.id, project.id);
+    assert.equal((await put(beforeChat)).statusCode, 409);
+    const notes = afterChat.notes.map(({ id, title, text }: { id: string; title: string; text: string }) => ({ id, title, text }));
+    assert.equal((await put({ ...afterChat, notes, autoInstructions: false })).statusCode, 200);
+    await send('Проверь отчёт.');
+    chat.visibility = 'project';
+    await send('Общий чат');
+  } finally { await app.close(); }
+  const reopened = new Store(root);
+  try {
+    const restored = reopened.personalInstructions(userId);
+    assert.equal(restored.autoInstructions, false);
+    assert.equal(restored.notes.length, 1);
+    assert.match(restored.text, /Отмечай источник/);
+  } finally { await reopened.close(); }
 });
 test('stop kills actual CLI and child process; subsequent job runs', async () => {
   const { workspace, project, chat, folder } = await fixture();

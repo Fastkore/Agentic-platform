@@ -98,9 +98,8 @@ export class CorporateAccess {
   tools(profile: AgentProfile, project?: Project) {
     const tools = profile.toolIds ?? agentToolIds;
     const policy = project?.agentPolicy;
-    if (!policy) return tools;
     const connection = this.connection(profile, project);
-    return tools.filter(id => connection?.toolIds.includes(id));
+    return agentToolIds.filter(id => id === 'fastkore' || tools.includes(id) && (!policy || connection?.toolIds.includes(id)));
   }
   list(user: User, project?: Project): AgentSummary[] {
     return this.data.profiles.filter(profile => this.canUse(user, profile) && (!project?.agentPolicy || this.connection(profile, project)))

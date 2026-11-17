@@ -14,10 +14,15 @@ const definitions: CodexToolDefinition[] = [
     } } },
 ];
 
-export function withInternetTools(other: CodexTools | undefined, permissions: () => { read: boolean; requests: boolean },
+export function withInternetTools(other: CodexTools | undefined, permissions: () => { search: boolean; read: boolean; requests: boolean },
   authorize: () => void, search: (query: string, signal: AbortSignal) => Promise<CodexToolResult>,
   http: (input: Parameters<typeof publicHttp>[0], signal: AbortSignal, authorize: () => void) => Promise<PublicHttpResult> = publicHttp): CodexTools | undefined {
-  const allowed = (name: string) => name === 'internet_request' ? permissions().requests : permissions().read;
+  const allowed = (name: string) => {
+    const grants = permissions();
+    if (name === 'internet_search') return grants.search;
+    if (name === 'internet_read') return grants.read;
+    return grants.requests;
+  };
   const available = definitions.filter(tool => allowed(tool.name));
   if (!available.length) return other;
   return { definitions: [...(other?.definitions ?? []), ...available], async call(name, raw, signal) {

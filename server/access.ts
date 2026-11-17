@@ -1,6 +1,6 @@
 import { randomBytes, randomUUID, createHash, scrypt, timingSafeEqual } from 'node:crypto';
 import { promisify } from 'node:util';
-import type { Chat, ChatSummary, Credential, Security, StoredFastkoreInstallation, User, UserRecord } from '../shared/types.js';
+import type { Chat, ChatSummary, Credential, InterfaceScale, Security, StoredFastkoreInstallation, User, UserRecord } from '../shared/types.js';
 import { BridgeError, type AccessDraft } from './store.js';
 import type { Workspace } from './workspace.js';
 import type { ErpDelegation, TicketIdentity } from './fastkore.js';
@@ -99,6 +99,13 @@ export class Access {
     if (!credential || credential.kind !== 'session' || !user || (credential.expiresAt && Date.parse(credential.expiresAt) <= Date.now())
       || (credential.source === 'fastkore' ? !this.externalCredentialValid?.(credential) : user.role !== 'admin')) throw new BridgeError('Войдите под своей учётной записью.', 401);
     return { user, credential };
+  }
+  changeInterfaceScale(current: () => Principal, interfaceScale: InterfaceScale) {
+    return this.changeAccess(draft => {
+      const { user } = current();
+      draft.security!.users.find(item => item.id === user.id)!.interfaceScale = interfaceScale;
+      return { interfaceScale };
+    });
   }
   setChatPinned(pinned: boolean, authorize: () => { actor: User; chat: Chat }) {
     return this.changeAccess(draft => {
@@ -232,8 +239,13 @@ export class Access {
     const run = this.workspace.getRun(id); if (run.projectId && run.chatId) this.chat(user, run.projectId, run.chatId); else this.admin(user); return run;
   }
   viewChat(chat: Chat) {
-    const { specialistSessions, knowledgeRevision, fastkoreBinding, fastkoreHistory, titleCustomized, cliWorkspaceProjectId, ...view } = chat;
-    return { ...view, linkedToFastkore: fastkoreBinding ? true as const : undefined, ownerName: this.data.users.find(u => u.id === chat.ownerId)?.name ?? 'Пользователь', messages: chat.messages.map(m => m.role === 'user' ? { ...m, authorId: m.authorId ?? chat.ownerId, authorName: this.data.users.find(u => u.id === (m.authorId ?? chat.ownerId))?.name ?? 'Пользователь' } : m) };
+    const { specialistSessions, knowledgeRevision, fastkoreBinding, fastkoreHistory, titleCustomized, cliWorkspaceProjectId, sessionProvider, historyReplayPending, legacyHistory, ...view } = chat;
+    const messages = chat.messages.map(({ historyScope, ...message }) => {
+      if (message.role === 'assistant') return message;
+      const authorId = message.authorId ?? chat.ownerId;
+      return { ...message, authorId, authorName: this.data.users.find(user => user.id === authorId)?.name ?? 'Пользователь' };
+    });
+    return { ...view, linkedToFastkore: fastkoreBinding ? true as const : undefined, ownerName: this.data.users.find(u => u.id === chat.ownerId)?.name ?? 'Пользователь', messages };
   }
   chatSummary({ id, title, updatedAt, messages, ownerId, visibility, fastkoreBinding }: Chat): ChatSummary {
     return { id, title, updatedAt, messageCount: messages.length, ownerId, ownerName: this.data.users.find(user => user.id === ownerId)?.name ?? 'Пользователь', visibility, linkedToFastkore: fastkoreBinding ? true : undefined };
@@ -329,6 +341,9 @@ export class Access {
     this.admin(actor); return this.change(() => {
       const chat = this.editChat(actor, projectId, chatId);
       if (chat.fastkoreBinding && visibility === 'project') throw new BridgeError('Связанный чат Fastkore доступен его автору и руководителям.', 409);
+      if (chat.visibility !== 'project' && visibility === 'project' && this.workspace.activeRuns.some(run => run.projectId === projectId && run.chatId === chatId)) {
+        throw new BridgeError('Дождитесь ответа, чтобы поделиться чатом.', 409);
+      }
       chat.visibility = visibility; this.audit(actor.id, `chat.${visibility}`, chatId); return this.viewChat(chat);
     });
   }

@@ -9,7 +9,7 @@ const labels: Record<string, string> = {
   setup: 'Настройка руководителя', 'user.create': 'Создан пользователь', 'sso.user.create': 'Создан пользователь',
   'sso.login': 'Вход через Fastkore', 'sso.identity.link': 'Связана учётная запись Fastkore',
   'user.update': 'Изменён пользователь', 'user.projects': 'Изменён доступ к проектам',
-  'project.members': 'Изменены участники проекта', 'project.agents': 'Изменены агенты проекта',
+  'project.members': 'Изменены участники проекта', 'project.agents': 'Изменены специалисты проекта', 'project.rename': 'Проект переименован',
   'role.update': 'Изменена рабочая роль', 'profile.update': 'Изменён агент', 'dataset.update': 'Изменён источник',
   'chat.private': 'Чат сделан личным', 'chat.project': 'Чат открыт проекту',
   'chat.archive': 'Чат перемещён в архив', 'chat.restore': 'Чат восстановлен из архива', 'chat.delete': 'Чат удалён',

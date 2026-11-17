@@ -1,0 +1,173 @@
+PROJECT SOURCES — КОНТРАКТЫ И КАРТА РЕАЛИЗАЦИИ (ЭТАП A)
+Историческая карта реализации. Актуальный объём упрощения задан в LIBRARY-SPEC.txt 2.0, её требования имеют приоритет.
+Редакция 1 · 17 ноября 2026 года · к ТЗ PROJECT-SOURCES-SPEC.txt 1.0
+Документ исполнителя. Фиксирует решения этапа A; при расхождении с ТЗ приоритет у ТЗ.
+
+1. ОБСЛЕДОВАНИЕ (A1, A2)
+
+Инструкции проекта: AGENTS.md в рабочем дереве нет. Прочитаны README.md, AGENT-PLATFORM-OVERVIEW.md,
+AGENT-PLATFORM-MARKETING.md, docs/IMPLEMENTATION-PLAN.txt, docs/CODEX-WORKER.md, docs/Мои инструкции.txt.
+Базовый коммит: 4bcd580 (main). Рабочее дерево содержит незакоммиченные изменения других задач (перечень
+в журнале TODO). Пересечения с этой задачей: server/workspace.ts, server/app.ts, shared/types.ts,
+server/corporate.ts, client/main.tsx, README.md, API.md, docs/IMPLEMENTATION-PLAN.txt. Правила:
+- новый код размещается в новых файлах (server/sources/*, shared/sources.ts, client/Source*.tsx);
+- в чужие изменённые файлы вносятся только точечные вставки подключения (импорт, регистрация маршрутов,
+  обёртка инструментов, scope задания); существующие строки не переписываются;
+- коммит исполнителя (если пользователь его разрешит) включает только свои файлы и свои хунки.
+
+Сверка baseline ТЗ (раздел 2) с кодом — подтверждено:
+- file-storage.ts: S3 вложений, ключ projects/<projectId>/<fileId>, чтение целиком, 20 МиБ. Переключатель
+  local/s3 — settings.fileStorageProvider. Новая подсистема его не использует.
+- knowledge.ts: knowledge.sqlite, BLOB-содержимое, FTS5, фрагменты 4000 символов, 500 файлов/256 МиБ.
+- knowledge-tools.ts подключается в workspace.executeChat только при isolatedCodex (отдельный исполнитель).
+  Те же CodexTools передаются всем провайдерам (codex/gemini/antigravity/glm) через CodexRunner; GLM и Gemini
+  исполняются через тот же runWithTools в исполнителе. Отдельных путей инструментов у провайдеров нет.
+- documents.ts attachmentName() отбрасывает каталоги — для относительных путей не используется.
+- upload-admission.ts: 20 МиБ, один запрос на пользователя, 60 с — новый протокол её не использует.
+- corporate.ts unavailable(): глобальная блокировка при наличии restricted Dataset и для профилей с datasetIds.
+  Блокировка сохраняется (см. раздел 7).
+- ProjectAgentPolicy (project.agentPolicy) — каноническое подключение специалиста к проекту и его инструментов.
+- worker-files.ts/stageWorkerFiles: вложения и файлы библиотеки копируются в input задания. Источники в этот
+  маршрут не попадают: инструменты источников читают объекты на стороне платформы, а не исполнителя.
+- История/события: answer.text обновляется по message-delta и сохраняется (saveRun) — пользователь видит
+  поток. run.tool и run.toolContext публикуются в /api/runs/:id и /api/status. Аргументы и результаты
+  инструментов в Run/Message не сохраняются.
+- Окружение исполнителя: в контейнере проверки Node 24.22, Linux x64; Docker/MinIO недоступны. Для
+  S3-интеграционных тестов используется S3-совместимый эмулятор moto server (не MinIO) — ограничение
+  записывается в отчёт; проверка на MinIO остаётся пунктом R2/B7 на стенде.
+
+2. КАНОНИЧЕСКАЯ МОДЕЛЬ (A3)
+
+Отдельная база <data>/sources.sqlite (WAL, synchronous=FULL, 0600), модуль server/sources/registry.ts.
+Причина: основной Store хранит corporate/settings как JSON в metadata и уже изменяется другими задачами;
+новые сущности требуют внешних ключей, уникальностей и FTS. Закрытый текст индекса физически отделён от
+общей истории и общей базы знаний.
+
+Таблицы (миграции PRAGMA user_version, каждая в транзакции, повторяемая, с проверкой версии):
+sources(id PK, name, description, kind code|documents|prices|mixed, classification shared|restricted,
+  quota_bytes, policy_revision, output_policy explanation_only|excerpts_allowed, created_by, created_at,
+  archived_at)
+source_managers(source_id FK, user_id, actions JSON, PK(source_id,user_id))
+snapshots(id PK, source_id FK, label, created_by, uploaded_at, valid_from, valid_to, state
+  uploading|verifying|indexing|ready|failed|cancelled|archived, manifest_hash, total_files, total_bytes,
+  indexed_files, unsupported_files, extraction_errors, index_generation, coverage_accepted_by, exclusions JSON,
+  precheck JSON, metadata_revision, UNIQUE(source_id,label))
+blobs(id PK, source_id FK, object_key UNIQUE, sha256, size, state pending|verified|orphan|deleted,
+  created_at); повторное использование только внутри source_id, поиск по (source_id,sha256,size,state=verified)
+snapshot_files(snapshot_id FK, file_id, path, path_key UNIQUE(snapshot_id,path_key), blob_id FK, sha256,
+  size, media_type, encoding, extraction_state, line_count, language, PK(snapshot_id,file_id))
+  path_key = NFC + lower-case — обнаружение коллизий регистра/нормализации.
+upload_sessions(id PK, source_id FK, snapshot_id FK, actor_id, idempotency_key, request_hash, state,
+  expires_at, reserved_bytes, base_snapshot_id, manifest_pages, manifest_complete, failure_code,
+  UNIQUE(actor_id,idempotency_key))
+upload_files(upload_id FK, file_id, path, path_key, size, sha256, state pending|uploading|verified|reused|
+  failed, blob_id, s3_upload_id, parts_total, UNIQUE(upload_id,path_key))
+upload_parts(upload_id, file_id, part, size, sha256, etag, PK(upload_id,file_id,part))
+index_jobs(snapshot_id PK, generation, state, lease_owner, lease_until, attempts, last_error)
+chunks — FTS5 (tokenize trigram): snapshot_id, generation, file_id, start_line, text
+symbols(snapshot_id, generation, file_id, name, kind, line, language)
+bindings(id PK, project_id, source_id FK, selector pinned|effective_date, snapshot_id, approved JSON,
+  allowed_actions JSON, output_policy, enabled, revision, UNIQUE(project_id,source_id))
+grants(project_id, profile_id, binding_id FK, enabled, max_output_policy, PK(project_id,profile_id,binding_id))
+bundles(id PK, project_id, label, revision, items JSON binding→snapshot, state active|archived, created_by,
+  created_at); не более одного active на проект (частичный уникальный индекс)
+dependencies(snapshot_id FK, platform_snapshot_id FK, kind, confirmed_by, confirmed_at, PK(snapshot_id,
+  platform_snapshot_id))
+project_settings(project_id PK, business_time_zone, current_date_rule 0|1, revision)
+chat_pins(chat_id PK, project_id, bundle_id, bundle_revision, scope_hash, effective_date, pinned_at)
+run_scopes(run_id PK, project_id, actor_id, profile_id, scope JSON, policy_revisions JSON, created_at)
+run_reads(run_id, binding_id, file_id, ranges, bytes) — учёт лимитов и проверки публикации, внутренний.
+audit — AuditJournal на sources.sqlite (без текста исходников и запросов).
+
+Единые правила (без дублирования):
+- «Специалист подключён к проекту» — только project.agentPolicy (как сейчас). Grant действует, лишь если
+  профиль подключён (или у проекта нет agentPolicy) и профиль доступен сотруднику (CorporateAccess.canUse).
+- Dataset/AgentProfile.datasetIds/WorkRole.readDatasetIds — legacy, новой подсистемой не читаются и доступа
+  не дают; перенос — отдельная миграция F5.
+- Эффективный доступ вычисляет одна функция effectiveAccess() (server/sources/policy.ts). Её используют
+  матрица, API привязок, инструменты агента и проверка публикации.
+
+3. ВЕРСИИ И ДАТЫ
+
+- pinned: binding.snapshot_id; effective_date: выбор среди approved ∩ ready по [valid_from, valid_to) в
+  project_settings.business_time_zone; пересечение → 409 conflict; пусто → «Нет действующего источника».
+- bundle фиксирует binding→snapshot атомарно; активация = одна транзакция (архивирование прежнего active).
+- Чат закрепляет (bundle_id, revision, scope_hash) при первом запуске; при смене набора проекта запуск в
+  старом чате отклоняется с кодом 409 source_scope_changed, пока сотрудник явно не переключит чат (событие в
+  истории + сброс sessionId); scope_hash входит в sessionScope, поэтому контекст исполнителя новый.
+
+4. API (A4)
+
+Авторизация — существующий onRequest (Bearer/cookie+CSRF+Origin). userId/profileId берутся только из сеанса
+или задания. Ошибки: 400/401/403/404/409/413/429/503 по ТЗ. Подробное описание — в API.md.
+/api/admin/sources-storage                GET состояние, POST /check
+/api/admin/sources                        GET реестр (фильтр по правам), POST создать
+/api/admin/sources/:sourceId              GET, PATCH (expected revision), POST /archive, DELETE
+/api/admin/sources/:sourceId/usage        GET «где используется»
+/api/admin/sources/:sourceId/snapshots    GET; PATCH /:snapshotId/metadata (период, аудит);
+                                          POST /:snapshotId/accept-coverage; PUT /:snapshotId/dependencies
+/api/admin/sources/:sourceId/snapshots/:snapshotId/tree|files/:fileId/original — view/download_original
+/api/admin/sources/:sourceId/uploads      POST создать (Idempotency-Key)
+  .../:uploadId                           GET статус (+ страница файлов для передачи, cursor)
+  .../:uploadId/manifest                  PUT страница {page, entries[], last}
+  .../:uploadId/files/:fileId/parts/:part PUT application/octet-stream, X-Content-SHA256
+  .../:uploadId/complete                  POST (Idempotency-Key), 202
+  .../:uploadId/cancel                    POST
+/api/projects/:projectId/sources          GET (экран проекта, только разрешённое), POST создать+привязать
+/api/projects/:projectId/source-bindings  GET, PUT /:bindingId (revision), DELETE /:bindingId
+/api/projects/:projectId/source-grants    PUT (profileId, bindingId, enabled) с revision привязки
+/api/projects/:projectId/source-bundles   GET, POST, POST /:bundleId/activate
+/api/projects/:projectId/source-matrix    GET
+/api/projects/:projectId/source-settings  GET/PUT (часовой пояс, правило текущей даты)
+/api/projects/:projectId/chats/:chatId/source-scope GET, POST /switch
+
+Идемпотентность и возобновление:
+- POST uploads: (actor, Idempotency-Key) уникальны; повтор с тем же телом → та же сессия; с другим → 409.
+- manifest: страница с номером n принимается один раз; повтор идентичной страницы → 200, иной → 409.
+- part: PUT той же части с тем же sha256 → 200 без повторной записи; иной sha256 → 409.
+  Сервер считает SHA-256 и размер части сам. Части по 8 МиБ (последняя меньше), файл ≤ 1 части — PutObject,
+  больше — S3 multipart (UploadId хранится в upload_files). После последней части — CompleteMultipartUpload и
+  серверное перечтение объекта с вычислением SHA-256/размера; несовпадение с манифестом → объект удаляется,
+  файл failed (повторная передача).
+- reuse: файл манифеста с (sha256,size), совпадающими с verified blob того же источника, получает state reused
+  без передачи (наличие объекта проверяется HeadObject при complete).
+- complete: проверяет все файлы verified|reused, повторно HeadObject, фиксирует snapshot_files одной
+  транзакцией и переводит снимок verifying→indexing, ставит index_job. Повтор → тот же результат.
+- Перезапуск: сессии остаются в SQLite; части MPU в S3 сохраняются; статус показывает недостающие части.
+- Квота: reserved_bytes резервируется при создании сессии в одной транзакции с проверкой
+  used(ready+indexing+verifying) + reserved(активные сессии) ≤ quota_bytes; освобождается при cancel/expire/
+  complete. Повторная проверка перед ready.
+- Истечение: expires_at (24 ч, продление при активности); сборщик отменяет просроченные, прерывает MPU,
+  помечает blobs без ссылок orphan и удаляет их после задержки.
+
+5. ФОРМАТЫ (A5)
+
+Реальный образец Fastkore Business/Platform и прайсы не предоставлены. Первая версия:
+- текст: UTF-8 (без BOM и с BOM), UTF-16 LE/BE с BOM; иные кодировки → «неподдерживаемая кодировка»;
+- расширения исходников и конфигураций — по списку TEXT_EXTENSIONS (cs, vb, ts, js, sql, xml, json, config,
+  xaml, md, txt, csv и др.) + эвристика «текст без NUL» для прочих;
+- CSV/TSV — построчно (номер строки = номер записи + заголовок); XLSX — через существующий изолированный
+  worker documents.ts, постранично по листам с заголовками; PDF — через существующий worker, по страницам;
+- символы: эвристические анализаторы C#, TypeScript/JavaScript, SQL помечаются как «эвристика, язык не
+  подтверждён на образце». AC16 и заявление о поддержке форматов Fastkore блокированы до получения образца.
+
+6. ЛИМИТЫ (конфигурация env, значения по умолчанию)
+BRIDGE_SOURCES_MAX_FILES=50000, _MAX_FILE_BYTES=100 MiB, _MAX_DEPTH=64, _MAX_PATH=1024, _PART_BYTES=8 MiB,
+_UPLOAD_CONCURRENCY=8 (на сервер), _SESSIONS_PER_USER=2, _DEFAULT_QUOTA=20 GiB, _INDEX_TEXT_BYTES=16 MiB,
+инструменты: tree 200, search 20, read 200 строк, ответ 32 КиБ, на задание 200 вызовов / 4 МиБ.
+
+7. ИЗОЛЯЦИЯ И ВЫДАЧА (A6)
+
+- Оригиналы читаются только процессом платформы (S3-клиент источников, отдельный бакет и ключи
+  BRIDGE_SOURCES_S3_*). Исполнитель модели получает только результат инструмента в пределах лимитов; доступа к
+  S3, object keys, presigned URL и файловой системе источников у него нет; в input/output задания источники
+  не копируются.
+- Режим explanation_only: ответ не транслируется по мере генерации (answer.text не обновляется дельтами),
+  перед публикацией выполняется проверка совпадений с прочитанными фрагментами (run_reads) и запрет блоков
+  кода; при нарушении ответ заменяется отказом с объяснением. Вывод файлов (output) для такого задания
+  выключен сервером (workerWrites=false). run.tool показывается только как имя инструмента без аргументов.
+- Глобальная restricted-блокировка Dataset не снимается. Новые источники classification=restricted доступны
+  агенту только при BRIDGE_SOURCES_CLOSED_ANALYSIS=verified, выставляемом после проверки изоляции на целевом
+  Linux (E6); иначе закрытый анализ блокируется явно, обычные чаты и shared-источники работают.
+- Отзыв: каждый вызов инструмента и публикация перепроверяют effectiveAccess по текущим политикам; scope_hash
+  включает revisions — смена ведёт к новому контексту исполнителя.

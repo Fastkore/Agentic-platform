@@ -7,6 +7,7 @@ export type FastkoreEntityContext = ContextHeader & {
   view: 'card' | 'list' | 'link_list'; entity_set_id: string; entity_set_name: string | null; filter_xml: string | null;
   entity_name?: string;
   tile_name?: string;
+  entity_type_ids?: string[];
   filter_status: 'included' | 'none' | 'unavailable'; control_uid: string | null;
   deleted: boolean | null; scope_reproducible: boolean;
 } & Record<typeof guidFields[number], string | null>;
@@ -57,7 +58,12 @@ export function parseFastkoreContext(value: unknown): FastkoreContext | null {
   }
   const entityName = view === 'card' ? contextName(value.entity_name) : undefined;
   const tileName = view !== 'card' ? contextName(value.tile_name) : undefined;
+  const rawTypeIds = value.entity_type_ids;
+  if (rawTypeIds !== undefined && rawTypeIds !== null &&
+    (!Array.isArray(rawTypeIds) || rawTypeIds.length > 128 || rawTypeIds.some(id => typeof id !== 'string' || !guid.test(id)))) return null;
+  const typeIds = Array.isArray(rawTypeIds) ? [...new Set<string>(rawTypeIds.map(id => id.toLowerCase()))].sort() : [];
   return { ...header, view, entity_set_id: setId, entity_set_name, ...(entityName ? { entity_name: entityName } : {}), ...(tileName ? { tile_name: tileName } : {}),
+    ...(typeIds.length ? { entity_type_ids: typeIds } : {}),
     filter_xml: filter_xml as string | null, filter_status, control_uid, deleted, scope_reproducible, ...ids };
 }
 

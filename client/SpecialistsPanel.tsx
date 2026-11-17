@@ -3,7 +3,7 @@ import { BarChart3, Bot, Calculator, ChevronDown, ChevronLeft, Database, FileTex
 import { agentToolIds, agentTools } from '../shared/agent-tools';
 import { specialistFileLimits, specialistIcons, type AgentProfile, type Dataset, type ModelCatalog, type SpecialistIcon } from '../shared/types';
 import { isAutomaticModel } from '../shared/model-selection';
-import { Checks, operations } from './CorporatePanel';
+import { Checks } from './CorporatePanel';
 import { Select } from './Select';
 import { PermissionSwitch as Toggle } from './PermissionSwitch';
 import './specialists.css';
@@ -13,7 +13,7 @@ type Profile = AgentProfile & { unavailableReason?: string };
 const icons = { bot: Bot, message: MessageCircle, calculator: Calculator, settings: Settings2, database: Database, chart: BarChart3, file: FileText, search: Search };
 const iconLabels: Record<SpecialistIcon, string> = { bot: 'Помощник', message: 'Диалог', calculator: 'Расчёты', settings: 'Настройки', database: 'Данные', chart: 'Аналитика', file: 'Документы', search: 'Поиск' };
 const builtInIcons: Partial<Record<string, SpecialistIcon>> = { universal: 'message', estimator: 'calculator', technologist: 'settings', accountant: 'database' };
-const toolIcons = { 'project-files': Folder, 'chat-files': Paperclip, fastkore: Database };
+const toolIcons = { 'project-files': Folder, 'chat-files': Paperclip };
 const newProfile: AgentProfile = { id: '', name: '', description: '', instructions: '', enabled: false, model: '', reasoningEffort: 'high', operationIds: ['chat'], datasetIds: [], skillIds: [], allowWrite: false, revision: 0, toolIds: [] };
 const editorTabs = [
   { id: 'general', label: 'Основное', icon: Bot },
@@ -30,7 +30,11 @@ function IconTile({ icon }: { icon: SpecialistIcon }) {
   const Icon = icons[icon];
   return <span className="specialist-icon" aria-hidden="true"><Icon size={23} strokeWidth={1.8} /></span>;
 }
-export function SpecialistsPanel({ request, globalInstructions }: { request: Request; globalInstructions: string }) {
+export function SpecialistsPanel({ request, globalInstructions, initialProfileId }: {
+  request: Request;
+  globalInstructions: string;
+  initialProfileId?: string;
+}) {
   const [profiles, setProfiles] = useState<Profile[]>();
   const [datasets, setDatasets] = useState<Dataset[]>([]);
   const [editing, setEditing] = useState<Profile>();
@@ -55,10 +59,17 @@ export function SpecialistsPanel({ request, globalInstructions }: { request: Req
       request<Profile[]>('/api/admin/profiles', { signal: controller.signal }),
       request<Dataset[]>('/api/admin/datasets', { signal: controller.signal }),
     ]).then(([list, sources]) => {
-      if (!controller.signal.aborted) { setProfiles(list); setDatasets(sources); }
+      if (controller.signal.aborted) return;
+      setProfiles(list);
+      setDatasets(sources);
+      if (initialProfileId) {
+        const profile = list.find(item => item.id === initialProfileId);
+        if (profile) setEditing({ ...profile });
+        else setError('Специалист недоступен.');
+      }
     }).catch(error => { if (!controller.signal.aborted) setError(error.message); });
     return () => controller.abort();
-  }, [request]);
+  }, [initialProfileId, request]);
   useEffect(() => { if (editingProfile) heading.current?.focus(); }, [editingProfile]);
   useEffect(() => {
     if (!editingProfile || tab !== 'model') return;
@@ -157,7 +168,7 @@ export function SpecialistsPanel({ request, globalInstructions }: { request: Req
         {profile.description && <p>{profile.description}</p>}
         <div className="specialist-meta">
           <span className="specialist-status" data-enabled={profile.enabled}>{profile.enabled ? 'Включён' : 'Выключен'}</span>
-          <span className="specialist-tool-summary"><Layers3 size={15} aria-hidden="true" />{agentTools.filter(tool => (profile.toolIds ?? agentToolIds).includes(tool.id)).map(tool => tool.name).join(', ') || 'Без инструментов'}</span>
+          <span className="specialist-tool-summary"><Layers3 size={15} aria-hidden="true" />{agentTools.filter(tool => tool.id !== 'fastkore' && (profile.toolIds ?? agentToolIds).includes(tool.id)).map(tool => tool.name).join(', ') || 'Без файловых инструментов'}</span>
         </div>
         {profile.enabled && profile.unavailableReason && <p className="specialist-unavailable">{profile.unavailableReason}</p>}
       </div>
@@ -265,7 +276,7 @@ export function SpecialistsPanel({ request, globalInstructions }: { request: Req
           <h3><Layers3 size={19} aria-hidden="true" />Инструменты специалиста</h3>
           <p className="help">Доступ к источникам уточняется в настройках проекта.</p>
           <div className="specialist-tool-list">
-            {agentTools.map(tool => {
+            {agentTools.filter(tool => tool.id !== 'fastkore').map(tool => {
               const Tool = toolIcons[tool.id];
               return <label key={tool.id}>
                 <input type="checkbox" checked={selectedTools.includes(tool.id)}
@@ -275,12 +286,9 @@ export function SpecialistsPanel({ request, globalInstructions }: { request: Req
             })}
           </div>
         </section>
-      <section className="specialist-card">
-          <label className="check-setting"><input type="checkbox" checked={profile.allowWrite} onChange={event => update({ allowWrite: event.target.checked })} />Разрешить запись, если она включена на сервере</label>
-      <p className="help">Доступ к Fastkore также учитывает разрешения роли сотрудника и подключение к проекту. Права на данные проверяет ERP.</p>
-          <Checks label="Разрешённые операции" values={profile.operationIds} options={Object.entries(operations).map(([id, name]) => ({ id, name }))} change={operationIds => update({ operationIds })} />
+        <section className="specialist-card">
           <Checks label="Библиотеки специалиста" values={profile.datasetIds} options={datasets} change={datasetIds => update({ datasetIds })} />
-      </section>
+        </section>
       </div>
 
       <div role="tabpanel" id="specialist-panel-model" aria-labelledby="specialist-tab-model" className="specialist-tabpanel" hidden={tab !== 'model'} tabIndex={0}>

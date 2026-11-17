@@ -6,7 +6,7 @@ const args = process.argv.slice(2);
 if (args[0] === '--version') { console.log('codex mock 1.0'); process.exit(0); }
 if (args[0] === 'login') { console.error('Logged in using ChatGPT'); process.exit(0); }
 if (args.includes('app-server')) {
-  let steeringThread;
+  let steeringThread, localChat;
   for await (const line of createInterface({ input: process.stdin })) {
     const request = JSON.parse(line);
     if (request.method === 'initialize') console.log(JSON.stringify({ id: request.id, result: { userAgent: 'fake' } }));
@@ -19,8 +19,10 @@ if (args.includes('app-server')) {
     } : {
       data: [{ id: 'test-a', model: 'test-a', displayName: 'Test Model A', isDefault: true }, { id: 'hidden', model: 'hidden', hidden: true }], nextCursor: 'next'
     } }));
-    if (request.method === 'thread/start' || request.method === 'thread/resume') console.log(JSON.stringify({ id: request.id,
-      result: { thread: { id: request.params.threadId ?? '87db344a-98f3-42c8-bba8-c7d9f3dcff11' } } }));
+    if (request.method === 'thread/start' || request.method === 'thread/resume') {
+      localChat = request.params.sandbox && request.params.developerInstructions?.includes('my_instructions');
+      console.log(JSON.stringify({ id: request.id, result: { thread: { id: request.params.threadId ?? '87db344a-98f3-42c8-bba8-c7d9f3dcff11' } } }));
+    }
     if (request.method === 'turn/start') {
       const threadId = request.params.threadId;
       console.log(JSON.stringify({ id: request.id, result: { turn: { id: 'turn-1' } } }));
@@ -45,6 +47,11 @@ if (args.includes('app-server')) {
       if (request.params.input[0].text.includes('WAIT_FOR_STEER')) {
         steeringThread = threadId;
         console.log(JSON.stringify({ id: 91, method: 'item/tool/call', params: { threadId, turnId: 'turn-1', callId: 'slow-tool', tool: 'knowledge', arguments: {} } }));
+        continue;
+      }
+      if (localChat) {
+        console.log(JSON.stringify({ method: 'item/completed', params: { threadId, item: { id: 'text-1', type: 'agentMessage', text: 'В таблице: Кофе — 42.\n\n**Готово.**' } } }));
+        console.log(JSON.stringify({ method: 'turn/completed', params: { threadId, turn: { status: 'completed' } } }));
         continue;
       }
       console.log(JSON.stringify({ method: 'item/reasoning/textDelta', params: { threadId, delta: 'PRIVATE_REASONING' } }));

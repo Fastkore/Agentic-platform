@@ -7,6 +7,7 @@ import { BridgeError, redact } from './store.js';
 import type { CliInfo, CodexLimits, LimitWindow, ModelCatalog, ModelOption, RunToolContext, Usage } from '../shared/types.js';
 import type { CodexTools } from './codex-tools.js';
 import { describeToolContext } from './tool-context.js';
+import { personalInstructionsTool } from '../shared/personal-instructions.js';
 import { chatImagesUnsupportedProvider } from './chat-images.js';
 
 export interface CodexEvent { kind: 'session' | 'message' | 'message-delta' | 'message-replace' | 'tool' | 'tool-end' | 'progress' | 'usage' | 'steer-ready' | 'steer-closed'; text?: string; toolCallId?: string; toolContext?: RunToolContext; usage?: Usage }
@@ -206,7 +207,7 @@ export class CodexClient implements CodexRunner {
     signal.throwIfAborted();
     if (request.imageUrls?.length && !this.acceptsImages) throw new BridgeError(chatImagesUnsupportedProvider, 422);
     if (request.imageUrls?.length || request.tools || request.consultation || registerSteering && this.mode === 'worker') {
-      if (this.mode !== 'worker' && request.tools?.definitions.some(tool => tool.name !== 'consult_specialist')) throw new BridgeError('Эти инструменты доступны только в изолированном исполнителе.', 403);
+      if (this.mode !== 'worker' && request.tools?.definitions.some(tool => !['consult_specialist', personalInstructionsTool].includes(tool.name))) throw new BridgeError('Эти инструменты доступны только в изолированном исполнителе.', 403);
       return this.runWithTools(request, request.tools, onEvent, signal, registerSteering);
     }
     const child = this.start(request.cliPath, buildArguments(request, this.mode, this.provider), request.workspace);
@@ -301,7 +302,8 @@ export class CodexClient implements CodexRunner {
             && !seenCalls.has(callId) && typeof tool === 'string' && ++toolCalls <= 64) {
             seenCalls.add(callId);
             await onEvent({ kind: 'tool', text: tool, toolCallId: callId, toolContext: describeToolContext(tool, args) });
-            await onEvent({ kind: 'progress', text: tool === 'consult_specialist' ? 'Codex обращается к специалисту…' : tool === 'knowledge' ? 'Codex читает базу знаний…' : 'Codex обращается к Fastkore…' });
+            await onEvent({ kind: 'progress', text: tool === 'consult_specialist' ? 'Codex обращается к специалисту…' : tool === 'knowledge' ? 'Codex читает базу знаний…' :
+              tool === personalInstructionsTool ? 'Codex работает с личными инструкциями…' : 'Codex обращается к Fastkore…' });
             try { if (tools) result = await tools.call(tool, args, signal); } catch { /* Never forward an upstream exception to the model. */ }
             await onEvent({ kind: 'tool-end', toolCallId: callId });
           }

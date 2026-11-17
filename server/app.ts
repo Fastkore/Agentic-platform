@@ -12,10 +12,14 @@ import { Access, publicUser, type Principal } from './access.js';
 import { projectFilePath } from './documents.js';
 import { maxUploadBytes } from './file-storage.js';
 import { knowledgeRoutes } from './knowledge-routes.js';
+import { isUploadToken, sourceRoutes, uploadTokenRoutes } from './sources/routes.js';
+import { editPersonalInstructions } from './personal-instructions.js';
+import { instructionTile, personalInstructionLimits as personalLimits, type PersonalInstructionsEdit } from '../shared/personal-instructions.js';
+import { instructionComponent } from './instruction-context.js';
 import { UploadAdmission } from './upload-admission.js';
 import { loadDictation, maxDictationBytes, validateDictation, type TranscribeDictation } from './dictation.js';
-import { specialistFileLimits, specialistIcons } from '../shared/types.js';
-import type { DictationModelId } from '../shared/types.js';
+import { interfaceScales, specialistFileLimits, specialistIcons } from '../shared/types.js';
+import type { DictationModelId, InterfaceScale } from '../shared/types.js';
 import { fastkoreChatTitle, parseFastkoreContext } from '../shared/fastkore-context.js';
 import { canReadChatAttachment } from '../shared/chat-attachments.js';
 import { chatBinding, matchesFastkoreChat, migrateFastkoreChatBindings, parentFastkoreChatBindings } from './fastkore-chat.js';
@@ -23,11 +27,11 @@ import { FastkoreMcp } from './fastkore-mcp.js';
 import { FastkoreCli, type FastkoreCliTiming } from './fastkore-cli.js';
 import { elapsedMs } from './run-timing.js';
 import { RemoteCodexRunner } from './codex-remote.js';
-import { erpRoleCatalog, restoreErpRoles, erpRolePermissions, erpCredentialPermissions, internetCredentialPermissions } from './erp-roles.js';
+import { erpRoleCatalog, restoreErpRoles, erpRolePermissions, erpCredentialPermissions, internetCredentialPermissions, isErpReadOnly, erpReadOnlyMessage, fastkoreReadCommands } from './erp-roles.js';
 import { withInternetTools } from './internet-tools.js';
 import { withFastkoreCliDescription } from './codex-tools.js';
 import { withFastkoreCliCommands } from './fastkore-cli-tools.js';
-import type { AgentProfile, Dataset, FastkoreAuthentication, FastkoreInstallation, FastkoreKeyIssue, FileStorageProvider, ProjectAgentPolicy, ProjectAgentSettings, Settings, User, WorkRole } from '../shared/types.js';
+import type { AgentProfile, Credential, Dataset, FastkoreAuthentication, FastkoreInstallation, FastkoreKeyIssue, FastkoreRolePermissions, FileStorageProvider, ProjectAgentPolicy, ProjectAgentSettings, Settings, User, WorkRole } from '../shared/types.js';
 import type { AuditEvent, RelatedChatSummary, Run } from '../shared/types.js';
 import { agentToolIds } from '../shared/agent-tools.js';
 import { operationIds } from './corporate.js';
@@ -118,7 +122,8 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
     };
     const mcpStarted = performance.now();
     const integration = permissions.mcp ? await fastkoreMcp.prepare(credential, () => { checkPermission('mcp'); }, signal, ({ tool, parameters, ...details }) =>
-      audit('erp.mcp.call', tool, { ...details, objectIds: erpAuditIds(parameters) })).finally(() => {
+      audit('erp.mcp.call', tool, { ...details, objectIds: erpAuditIds(parameters) }),
+      () => isErpReadOnly(workspace.store.state, checkPermission('mcp'))).finally(() => {
         if (run?.timing) run.timing.mcpSetupMs ??= elapsedMs(mcpStarted);
       }) : {};
     if (!permissions.cli || !fastkoreCli || !sso || credential.source !== 'fastkore' || sso.delegationBinding(credential)?.cliEnabled === false) return integration;
@@ -146,13 +151,25 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
       async (command, args, callSignal) => {
         const started = performance.now(), timing: FastkoreCliTiming = {};
         let success = false;
+        let responseChars: number | undefined;
         try {
           const result = await fastkoreCli.run({ operation: 'execute', command, args, workDirectoryId: run.id, context },
-            sso, current, id => fastkoreMcp.invalidate(id), callSignal, timing);
+            sso, () => {
+              const active = current();
+              if (isErpReadOnly(workspace.store.state, active) && !fastkoreReadCommands.has(command)) {
+                throw new BridgeError(erpReadOnlyMessage, 403);
+              }
+              return active;
+            }, id => fastkoreMcp.invalidate(id), callSignal, timing);
           success = result.success;
           const text = JSON.stringify({ exitCode: result.exitCode, data: result.data });
-          return { success, text: text.length <= 96000 ? text : 'Ответ CLI слишком большой. Сохраните результат в файл или уменьшите выборку.' };
-        } finally { audit('erp.cli.command', command, { success, elapsedMs: elapsedMs(started), ...timing }); }
+          if (text.length <= 96_000) return { success, text };
+          responseChars = text.length;
+          const advice = command === 'data get' ? 'Повторите чтение с --detail brief и передайте в --properties только нужные поля.'
+            : command === 'data query' ? 'Сократите список полей через --properties и читайте выборку страницами меньшего размера.'
+              : 'Если команда изменила данные, проверьте результат чтением перед повторным вызовом.';
+          return { success: false, text: 'Ответ Fastkore CLI превышает лимит в 96 000 символов. ' + advice };
+        } finally { audit('erp.cli.command', command, { success, elapsedMs: elapsedMs(started), ...timing, responseChars }); }
       }, () => { current(); }) : descriptionOnly();
     return { tools: commands, problem: integration.problem };
   };
@@ -266,6 +283,8 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
       if (!['GET', 'HEAD', 'OPTIONS'].includes(request.method) && (request.headers.origin !== publicOrigin || !validCsrf(cookie, request.headers['x-csrf-token']))) throw new BridgeError('Не удалось подтвердить запрос страницы. Перезагрузите её.', 403);
       principals.set(request, p);
     } else {
+      // Short-lived source upload tokens of the local utility are checked by the source routes themselves and only there.
+      if (isUploadToken(authorization) && uploadTokenRoutes.has(route)) return;
       if (!authorization.startsWith('Bearer ') || authorization.length > 200) throw new BridgeError('Войдите под своей учётной записью.', 401);
       const p = access.authenticate(authorization.slice(7));
       if (p.credential.source === 'fastkore') throw new BridgeError('Для сеанса Fastkore требуется cookie.', 401);
@@ -348,7 +367,7 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
     if (request.headers.authorization) throw new BridgeError('Обнаружены два способа входа.', 409);
     secureRequest(request); const p = access.authenticate(token);
     if (p.credential.source !== 'fastkore') throw new BridgeError('Недействительная сессия Fastkore.', 401);
-    return { authenticated: true, user: publicUser(p.user), setupRequired: false, authentication: authDetails(p, token) };
+    return { authenticated: true, user: publicUser(p.user), setupRequired: false, interfaceScale: p.user.interfaceScale ?? 100, authentication: authDetails(p, token) };
   });
   app.post('/api/local-login', async request => { checkBootstrap(request); return access.bootstrap(); });
   app.post<{ Body: { username: string; password: string } }>('/api/auth/login', { schema: { body: object({ username: string(48), password: { type: 'string', maxLength: 200 } }, ['username', 'password']) } }, async request => {
@@ -368,10 +387,13 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
   app.get('/api/auth/me', async request => {
     const p = principal(request), source = p.credential.source ?? 'local';
     return {
-      user: publicUser(p.user), setupRequired: access.setupRequired, source,
+      user: publicUser(p.user), setupRequired: access.setupRequired, source, interfaceScale: p.user.interfaceScale ?? 100,
       ...(source === 'fastkore' ? { authentication: authDetails(p, cookieToken(request.headers.cookie)) } : {}),
     };
   });
+  app.patch<{ Body: { interfaceScale: InterfaceScale } }>('/api/me/preferences', {
+    schema: { body: object({ interfaceScale: { type: 'integer', enum: [...interfaceScales] } }, ['interfaceScale']) },
+  }, request => access.changeInterfaceScale(() => principal(request), request.body.interfaceScale));
   app.post<{ Body: { username: string; name: string; password: string } }>('/api/auth/setup', { schema: { body: object({ username: string(48), name: string(100), password }, ['username', 'name', 'password']) } }, async request => access.setup(() => principal(request), request.body.username, request.body.name, request.body.password));
   app.post('/api/auth/logout', async (request, reply) => { const p = principal(request); const result = await access.logout(p); if (p.credential.source === 'fastkore') reply.header('Set-Cookie', setSessionCookie('', 0)); return result; });
   app.post<{ Body: { currentPassword: string; password: string } }>('/api/auth/password', { schema: { body: object({ currentPassword: string(200), password }, ['currentPassword', 'password']) } }, async request => access.changePassword(principal(request), request.body.currentPassword, request.body.password));
@@ -380,9 +402,11 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
     admin(request);
     return erpRoleCatalog(workspace.store.state);
   });
-  app.patch<{ Params: { installationId: string; roleId: string }; Body: { mcp: boolean; cli: boolean; webRead?: boolean; webRequests?: boolean; revision: number } }>(
+  app.patch<{ Params: { installationId: string; roleId: string }; Body: FastkoreRolePermissions }>(
     '/api/admin/erp-roles/:installationId/:roleId/permissions', { schema: { body: object({ mcp: { type: 'boolean' }, cli: { type: 'boolean' },
-      webRead: { type: 'boolean' }, webRequests: { type: 'boolean' }, revision: { type: 'integer', minimum: 0 } }, ['mcp', 'cli', 'revision']) } }, async request => {
+      webSearch: { type: 'boolean' }, webRead: { type: 'boolean' }, webRequests: { type: 'boolean' },
+      readOnly: { type: 'boolean' }, createProjects: { type: 'boolean' },
+      revision: { type: 'integer', minimum: 0 } }, ['mcp', 'cli', 'revision']) } }, async request => {
       admin(request);
       return workspace.store.changeAccess(draft => {
         const actor = admin(request), { installationId, roleId } = request.params;
@@ -391,12 +415,15 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
         if (previous.revision !== request.body.revision) throw new BridgeError('Разрешения изменены. Откройте настройки роли заново.', 409);
         const records = draft.sso.rolePermissions ??= [];
         const value = { installationId, roleId, mcp: request.body.mcp, cli: request.body.cli,
+          readOnly: request.body.readOnly ?? previous.readOnly, createProjects: request.body.createProjects ?? previous.createProjects,
+          webSearch: request.body.webSearch ?? previous.webSearch,
           webRead: request.body.webRead ?? previous.webRead, webRequests: request.body.webRequests ?? previous.webRequests, revision: previous.revision + 1 };
         const index = records.findIndex(item => item.installationId === installationId && item.roleId === roleId);
         if (index < 0) records.push(value); else records[index] = value;
         draft.security?.audit.unshift({ id: randomUUID(), actorId: actor.id, action: 'erp.role.permissions', targetId: installationId + '/' + roleId, createdAt: new Date().toISOString() });
         draft.security?.audit.splice(1000);
-        return { mcp: value.mcp, cli: value.cli, webRead: value.webRead, webRequests: value.webRequests, revision: value.revision };
+        return { mcp: value.mcp, cli: value.cli, readOnly: value.readOnly, createProjects: value.createProjects,
+          webSearch: value.webSearch, webRead: value.webRead, webRequests: value.webRequests, revision: value.revision };
       });
     });
   app.delete<{ Params: { installationId: string; roleId: string } }>('/api/admin/erp-roles/:installationId/:roleId', async request => {
@@ -497,7 +524,81 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
     return access.linkExternal(() => localAdmin(request), b.installationId, b.externalUserId, b.userId);
   });
   app.get('/api/agents', async request => workspace.corporate.list(user(request)));
+  const instructionEditSchema = (administration = false) => object({
+      text: { type: 'string', maxLength: personalLimits.instructions },
+      autoInstructions: { type: 'boolean' },
+      revision: { type: 'integer', minimum: 0, maximum: Number.MAX_SAFE_INTEGER },
+      notes: { type: 'array', maxItems: personalLimits.notes, items: object({
+        id: string(100), title: string(personalLimits.title), text: string(personalLimits.note),
+        scope: { enum: ['project', 'erp'] },
+        ...(administration ? { common: { type: 'boolean' } } : {}),
+      }, ['title', 'text']) },
+      projectId: string(100),
+      context: { type: 'object' },
+    }, ['text', 'autoInstructions', 'revision', 'notes']);
+  const instructionRole = (actor: User) => {
+    const roleId = workspace.corporate.role(actor)?.id;
+    return roleId === 'sso_pending' ? undefined : roleId;
+  };
+  function instructionView(actor: User, installationId?: string) {
+    const allowedProjects = new Set(workspace.store.state.projects.filter(project => actor.role === 'admin' || project.memberIds?.includes(actor.id)).map(project => project.id));
+    const authors = new Map(access.data.users.map(author => [author.id, author.name]));
+    const sharedNotes = workspace.store.sharedInstructionNotes(actor.id, instructionRole(actor))
+      .filter(({ note }) => !note.scope || (note.scope.kind === 'erp' ? note.scope.id === installationId : allowedProjects.has(note.scope.id)))
+      .map(({ note, authorId }) => ({ ...note, authorName: authors.get(authorId) ?? 'Сотрудник' }));
+    return { ...workspace.store.personalInstructions(actor.id), ...(sharedNotes.length ? { sharedNotes } : {}) };
+  }
+  app.get('/api/me/instructions', async request => {
+    const { user: actor, credential } = principal(request);
+    return instructionView(actor, credential.installationId);
+  });
+  app.put<{ Body: PersonalInstructionsEdit }>('/api/me/instructions', { schema: { body: instructionEditSchema() } }, async request => {
+    const { user: actor, credential } = principal(request);
+    const project = request.body.projectId ? access.project(actor, request.body.projectId) : undefined;
+    const installation = workspace.store.state.sso?.installations?.find(item => item.id === credential.installationId);
+    const snapshot = request.body.context === undefined ? undefined : parseFastkoreContext(request.body.context);
+    if (snapshot === null) throw new BridgeError('Некорректный контекст Fastkore.');
+    editPersonalInstructions(workspace.store, actor.id, request.body, {
+      project: project && { kind: 'project', id: project.id, label: project.name },
+      erp: installation && { kind: 'erp', id: installation.id, label: installation.name },
+      component: installation ? instructionComponent(snapshot) : undefined,
+    }, { roleId: instructionRole(actor), tile: installation ? instructionTile(snapshot) : undefined });
+    return instructionView(actor, credential.installationId);
+  });
+  app.get('/api/admin/instructions', async request => {
+    localAdmin(request);
+    const authors = new Set(workspace.store.personalInstructionAuthors());
+    return access.data.users.filter(actor => authors.has(actor.id)).map(actor => ({
+      id: actor.id, name: actor.name, role: workspace.corporate.role(actor)?.name,
+    }));
+  });
+  const instructionAuthor = (request: FastifyRequest<{ Params: { id: string } }>) => {
+    localAdmin(request);
+    const author = access.data.users.find(actor => actor.id === request.params.id);
+    if (!author) throw new BridgeError('Сотрудник не найден.', 404);
+    return author;
+  };
+  app.get<{ Params: { id: string } }>('/api/admin/instructions/:id', async request =>
+    workspace.store.personalInstructions(instructionAuthor(request).id));
+  app.put<{ Params: { id: string }; Body: PersonalInstructionsEdit }>('/api/admin/instructions/:id',
+    { schema: { body: instructionEditSchema(true) } }, async request => {
+      const author = instructionAuthor(request);
+      return editPersonalInstructions(workspace.store, author.id, request.body, {}, { roleId: instructionRole(author), admin: true });
+    });
   knowledgeRoutes(app, workspace.knowledge, localAdmin, uploads);
+  const sources = workspace.sources;
+  sourceRoutes(app, { registry: sources.registry, policy: sources.policy, reader: sources.reader, indexer: sources.indexer,
+    actor: request => { const u = user(request); return { id: u.id, admin: u.role === 'admin' && !u.disabled }; },
+    chat: (request, projectId, chatId) => {
+      const p = principal(request);
+      const chat = request.method === 'POST' ? access.editChat(p.user, projectId, chatId) : access.chat(p.user, projectId, chatId);
+      if (!chatIdentityMatches(p, chat)) throw new BridgeError('Диалог не найден.', 404);
+      return { userId: p.user.id, profileId: chat.agentProfileId ?? 'universal' };
+    },
+    userActor: userId => { const u = workspace.store.state.security?.users.find(item => item.id === userId && !item.disabled); return u && { id: u.id, admin: u.role === 'admin' }; },
+    legacy: { datasets: () => workspace.corporate.data.datasets, profiles: () => workspace.corporate.data.profiles, roles: () => workspace.corporate.data.roles,
+      projectExists: id => workspace.store.state.projects.some(item => item.id === id) } });
+  sources.start();
   app.get('/api/admin/roles', async request => { admin(request); return workspace.corporate.data.roles; });
   app.get('/api/admin/profiles', async request => { admin(request); return workspace.corporate.data.profiles.map(p => ({ ...p, unavailableReason: workspace.corporate.unavailable(p) })); });
   app.get('/api/admin/datasets', async request => { admin(request); return workspace.corporate.data.datasets; });
@@ -509,7 +610,12 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
     return workspace.corporate.saveProfile(admin(request), { ...profile, id: request.params.id });
   });
   app.put<{ Params: { id: string }; Body: Omit<Dataset, 'id' | 'revision'> & { revision?: number } }>('/api/admin/datasets/:id', { schema: { params: object({ id: identifier }, ['id']), body: object({ name: string(100), directory: string(2000), projectIds: identifiers, classification: { enum: ['shared', 'restricted'] }, revision }, ['name', 'directory', 'projectIds', 'classification']) } }, async request => workspace.corporate.saveDataset(admin(request), { ...request.body, id: request.params.id }));
-  const canCreateProject = (u: User) => u.role === 'admin' || workspace.corporate.role(u)?.operationIds.includes('chat') === true;
+  const canCreateProject = (u: User, credential: Credential) => {
+    if (credential.source !== 'fastkore') return u.role === 'admin';
+    const installationId = credential.installationId;
+    return !!installationId && (credential.externalRoles?.some(role =>
+      erpRolePermissions(workspace.store.state, installationId, role.id).createProjects) ?? false);
+  };
   app.get('/api/status', async request => {
     const cli = await workspace.codexConnection();
     const { user: u, credential } = principal(request);
@@ -518,10 +624,12 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
     const isolatedToolsEnabled = workspace.isolatedCodex && !workspace.executionDisabled;
     const erpPermissions = erpCredentialPermissions(workspace.store.state, credential);
     const cliBinding = isolatedToolsEnabled && erpPermissions.cli && cliTicketsEnabled && fastkoreCli && sso?.delegationBinding(credential);
+    const internetPermissions = internetCredentialPermissions(workspace.store.state, credential);
     const toolPermissions = {
       cli: !!(cliBinding && cliBinding.cliEnabled !== false && cliBinding.ca && sso?.openDelegation(credential, cliBinding.revision)),
       mcp: isolatedToolsEnabled && erpPermissions.mcp && fastkoreToolsStatus === 'ready',
-      webSearch: !!(isolatedToolsEnabled && accountWorker && internetCredentialPermissions(workspace.store.state, credential).read),
+      webSearch: !!(isolatedToolsEnabled && accountWorker && internetPermissions.search),
+      webRead: isolatedToolsEnabled && internetPermissions.read,
     };
     const visibleRun = (run: Run) => {
       try {
@@ -537,7 +645,7 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
       if (job?.authorId !== u.id) return [run];
       return [{ ...run, queuedText: job?.text.slice(0, 240), queuedFiles: job?.attachmentIds.length }];
     });
-    return { version: '0.6.0', activeRun, activeRuns, queuedRuns, busy: workspace.busy, user: publicUser(u), setupRequired: access.setupRequired, canCreateProject: canCreateProject(u),
+    return { version: '0.6.0', activeRun, activeRuns, queuedRuns, busy: workspace.busy, user: publicUser(u), setupRequired: access.setupRequired, canCreateProject: canCreateProject(u, credential),
       cli: u.role === 'admin' ? cli : cli && { ...cli, path: '', status: '' },
       isolatedCodex: workspace.isolatedCodex, workerFilesAvailable: workspace.workerFilesAvailable, codexLimitsRevision: workspace.codexLimitsRevision,
       settings: { ...settings, cliPath: u.role === 'admin' ? settings.cliPath : '',
@@ -567,7 +675,9 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
       const actor = user(request);
       if (chatId && !projectId) throw new BridgeError('Укажите проект диалога.');
       const project = projectId ? access.project(actor, projectId) : undefined;
-      if (!project && !canCreateProject(actor)) throw new BridgeError('Рабочая роль не разрешает работу с чатом.', 403);
+      if (!project && actor.role !== 'admin' && !workspace.corporate.role(actor)?.operationIds.includes('chat')) {
+        throw new BridgeError('Рабочая роль не разрешает работу с чатом.', 403);
+      }
       const chat = chatId && projectId ? access.editChat(actor, projectId, chatId) : undefined;
       workspace.corporate.profile(actor, chat ? chat.agentProfileId : agentProfileId, project);
       return actor.id;
@@ -663,20 +773,25 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
   app.get('/api/projects', async request => {
     const u = user(request); return workspace.store.state.projects.filter(p => u.role === 'admin' || p.memberIds?.includes(u.id)).map(p => ({ id: p.id, name: p.name, directory: p.directory, chatCount: p.chats.filter(c => !c.archivedAt && access.canChat(u, c)).length }));
   });
-  app.post('/api/migrations/desktop', async request => { admin(request); const result = await workspace.importDesktop(); access.migrate(); await workspace.store.save(); return result; });
+  app.post('/api/migrations/desktop', async request => { localAdmin(request); const result = await workspace.importDesktop(); access.migrate(); await workspace.store.save(); return result; });
   app.post<{ Body: { directory?: string; name?: string } }>('/api/projects', { schema: { body: object({ directory: string(2000), name: string(100) }) } }, async (request, reply) => {
     const { directory, name } = request.body;
-    if (directory !== undefined) admin(request);
+    if (directory !== undefined) localAdmin(request);
+    const authorize = () => {
+      const { user: u, credential } = principal(request);
+      if (!canCreateProject(u, credential)) throw new BridgeError('Роль не позволяет создавать проекты.', 403);
+      return u.id;
+    };
+    authorize();
     const project = directory === undefined
-      ? await workspace.createProject(name ?? '', () => {
-        const u = user(request);
-        if (!canCreateProject(u)) throw new BridgeError('Рабочая роль не позволяет создавать проекты.', 403);
-        return u.id;
-      })
+      ? await workspace.createProject(name ?? '', authorize)
       : await workspace.addProject(directory, name);
     if (directory !== undefined) { access.migrate(); await workspace.store.save(); }
     return reply.code(201).send({ id: project.id, name: project.name, directory: project.directory, chatCount: project.chats.length });
   });
+  app.patch<{ Params: { projectId: string }; Body: { name: string } }>('/api/projects/:projectId', {
+    schema: { body: object({ name: string(100) }, ['name']) },
+  }, request => workspace.renameProject(request.params.projectId, request.body.name, () => localAdmin(request).id));
   app.get<{ Params: { projectId: string } }>('/api/projects/:projectId/members', async request => { admin(request); return { memberIds: workspace.project(request.params.projectId).memberIds ?? [] }; });
   app.get<{ Params: { projectId: string } }>('/api/projects/:projectId/agents', async request => {
     const actor = user(request);

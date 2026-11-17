@@ -2,15 +2,15 @@ import React, { lazy, Suspense, useCallback, useEffect, useRef, useState } from 
 import { createRoot } from 'react-dom/client';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import type { AgentSummary, Attachment, Chat, ChatSummary, CodexLimits, FastkoreAuthentication, FileStorageStatus, ModelCatalog, ProjectSummary, RelatedChatSummary, Run, Settings, Status, User } from '../shared/types';
 import { Archive, ArrowUp, BarChart3, Bot, Box, Check, ChevronDown, ChevronRight, ClipboardList, Copy, Database, Download, EllipsisVertical, Eraser, FileText, Folder, History, Link2, LoaderCircle, LockKeyhole, LogOut, Menu, Moon, Network, PanelLeftClose, PanelLeftOpen, Pencil, Pin, Plus, RefreshCw, Search, Settings2, ShieldCheck, Square, SquarePen, Sun, Terminal, Trash2, Users, X } from 'lucide-react';
+import { interfaceScales, type AgentSummary, type Attachment, type Chat, type ChatSummary, type CodexLimits, type FastkoreAuthentication, type FileStorageStatus, type InterfaceScale, type ModelCatalog, type ProjectSummary, type RelatedChatSummary, type Run, type Settings, type Status, type User } from '../shared/types';
 import './style.css';
 import './workspace.css';
 import { ChatArchiveDialog } from './ChatArchiveDialog';
 import { shortUserName } from './user-name';
 import { chatTooltip, dateTooltip, shortDate } from './chat-date';
 import { parseHostTheme, webViewHost, type Theme } from './fastkore';
-import { Select } from './Select';
+import { Select, type SelectHandle } from './Select';
 import { ExecutionAccountsPanel } from './ExecutionAccountsPanel';
 import { executionConnected } from '../shared/execution-accounts';
 import { SidebarResizeHandle } from './SidebarResizeHandle';
@@ -20,9 +20,10 @@ import { ChatModelControls, reasoningOptions } from './ChatModelControls';
 import { runToolLabel } from './run-tool-label';
 import { WorkspaceDialog } from './WorkspaceDialog';
 import { ProjectFilesDialog } from './ProjectFilesDialog';
-import { ProjectAgentsDialog } from './ProjectAgentsDialog';
+import { ProjectSpecialistsDialog } from './ProjectSpecialistsDialog';
 import { VoiceDictation } from './VoiceDictation';
 import { DictationModelSettings } from './DictationModelSettings';
+import { PersonalInstructionsPanel } from './PersonalInstructionsPanel';
 import { DEFAULT_AGENT_INSTRUCTIONS } from '../shared/agent-instructions';
 import { concreteModel, isAutomaticModel } from '../shared/model-selection';
 import { canReadChatAttachment, previewModelFormat, type PreviewModelFormat } from '../shared/chat-attachments';
@@ -32,20 +33,25 @@ const AccountPanel = lazy(() => import('./AccessPanel').then(module => ({ defaul
 const TeamPanel = lazy(() => import('./AccessPanel').then(module => ({ default: module.TeamPanel })));
 const AuditPanel = lazy(() => import('./AuditPanel').then(module => ({ default: module.AuditPanel })));
 const ErpRolesPanel = lazy(() => import('./ErpRolesPanel').then(module => ({ default: module.ErpRolesPanel })));
-const CorporatePanel = lazy(() => import('./CorporatePanel').then(module => ({ default: module.CorporatePanel })));
 const SpecialistsPanel = lazy(() => import('./SpecialistsPanel').then(module => ({ default: module.SpecialistsPanel })));
 const UsagePanel = lazy(() => import('./UsagePanel').then(module => ({ default: module.UsagePanel })));
 const FastkorePanel = lazy(() => import('./FastkorePanel').then(module => ({ default: module.FastkorePanel })));
 const KnowledgePanel = lazy(() => import('./KnowledgePanel').then(module => ({ default: module.KnowledgePanel })));
 const ChatModelPreview = lazy(() => import('./ChatModelPreview').then(module => ({ default: module.ChatModelPreview })));
+const ProjectSourcesDialog = lazy(() => import('./ProjectSourcesDialog').then(module => ({ default: module.ProjectSourcesDialog })));
+const SourcesPanel = lazy(() => import('./SourcesPanel').then(module => ({ default: module.SourcesPanel })));
+const ChatSourceScope = lazy(() => import('./ChatSourceScope').then(module => ({ default: module.ChatSourceScope })));
 
 let accessKey = sessionStorage.getItem('bridge-key') ?? '';
 const agentsUrl = (projectId: string) => projectId ? '/api/projects/' + encodeURIComponent(projectId) + '/agents' : '/api/agents';
 const settingsSections = {
   team: { label: 'Команда', icon: Users },
+  projects: { label: 'Проекты', icon: Folder },
+  personal: { label: 'Мои инструкции', icon: FileText },
+  employeeInstructions: { label: 'Инструкции сотрудников', icon: FileText },
   roles: { label: 'Роли', icon: ShieldCheck },
   profiles: { label: 'Специалисты', icon: Bot },
-  datasets: { label: 'Источники', icon: Database },
+  sources: { label: 'Библиотека', icon: Database },
   agent: { label: 'Общие инструкции', icon: FileText },
   knowledgeFastkore: { label: 'База знаний о Fastkore', icon: FileText },
   knowledgeCompany: { label: 'База знаний о компании', icon: Folder },
@@ -87,7 +93,7 @@ async function api<T>(url: string, init: RequestInit = {}, responseType: 'json' 
   const headers = new Headers(init.headers);
   if (browserSession && !['GET', 'HEAD'].includes(init.method ?? 'GET')) headers.set('X-CSRF-Token', csrfToken);
   if (!browserSession && accessKey) headers.set('Authorization', `Bearer ${accessKey}`);
-  if (init.body && !(init.body instanceof FormData)) headers.set('Content-Type', 'application/json');
+  if (init.body && !(init.body instanceof FormData) && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json');
   try {
     const response = await fetchApi(url, { ...init, headers });
     const blob = response.ok && responseType === 'blob';
@@ -121,9 +127,13 @@ async function copy(text: string) {
   const ok = document.execCommand('copy'); area.remove(); if (!ok) throw new Error('Выделите и скопируйте текст вручную.');
 }
 const requestId = () => globalThis.crypto?.randomUUID?.() ?? `web-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+const focusControls = 'a, button, input, textarea, select, label, summary, dialog, [contenteditable], [tabindex], [role="button"], [role="option"]';
 
 function App() {
   const [embedded] = useState(() => new URLSearchParams(location.search).get('embedded') === 'fastkore');
+  const [interfaceScale, setInterfaceScale] = useState<InterfaceScale>(100);
+  const [scalePendingEpoch, setScalePendingEpoch] = useState<number>();
+  const savingScale = scalePendingEpoch === authEpoch;
   const [browserTheme, setBrowserTheme] = useState<Theme>(() => localStorage.getItem('bridge-theme') === 'light' ? 'light' : 'dark');
   const [initialErpTheme] = useState<Theme>(() => new URLSearchParams(location.search).get('theme') === 'dark' ? 'dark' : 'light');
   const [erpTheme, setErpTheme] = useState<{ theme: Theme } | null>(null);
@@ -145,16 +155,24 @@ function App() {
   const [openProjects, setOpenProjects] = useState<Record<string, boolean>>({});
   const [showAll, setShowAll] = useState<Record<string, boolean>>({});
   const [projectId, setProjectId] = useState(localStorage.getItem('bridge-project') ?? ''), [chatId, setChatId] = useState(embedded ? '' : localStorage.getItem('bridge-chat') ?? '');
+  const projectPicker = useRef<SelectHandle>(null);
+  const [projectRequested, setProjectRequested] = useState(false);
+  useEffect(() => { setProjectRequested(false); }, [projectId, chatId, contextVersion]);
   const [drafts, setDrafts] = useState<Record<string, string>>({}), [files, setFiles] = useState<Record<string, Attachment[]>>({});
   const [specialists, setSpecialists] = useState<Record<string, string | undefined>>({});
-  const [panel, setPanel] = useState<'settings' | 'project' | 'project-files' | 'project-agents' | 'search' | 'archive' | 'related' | 'rename-chat' | 'reset-chat' | null>(null);
+  const [panel, setPanel] = useState<'settings' | 'project' | 'project-files' | 'project-agents' | 'project-sources' | 'rename-project' | 'search' | 'archive' | 'related' | 'rename-chat' | 'reset-chat' | null>(null);
   const [renameDraft, setRenameDraft] = useState<{ projectId: string; chatId: string; title: string; destinationId?: string }>();
   const [modelPreview, setModelPreview] = useState<{ name: string; url: string; format: PreviewModelFormat }>();
   const projectFromComposer = useRef(false);
   const [projectActionTarget, setProjectActionTarget] = useState<ProjectSummary | null>(null);
+  const [sourceProfileId, setSourceProfileId] = useState<string>();
+  const [renameProjectName, setRenameProjectName] = useState('');
+  const projectActionFromSettings = useRef(false);
+  const [initialSpecialistId, setInitialSpecialistId] = useState<string>();
   const [settingsSection, setSettingsSection] = useState<SettingsSection>('team');
   const [instructionsDraft, setInstructionsDraft] = useState<string>();
   const [knowledgeDirty, setKnowledgeDirty] = useState(false);
+  const [personalDirty, setPersonalDirty] = useState(false);
   const savedInstructions = status?.settings.agentInstructions ?? DEFAULT_AGENT_INSTRUCTIONS;
   const agentInstructions = instructionsDraft ?? savedInstructions;
   const openedFastkoreSettings = useRef(false);
@@ -173,13 +191,13 @@ function App() {
   const modelLoads = useRef(0);
   const [cliPath, setCliPath] = useState(''), [diagnostics, setDiagnostics] = useState(''), [subscription, setSubscription] = useState<Run | null>(null);
   const input = useRef<HTMLTextAreaElement>(null), fileInput = useRef<HTMLInputElement>(null), end = useRef<HTMLDivElement>(null);
+  const focusedComposer = useRef<HTMLTextAreaElement | null>(null);
   const scroll = useRef<HTMLDivElement>(null), stick = useRef(true), loadingSettings = useRef(false);
   const sending = useRef(false);
   const sendAttempt = useRef<{ chatId: string; content: string; requestId: string } | null>(null);
   const relatedDraftKey = currentErpContext.current.active && erpChatKey ? 'erp:' + erpChatKey : '';
   const draftSlot = chatId || relatedDraftKey;
   const selectedProject = projects.find(p => p.id === projectId), draft = drafts[draftSlot] ?? '', attachments = files[chatId] ?? [];
-  const selectedChatSummary = chatLists[projectId]?.find(item => item.id === chatId);
   const specialistKey = draftSlot || 'new:' + projectId;
   const specialistId = specialists[specialistKey];
   const activeRuns = status?.activeRuns ?? (status?.activeRun ? [status.activeRun] : []);
@@ -203,19 +221,24 @@ function App() {
     ? /активный аккаунт|Модель недоступна/.test(status.cli?.status ?? '') ? status.cli!.status
       : status.cli?.authentication === 'signed-out' ? 'Требуется вход в аккаунт на исполнителе.' : 'Исполнитель модели недоступен.'
     : '';
-  const canCreateProject = isAdmin || status?.canCreateProject === true;
+  const canCreateProject = status?.canCreateProject ?? (isAdmin && authSource === 'local');
   const currentAgent = chat ? agents.find(agent => agent.id === (chat.agentProfileId ?? 'universal')) : undefined;
   const messageAgent = chatId ? currentAgent : availableAgents.find(agent => agent.id === newAgent);
   const otherSpecialists = availableAgents.filter(agent => agent.id !== 'universal' && agent.id !== messageAgent?.id);
   const chatConsultants = otherSpecialists.filter(agent => chat?.consultantIds?.includes(agent.id));
   const availableConsultants = otherSpecialists.filter(agent => !chatConsultants.includes(agent));
+  const unavailableConsultant = agents.find(agent => agent.id !== 'universal' && agent.id !== messageAgent?.id && !agent.available && agent.unavailableReason);
   const canAttach = canEdit && messageAgent?.available === true && messageAgent.toolIds.includes('chat-files');
   const canReadFastkore = !!projectId && messageAgent?.toolIds.includes('fastkore') === true;
   const canStartChat = !chatId && !!newAgent && !!selectedProject;
+  const canPromptForProject = !!status && !chatId && !projectId && !(relatedLoading && currentErpContext.current.active);
   const canSend = !!status && !(relatedLoading && currentErpContext.current.active) && !status.executionDisabled && !codexUnavailable && (!canReadFastkore || !contextProblem || !!currentErpContext.current.snapshot) && (!attachments.length || canAttach)
     && !!messageAgent?.available && (!specialistId || otherSpecialists.some(agent => agent.id === specialistId)) && (chatId ? canEdit : canStartChat);
   const canManageSettings = isAdmin && !inFastkore;
-  const visibleSettingsSections = (Object.keys(settingsSections) as SettingsSection[]).filter(section => canManageSettings);
+  const canManageProjects = canManageSettings && authSource === 'local';
+  const visibleSettingsSections = (Object.keys(settingsSections) as SettingsSection[]).filter(section =>
+    section === 'projects' || section === 'employeeInstructions' ? canManageProjects : canManageSettings || section === 'personal');
+  const instructionSettings = settingsSection === 'personal' || settingsSection === 'employeeInstructions';
   const relatedPanelOpen = panel === 'related';
   useEffect(() => {
     if (!loggedIn || !isAdmin || authSource !== 'local' || inFastkore || setupRequired || openedFastkoreSettings.current) return;
@@ -256,6 +279,7 @@ function App() {
       if (!alive) return;
       if (value?.authentication?.source === 'fastkore') {
         clearLogin();
+        setInterfaceScale(value.interfaceScale ?? 100);
         browserSession = true; csrfToken = value.authentication.csrfToken; sessionUserId = value.user.id;
         setErpAuth(value.authentication); setAuthSource('fastkore'); setUser(value.user); setSetupRequired(false); setLoggedIn(true);
       } else if (!embedded) setLoggedIn(!!accessKey);
@@ -270,15 +294,19 @@ function App() {
   async function login(local = false) {
     await action(async () => {
       const result = local ? await api<{ token: string; user: User }>('/api/local-login', { method: 'POST', headers: { 'X-Bridge-Local': '1' } }) : await post<{ token: string; user: User }>('/api/auth/login', { username: loginInput, password: passwordInput });
-      saveToken(result.token); setAuthSource('local'); const me = await api<{ user: User; setupRequired: boolean }>('/api/auth/me'); setUser(me.user); setSetupRequired(me.setupRequired); setLoggedIn(true); setPasswordInput('');
+      saveToken(result.token); setAuthSource('local');
+      const me = await api<{ user: User; setupRequired: boolean; interfaceScale: InterfaceScale }>('/api/auth/me');
+      setInterfaceScale(me.interfaceScale ?? 100); setUser(me.user); setSetupRequired(me.setupRequired); setLoggedIn(true); setPasswordInput('');
     });
   }
   useEffect(() => {
-    if (!loggedIn || authSource === 'fastkore') return;
+    if (!loggedIn || authSource === 'fastkore' || user) return;
     let alive = true;
-    api<{ user: User; setupRequired: boolean }>('/api/auth/me').then(me => { if (alive) { setUser(me.user); setSetupRequired(me.setupRequired); } }).catch(e => { if (alive) fail(e); });
+    api<{ user: User; setupRequired: boolean; interfaceScale: InterfaceScale }>('/api/auth/me').then(me => {
+      if (alive) { setInterfaceScale(me.interfaceScale ?? 100); setUser(me.user); setSetupRequired(me.setupRequired); }
+    }).catch(e => { if (alive) fail(e); });
     return () => { alive = false; };
-  }, [loggedIn, authSource]);
+  }, [loggedIn, authSource, user?.id]);
   useEffect(() => {
     const host = inFastkore ? webViewHost() : undefined;
     if (!host) return;
@@ -571,7 +599,7 @@ function App() {
       currentErpContext.current.active = !!key;
       navigateTo(p, created.id);
       setChat(created);
-      setPanel(panel => panel === 'related' ? null : panel);
+      setPanel(current => current === 'related' ? null : current);
       input.current?.focus();
     });
   }
@@ -581,19 +609,19 @@ function App() {
       return;
     }
     const { active, key, snapshot } = currentErpContext.current;
-    if (!active || !key || !snapshot) {
+    const context = active && key ? snapshot : undefined;
+    if (!context && !projectRequested) {
       if (active) navigateTo(project);
       else navigateWorkspace(project);
       return;
     }
     const navigation = contextNavigation.current, epoch = authEpoch, previous = selected.current;
-    const { chat: created, projectId: destination } = await createChat(project, snapshot);
+    const { chat: created, projectId: destination } = await createChat(project, context);
     if (authEpoch !== epoch || contextNavigation.current !== navigation || selected.current.projectId !== previous.projectId ||
       selected.current.chatId !== previous.chatId ||
-      !currentErpContext.current.active || currentErpContext.current.key !== key) return;
-    const draftKey = 'erp:' + key;
-    setDrafts(old => ({ ...old, [created.id]: old[draftKey] || old[created.id] || '', [draftKey]: '' }));
-    setSpecialists(old => ({ ...old, [created.id]: old[draftKey] ?? old[created.id], [draftKey]: undefined }));
+      (context && (!currentErpContext.current.active || currentErpContext.current.key !== key))) return;
+    setDrafts(old => ({ ...old, [created.id]: old[draftSlot] || old[created.id] || '', [draftSlot]: '' }));
+    setSpecialists(old => ({ ...old, [created.id]: old[specialistKey] ?? old[created.id], [specialistKey]: undefined }));
     navigateTo(destination, created.id);
     setChat(created);
   }
@@ -664,8 +692,8 @@ function App() {
       }
     });
   }
-  async function toggleChatPin(project = projectId, summary = selectedChatSummary) {
-    if (!summary || pending) return;
+  async function toggleChatPin(project: string, summary: ChatSummary) {
+    if (pending) return;
     const conversation = summary.id;
     await action(async () => {
       const { pinned } = await api<{ pinned: boolean }>(`/api/projects/${project}/chats/${conversation}/pin`, {
@@ -718,10 +746,16 @@ function App() {
   async function send(override?: string) {
     const navigation = contextNavigation.current;
     const text = (override ?? draft).trim();
+    if (!text || pending || sending.current) return;
+    if (canPromptForProject) {
+      setProjectRequested(true);
+      projectPicker.current?.open();
+      return;
+    }
     const link = relatedDraftKey ? currentErpContext.current : undefined;
     const { snapshot, problem } = currentErpContext.current.active || matchesErpChat || (!chat?.linkedToFastkore &&
       (canReadFastkore || otherSpecialists.some(agent => agent.toolIds.includes('fastkore')))) ? currentErpContext.current : {};
-    if (!canSend || (canReadFastkore && problem && !snapshot) || !text || pending || sending.current) return;
+    if (!canSend || (canReadFastkore && problem && !snapshot)) return;
     const attachmentIds = attachments.map(a => a.id);
     sending.current = true;
     try {
@@ -777,16 +811,24 @@ function App() {
     }); if (fileInput.current) fileInput.current.value = '';
   }
   async function copyItem(text: string, label: string) { try { await copy(text); setCopied(label); setTimeout(() => setCopied(''), 1800); } catch (e) { fail(e); } }
+  async function changeInterfaceScale(scale: InterfaceScale) {
+    if (savingScale || scale === interfaceScale) return;
+    const epoch = authEpoch;
+    setScalePendingEpoch(epoch);
+    setInterfaceScale(scale);
+    try {
+      await api('/api/me/preferences', { method: 'PATCH', body: JSON.stringify({ interfaceScale: scale }) });
+    } catch (cause) {
+      if (epoch === authEpoch) { setInterfaceScale(interfaceScale); fail(cause); }
+    } finally {
+      if (epoch === authEpoch) setScalePendingEpoch(undefined);
+    }
+  }
   function showSettings() {
+    setInitialSpecialistId(undefined);
     if (accountMenu.current) accountMenu.current.open = false;
     setSidebarOpen(false);
-    if (!canManageSettings) {
-      setSidebarOpen(false);
-      const access = document.querySelector<HTMLDetailsElement>('.composer-access');
-      if (access) { access.open = true; access.querySelector('summary')?.focus(); }
-      return;
-    }
-    setSettingsSection('team');
+    setSettingsSection(canManageSettings ? 'team' : 'personal');
     setInstructionsDraft(undefined);
     setPanel('settings');
   }
@@ -797,7 +839,8 @@ function App() {
   }
   function chooseSettingsSection(section: SettingsSection) {
     if (section === settingsSection) return;
-    if (knowledgeDirty && !window.confirm('Перейти в другой раздел и удалить несохранённые изменения?')) return;
+    if ((knowledgeDirty || personalDirty) && !window.confirm('Перейти в другой раздел и удалить несохранённые изменения?')) return;
+    setInitialSpecialistId(undefined);
     if (section === 'server') void showServerSettings();
     else setSettingsSection(section);
   }
@@ -859,7 +902,9 @@ function App() {
       { name: 'Fastkore CLI', enabled: canUseChatTools && canReadFastkore && status.toolPermissions?.cli },
       { name: 'Fastkore MCP', enabled: canUseChatTools && canReadFastkore && status.toolPermissions?.mcp },
       { name: 'Веб-поиск', enabled: canUseChatTools && status.toolPermissions?.webSearch,
-        description: 'Поиск в интернете. Для него нужен активный аккаунт GLM Coding Plan.' },
+        description: 'Поиск в интернете.' },
+      { name: 'Чтение страниц', enabled: canUseChatTools && status.toolPermissions?.webRead,
+        description: 'Чтение публичных веб-страниц по ссылке.' },
     ];
     return <div className="chat-access-settings">
       <ul className="settings-records">{permissions.map(({ name, enabled, description }) => <li key={name}>
@@ -884,8 +929,24 @@ function App() {
     ...(serverModel && !catalogOptions.some(model => model.value === serverModel) ? [{ value: serverModel, label: modelName(serverModel) }] : []),
     ...catalogOptions,
   ];
+  function openProjectPanel(project: ProjectSummary, next: 'project-files' | 'project-agents' | 'project-sources' | 'rename-project', trigger: HTMLButtonElement) {
+    trigger.closest('details')?.removeAttribute('open');
+    setError('');
+    projectActionFromSettings.current = panel === 'settings';
+    setProjectActionTarget(project);
+    if (next === 'rename-project') setRenameProjectName(project.name);
+    setPanel(next);
+  }
+  function renderProjectActions(project: ProjectSummary) {
+    return <>
+      <button type="button" className="workspace-row" onClick={event => openProjectPanel(project, 'project-files', event.currentTarget)}><FileText size={15} />Файлы проекта</button>
+      <button type="button" className="workspace-row" onClick={event => openProjectPanel(project, 'project-agents', event.currentTarget)}><Bot size={15} />Специалисты проекта</button>
+      <button type="button" className="workspace-row" onClick={event => openProjectPanel(project, 'project-sources', event.currentTarget)}><Database size={15} />Библиотека</button>
+    </>;
+  }
+  const closeProjectPanel = () => setPanel(projectActionFromSettings.current ? 'settings' : null);
   const closePanel = () => {
-    if (knowledgeDirty && !window.confirm('Закрыть настройки и удалить несохранённые изменения?')) return;
+    if ((knowledgeDirty || personalDirty) && !window.confirm('Закрыть настройки и удалить несохранённые изменения?')) return;
     projectFromComposer.current = false;
     setPanel(null);
   };
@@ -929,16 +990,32 @@ function App() {
   </>;
   const createProjectOption = '+project';
   const showChatConsultants = !!chat && (canEdit || chatConsultants.length > 0);
+  function rememberComposerFocus(event: React.MouseEvent) {
+    const field = input.current;
+    focusedComposer.current = event.button === 0 && field === document.activeElement &&
+      event.target instanceof Element && !event.target.closest(focusControls) ? field : null;
+  }
+  function restoreComposerFocus(event: React.MouseEvent) {
+    const field = focusedComposer.current;
+    focusedComposer.current = null;
+    if (!field || field !== input.current || field.disabled || event.detail === 0 || event.defaultPrevented ||
+        !(event.target instanceof Element) || event.target.closest(focusControls) || window.getSelection()?.isCollapsed === false) return;
+    const active = document.activeElement;
+    if (active !== field && active?.contains(event.target) && !active.closest(focusControls)) field.focus({ preventScroll: true });
+  }
   const composer = <div className="bridge-composer">
-    {chat && !canEdit && <p className="composer-status" role={relatedLoading ? 'status' : 'alert'}>
-      {relatedLoading ? 'Проверяем связь чата с открытым окном Fastkore…' : chat.linkedToFastkore && chat.ownerId === user.id && !chat.archivedAt
-        ? 'Чат связан с другим окном Fastkore. Откройте связанный список или карточку, чтобы продолжить.' : 'Чат доступен для чтения'}
-    </p>}
+    {chat && !canEdit && (relatedLoading
+      ? <p className="composer-status" role="status">Проверяем связь чата с открытым окном Fastkore…</p>
+      : chat.linkedToFastkore && chat.ownerId === user.id && !chat.archivedAt
+        ? <LinkedFastkoreNotice key={chat.id} />
+        : <p className="composer-status" role="alert">Чат доступен для чтения</p>)}
     {codexNotice && draftEditable && <p className="composer-status" role="status">{codexNotice} Можно подготовить черновик.</p>}
     {canReadFastkore && contextProblem && <p className="composer-status" role="alert">{contextProblem}</p>}
     {!!attachments.length && !canAttach && <p className="composer-status" role="status">Удалите вложения из черновика. Агенту сейчас не разрешено их читать.</p>}
     {canReadFastkore && inFastkore && status?.fastkoreToolsStatus === 'reauth' && <p className="composer-status" role="status">Для доступа к ERP откройте помощника из Fastkore заново.</p>}
-    {!projectId && status && !canCreateProject && !projects.length && <p className="composer-status">Для отправки администратор должен дать вам доступ к проекту.</p>}
+    {canPromptForProject && projectRequested ? <p className="composer-status" role="alert">
+      {projects.length || canCreateProject ? 'Выберите проект, чтобы отправить сообщение.' : 'Нет доступных проектов. Попросите администратора дать доступ к проекту.'}
+    </p> : !projectId && status && !canCreateProject && !projects.length && <p className="composer-status">Для отправки администратор должен дать вам доступ к проекту.</p>}
     {agentCatalog?.projectId === projectId && chat && canEdit && !currentAgent?.available && <p className="composer-status">{currentAgent?.unavailableReason ?? 'Агент этого чата вам сейчас недоступен.'}</p>}
     {agentCatalog?.projectId === projectId && !chatId && status && (projectId || canCreateProject) && !availableAgents.length && <p className="composer-status">Для нового чата нужен доступ к агенту проекта.</p>}
     {chatQueuedRuns.map(run => <div className="bridge-progress queued-message" key={run.id}>
@@ -964,7 +1041,7 @@ function App() {
     {(!hasMessages || showChatConsultants) && <div className="composer-project">
       {!hasMessages && <div className="composer-project-picker">
         <Folder size={17} aria-hidden="true" />
-        <Select label="Проект" placeholder="Выберите проект" value={projectId}
+        <Select ref={projectPicker} label="Проект" placeholder="Выберите проект" value={projectId}
           disabled={pending || (relatedLoading && !!relatedDraftKey) || (!!chatId && !canEditChatDetails)}
           onChange={project => {
             if (project === createProjectOption) {
@@ -987,11 +1064,14 @@ function App() {
             <X size={13} />
           </button>}
         </span>)}
-        {canEdit && <Select className="chat-consultants-select" label="Подключить специалиста" placeholder="Подключить специалиста"
-          value="" disabled={pending} onChange={id => void changeChatConsultants([...chatConsultants.map(item => item.id), id])}
-          options={availableConsultants.length ? availableConsultants.map(agent => ({ value: agent.id, label: agent.name })) : [{
-            value: 'unavailable', disabled: true, label: otherSpecialists.length ? 'Все специалисты подключены' : 'Нет доступных дополнительных специалистов',
-          }]} />}
+        {canEdit && (availableConsultants.length > 0
+          ? <Select className="chat-consultants-select" label="Подключить специалиста" placeholder="Подключить специалиста"
+            value="" disabled={pending} onChange={id => void changeChatConsultants([...chatConsultants.map(item => item.id), id])}
+            options={availableConsultants.map(agent => ({ value: agent.id, label: agent.name }))} />
+          : agentCatalog?.projectId === projectId && <span className="chat-consultant-notice">
+            {otherSpecialists.length ? 'Все доступные специалисты подключены' : unavailableConsultant
+              ? `${unavailableConsultant.name}: ${unavailableConsultant.unavailableReason}` : 'Нет доступных дополнительных специалистов'}
+          </span>)}
       </div>}
     </div>}
     <div className="bridge-editor">
@@ -1030,14 +1110,18 @@ function App() {
               if (shouldSend) void send(content);
               if (!shouldSend) requestAnimationFrame(() => input.current?.focus());
             }} onError={fail} />}
-          <button className="bridge-send" aria-label={chatBusy ? 'Добавить в очередь' : 'Отправить вопрос'} title={codexNotice || (chatBusy ? 'В очередь · Enter' : 'Отправить · Enter')} onClick={() => void send()} disabled={!canSend || !draft.trim() || pending}><ArrowUp size={18} /></button>
+          <button className="bridge-send" aria-label={chatBusy ? 'Добавить в очередь' : 'Отправить вопрос'}
+            title={canPromptForProject ? 'Выбрать проект · Enter' : codexNotice || (chatBusy ? 'В очередь · Enter' : 'Отправить · Enter')}
+            onClick={() => void send()} disabled={(!canSend && !canPromptForProject) || !draft.trim() || pending}><ArrowUp size={18} /></button>
         </div>
       </div>} />
     </div>
     {!chatId && canCreate && <button className="empty-new-chat" onClick={() => void newChat()}><SquarePen size={15} />Создать чат</button>}
   </div>;
 
-  return <div className="workspace-shell" data-theme={theme} data-fastkore={inFastkore ? '' : undefined}>
+  return <div className="workspace-shell" data-theme={theme} data-fastkore={inFastkore ? '' : undefined}
+    style={{ '--interface-scale': interfaceScale / 100 } as React.CSSProperties}
+    onMouseDownCapture={rememberComposerFocus} onClick={restoreComposerFocus}>
     {sidebarOpen && <button className="workspace-scrim" aria-label="Закрыть навигацию" onClick={() => setSidebarOpen(false)} />}
     <aside id="workspace-sidebar" className={'workspace-sidebar' + (sidebarOpen ? ' is-open' : '') + (sidebarCollapsed ? ' is-collapsed' : '')} aria-label="Боковая панель">
       <div className="workspace-brand"><span className="workspace-mark"><Terminal size={16} /></span><b>Agentic Platform</b>
@@ -1062,10 +1146,10 @@ function App() {
         {projects.map(project => {
           const open = openProjects[project.id] ?? project.id === projectId;
           const list = chatLists[project.id] ?? [];
-          const canManageProject = isAdmin && authSource === 'local' && !inFastkore;
           const pinned = list.filter(item => item.pinned);
           const recent = list.filter(item => !item.pinned);
           const visible = [...pinned, ...(showAll[project.id] ? recent : recent.slice(0, 5))];
+          const canManageProject = canManageProjects;
           const newChatDisabled = pending || (project.id === projectId && !newAgent);
           return <div key={project.id} className="project-group">
             <div className="project-line">
@@ -1083,43 +1167,36 @@ function App() {
               }}>
                 <summary className="workspace-icon" aria-label={'Действия проекта ' + project.name} title="Действия проекта"><EllipsisVertical size={16} /></summary>
                 <div className="project-actions-menu">
-                  <button className="workspace-row" disabled={newChatDisabled} onClick={e => {
-                    const menu = e.currentTarget.closest('details');
-                    if (menu) menu.open = false;
+                  <button type="button" className="workspace-row" disabled={newChatDisabled} onClick={event => {
+                    event.currentTarget.closest('details')?.removeAttribute('open');
                     void newChat(project.id, false);
                   }}><SquarePen size={15} />Новый чат</button>
-                  <button className="workspace-row" onClick={e => {
-                    const menu = e.currentTarget.closest('details');
-                    if (menu) menu.open = false;
-                    setProjectActionTarget(project);
-                    setPanel('project-files');
-                  }}><FileText size={15} />Файлы проекта</button>
-                  <button className="workspace-row" onClick={e => {
-                    const menu = e.currentTarget.closest('details');
-                    if (menu) menu.open = false;
-                    setProjectActionTarget(project);
-                    setPanel('project-agents');
-                  }}><Bot size={15} />Агенты проекта</button>
+                  {renderProjectActions(project)}
+                  <button type="button" className="workspace-row" onClick={event => openProjectPanel(project, 'rename-project', event.currentTarget)}><Pencil size={15} />Переименовать проект</button>
                 </div>
               </details>}
             </div>
             {open && <div className="project-chat-list" id={'chats-' + project.id}>
-              {visible.map(item => <div key={item.id} className="chat-row-container">
-                <button type="button" className="workspace-row chat-row" aria-current={item.id === chatId ? 'page' : undefined}
-                onClick={() => navigateWorkspace(project.id, item.id)} title={chatTooltip(item)}>
-                {item.pinned && <Pin size={13} className="chat-row-pin" aria-label="Закреплённый чат" />}
-                <span>{item.title}</span>
-                <span className="chat-row-time">{activeRuns.some(run => run.status === 'running' && run.projectId === project.id && run.chatId === item.id) ? <LoaderCircle size={13} className="spin" /> : <time dateTime={item.updatedAt}>{shortDate(item.updatedAt)}</time>}</span>
-                </button>
-                <div className="chat-row-actions">
-                  <button type="button" className="workspace-icon" title={item.pinned ? 'Открепить чат' : 'Закрепить чат'}
-                    aria-label={(item.pinned ? 'Открепить чат «' : 'Закрепить чат «') + item.title + '»'} aria-pressed={!!item.pinned}
-                    disabled={pending} onClick={() => void toggleChatPin(project.id, item)}><Pin size={14} /></button>
-                  {(isAdmin || item.ownerId === user.id && item.messageCount === 0) && <button type="button" className="workspace-icon" title={item.messageCount === 0 ? 'Удалить пустой чат' : 'Архивировать чат'} aria-label={(item.messageCount === 0 ? 'Удалить пустой чат «' : 'Архивировать чат «') + item.title + '»'}
-                    disabled={pending || [...activeRuns, ...queuedRuns].some(run => run.projectId === project.id && run.chatId === item.id)}
-                    onClick={() => void (item.messageCount === 0 ? deleteEmptyChat(project.id, item.id) : archiveChat(project.id, item.id))}>{item.messageCount === 0 ? <Trash2 size={14} /> : <Archive size={14} />}</button>}
+              {visible.map((item, index) => <React.Fragment key={item.id}>
+                {pinned.length > 0 && index === pinned.length && <hr className="project-chat-divider" />}
+                <div className="chat-row-container">
+                  <button type="button" className="workspace-row chat-row" aria-current={item.id === chatId ? 'page' : undefined}
+                    onClick={() => navigateWorkspace(project.id, item.id)} title={chatTooltip(item)}>
+                    {item.pinned && <Pin size={13} className="chat-row-pin" aria-label="Закреплённый чат" />}
+                    <span>{item.title}</span>
+                    <span className="chat-row-time">{activeRuns.some(run => run.status === 'running' && run.projectId === project.id && run.chatId === item.id) ? <LoaderCircle size={13} className="spin" /> : <time dateTime={item.updatedAt}>{shortDate(item.updatedAt)}</time>}</span>
+                  </button>
+                  <div className="chat-row-actions">
+                    <button type="button" className="workspace-icon" title={item.pinned ? 'Открепить чат' : 'Закрепить чат'}
+                      aria-label={(item.pinned ? 'Открепить чат «' : 'Закрепить чат «') + item.title + '»'} aria-pressed={!!item.pinned}
+                      disabled={pending} onClick={() => void toggleChatPin(project.id, item)}><Pin size={14} /></button>
+                    {(isAdmin || item.ownerId === user.id && item.messageCount === 0) && <button type="button" className="workspace-icon" title={item.messageCount === 0 ? 'Удалить пустой чат' : 'Архивировать чат'} aria-label={(item.messageCount === 0 ? 'Удалить пустой чат «' : 'Архивировать чат «') + item.title + '»'}
+                      disabled={pending || [...activeRuns, ...queuedRuns].some(run => run.projectId === project.id && run.chatId === item.id)}
+                      onClick={() => void (item.messageCount === 0 ? deleteEmptyChat(project.id, item.id) : archiveChat(project.id, item.id))}>
+                      {item.messageCount === 0 ? <Trash2 size={14} /> : <Archive size={14} />}</button>}
+                  </div>
                 </div>
-              </div>)}
+              </React.Fragment>)}
               {recent.length > 5 && <button className="workspace-row show-chats" onClick={() => setShowAll(old => ({ ...old, [project.id]: !old[project.id] }))}>{showAll[project.id] ? 'Свернуть' : 'Показать ещё'}</button>}
             </div>}
           </div>;
@@ -1153,10 +1230,6 @@ function App() {
           <div className="workspace-chat-title">
             <Folder size={17} aria-label={selectedProject?.name} />
             <h1 title={chatTooltip(chat)}>{chat.title}</h1>
-            {!chat.archivedAt && <button type="button" className="workspace-icon chat-pin-button"
-              aria-label="Закрепить чат" aria-pressed={!!selectedChatSummary?.pinned}
-              title={selectedChatSummary?.pinned ? 'Открепить чат' : 'Закрепить чат'} disabled={pending || !selectedChatSummary}
-              onClick={() => void toggleChatPin()}><Pin size={15} aria-hidden="true" /></button>}
             {canEditChatDetails && <button type="button" className="workspace-icon chat-rename-button"
               aria-label="Переименовать чат" title="Переименовать чат" disabled={pending} onClick={() => {
                 setError('');
@@ -1164,6 +1237,7 @@ function App() {
                 setPanel('rename-chat');
               }}><Pencil size={15} /></button>}
           </div>
+          {projectId && <Suspense fallback={null}><ChatSourceScope request={api} projectId={projectId} chatId={chat.id} canSwitch={canEdit} revision={chat.messages.length} /></Suspense>}
           <div className="chat-access" title={dateTooltip(chat.updatedAt, chat.ownerName)}>
             {isAdmin && !chat.linkedToFastkore ? <Select label="Видимость чата" value={chat.visibility ?? 'private'} disabled={pending}
               onChange={visibility => void changeVisibility(visibility as 'private' | 'project')}
@@ -1180,6 +1254,10 @@ function App() {
           {!sharedContextHistory && <button type="button" className="workspace-icon" title="Создать новый чат по этому контексту" aria-label="Создать новый чат по этому контексту"
             disabled={pending || relatedLoading || !newAgent || (!projectId && !canCreateProject)} onClick={() => void newChat(projectId, true)}><SquarePen size={17} /></button>}
         </div>}
+        <select className="workspace-scale" aria-label="Масштаб интерфейса" title="Масштаб интерфейса"
+          value={interfaceScale} disabled={savingScale} onChange={event => void changeInterfaceScale(Number(event.currentTarget.value) as InterfaceScale)}>
+          {interfaceScales.map(scale => <option key={scale} value={scale}>{scale}%</option>)}
+        </select>
         {themeButton}
       </header>
       {!embedded && chat?.erpContext && <div className="workspace-context">{chat.erpContext.entityType} / {chat.erpContext.entityId}</div>}
@@ -1254,11 +1332,11 @@ function App() {
         {!searchLoading && !searchable.length && <p className="composer-status">Ничего не найдено</p>}
       </div>
     </WorkspaceDialog>}
-    {panel === 'project' && <WorkspaceDialog title="Новый проект" className="workspace-project-form" close={closePanel}>
+    {panel === 'project' && canCreateProject && <WorkspaceDialog title="Новый проект" className="workspace-project-form" close={closePanel}>
       <form onSubmit={e => { e.preventDefault(); void action(async () => {
         const selectForChat = projectFromComposer.current || (!!relatedDraftKey && !chatId);
         const previous = selected.current, navigation = contextNavigation.current;
-        const p = await post<ProjectSummary>('/api/projects', { ...(folderPath.trim() && isAdmin ? { directory: folderPath.trim() } : {}), ...(projectName.trim() ? { name: projectName.trim() } : {}) });
+        const p = await post<ProjectSummary>('/api/projects', { ...(folderPath.trim() && canManageProjects ? { directory: folderPath.trim() } : {}), ...(projectName.trim() ? { name: projectName.trim() } : {}) });
         setProjects(await api('/api/projects'));
         closePanel(); setFolderPath(''); setProjectName('');
         if (selected.current.projectId !== previous.projectId || selected.current.chatId !== previous.chatId ||
@@ -1267,18 +1345,51 @@ function App() {
         else navigateTo(p.id);
       }); }}>
         <label htmlFor="project-name">Название проекта</label>
-        <input id="project-name" value={projectName} onChange={e => setProjectName(e.target.value)} required={!isAdmin || !folderPath.trim()} maxLength={100} autoFocus />
-        {isAdmin && <><label htmlFor="directory">Папка на сервере <span>необязательно</span></label><input id="directory" value={folderPath} onChange={e => setFolderPath(e.target.value)} placeholder={status?.executionDisabled ? '/projects/Финансы' : 'C:\\Проекты\\Финансы'} /></>}
+        <input id="project-name" value={projectName} onChange={e => setProjectName(e.target.value)} required={!canManageProjects || !folderPath.trim()} maxLength={100} autoFocus />
+        {canManageProjects && <><label htmlFor="directory">Папка на сервере <span>необязательно</span></label><input id="directory" value={folderPath} onChange={e => setFolderPath(e.target.value)} placeholder={status?.executionDisabled ? '/projects/Финансы' : 'C:\\Проекты\\Финансы'} /></>}
         {error && <div className="inline-error" role="alert">{error}</div>}
-        <button className="primary w-full" disabled={pending}>{folderPath.trim() && isAdmin ? 'Подключить папку' : 'Создать проект'}</button>
+        <button className="primary w-full" disabled={pending}>{folderPath.trim() && canManageProjects ? 'Подключить папку' : 'Создать проект'}</button>
       </form>
     </WorkspaceDialog>}
-    {panel === 'project-files' && projectActionTarget && isAdmin && authSource === 'local' && !inFastkore &&
-      <ProjectFilesDialog key={projectActionTarget.id} project={projectActionTarget} request={api} download={url => api<Blob>(url, {}, 'blob')} close={closePanel} />}
-    {panel === 'project-agents' && projectActionTarget && isAdmin && authSource === 'local' && !inFastkore &&
-      <ProjectAgentsDialog key={projectActionTarget.id} project={projectActionTarget} request={api} close={closePanel} />}
-    {panel === 'settings' && canManageSettings && <WorkspaceDialog title="Настройки" className="workspace-settings" close={closePanel}>
-      <div className="settings-layout">
+    {panel === 'rename-project' && projectActionTarget && canManageProjects && <WorkspaceDialog title="Переименовать проект" className="workspace-chat-rename"
+      close={() => { if (!pending) closeProjectPanel(); }}>
+      <form onSubmit={event => { event.preventDefault(); void action(async () => {
+        const { id } = projectActionTarget;
+        const { name } = await api<{ name: string }>('/api/projects/' + encodeURIComponent(id), {
+          method: 'PATCH', body: JSON.stringify({ name: renameProjectName.trim() }),
+        });
+        setProjects(items => items.map(project => project.id === id ? { ...project, name } : project));
+        setRelatedChats(chats => chats && { ...chats, list: chats.list.map(chat => chat.projectId === id ? { ...chat, projectName: name } : chat) });
+        closeProjectPanel();
+      }); }}>
+        <label htmlFor="rename-project-name">Название проекта</label>
+        <input id="rename-project-name" data-dialog-focus value={renameProjectName} onChange={event => setRenameProjectName(event.target.value)}
+          onFocus={event => event.currentTarget.select()} required maxLength={100} disabled={pending} />
+        {error && <p className="inline-error" role="alert">{error}</p>}
+        <div className="settings-dialog-actions">
+          <button type="button" className="secondary" onClick={closeProjectPanel} disabled={pending}>Отмена</button>
+          <button type="submit" className="primary" disabled={pending || !renameProjectName.trim() || renameProjectName.trim() === projectActionTarget.name}>Сохранить</button>
+        </div>
+      </form>
+    </WorkspaceDialog>}
+    {panel === 'project-files' && projectActionTarget && canManageProjects &&
+      <ProjectFilesDialog key={projectActionTarget.id} project={projectActionTarget} request={api} download={url => api<Blob>(url, {}, 'blob')} close={closeProjectPanel} />}
+    {panel === 'project-sources' && projectActionTarget && canManageProjects && <Suspense fallback={null}>
+      <ProjectSourcesDialog key={projectActionTarget.id + (sourceProfileId ?? '')} project={projectActionTarget} request={api} close={() => { setSourceProfileId(undefined); closeProjectPanel(); }} isAdmin={isAdmin} initialProfileId={sourceProfileId} /></Suspense>}
+    {panel === 'project-agents' && projectActionTarget && canManageProjects &&
+      <ProjectSpecialistsDialog key={projectActionTarget.id} project={projectActionTarget} request={api} close={closeProjectPanel}
+        openSources={profileId => { setSourceProfileId(profileId); setPanel('project-sources'); }}
+        openSpecialist={id => {
+          setInitialSpecialistId(id);
+          setSettingsSection('profiles');
+          setPanel('settings');
+        }} />}
+    {panel === 'settings' && visibleSettingsSections.includes(settingsSection) && <WorkspaceDialog title="Настройки"
+      className={'workspace-settings' + (instructionSettings ? ' personal-instructions-dialog' : '')} close={closePanel}
+      back={instructionSettings && visibleSettingsSections.length > 1 ? () => chooseSettingsSection('team') : undefined}>
+      {instructionSettings ? <PersonalInstructionsPanel key={user.id + settingsSection} request={api} project={selectedProject}
+        erp={authSource === 'fastkore'} context={currentErpContext.current.snapshot}
+        administration={settingsSection === 'employeeInstructions'} dirtyChanged={setPersonalDirty} /> : <div className="settings-layout">
         <nav aria-label="Разделы настроек" className="settings-nav">
           {visibleSettingsSections.map(section => {
             const { label, icon: Icon } = settingsSections[section];
@@ -1298,9 +1409,20 @@ function App() {
           <Suspense fallback={<p role="status">Загрузка…</p>}>
           {settingsSection === 'account' && <AccountPanel request={api} renewed={saveToken} fastkore={authSource === 'fastkore'} />}
           {settingsSection === 'team' && <TeamPanel request={api} projectId={projectId} projectName={selectedProject?.name ?? ''} self={user} />}
+          {settingsSection === 'projects' && <ul className="agent-card-list">
+            {projects.map(project => <li className="agent-card" key={project.id}>
+              <div className="settings-project-title">
+                <Folder size={16} aria-hidden="true" /><strong>{project.name}</strong>
+                <button type="button" className="workspace-icon" aria-label={'Переименовать проект ' + project.name} title="Переименовать проект"
+                  onClick={event => openProjectPanel(project, 'rename-project', event.currentTarget)}><Pencil size={15} aria-hidden="true" /></button>
+              </div>
+              <div className="settings-project-actions">{renderProjectActions(project)}</div>
+            </li>)}
+            {!projects.length && <li className="help">Проектов пока нет.</li>}
+          </ul>}
           {settingsSection === 'roles' && <ErpRolesPanel request={api} />}
-          {settingsSection === 'datasets' && <CorporatePanel request={api} section={settingsSection} />}
-          {settingsSection === 'profiles' && <SpecialistsPanel request={api} globalInstructions={savedInstructions} />}
+          {settingsSection === 'sources' && <SourcesPanel request={api} />}
+          {settingsSection === 'profiles' && <SpecialistsPanel request={api} globalInstructions={savedInstructions} initialProfileId={initialSpecialistId} />}
           {settingsSection === 'audit' && <AuditPanel request={api} />}
           {settingsSection === 'usage' && <UsagePanel request={api} />}
           {settingsSection === 'fastkore' && <FastkorePanel request={api} />}
@@ -1319,23 +1441,23 @@ function App() {
           {settingsSection === 'server' && <>
             {status?.isolatedCodex && authSource === 'local' && !inFastkore && <ExecutionAccountsPanel request={api} busy={busy || pending}
               changed={async () => { await post('/api/cli/check'); setStatus(await api('/api/status')); await loadModels(true); }} />}
-            {!projects.length && <section className="setting-section"><h3>История настольной версии</h3><button className="secondary w-full" disabled={pending || busy} onClick={() => void action(async () => {
+            {canManageProjects && !projects.length && <section className="setting-section"><h3>История настольной версии</h3><button className="secondary w-full" disabled={pending || busy} onClick={() => void action(async () => {
               await post('/api/migrations/desktop'); setProjects(await api('/api/projects')); setStatus(await api('/api/status')); closePanel();
             })}>Перенести проекты и историю</button></section>}
             <section className="setting-section"><h3>Адрес сервера</h3>
               {status?.addresses.map(url => <button key={url} className="copy-row" onClick={() => void copyItem(url, url)}><code>{url}</code>{copied === url ? <Check size={14} /> : <Copy size={14} />}</button>)}
             </section>
-            <section className="setting-section"><h3>Исполнитель модели</h3>
+            {status && !status.isolatedCodex && <section className="setting-section"><h3>Исполнитель модели</h3>
               <p className="settings-status">{status?.cli?.authentication === 'google' ? 'Подключён Gemini CLI через Google' : status?.cli?.authentication === 'chatgpt' ? 'Подключён через ChatGPT' : status?.cli?.authentication === 'glm' ? 'Подключён GLM (Z.ai) по ключу Coding Plan' : status?.cli?.authentication === 'api-key' ? 'API-ключ · выполнение отключено' : 'Исполнитель не подключён'}</p>
-              {status?.isolatedCodex ? <p className="help">Отдельный исполнитель</p>
-                : <><label htmlFor="cli-path">Путь к Codex CLI</label><input id="cli-path" value={cliPath} onChange={e => setCliPath(e.target.value)} placeholder="Автоопределение" disabled={busy} /></>}
+              <label htmlFor="cli-path">Путь к Codex CLI</label>
+              <input id="cli-path" value={cliPath} onChange={e => setCliPath(e.target.value)} placeholder="Автоопределение" disabled={busy} />
               <div className="settings-actions">
-                {!status?.isolatedCodex && <button className="secondary" disabled={pending || busy} onClick={() => void saveSettings({ cliPath: cliPath.trim() })}>Сохранить</button>}
+                <button className="secondary" disabled={pending || busy} onClick={() => void saveSettings({ cliPath: cliPath.trim() })}>Сохранить</button>
                 <button className="secondary" disabled={pending || busy} onClick={() => void action(async () => { await post('/api/cli/check'); setStatus(await api('/api/status')); })}>Проверить</button>
                 <button className="secondary" disabled={pending || busy || !!codexNotice} onClick={() => void action(async () => { setSubscription(await post<Run>('/api/subscription/check')); })}>Проверить подписку</button>
               </div>
               {subscription && <p role="status">{subscription.error ?? subscription.response ?? subscription.progress}</p>}
-            </section>
+            </section>}
             <section className="setting-section">
               <div className="settings-model-row">
                 <label htmlFor="server-model">Модель по умолчанию</label>
@@ -1387,13 +1509,23 @@ function App() {
           </>}
           </div>
         </section>
-      </div>
+      </div>}
     </WorkspaceDialog>}
   </div>;
 }
 
 const remainingPercent = (used: number) => Math.min(100, Math.max(0, 100 - used));
 const limitPercentFormat = new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 2 });
+
+function LinkedFastkoreNotice() {
+  const [showHint, setShowHint] = useState(false);
+  return <p className="composer-status" role="status">
+    Чат связан с другим окном Fastkore.{' '}
+    <button type="button" className="composer-status-link" aria-label="Открыть в Fastkore"
+      onClick={() => setShowHint(true)}>Открыть</button>
+    {showHint && ' · Переход пока недоступен. Откройте связанный список или карточку вручную.'}
+  </p>;
+}
 
 function ModelPicker({ request, unavailableReason, revision, model, options, effort, levels, disabled, onModel, onEffort }: {
   request: typeof api; unavailableReason: string; revision?: number; model: string;

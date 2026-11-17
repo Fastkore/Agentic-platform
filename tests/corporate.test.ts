@@ -155,7 +155,10 @@ test('Fastkore v1 history follows the desktop key and keeps queued snapshots on 
     assert.equal((await create(moved)).json().chat.id, id);
     assert.equal((await related(moved)).json()[0].id, id);
     assert.deepEqual((await related({ ...list, tile_id: otherTile, chat_key: 'tile:' + otherTile })).json(), []);
-    const cardChat = (await create(card)).json().chat.id;
+    const namedCard = await create({ ...card, entity_name: '  Заказ № 42\nДля сборки  ' });
+    assert.equal(namedCard.statusCode, 201, namedCard.body);
+    assert.equal(namedCard.json().chat.title, 'Заказ № 42 Для сборки');
+    const cardChat = namedCard.json().chat.id;
     assert.equal((await create(linked)).json().chat.id, cardChat);
     const linkedRows = (await related(linked)).json();
     assert.deepEqual(linkedRows.map((row: { id: string; parent?: boolean }) => [row.id, row.parent]), [[cardChat, true]]);
@@ -226,11 +229,15 @@ test('ERP role permissions require an administrator, reject stale saves and surv
     assert.equal((await f.req('PATCH', route, f.token, payload)).statusCode, 403);
     const saved = await f.req('PATCH', route, f.admin, payload);
     assert.equal(saved.statusCode, 200, saved.body);
-    assert.deepEqual(saved.json(), { mcp: false, cli: true, webRead: false, webRequests: false, revision: 1 });
+    assert.deepEqual(saved.json(), { mcp: false, cli: true, readOnly: false, createProjects: true, webSearch: false, webRead: false, webRequests: false, revision: 1 });
     assert.equal((await f.req('PATCH', route, f.admin, payload)).statusCode, 409);
+    const restricted = await f.req('PATCH', route, f.admin, { ...payload, readOnly: true, revision: 1 });
+    assert.equal(restricted.statusCode, 200, restricted.body);
+    assert.equal(restricted.json().readOnly, true);
     f.store.state.sso!.roles[0].name = 'Новое название';
     const rows = (await f.req('GET', '/api/admin/erp-roles', f.admin)).json();
     assert.equal(rows[0].permissions.mcp, false);
+    assert.equal(rows[0].permissions.readOnly, true);
     assert.equal(rows[0].name, 'Новое название');
   } finally { await f.app.close(); }
 });
@@ -689,14 +696,14 @@ test('project files are managed by a local administrator and read by the agent o
   } finally { await f.app.close(); }
 });
 
-test('project connections enforce the agent tool list, selected files, and access revocation', async () => {
+test('project connections enforce selected files and access revocation while Fastkore follows the ERP role', async () => {
   const f = await fixture();
   const projectPath = '/api/projects/' + f.project.id;
   const settingsPath = projectPath + '/agent-settings';
   try {
     const { id, ...profile } = f.workspace.corporate.data.profiles[0];
     const updated = await f.req('PUT', '/api/admin/profiles/' + id, f.admin, {
-      ...profile, instructions: 'Указывай источники.', toolIds: ['project-files', 'fastkore'],
+      ...profile, instructions: 'Указывай источники.', toolIds: ['project-files'],
     });
     assert.equal(updated.statusCode, 200, updated.body);
     const allowed = await f.workspace.addProjectFile(f.project.id, 'allowed.txt', Buffer.from('Allowed source'), () => 'admin');
@@ -714,7 +721,7 @@ test('project connections enforce the agent tool list, selected files, and acces
     assert.equal(saved.statusCode, 200, saved.body);
     assert.equal(saved.json().revision, 1);
     assert.equal((await f.req('PUT', settingsPath, f.admin, policy)).statusCode, 409);
-    assert.deepEqual((await f.req('GET', projectPath + '/agents', f.token)).json()[0].toolIds, ['project-files']);
+    assert.deepEqual((await f.req('GET', projectPath + '/agents', f.token)).json()[0].toolIds, ['project-files', 'fastkore']);
     assert.equal((await f.req('GET', settingsPath, f.admin)).json().files.length, 2);
 
     let erpPrepares = 0;
@@ -727,8 +734,8 @@ test('project connections enforce the agent tool list, selected files, and acces
     } });
     assert.equal(sent.statusCode, 202, sent.body);
     await idle(f.workspace);
-    assert.equal(erpPrepares, 0);
-    assert.doesNotMatch(f.calls[0].prompt, /fastkore_context/);
+    assert.equal(erpPrepares, 1);
+    assert.match(f.calls[0].prompt, /fastkore_context/);
     assert.match(f.calls[0].developerInstructions!, /Указывай источники/);
     const tools = f.calls[0].tools!;
     const signal = new AbortController().signal;
@@ -746,7 +753,7 @@ test('project connections enforce the agent tool list, selected files, and acces
     assert.deepEqual((await f.req('GET', projectPath + '/agents', f.token)).json(), []);
     assert.equal((await f.req('POST', messages, f.token, { text: 'Продолжить' })).statusCode, 403);
     assert.equal((await f.req('POST', projectPath + '/chats', f.token, {})).statusCode, 403);
-    assert.deepEqual((await f.req('GET', '/api/projects/' + other.id + '/agents', f.token)).json()[0].toolIds, ['project-files']);
+    assert.deepEqual((await f.req('GET', '/api/projects/' + other.id + '/agents', f.token)).json()[0].toolIds, ['project-files', 'fastkore']);
     assert.equal((await f.req('POST', '/api/projects/' + other.id + '/chats', f.token, {})).statusCode, 201);
     assert.equal((await f.req('GET', projectPath + '/chats/' + chat.id, f.token)).statusCode, 200);
   } finally { await f.app.close(); }
@@ -804,6 +811,7 @@ test('deployment mode disables inference and keeps accepted queue intact; HTTPS 
     if (origin === undefined) delete process.env.BRIDGE_PUBLIC_ORIGIN; else process.env.BRIDGE_PUBLIC_ORIGIN = origin;
   }
 });
+
 
 test('owners can delete empty chats directly, but cannot delete foreign or running chats', async () => {
   const f = await fixture();

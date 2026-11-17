@@ -193,3 +193,53 @@ ERP открывает `/?settings=fastkore` на публичном адрес�
 `DELETE /api/admin/erp-roles/{installationId}/{roleId}` удаляет запись из каталога. Следующий успешный вход, в котором ERP снова передаст эту роль, добавит её заново. Удаление и изменения каталога сохраняются транзакционно.
 
 Для HTTPS-ответа `validate-ticket` лимит составляет 64 КиБ в UTF-8 с учётом всего JSON. Превышение лимита или некорректный набор ролей отклоняют обмен целиком.
+
+## Источники проекта
+
+Каталоги исходного кода, документации и прайс-листов (ТЗ docs/PROJECT-SOURCES-SPEC.txt; контракты docs/PROJECT-SOURCES-DESIGN.txt). Все маршруты используют обычную авторизацию API: Bearer для локального входа, cookie + `X-CSRF-Token` и Origin для сеанса Fastkore. `userId` и `profileId` никогда не берутся из тела запроса. Недоступный или неизвестный объект — нейтральный 404; причина отказа пишется в аудит источников. Коды: 400 валидация, 401 нет сеанса, 403 запрещённое административное действие, 404 недоступный объект, 409 конфликт ревизии/версии/идемпотентности, 413 квота или лимит, 429 занятость, 503 хранилище недоступно.
+
+Хранилище и реестр (руководитель или делегированный управляющий источником):
+
+| Метод и путь | Назначение |
+| --- | --- |
+| `GET /api/admin/sources-storage`, `POST /api/admin/sources-storage/check` | Состояние отдельного бакета источников, лимиты, очередь подготовки; проверка соединения. Ключи не возвращаются. |
+| `GET /api/admin/sources` | Реестр, только разрешённые источники. |
+| `POST /api/admin/sources` | Создать `{name, description?, kind: code\|documents\|prices\|mixed, classification: shared\|restricted, outputPolicy?, quotaBytes?, managers?, projectId?}`; с `projectId` источник сразу подключается к проекту без доступа специалистам. 201 `{source, binding?}`. |
+| `GET/PATCH /api/admin/sources/{sourceId}` | Карточка; изменение с `revision` (409 при устаревшей). Права, классификацию и квоту меняет руководитель. |
+| `POST /api/admin/sources/{sourceId}/archive`, `DELETE /api/admin/sources/{sourceId}` | Архивирование `{revision}`; удаление только архивированного источника без привязок, активных загрузок, заданий и удержаний. |
+| `GET /api/admin/sources/{sourceId}/usage` | Где используется: привязки, назначения, активные наборы в доступных проектах; `deletionBlockers`. |
+| `GET /api/admin/sources/{sourceId}/snapshots` | Снимки с состоянием, покрытием и зависимостями. |
+| `PATCH /api/admin/sources/{sourceId}/snapshots/{snapshotId}` | Аудируемая редакция `{metadataRevision, label?, validFrom?, validTo?}`; содержимое неизменно. |
+| `POST …/snapshots/{snapshotId}/accept-coverage`, `…/reindex`, `…/retention {retained}`, `…/archive` | Принять частичное покрытие; новая генерация индекса; удержание; архивирование неиспользуемого снимка. |
+| `PUT …/snapshots/{snapshotId}/dependencies {platformSnapshotIds}` | Явно подтверждённая совместимость конфигурации с платформой. |
+| `GET …/snapshots/{snapshotId}/tree?path=&cursor=` | Дерево (метаданные). |
+| `GET …/snapshots/{snapshotId}/files/{fileId}/original[?download=1&line=]` | Оригинал: просмотр строк — `view_original`, скачивание — `download_original`. Агентские инструменты этот маршрут не используют. |
+
+Загрузка каталога (`upload_snapshot`):
+
+| Метод и путь | Назначение |
+| --- | --- |
+| `POST /api/admin/sources/{sourceId}/uploads` | `{idempotencyKey, label, validFrom?, validTo?, totalFiles, totalBytes, exclusions[], baseSnapshotId?, skipUnchanged?}` → 201 сессия. При `skipUnchanged` без указанной базы выбирается последний готовый снимок. Квота резервируется до приёма байтов. Повтор с тем же ключом и телом — та же сессия, с другим телом — 409. |
+| `PUT …/uploads/{uploadId}/manifest` | Страница `{page, last, entries[{path, size, sha256, secretFindings?}]}` до 1000 записей. Пути относительные, `/`, NFC; коллизии регистра — 409. Идентичный повтор страницы — 200, иной — 409. |
+| `GET …/uploads/{uploadId}?cursor=` | Сводка, страница файлов, которым нужны байты (принятые части), отличия от базового снимка. |
+| `PUT …/uploads/{uploadId}/files/{fileId}/parts/{part}` | `application/octet-stream`, часть 8 МиБ (последняя меньше), необязательный `X-Content-SHA256`. Сервер сам считает размер и SHA-256; после последней части перечитывает объект. Повтор той же части — 200, иное содержимое — 409. |
+| `POST …/uploads/{uploadId}/files/{fileId}/secret-decision` | Аудируемое решение управляющего включить файл, похожий на секрет. |
+| `POST …/uploads/{uploadId}/complete {idempotencyKey}` | 202. При `skipUnchanged` и совпадении путей, хешей и периода действия возвращается `unchanged: true` и ID уже готового снимка. Иначе новый снимок переходит в подготовку, а выбранные в проектах версии сохраняются. |
+| `POST …/uploads/{uploadId}/cancel` | Отмена, освобождение резерва, сборка бесхозных объектов. |
+| `POST /api/admin/sources/{sourceId}/upload-tokens {ttlMinutes}`, `DELETE …/upload-tokens` | Короткоживущий токен `fksrc1.…` (5–240 мин) для локальной утилиты: действует только на маршрутах загрузки этого источника и `GET …/snapshots`, хранится хешем, показывается один раз; отзыв всех токенов. |
+
+Перенос прежних серверных источников (руководитель): `GET /api/admin/sources-legacy` — отчёт; `POST /api/admin/sources-legacy/apply` — однократный версионируемый перенос: новые источники и выключенные привязки, без назначений специалистам (права `datasetIds`/`readDatasetIds` не расширяются); `POST /api/admin/sources-legacy/{datasetId}/import {sourceId, label, dryRun?}` — импорт зарегистрированной серверной папки тем же протоколом, без следования ссылкам.
+
+Проекты (управляющий проектом с `manage_project_binding`; сотрудник без этого права получает 404):
+
+| Метод и путь | Назначение |
+| --- | --- |
+| `GET /api/projects/{projectId}/sources` | Экран источников проекта: привязки, снимки, матрица, наборы, настройки дат. |
+| `POST /api/projects/{projectId}/source-bindings`, `PUT/DELETE …/source-bindings/{bindingId}` | Подключить `{sourceId, selector: pinned\|effective_date, snapshotId?, approvedSnapshotIds?, outputPolicy?}`; изменить с `revision`; отсоединить. |
+| `PUT /api/projects/{projectId}/source-grants` | `{bindingId, profileId, enabled, outputPolicy?, bindingRevision}` — единая привязка «источник × специалист» для матрицы и экрана специалиста. |
+| `GET /api/projects/{projectId}/source-matrix` | Эффективные связи и причины недоступности, вычисленные теми же правилами, что при выполнении. |
+| `GET/POST /api/projects/{projectId}/source-bundles`, `POST …/source-bundles/{bundleId}/activate` | Наборы версий; атомарное переключение с `expectedActiveRevision`; несовместимая пара — 409. |
+| `PUT /api/projects/{projectId}/source-settings` | `{businessTimeZone, currentDateRule, revision}` для выбора прайсов по дате. |
+| `GET /api/projects/{projectId}/chats/{chatId}/source-scope`, `POST …/source-scope/switch` | Набор версий чата, отличия от проекта, история; явное переключение чата (новый контекст исполнителя). |
+
+Инструменты агента (`sources_list`, `source_tree`, `source_search`, `source_read`, `source_symbol`, `source_references`) получают проект, сотрудника, специалиста и набор версий только из зафиксированной области задания; доступ перепроверяется при каждом вызове и перед публикацией ответа. Ответ инструмента — до 32 КиБ, поиск — до 20 совпадений, чтение — до 200 строк.

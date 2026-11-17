@@ -1,5 +1,6 @@
 import { request } from 'node:https';
 import type { Credential } from '../shared/types.js';
+import { erpReadOnlyMessage } from './erp-roles.js';
 import type { CodexTools, CodexToolDefinition } from './codex-tools.js';
 import { postErpJson, type ErpDelegation, type FastkoreSso } from './fastkore.js';
 import { BridgeError, redact } from './store.js';
@@ -15,6 +16,18 @@ const audience = 'fastkore-mcp';
 const reauth = 'Доступ к ERP завершён или отозван. Откройте помощника из Fastkore заново.';
 const unavailable = 'Инструменты Fastkore сейчас недоступны. Чат доступен.';
 const maxResponse = 768 * 1024;
+// Methods verified as read-only in Fastkore.Business. Unknown methods require write access.
+const readTools = new Set([
+  'GetCurrentUserInfo', 'GetOrder', 'GetOrders', 'GetOrderRange', 'GetOrderByCustomer', 'GetOrdersModifiedInPeriod',
+  'GetOrderCommunications', 'GetOrderStageList', 'GetPurchaseOrder', 'GetPurchaseOrders', 'GetPurchaseOrderRange',
+  'GetPurchaseOrderBySupplier', 'GetPurchaseOrdersModifiedInPeriod', 'GetPurchaseOrderStageList',
+  'GetCommunicationEntryBody', 'GetCommunicationEntryRange', 'GetCommunicationEntryStatusList', 'GetCommunicationEntriesModifiedInPeriod',
+  'GetContact', 'GetContactAddresses', 'GetContactCommunications', 'GetContractor', 'GetContractorRange',
+  'GetNomenclature', 'GetNomenclatureById', 'GetNomenclatureByBarCode', 'GetNomenclatureGroup', 'SearchNomenclature',
+  'GetProject', 'GetProjects', 'GetTask', 'GetTasks', 'GetTaskRange', 'GetTasksModifiedInPeriod',
+  'GetEquipment', 'GetEquipmentGroup', 'GetEquipments', 'GetProductionOperation', 'GetProductionOperations',
+  'GetProductionPosition', 'GetProductionPositions', 'GetStoreAction', 'GetStoreActions', 'GetStoreActionItems',
+]);
 
 function record(value: unknown): Record<string, any> | undefined {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
@@ -137,7 +150,7 @@ export class FastkoreMcp {
   }
 
   async prepare(credential: Credential, authorize: () => void, signal: AbortSignal,
-    audit?: (event: ReadAudit) => void): Promise<{ tools?: CodexTools; problem?: string }> {
+    audit?: (event: ReadAudit) => void, readOnly: () => boolean = () => false): Promise<{ tools?: CodexTools; problem?: string }> {
     const status = this.status(credential);
     if (status === 'reauth') return { problem: reauth };
     const state = status === 'ready' ? this.sessions.get(credential.id) : undefined;
@@ -159,6 +172,9 @@ export class FastkoreMcp {
       const token = await this.token(state, binding).finally(() => { if (timing) timing.mcpTokenMs = elapsedMs(tokenStarted); });
       check(); signal.throwIfAborted();
       const notification = method === 'notifications/initialized';
+      if (method === 'tools/call' && readOnly() && !readTools.has(String(params.name))) {
+        throw new BridgeError(erpReadOnlyMessage, 403);
+      }
       const requestId = ++id;
       const httpStarted = performance.now();
       const response = await postMcp(url, token.value, binding.mcpCa,
@@ -203,8 +219,9 @@ export class FastkoreMcp {
         cursor = next;
       }
       if (!tools.size) return { problem: unavailable };
+      const restrictWrites = readOnly();
       return { tools: {
-        definitions: [...tools.values()].map(tool => tool.definition),
+        definitions: [...tools.values()].filter(tool => !restrictWrites || readTools.has(tool.upstream)).map(tool => tool.definition),
         async call(name, args, callSignal) {
           const tool = tools.get(name);
           const supplied = record(args);
@@ -222,7 +239,7 @@ export class FastkoreMcp {
             success = result.result.isError !== true;
             return { success, text };
           } catch (error) {
-            if (error instanceof BridgeError && error.message === reauth) return { success: false, text: reauth };
+            if (error instanceof BridgeError && [reauth, erpReadOnlyMessage].includes(error.message)) return { success: false, text: error.message };
             return { success: false, text: 'Fastkore не подтвердил результат операции. Проверьте состояние чтением перед повтором.' };
           } finally {
             audit?.({ tool: tool.upstream, parameters: supplied, status, success, elapsedMs: elapsedMs(started), ...timing });

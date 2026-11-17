@@ -1,0 +1,94 @@
+/* Project sources: layout on top of the shared dialog, card, record and control styles. Colours come from theme tokens only. */
+.project-sources-dialog { width: min(980px, calc(100vw - 24px)); }
+.project-sources-dialog .project-agents-intro p.source-selection { display: flex; align-items: center; gap: 6px; margin-top: 4px; }
+.project-sources-dialog .source-tabs { flex: none; margin-bottom: 12px; }
+.source-panel { display: grid; align-content: start; gap: 12px; }
+.source-panel > .agent-card-list { gap: 12px; }
+.source-disabled { opacity: .62; }
+
+/* Card body and forms reuse the label + control rhythm of the specialist editor. */
+.source-card-body, .source-form, .source-upload { display: grid; gap: 10px; }
+.source-card-body { margin: 12px 0 0 27px; }
+.source-card-actions { margin: 12px 0 0 27px; }
+.source-form > strong { font-size: 14px; font-weight: 650; }
+.source-form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
+.source-form-grid > div, .source-field-row { display: grid; gap: 6px; min-width: 0; }
+.project-sources-dialog :is(.source-form-grid, .source-field-row, .source-upload) label:not(.agent-tool-choice) { margin: 0; }
+.project-sources-dialog :is(.source-form-grid, .source-field-row) input:not([type="checkbox"]) { margin: 0; min-height: 40px; padding: 8px 10px; font-size: 14px; }
+.source-field-row { max-width: 420px; }
+.source-filter { grid-template-columns: auto minmax(200px, 320px); align-items: center; gap: 10px; }
+.project-sources-dialog .help, .sources-settings .help { margin: 0; }
+.source-warning { color: var(--warning); }
+.source-upload textarea { width: 100%; min-height: 120px; margin-top: 8px; resize: vertical; }
+.source-upload .agent-advanced { margin: 0; }
+.source-upload .agent-file-options small { color: var(--text-muted); }
+
+/* Checkbox lists use the shared tool-choice rows; the box is centred on a single-line label. */
+.source-periods, .source-secrets { margin: 0; }
+.source-periods .agent-tool-choice, .source-secrets .agent-tool-choice { align-items: center; }
+.source-periods .agent-tool-choice input, .source-secrets .agent-tool-choice input { margin-top: 0; }
+.source-secrets { padding: 10px 12px; border: 1px solid var(--warning); border-radius: 8px; }
+.source-secrets legend { padding: 0 4px; }
+.source-secrets > .help { margin-bottom: 8px; }
+
+/* Key facts. */
+.source-facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; margin: 0; }
+.source-facts > div { padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--control); }
+.source-facts dt { color: var(--text-muted); font-size: 12px; }
+.source-facts dd { margin: 2px 0 0; font-size: 14px; font-weight: 600; overflow-wrap: anywhere; }
+.source-progress { display: grid; gap: 6px; font-size: 13px; color: var(--text-secondary); }
+.source-progress > span { display: flex; align-items: center; gap: 6px; }
+.source-progress progress { appearance: none; width: 100%; height: 6px; border: 0; border-radius: 99px; background: var(--control); overflow: hidden; }
+.source-progress progress::-webkit-progress-bar { background: var(--control); border-radius: 99px; }
+.source-progress progress::-webkit-progress-value { background: var(--accent); border-radius: 99px; }
+.source-progress progress::-moz-progress-bar { background: var(--accent); border-radius: 99px; }
+
+/* Matrix: rows are sources, columns are specialists. */
+.source-matrix-wrap { overflow: auto; max-height: 56dvh; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); }
+.source-matrix { width: 100%; border-collapse: collapse; font-size: 13px; }
+.source-matrix :is(th, td) { padding: 10px 12px; text-align: left; vertical-align: middle; border-bottom: 1px solid var(--border); }
+.source-matrix tr:last-child :is(th, td) { border-bottom: 0; }
+.source-matrix :is(th, td) + :is(th, td) { border-left: 1px solid var(--border); }
+.source-matrix thead th { position: sticky; top: 0; z-index: 1; background: var(--surface); color: var(--text-muted); font-weight: 600; }
+.source-matrix tbody th strong { display: block; font-weight: 650; }
+.source-matrix tbody th small { display: block; margin-top: 2px; color: var(--text-muted); font-weight: 400; }
+.source-matrix td[data-state="blocked"] .source-cell > span { color: var(--danger); }
+.source-matrix td[data-state="off"] .source-cell > span { color: var(--text-muted); }
+.source-cell { display: flex; align-items: center; gap: 8px; white-space: nowrap; }
+.source-cell .workspace-icon { width: 26px; height: 26px; color: var(--text-muted); }
+.source-detail { display: grid; gap: 6px; }
+
+/* Settings → Sources. */
+.sources-settings { display: grid; gap: 14px; }
+.sources-settings .settings-records strong { display: inline-flex; align-items: center; gap: 6px; }
+.sources-settings .setting-section .settings-model-row { margin-bottom: 10px; }
+.source-snapshot-row { flex-wrap: wrap; }
+.source-snapshot-row > div { flex: 1 1 360px; }
+.source-dependencies { margin-top: 8px; }
+.source-dependencies .chat-consultant .workspace-icon { width: 18px; height: 18px; }
+
+/* Chat header indicator. */
+.chat-source-scope { flex-wrap: nowrap; min-width: 0; max-width: 46%; font-size: 12px; }
+.chat-source-scope .chat-consultant { min-width: 0; }
+.chat-source-scope .chat-consultant > span, .chat-source-scope .chat-consultant-notice { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chat-source-scope .chat-source-switch { flex: none; min-height: 26px; padding: 2px 8px; font-size: 12px; }
+
+@media (max-width: 640px) {
+  .source-card-body, .source-card-actions { margin-left: 0; }
+  .source-filter { grid-template-columns: minmax(0, 1fr); }
+  .chat-source-scope { display: none; }
+}
+
+/* Toggle row and inline selects. */
+.project-sources-dialog .personal-toggle { align-items: center; }
+.project-sources-dialog .personal-toggle > span { display: grid; gap: 2px; margin: 0; color: var(--text); font-size: 14px; font-weight: 500; }
+.project-sources-dialog .personal-toggle small { margin: 0; color: var(--text-muted); font-size: 12px; font-weight: 400; }
+.source-card-actions { align-items: center; }
+.source-card-actions .workspace-select.settings-select { width: auto; min-width: 210px; flex: 0 0 auto; }
+.settings-project-actions .workspace-select.settings-select { width: auto; min-width: 280px; }
+.project-sources-dialog label.personal-toggle { display: flex; align-items: center; gap: 12px; margin: 0; }
+.source-card-actions .workspace-select.settings-select { min-height: 38px; margin: 0; padding-block: 6px; }
+.source-token { display: grid; gap: 8px; }
+.source-token code { font-size: 13px; letter-spacing: 0; overflow-wrap: anywhere; user-select: all; }
+.source-token .source-command { font-weight: 500; color: var(--text-secondary); }
+.sources-settings .settings-records small + small { margin-top: 2px; }

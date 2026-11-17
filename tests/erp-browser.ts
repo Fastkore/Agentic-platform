@@ -2,14 +2,14 @@ import assert from 'node:assert/strict';
 import { randomBytes, randomUUID } from 'node:crypto';
 import type { createApp, AppOptions } from '../server/app.js';
 import { audience, csrfFor } from '../server/fastkore.js';
-import type { User } from '../shared/types.js';
+import type { FastkoreRole, User } from '../shared/types.js';
 
 type App = Awaited<ReturnType<typeof createApp>>;
 const code = () => randomBytes(32).toString('base64url');
 
 export function erpBrowser(publicOrigin = 'https://agents.example.test') {
   const headers = { host: new URL(publicOrigin).host, 'x-forwarded-proto': 'https', origin: publicOrigin };
-  const tickets = new Map<string, { id: string; name: string; challenge: string }>();
+  const tickets = new Map<string, { id: string; name: string; challenge: string; roles?: FastkoreRole[] }>();
   const options: AppOptions = {
     publicOrigin, trustedProxies: ['127.0.0.1'], ssoKey: randomBytes(32),
     pairingClient: async (_url, payload) => ({ version: 1, paired: true, installation_id: payload.installation_id }),
@@ -17,7 +17,8 @@ export function erpBrowser(publicOrigin = 'https://agents.example.test') {
       const ticket = tickets.get(payload.ticket);
       if (!ticket || ticket.challenge !== payload.login_challenge) return { valid: false };
       tickets.delete(payload.ticket);
-      return { version: 1, valid: true, installation_id: payload.installation_id, audience, user: { id: ticket.id, display_name: ticket.name } };
+      return { version: 1, valid: true, installation_id: payload.installation_id, audience,
+        user: { id: ticket.id, display_name: ticket.name, roles: ticket.roles } };
     },
   };
 
@@ -39,13 +40,13 @@ export function erpBrowser(publicOrigin = 'https://agents.example.test') {
     const linked = await req('POST', `${installations}/${id}/pair`, admin, { pairingCode: code() });
     assert.equal(linked.statusCode, 200, linked.body);
 
-    return async (name: string, externalId = randomUUID()) => {
+    return async (name: string, externalId = randomUUID(), roles?: FastkoreRole[]) => {
       const start = await app.inject({ url: '/auth/fastkore/start', headers });
       const prep = String(start.headers['set-cookie']).split(';')[0];
       const challenge = start.body.match(/name="fastkore-login-challenge" content="([A-Za-z0-9_-]{43})"/)?.[1];
       assert.ok(challenge, start.body);
       const ticket = code();
-      tickets.set(ticket, { id: externalId, name, challenge });
+      tickets.set(ticket, { id: externalId, name, challenge, roles });
       const exchanged = await app.inject({ method: 'POST', url: '/auth/fastkore/exchange',
         headers: { ...headers, cookie: prep, 'content-type': 'application/x-www-form-urlencoded' },
         payload: new URLSearchParams({ version: '1', installation_id: id, ticket, login_challenge: challenge }).toString(),

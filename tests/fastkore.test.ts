@@ -152,6 +152,31 @@ test('1.1 provisions a cookie-only identity with no automatic platform rights', 
   } finally { await f.app.close(); }
 });
 
+test('Fastkore restores the interface scale for the same profile after signing in again and restarting', async () => {
+  const f = await fixture();
+  let reopened: App | undefined;
+  try {
+    const session = await f.login(), preferences = '/api/me/preferences';
+    const scale = async (current: typeof session) => (await f.asCookie(current, 'GET', '/api/auth/me')).json().interfaceScale;
+    assert.equal(await scale(session), 100);
+    assert.equal((await f.asCookie(session, 'PATCH', preferences, { interfaceScale: 85 })).statusCode, 400);
+    assert.equal((await f.asCookie(session, 'PATCH', preferences, { interfaceScale: 80 }, { 'x-csrf-token': 'invalid' })).statusCode, 403);
+    const saved = await f.asCookie(session, 'PATCH', preferences, { interfaceScale: 80 });
+    assert.equal(saved.statusCode, 200, saved.body);
+    const next = await f.login(f.userId, f.id, session.cookie);
+    assert.equal(await scale(next), 80);
+    assert.equal(await scale(await f.login(randomUUID())), 100);
+
+    await f.app.close();
+    reopened = await createApp(makeWorkspace(new Store(f.root)), f.options);
+    const auth = await reopened.inject({ url: '/api/auth/browser-session', headers: { ...headers, cookie: next.cookie } });
+    assert.equal(auth.statusCode, 200, auth.body);
+    assert.equal(auth.json().interfaceScale, 80);
+  } finally {
+    await (reopened ?? f.app).close();
+  }
+});
+
 test('Fastkore roles are scoped to the current installation and preserve unknown and empty snapshots', async () => {
   const f = await fixture();
   try {
@@ -333,16 +358,22 @@ test('a valid SSO grant exposes CLI tools without MCP and only with a trusted ru
   process.env.BRIDGE_FASTKORE_CLI_SOCKET = 'test-runner';
   process.env.BRIDGE_FASTKORE_CLI_TICKETS = '1';
   let trusted = false;
+  let cliOutput = 'private ERP content';
   const check = t.mock.method(FastkoreCli.prototype, 'checkTrust', async () => {
     if (!trusted) throw new BridgeError('Адрес или CA исполнителя не совпадает.', 424);
     return { authority: 'erp.example.test', caFingerprint: 'test-fingerprint' };
   });
-  t.mock.method(FastkoreCli.prototype, 'run', async () => ({ success: true, exitCode: 0, data: { text: 'private ERP content' } }));
+  t.mock.method(FastkoreCli.prototype, 'run', async (...[, , current]: Parameters<FastkoreCli['run']>) => {
+    current();
+    return { success: true, exitCode: 0, data: { text: cliOutput } };
+  });
   const f = await fixture();
   try {
     const grant = 'fkug1.' + random();
+    const claims = identity(f.id, f.userId);
+    const roles = [{ id: randomUUID(), name: 'Запись' }, { id: randomUUID(), name: 'Чтение' }];
     f.setValidator(async () => ({
-      ...identity(f.id, f.userId), delegation: { grant, expires_in: 3600, audiences: ['fastkore-mcp'] },
+      ...claims, user: { ...claims.user, roles }, delegation: { grant, expires_in: 3600, audiences: ['fastkore-mcp'] },
     }));
     const session = await f.login();
     const credential = f.store.state.security!.credentials.find(item => item.userId === session.user.id)!;
@@ -372,6 +403,21 @@ test('a valid SSO grant exposes CLI tools without MCP and only with a trusted ru
     assert.equal(entry.details?.chatId, run.chatId);
     assert.equal(entry.details?.scope, undefined);
     assert.doesNotMatch(JSON.stringify(entry), /private ERP content|fkug1/);
+    const changed = await f.req('PATCH', `/api/admin/erp-roles/${f.id}/${roles[1].id}/permissions`,
+      f.admin, { cli: true, mcp: true, readOnly: true, revision: 0 });
+    assert.equal(changed.statusCode, 200, changed.body);
+    const blockedWrite = await ready.tools!.call('fastkore_cli_execute', { command: 'data create', args: [] }, signal);
+    assert.equal(blockedWrite.success, false);
+    assert.match(blockedWrite.text, /только чтение/);
+    assert.equal((await ready.tools!.call('fastkore_cli_execute',
+      { command: 'data get', args: ['--entity-set', entitySetId, '--entity', entityId] }, signal)).success, true);
+    cliOutput = 'x'.repeat(96_000);
+    const oversized = await ready.tools!.call('fastkore_cli_execute',
+      { command: 'data get', args: ['--entity-set', entitySetId, '--entity', entityId] }, signal);
+    assert.equal(oversized.success, false);
+    assert.match(oversized.text, /--detail brief.*--properties/);
+    const oversizedAudit = f.store.auditEvents().find(event => event.action === 'erp.cli.command' && event.details?.responseChars);
+    assert.ok(oversizedAudit && oversizedAudit.details!.responseChars! > 96_000);
     await f.asCookie(session, 'POST', '/api/auth/logout', {});
     await assert.rejects(prepare());
   } finally { await f.app.close(); }

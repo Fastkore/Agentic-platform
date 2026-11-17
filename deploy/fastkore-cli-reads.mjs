@@ -5,7 +5,7 @@ const id = value => typeof value === 'string' && guid.test(value);
 const ids = (list, max) => Array.isArray(list) && list.length > 0 && list.length <= max && list.every(id) && new Set(list).size === list.length;
 const validText = value => typeof value === 'string' && !!value.trim() && value.length <= 8192 && !/[\x00\r\n]/.test(value) && !value.startsWith('--');
 const fields = ['type','version','view','entity_set_id','entity_set_name','entity_ids','chat_key','tile_id','filter_status','filter_xml',
-  'catalog_id','folder_id','tree_parent_id','deleted','scope_reproducible','owner_entity_set_id','owner_entity_id','link_id','control_uid'];
+  'catalog_id','folder_id','tree_parent_id','deleted','scope_reproducible','owner_entity_set_id','owner_entity_id','link_id','control_uid','tile_name','entity_type_ids'];
 
 function listContext(value) {
   if (!only(value, fields) || value.type !== 'fastkore.context' || value.version !== 1 || value.view !== 'list' ||
@@ -13,6 +13,8 @@ function listContext(value) {
     value.entity_ids.length > 2000 || !value.entity_ids.every(id) || ![null, false, true].includes(value.deleted) ||
     [value.owner_entity_set_id, value.owner_entity_id, value.link_id].some(field => field != null)) return false;
   if (value.entity_set_name != null && (typeof value.entity_set_name !== 'string' || value.entity_set_name.length > 200) ||
+    value.tile_name != null && (typeof value.tile_name !== 'string' || value.tile_name.length > 120) ||
+    value.entity_type_ids !== undefined && !ids(value.entity_type_ids, 128) ||
     value.control_uid != null && (typeof value.control_uid !== 'string' || value.control_uid.length > 128)) return false;
   if (['tile_id','catalog_id','folder_id','tree_parent_id'].some(key => value[key] != null && !id(value[key]))) return false;
   if (value.chat_key !== undefined && value.chat_key !== null && value.chat_key !== (value.tile_id ? `tile:${value.tile_id}` : `list:${value.entity_set_id}`)) return false;

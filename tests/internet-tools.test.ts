@@ -9,13 +9,15 @@ import type { Credential, State } from '../shared/types.js';
 test('internet roles default to denied, combine grants and remain scoped to installation', () => {
   const credential = { source: 'fastkore', installationId: 'a', userId: 'user', externalRoles: [{ id: 'role', name: 'Role' }] } as Credential;
   const state = {} as State;
-  assert.deepEqual(internetCredentialPermissions(state, credential), { read: false, requests: false });
+  assert.deepEqual(internetCredentialPermissions(state, credential), { search: false, read: false, requests: false });
   state.sso = { rolePermissions: [{ installationId: 'a', roleId: 'role', mcp: true, cli: true, webRead: true, webRequests: false, revision: 1 }] };
-  assert.deepEqual(internetCredentialPermissions(state, credential), { read: true, requests: false });
+  assert.deepEqual(internetCredentialPermissions(state, credential), { search: true, read: true, requests: false });
+  state.sso.rolePermissions![0].webSearch = false;
+  assert.deepEqual(internetCredentialPermissions(state, credential), { search: false, read: true, requests: false });
   credential.installationId = 'b';
-  assert.deepEqual(internetCredentialPermissions(state, credential), { read: false, requests: false });
+  assert.deepEqual(internetCredentialPermissions(state, credential), { search: false, read: false, requests: false });
   credential.source = 'local';
-  assert.deepEqual(internetCredentialPermissions(state, credential), { read: false, requests: false });
+  assert.deepEqual(internetCredentialPermissions(state, credential), { search: false, read: false, requests: false });
 });
 
 test('public HTTP rejects private, encoded, transition and service destinations before making a request', async () => {
@@ -27,17 +29,23 @@ test('public HTTP rejects private, encoded, transition and service destinations 
 });
 
 test('read access never grants API writes, redirects recheck permissions, and revocation hides an in-flight result', async () => {
-  let read = true, requests = false, calls = 0;
+  let search = true, read = true, requests = false, calls = 0;
   const http = async (input: { url: string }) => { calls++; return { status: 200, url: input.url, contentType: 'text/html', text: '<script>hidden()</script><h1>Documentation</h1>' }; };
-  const tools = withInternetTools(undefined, () => ({ read, requests }), () => {}, async () => ({ success: true, text: 'Found' }), http);
+  const tools = withInternetTools(undefined, () => ({ search, read, requests }), () => {}, async () => ({ success: true, text: 'Found' }), http);
   assert.deepEqual(tools.definitions.map(tool => tool.name), ['internet_search', 'internet_read']);
   const signal = AbortSignal.timeout(5000);
+  read = false;
+  assert.equal((await tools.call('internet_read', { url: 'https://example.test/docs' }, signal)).success, false);
+  assert.equal((await tools.call('internet_search', { query: 'Docs' }, signal)).success, true);
+  read = true;
+  search = false;
+  assert.equal((await tools.call('internet_search', { query: 'Docs' }, signal)).success, false);
   assert.equal((await tools.call('internet_request', { url: 'https://example.test', method: 'POST' }, signal)).success, false);
   assert.equal(calls, 0);
   const result = await tools.call('internet_read', { url: 'https://example.test/docs' }, signal);
   assert.equal(result.success, true); assert.match(result.text, /Documentation/); assert.ok(!result.text.includes('hidden'));
   let reached = 0;
-  const redirecting = withInternetTools(undefined, () => ({ read, requests }), () => {}, async () => ({ success: true, text: '' }), async input => {
+  const redirecting = withInternetTools(undefined, () => ({ search, read, requests }), () => {}, async () => ({ success: true, text: '' }), async input => {
     await publicTarget(input.url); reached++;
     return { status: 302, url: input.url, contentType: 'text/html', location: 'http://169.254.169.254/', text: '' };
   })!;
@@ -45,11 +53,12 @@ test('read access never grants API writes, redirects recheck permissions, and re
   assert.equal(reached, 1, 'a redirect must not reach the internal destination');
   requests = true;
   assert.equal((await tools.call('internet_request', { url: 'https://example.test', method: 'POST', body: '{}' }, signal)).success, true);
-  const interrupted = withInternetTools(undefined, () => ({ read, requests }), () => {}, async () => ({ success: false, text: '' }), async () => { throw Error('socket closed after the API accepted the write'); })!;
+  const interrupted = withInternetTools(undefined, () => ({ search, read, requests }), () => {}, async () => ({ success: false, text: '' }), async () => { throw Error('socket closed after the API accepted the write'); })!;
   const unknown = await interrupted.call('internet_request', { url: 'https://example.test', method: 'POST', body: '{}' }, signal);
   assert.equal(unknown.success, false); assert.match(unknown.text, /результат операции не подтверждён/);
   assert.match(unknown.text, /проверьте фактическое состояние/);
-  const revoking = withInternetTools(undefined, () => ({ read, requests }), () => {}, async () => { read = false; return { success: true, text: 'Must not be returned' }; }, http);
+  search = true;
+  const revoking = withInternetTools(undefined, () => ({ search, read, requests }), () => {}, async () => { search = false; return { success: true, text: 'Must not be returned' }; }, http);
   const revoked = await revoking.call('internet_search', { query: 'Docs' }, signal);
   assert.equal(revoked.success, false); assert.ok(!revoked.text.includes('Must not'));
 });

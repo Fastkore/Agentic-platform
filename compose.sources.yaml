@@ -1,0 +1,13 @@
+# Project sources: a separate private bucket in the stack's MinIO (see compose.minio.yaml); the executor gets no access.
+# Closed (restricted) analysis stays off until deploy/Test-ProjectSources.ps1 has verified executor isolation on this host.
+services:
+  app:
+    environment:
+      BRIDGE_SOURCES_S3_ENDPOINT: http://minio:9000
+      BRIDGE_SOURCES_S3_BUCKET: ${BRIDGE_SOURCES_S3_BUCKET:-agentic-platform-sources}
+      BRIDGE_SOURCES_S3_REGION: us-east-1
+      BRIDGE_SOURCES_S3_FORCE_PATH_STYLE: "1"
+      BRIDGE_SOURCES_S3_ACCESS_KEY: ${BRIDGE_SOURCES_S3_ACCESS_KEY:-agentic-platform}
+      BRIDGE_SOURCES_S3_SECRET_KEY_FILE: /run/secrets/minio-password
+      BRIDGE_SOURCES_S3_CREATE_BUCKET: "1"
+      BRIDGE_SOURCES_CLOSED_ANALYSIS: ${BRIDGE_SOURCES_CLOSED_ANALYSIS:-}

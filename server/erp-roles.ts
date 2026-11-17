@@ -1,11 +1,27 @@
 import type { Credential, FastkoreRole, FastkoreRoleSummary, State, TeamUser } from '../shared/types.js';
 
 type RoleState = Pick<State, 'sso' | 'externalIdentities' | 'security'>;
+const projectCreationRoles = new Set(['руководитель', 'системный администратор']);
 
 export function erpRolePermissions(state: RoleState, installationId: string, roleId: string) {
   const saved = state.sso?.rolePermissions?.find(item => item.installationId === installationId && item.roleId === roleId);
+  const roleName = state.sso?.roles?.find(item => item.installationId === installationId && item.id === roleId)?.name;
   return { mcp: saved?.mcp ?? true, cli: saved?.cli ?? true, webRead: saved?.webRead ?? false,
-    webRequests: saved?.webRequests ?? false, revision: saved?.revision ?? 0 };
+    webSearch: saved?.webSearch ?? saved?.webRead ?? false,
+    webRequests: saved?.webRequests ?? false, readOnly: saved?.readOnly ?? false,
+    createProjects: saved?.createProjects ?? projectCreationRoles.has(roleName?.trim().toLocaleLowerCase('ru-RU') ?? ''),
+    revision: saved?.revision ?? 0 };
+}
+
+export const erpReadOnlyMessage = 'Роль Fastkore разрешает только чтение. Эта операция заблокирована.';
+export const fastkoreReadCommands = new Set([
+  'auth info', 'data get', 'data query', 'schema entity-set list', 'schema entity-set show', 'schema property show',
+]);
+
+export function isErpReadOnly(state: RoleState, credential: Credential) {
+  const { installationId, source, externalRoles } = credential;
+  return source === 'fastkore' && !!installationId &&
+    (externalRoles?.some(role => erpRolePermissions(state, installationId, role.id).readOnly) ?? false);
 }
 
 export function erpCredentialPermissions(state: RoleState, credential: Credential) {
@@ -22,7 +38,8 @@ export function internetCredentialPermissions(state: RoleState, credential: Cred
     ? [{ installationId: credential.installationId, roles: credential.externalRoles }]
     : erpRolesForUser(state, credential.userId);
   const policies = memberships.flatMap(item => (item.roles ?? []).map(role => erpRolePermissions(state, item.installationId, role.id)));
-  return { read: policies.some(role => role.webRead), requests: policies.some(role => role.webRequests) };
+  return { search: policies.some(role => role.webSearch), read: policies.some(role => role.webRead),
+    requests: policies.some(role => role.webRequests) };
 }
 
 export function observeErpRoles(state: RoleState, installationId: string, externalUserId: string,
