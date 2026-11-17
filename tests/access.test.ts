@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
 import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -109,6 +110,33 @@ test('per-user project access controls dictation and leaves other memberships in
     assert.equal(transcriptions, 1);
   } finally { await f.app.close(); }
 });
+test('uploaded 3D models can be opened by their owner and an administrator within the chat', async () => {
+  const f = await fixture();
+  try {
+    const owner = await f.employee('model-owner'), reader = await f.employee('model-reader');
+    assert.equal((await f.req('PATCH', `/api/projects/${f.project.id}/members`, f.admin, { memberIds: [owner.id, reader.id] })).statusCode, 200);
+    const chat = await f.workspace.addChat(f.project.id, '3D', undefined, owner.id);
+    chat.visibility = 'project';
+    const data = Buffer.from('solid sample\nendsolid sample\n');
+    const model = await f.workspace.addAttachment(f.project.id, 'sample.STL', data, () => owner.id);
+    const document = await f.workspace.addAttachment(f.project.id, 'note.txt', Buffer.from('Example'), () => owner.id);
+    const messageId = randomUUID();
+    chat.messages.push({ id: messageId, role: 'user', status: 'complete', text: '3D', authorId: owner.id,
+      createdAt: new Date().toISOString(), attachments: [model, document] });
+    await f.store.save();
+    const chatUrl = `/api/projects/${f.project.id}/chats/${chat.id}`;
+    const fileUrl = `${chatUrl}/messages/${messageId}/files/`;
+    for (const token of [owner.token, f.admin]) {
+      const opened = await f.req('GET', fileUrl + model.id, token);
+      assert.equal(opened.statusCode, 200, opened.body);
+      assert.deepEqual(opened.rawPayload, data);
+    }
+    assert.equal((await f.req('GET', chatUrl, reader.token)).statusCode, 200);
+    assert.equal((await f.req('GET', fileUrl + model.id, reader.token)).statusCode, 404);
+    assert.equal((await f.req('GET', fileUrl + document.id, owner.token)).statusCode, 404);
+  } finally { await f.app.close(); }
+});
+
 test('three employees share library but private chat metadata, messages, jobs and writes are protected', async () => {
   const f = await fixture(); try {
     const a = await f.employee('alice'), b = await f.employee('boris'), c = await f.employee('clara');

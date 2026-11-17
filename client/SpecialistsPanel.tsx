@@ -14,7 +14,7 @@ const icons = { bot: Bot, message: MessageCircle, calculator: Calculator, settin
 const iconLabels: Record<SpecialistIcon, string> = { bot: 'Помощник', message: 'Диалог', calculator: 'Расчёты', settings: 'Настройки', database: 'Данные', chart: 'Аналитика', file: 'Документы', search: 'Поиск' };
 const builtInIcons: Partial<Record<string, SpecialistIcon>> = { universal: 'message', estimator: 'calculator', technologist: 'settings', accountant: 'database' };
 const toolIcons = { 'project-files': Folder, 'chat-files': Paperclip, fastkore: Database };
-const newProfile: AgentProfile = { id: '', name: '', description: '', instructions: '', enabled: false, model: '', reasoningEffort: 'high', operationIds: ['chat'], datasetIds: [], skillIds: [], allowWrite: false, outputMode: 'chat', revision: 0, toolIds: [] };
+const newProfile: AgentProfile = { id: '', name: '', description: '', instructions: '', enabled: false, model: '', reasoningEffort: 'high', operationIds: ['chat'], datasetIds: [], skillIds: [], allowWrite: false, revision: 0, toolIds: [] };
 const editorTabs = [
   { id: 'general', label: 'Основное', icon: Bot },
   { id: 'instructions', label: 'Инструкции', icon: FileText },
@@ -229,11 +229,6 @@ export function SpecialistsPanel({ request, globalInstructions }: { request: Req
               options={specialistIcons.map(value => ({ value, label: iconLabels[value] }))} />
           </div>
         </div>
-      </section>
-      <section className="specialist-card">
-          <label htmlFor="profile-output">Выдача результата</label><Select id="profile-output" className="settings-select" value={profile.outputMode}
-            onChange={outputMode => update({ outputMode: outputMode as AgentProfile['outputMode'] })}
-            options={[{ value: 'chat', label: 'Обычный чат проекта' }, { value: 'restricted', label: 'Проверяемый результат закрытой операции' }]} />
       </section>
       </div>
 

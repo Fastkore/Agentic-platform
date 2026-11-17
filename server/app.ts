@@ -16,7 +16,8 @@ import { UploadAdmission } from './upload-admission.js';
 import { loadDictation, maxDictationBytes, validateDictation, type TranscribeDictation } from './dictation.js';
 import { specialistFileLimits, specialistIcons } from '../shared/types.js';
 import type { DictationModelId } from '../shared/types.js';
-import { parseFastkoreContext } from '../shared/fastkore-context.js';
+import { fastkoreChatTitle, parseFastkoreContext } from '../shared/fastkore-context.js';
+import { canReadChatAttachment } from '../shared/chat-attachments.js';
 import { chatBinding, matchesFastkoreChat, migrateFastkoreChatBindings, parentFastkoreChatBindings } from './fastkore-chat.js';
 import { FastkoreMcp } from './fastkore-mcp.js';
 import { FastkoreCli, type FastkoreCliTiming } from './fastkore-cli.js';
@@ -503,7 +504,10 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
   app.get('/api/admin/operations', async request => { admin(request); return operationIds; });
   const revision = { type: 'integer', minimum: 1, maximum: 2147483647 };
   app.put<{ Params: { id: string }; Body: Omit<WorkRole, 'id' | 'revision'> & { revision?: number } }>('/api/admin/roles/:id', { schema: { params: object({ id: identifier }, ['id']), body: object({ name: string(100), enabled: { type: 'boolean' }, profileIds: identifiers, operationIds: identifiers, readDatasetIds: identifiers, instructions: { type: 'string', maxLength: 20000 }, revision }, ['name', 'enabled', 'profileIds', 'operationIds', 'readDatasetIds', 'instructions']) } }, async request => workspace.corporate.saveRole(admin(request), { ...request.body, id: request.params.id }));
-  app.put<{ Params: { id: string }; Body: Omit<AgentProfile, 'id' | 'revision'> & { revision?: number } }>('/api/admin/profiles/:id', { schema: { params: object({ id: identifier }, ['id']), body: object({ name: string(100), description: { type: 'string', maxLength: 1000 }, instructions: { type: 'string', maxLength: 20000 }, enabled: { type: 'boolean' }, model: modelSchema, reasoningEffort: { enum: ['low', 'medium', 'high', 'xhigh'] }, operationIds: identifiers, datasetIds: identifiers, skillIds: identifiers, allowWrite: { type: 'boolean' }, outputMode: { enum: ['chat', 'restricted'] }, revision, toolIds: agentToolList, icon: { enum: [...specialistIcons] }, instructionFiles: { type: 'array', maxItems: specialistFileLimits.count, items: object({ name: string(120), text: { type: 'string', minLength: 1, maxLength: specialistFileLimits.characters } }, ['name', 'text']) } }, ['name', 'description', 'instructions', 'enabled', 'model', 'reasoningEffort', 'operationIds', 'datasetIds', 'skillIds', 'allowWrite', 'outputMode']) } }, async request => workspace.corporate.saveProfile(admin(request), { ...request.body, id: request.params.id }));
+  app.put<{ Params: { id: string }; Body: Omit<AgentProfile, 'id' | 'revision'> & { revision?: number; outputMode?: 'chat' | 'restricted' } }>('/api/admin/profiles/:id', { schema: { params: object({ id: identifier }, ['id']), body: object({ name: string(100), description: { type: 'string', maxLength: 1000 }, instructions: { type: 'string', maxLength: 20000 }, enabled: { type: 'boolean' }, model: modelSchema, reasoningEffort: { enum: ['low', 'medium', 'high', 'xhigh'] }, operationIds: identifiers, datasetIds: identifiers, skillIds: identifiers, allowWrite: { type: 'boolean' }, outputMode: { enum: ['chat', 'restricted'] }, revision, toolIds: agentToolList, icon: { enum: [...specialistIcons] }, instructionFiles: { type: 'array', maxItems: specialistFileLimits.count, items: object({ name: string(120), text: { type: 'string', minLength: 1, maxLength: specialistFileLimits.characters } }, ['name', 'text']) } }, ['name', 'description', 'instructions', 'enabled', 'model', 'reasoningEffort', 'operationIds', 'datasetIds', 'skillIds', 'allowWrite']) } }, async request => {
+    const { outputMode: _legacyOutputMode, ...profile } = request.body;
+    return workspace.corporate.saveProfile(admin(request), { ...profile, id: request.params.id });
+  });
   app.put<{ Params: { id: string }; Body: Omit<Dataset, 'id' | 'revision'> & { revision?: number } }>('/api/admin/datasets/:id', { schema: { params: object({ id: identifier }, ['id']), body: object({ name: string(100), directory: string(2000), projectIds: identifiers, classification: { enum: ['shared', 'restricted'] }, revision }, ['name', 'directory', 'projectIds', 'classification']) } }, async request => workspace.corporate.saveDataset(admin(request), { ...request.body, id: request.params.id }));
   const canCreateProject = (u: User) => u.role === 'admin' || workspace.corporate.role(u)?.operationIds.includes('chat') === true;
   app.get('/api/status', async request => {
@@ -813,8 +817,8 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
     requestChat(request, true);
     return user(request);
   }));
-  app.patch<{ Params: ChatParams; Body: { projectId: string; title: string } }>(chatPath + '/move', {
-    schema: { body: object({ projectId: string(100), title: string(120) }, ['projectId', 'title']) },
+  app.patch<{ Params: ChatParams; Body: { projectId: string; title?: string } }>(chatPath + '/move', {
+    schema: { body: object({ projectId: string(100), title: string(120) }, ['projectId']) },
   }, async request => {
     const { projectId, chatId } = request.params;
     const destinationId = request.body.projectId;
@@ -844,16 +848,18 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
         throw new BridgeError('Откройте в Fastkore карточку или список, к которым привязан этот чат.', 409);
       }
       return actor;
-    }));
+    }, fastkoreChatTitle(context ?? undefined)));
   });
   app.delete<{ Params: ChatParams }>(chatPath, request => workspace.deleteArchivedChat(request.params.projectId, request.params.chatId, () => admin(request)));
   app.get<{ Params: ChatParams & { messageId: string; fileId: string } }>(chatPath + '/messages/:messageId/files/:fileId', async (request, reply) => {
     const { projectId, chatId, messageId, fileId } = request.params;
     const findFile = () => {
       const chat = requestChat(request);
-      const file = chat.messages.find(message => message.id === messageId && message.role === 'assistant' && message.status === 'complete')
-        ?.attachments.find(item => item.id === fileId);
-      if (!file) throw new BridgeError('Файл результата не найден.', 404);
+      const message = chat.messages.find(item => item.id === messageId);
+      const file = message?.attachments.find(item => item.id === fileId);
+      if (!message || !file || !canReadChatAttachment(file, message, chat.ownerId, user(request))) {
+        throw new BridgeError('Вложение не найдено.', 404);
+      }
       return file;
     };
     const file = findFile();

@@ -5,6 +5,8 @@ const maxSelection = 2000;
 type ContextHeader = { type: 'fastkore.context'; version: 1; entity_ids: string[]; chat_key?: string | null };
 export type FastkoreEntityContext = ContextHeader & {
   view: 'card' | 'list' | 'link_list'; entity_set_id: string; entity_set_name: string | null; filter_xml: string | null;
+  entity_name?: string;
+  tile_name?: string;
   filter_status: 'included' | 'none' | 'unavailable'; control_uid: string | null;
   deleted: boolean | null; scope_reproducible: boolean;
 } & Record<typeof guidFields[number], string | null>;
@@ -53,8 +55,20 @@ export function parseFastkoreContext(value: unknown): FastkoreContext | null {
       : ids.owner_entity_set_id && ids.owner_entity_id ? `card:${ids.owner_entity_set_id}:${ids.owner_entity_id}` : null;
     if (header.chat_key !== null && header.chat_key !== expected) return null;
   }
-  return { ...header, view, entity_set_id: setId, entity_set_name,
+  const entityName = view === 'card' ? contextName(value.entity_name) : undefined;
+  const tileName = view !== 'card' ? contextName(value.tile_name) : undefined;
+  return { ...header, view, entity_set_id: setId, entity_set_name, ...(entityName ? { entity_name: entityName } : {}), ...(tileName ? { tile_name: tileName } : {}),
     filter_xml: filter_xml as string | null, filter_status, control_uid, deleted, scope_reproducible, ...ids };
+}
+
+function contextName(value: unknown) {
+  return typeof value === 'string' ? value.replace(/\s+/g, ' ').trim().slice(0, 120).trimEnd() || undefined : undefined;
+}
+
+export function fastkoreChatTitle(context?: FastkoreContext) {
+  if (!context || context.view === 'none') return;
+  if (context.view === 'card') return context.entity_name;
+  return context.tile_name ?? contextName(context.entity_set_name);
 }
 
 export function fastkoreContextProblem(context: FastkoreContext): string | undefined {

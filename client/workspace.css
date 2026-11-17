@@ -303,6 +303,18 @@
   overflow-wrap: anywhere; border: 1px solid var(--border); border-radius: 8px; background: var(--control); font-size: 13px;
 }
 .conversation-files svg { flex: 0 0 auto; }
+.workspace-dialog.chat-model-dialog { width: min(820px, calc(100vw - 24px)); }
+.chat-model-viewport { position: relative; height: min(500px, 60dvh); background: #17202d; }
+.chat-model-viewport canvas { display: block; width: 100%; height: 100%; touch-action: none; }
+.chat-model-viewport canvas:focus-visible { outline: 2px solid var(--accent-strong); outline-offset: -3px; }
+.chat-model-status { padding: 16px; }
+.chat-model-viewport .chat-model-status {
+  position: absolute; inset: 0; display: grid; place-items: center; margin: 0; color: #e0e9f6; text-align: center;
+}
+.chat-model-controls {
+  display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px;
+  padding: 10px 16px; color: var(--text-muted); font-size: 12px;
+}
 .conversation-footer { padding-bottom: 17px; flex: 0 0 auto; }
 
 .bridge-composer { position: relative; }

@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { fastkoreChatContextKey, fastkoreSelectionChatKey, isFastkoreTileList, parseFastkoreContext, type FastkoreContext } from '../shared/fastkore-context.js';
+import { fastkoreChatContextKey, fastkoreChatTitle, fastkoreSelectionChatKey, isFastkoreTileList, parseFastkoreContext, type FastkoreContext } from '../shared/fastkore-context.js';
 import type { Chat, FastkoreChatBinding, Job, State } from '../shared/types.js';
 
 const hashKey = (key: string) => createHash('sha256').update(key).digest('hex');
@@ -8,9 +8,11 @@ export function chatBinding(installationId: string, context: FastkoreContext, ex
   const key = fastkoreChatContextKey(context);
   if (!key) return;
   if (context.chat_key !== undefined && !externalUserId) return;
+  const contextName = fastkoreChatTitle(context);
   return { installationId, externalUserId: context.chat_key !== undefined ? externalUserId : undefined,
     key: hashKey(key), view: context.view, entitySetId: context.view === 'none' ? undefined : context.entity_set_id,
     entityId: context.view === 'card' ? context.entity_ids[0] : undefined,
+    ...(contextName ? { contextName } : {}),
     tileId: isFastkoreTileList(context) ? context.tile_id : undefined };
 }
 

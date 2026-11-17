@@ -3,7 +3,7 @@ import { SettingsAction } from './SettingsAction';
 import React, { useEffect, useState } from 'react';
 import type { AgentProfile, Dataset, WorkRole } from '../shared/types';
 type Request = <T>(url: string, init?: RequestInit) => Promise<T>;
-export const operations: Record<string, string> = { chat: 'Обсуждение проекта', estimate: 'Расчёт и КП', technology: 'Технология', accounting: 'Бухгалтерская операция' };
+export const operations: Record<string, string> = { chat: 'Обсуждение проекта', technology: 'Технология', accounting: 'Бухгалтерская операция' };
 export function CorporatePanel({ request, section }: { request: Request; section: 'roles' | 'datasets' }) {
   const [roles, setRoles] = useState<WorkRole[]>([]), [profiles, setProfiles] = useState<AgentProfile[]>([]), [datasets, setDatasets] = useState<Dataset[]>([]);
   const [editing, setEditing] = useState<WorkRole | Dataset | null>(null);

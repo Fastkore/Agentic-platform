@@ -57,7 +57,7 @@ HTTP-маршруты обслуживают веб-интерфейс. Для �
 | PATCH | /api/projects/{projectId}/chats/{chatId}/archive | Только руководитель. `{archived: true}` переносит чат в архив, `{archived: false}` восстанавливает |
 | DELETE | /api/projects/{projectId}/chats/{chatId} | Только руководитель. Окончательное удаление чата из архива |
 | POST | /api/fastkore/chats/related | Сеанс Fastkore. `{context}` возвращает собственные активные чаты по карточке или списку, начиная с последнего |
-| POST | /api/fastkore/chats | Сеанс Fastkore. `{projectId, context, agentProfileId?, fresh?}` возвращает `{projectId, chat}`. Для снимка с `chat_key` повторно открывает активный чат этой истории, даже с `fresh: true` |
+| POST | /api/fastkore/chats | Сеанс Fastkore. `{projectId, context, agentProfileId?, fresh?}` возвращает `{projectId, chat}`. Для снимка с `chat_key` повторно открывает активный чат этой истории, даже с `fresh: true`. Название новой карточки берётся из `entity_name`, название чата таблицы — из `tile_name` или, если его нет, из `entity_set_name`. |
 | POST | /api/projects/{projectId}/chats/{chatId}/reset | Сеанс Fastkore, автор связанного чата. `{context}` переносит текущий чат в архив и возвращает пустой чат с той же привязкой. Для пустого чата ничего не меняется. При активном или ожидающем задании возвращает 409 |
 | PATCH | /api/projects/{projectId}/chats/{chatId} | Выбрать модель чата: {model} |
 | GET | /api/projects/{projectId}/chats/{chatId} | Чат, messages, sessionId |
@@ -141,14 +141,14 @@ GET /api/agents возвращает разрешённые профили: id, 
 | GET | /api/admin/roles | Список рабочих ролей |
 | PUT | /api/admin/roles/{id} | name, enabled, profileIds, operationIds, readDatasetIds, instructions |
 | GET | /api/admin/profiles | Список профилей и причины недоступности |
-| PUT | /api/admin/profiles/{id} | name, description, instructions, enabled, model, reasoningEffort, operationIds, datasetIds, skillIds, allowWrite, outputMode, необязательные icon и instructionFiles |
+| PUT | /api/admin/profiles/{id} | name, description, instructions, enabled, model, reasoningEffort, operationIds, datasetIds, skillIds, allowWrite, необязательные icon и instructionFiles. Поле outputMode от старых клиентов игнорируется. |
 | GET | /api/admin/datasets | Список источников с серверными путями |
 | PUT | /api/admin/datasets/{id} | name, directory, projectIds, classification |
 | GET | /api/admin/operations | Поддерживаемые идентификаторы операций |
 
 PUT передаёт все поля записи. Для обновления требуется revision из последнего GET; несовпадение даёт 409. Для создания revision отсутствует. ID — 2–64 символа: первая латинская буква, затем строчные буквы/цифры/подчёркивание/дефис. Обычные сотрудники не читают и не меняют эту конфигурацию.
 
-reasoningEffort: low, medium, high, xhigh. outputMode: chat или restricted. classification: shared или restricted. Список operationIds: chat, estimate, technology, accounting. Сейчас запускается только обычная операция chat без дополнительных источников/Skills. Остальные настройки можно подготовить; они не означают, что бизнес-сценарий реализован.
+reasoningEffort: low, medium, high, xhigh. classification: shared или restricted. Список operationIds: chat, technology, accounting. Сейчас запускается только обычная операция chat без дополнительных источников/Skills. Расчёты стоимости и подготовка черновиков коммерческих предложений задаются инструкциями специалиста.
 
 POST /api/users дополнительно принимает roleId; PATCH /api/users/{id} принимает name, roleId, role (admin/employee), disabled и password. role — административный уровень, roleId — рабочая роль. Должен оставаться хотя бы один активный администратор. Смена рабочей роли немедленно применяется к дальнейшим операциям и проверяется во время выполнения.
 

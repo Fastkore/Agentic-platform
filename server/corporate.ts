@@ -6,20 +6,49 @@ import { specialistFileLimits } from '../shared/types.js';
 import type { AgentProfile, AgentSummary, Corporate, Dataset, Project, ProjectAgentPolicy, State, User, WorkRole } from '../shared/types.js';
 import { BridgeError, Store } from './store.js';
 
-export const operationIds = ['chat', 'estimate', 'technology', 'accounting'] as const;
+export const operationIds = ['chat', 'technology', 'accounting'] as const;
 const baseAssistantName = 'Помощник Фасткор';
+const estimatorInstructions = 'Готовь расчёты стоимости и черновики коммерческих предложений по согласованным данным и материалам проекта. ' +
+  'Указывай исходные данные, допущения и итог. Если данных недостаточно, задай уточняющий вопрос.';
 function baseAssistant(): AgentProfile {
   return { id: 'universal', name: baseAssistantName, description: 'Обсуждение файлов и вопросов проекта', instructions: '', enabled: true,
-    model: '', reasoningEffort: 'high', operationIds: ['chat'], datasetIds: [], skillIds: [], allowWrite: false, outputMode: 'chat', revision: 1 };
+    model: '', reasoningEffort: 'high', operationIds: ['chat'], datasetIds: [], skillIds: [], allowWrite: false, revision: 1 };
+}
+function migrateEstimateOperation(corporate: Corporate) {
+  const retired = 'estimate';
+  const normalize = (ids: string[]) => [...new Set(ids.map(id => id === retired ? 'chat' : id))];
+  const profiles = new Map(corporate.profiles.map(profile => [profile.id, profile.operationIds]));
+  for (const role of corporate.roles) {
+    const operations = normalize(role.operationIds);
+    // Replacing an operation must not grant access to an additional profile.
+    const profileIds = role.profileIds.filter(id => {
+      const operationsBefore = profiles.get(id);
+      return !operationsBefore || operationsBefore.some(operation => role.operationIds.includes(operation))
+        || !normalize(operationsBefore).some(operation => operations.includes(operation));
+    });
+    if (!role.operationIds.includes(retired) && profileIds.length === role.profileIds.length) continue;
+    role.operationIds = operations;
+    role.profileIds = profileIds;
+    role.revision++;
+  }
+  for (const profile of corporate.profiles) {
+    if (!profile.operationIds.includes(retired)) continue;
+    profile.operationIds = normalize(profile.operationIds);
+    if (!profile.instructions.trim() && !profile.instructionFiles?.length) profile.instructions = estimatorInstructions;
+    profile.revision++;
+  }
 }
 export function initializeCorporate(state: State): Corporate {
   if (!state.corporate) state.corporate = {
     roles: [{ id: 'employee', name: 'Сотрудник', enabled: true, profileIds: ['universal'], operationIds: ['chat'], readDatasetIds: [], instructions: '', revision: 1 }],
     profiles: [
       baseAssistant(),
-      ...[['estimator', 'Оценщик', 'Подготовка расчёта и коммерческого предложения', 'estimate'], ['technologist', 'Технолог', 'Подготовка технологии изготовления', 'technology'], ['accountant', 'Бухгалтер', 'Работа с согласованными бухгалтерскими операциями', 'accounting']].map(([id, name, description, operation]): AgentProfile => ({ id, name, description, instructions: '', enabled: false, model: '', reasoningEffort: 'high', operationIds: [operation], datasetIds: [], skillIds: [], allowWrite: false, outputMode: 'restricted', revision: 1 }))
+      { ...baseAssistant(), id: 'estimator', name: 'Оценщик', description: 'Подготовка расчёта и коммерческого предложения', instructions: estimatorInstructions, enabled: false },
+      ...[['technologist', 'Технолог', 'Подготовка технологии изготовления', 'technology'], ['accountant', 'Бухгалтер', 'Работа с согласованными бухгалтерскими операциями', 'accounting']].map(([id, name, description, operation]): AgentProfile => ({ id, name, description, instructions: '', enabled: false, model: '', reasoningEffort: 'high', operationIds: [operation], datasetIds: [], skillIds: [], allowWrite: false, revision: 1 }))
     ], datasets: []
   };
+  migrateEstimateOperation(state.corporate);
+  for (const profile of state.corporate.profiles) delete (profile as AgentProfile & { outputMode?: unknown }).outputMode;
   const base = state.corporate.profiles.find(profile => profile.id === 'universal');
   if (base) Object.assign(base, { name: baseAssistantName, enabled: true });
   else state.corporate.profiles.unshift(baseAssistant());
@@ -57,7 +86,8 @@ export class CorporateAccess {
   unavailable(profile: AgentProfile, project?: Project) {
     // A shared OS identity cannot promise that a "normal" chat cannot read another source.
     if (this.data.datasets.some(d => d.classification === 'restricted')) return 'На сервере зарегистрированы закрытые источники. Запуски приостановлены до проверки изоляции на Linux.';
-    if (profile.outputMode === 'restricted' || profile.operationIds.some(id => id !== 'chat') || profile.datasetIds.length) return 'Профиль ожидает проверки изоляции и выдачи результатов на Linux. Запуск пока закрыт.';
+    if (profile.operationIds.some(id => id !== 'chat')) return 'Профилю назначены операции, которые пока недоступны в чате.';
+    if (profile.datasetIds.length) return 'Запуск профиля с назначенными библиотеками пока недоступен.';
     if (profile.skillIds.length) return 'Профиль ожидает установки и проверки утверждённых Skills в среде исполнения.';
     if (!this.isolated && (project?.agentPolicy || profile.toolIds !== undefined)) return 'Для применения разрешений на инструменты нужен отдельный исполнитель Codex.';
     return undefined;

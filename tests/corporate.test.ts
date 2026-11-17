@@ -7,6 +7,7 @@ import path from 'node:path';
 import { Store } from '../server/store.js';
 import { Workspace } from '../server/workspace.js';
 import { createApp } from '../server/app.js';
+import { initializeCorporate } from '../server/corporate.js';
 import { migrateFastkoreChatBindings } from '../server/fastkore-chat.js';
 import type { AgentProfile } from '../shared/types.js';
 import type { CodexRequest, CodexRunner } from '../server/codex.js';
@@ -67,6 +68,44 @@ test('moving a chat requires access to the destination and preserves its history
     assert.equal(moved.ownerId, source.ownerId);
     assert.equal(moved.messages[0].text, 'Результат');
     assert.equal((await f.workspace.files.read(destination, moved.messages[0].attachments[0])).toString(), 'Содержимое');
+  } finally { await f.app.close(); }
+});
+
+test('an employee chooses a project for a new named Fastkore chat and can move it without losing its context', async () => {
+  const f = await fixture();
+  try {
+    const directory = path.join(f.root, 'second-project');
+    await mkdir(directory);
+    const destination = await f.workspace.addProject(directory);
+    assert.equal((await f.req('PATCH', `/api/projects/${destination.id}/members`, f.admin, {
+      memberIds: [f.employee.id],
+    })).statusCode, 200);
+    const component = randomUUID(), tile = randomUUID(), entity = randomUUID();
+    const header = { type: 'fastkore.context', version: 1, entity_set_id: component, entity_set_name: 'Заказы', filter_status: 'none', scope_reproducible: true };
+    const list = { ...header, view: 'list', entity_ids: [], tile_id: tile, tile_name: '  Текущие\nзаказы  ', chat_key: 'tile:' + tile };
+    const history = (context: object) => f.req('POST', '/api/fastkore/chats/related', f.token, { context });
+    const create = (context: object, projectId = f.project.id) => f.req('POST', '/api/fastkore/chats', f.token, { projectId, context });
+    assert.deepEqual((await history(list)).json(), []);
+    const response = await create(list, destination.id);
+    assert.equal(response.statusCode, 201, response.body);
+    const created = response.json();
+    assert.equal(created.projectId, destination.id);
+    assert.equal(created.chat.title, 'Текущие заказы');
+    const oldUrl = `/api/projects/${destination.id}/chats/${created.chat.id}`;
+    const moved = await f.req('PATCH', oldUrl + '/move', f.token, { projectId: f.project.id });
+    assert.equal(moved.statusCode, 200, moved.body);
+    assert.equal(moved.json().title, created.chat.title);
+    assert.equal((await f.req('GET', oldUrl, f.token)).statusCode, 404);
+    const rows = (await history({ ...list, tile_name: 'Другое название' })).json();
+    assert.deepEqual(rows.map((row: { id: string; projectId: string; title: string }) =>
+      [row.id, row.projectId, row.title]), [[created.chat.id, f.project.id, 'Текущие заказы']]);
+    const repeated = await create(list, destination.id);
+    assert.equal(repeated.statusCode, 200, repeated.body);
+    assert.equal(repeated.json().chat.id, created.chat.id);
+    const card = { ...header, view: 'card', entity_ids: [entity], entity_name: 'Заказ №42', chat_key: `card:${component}:${entity}` };
+    assert.equal((await create(card)).json().chat.title, 'Заказ №42');
+    const componentList = { ...header, view: 'list', entity_ids: [], chat_key: 'list:' + component };
+    assert.equal((await create(componentList)).json().chat.title, 'Заказы');
   } finally { await f.app.close(); }
 });
 
@@ -405,6 +444,55 @@ test('token activity groups project usage by day for administrators', async () =
   } finally { await f.app.close(); }
 });
 
+test('the retired result mode is ignored in saved profiles and legacy profile requests', async () => {
+  const f = await fixture();
+  try {
+    const state = structuredClone(f.store.state);
+    const saved = state.corporate!.profiles[0];
+    Object.assign(saved, { outputMode: 'restricted' });
+    assert.ok(!Object.hasOwn(initializeCorporate(state).profiles[0], 'outputMode'));
+    const { id, ...profile } = f.workspace.corporate.data.profiles[0];
+    const body = { ...profile, name: 'Профиль чата' };
+    for (const legacyFields of [{}, { outputMode: 'restricted' }]) {
+      const updated = await f.req('PUT', '/api/admin/profiles/chat-output-test', f.admin, { ...body, ...legacyFields });
+      assert.equal(updated.statusCode, 200, updated.body);
+      const stored = f.workspace.corporate.data.profiles.find(item => item.id === 'chat-output-test')!;
+      assert.ok(!Object.hasOwn(stored, 'outputMode'));
+      assert.equal(f.workspace.corporate.unavailable(stored, f.project), undefined);
+      body.revision = stored.revision;
+    }
+  } finally { await f.app.close(); }
+});
+
+test('legacy estimate profiles become instructed chat specialists without expanding role access', async () => {
+  const f = await fixture();
+  try {
+    const state = structuredClone(f.store.state);
+    const corporate = state.corporate!;
+    const estimator = corporate.profiles.find(profile => profile.id === 'estimator')!;
+    estimator.operationIds = ['estimate'];
+    estimator.instructions = '';
+    estimator.enabled = true;
+    const custom = { ...estimator, id: 'custom-estimator', instructions: 'Используй внутренний прайс.' };
+    corporate.profiles.push(custom);
+    const template = corporate.roles.find(role => role.id === 'employee')!;
+    const estimateRole = { ...template, id: 'estimate-role', operationIds: ['estimate'], profileIds: ['universal', 'estimator', custom.id] };
+    const chatRole = { ...template, id: 'chat-role', operationIds: ['chat'], profileIds: ['universal', 'estimator'] };
+    corporate.roles.push(estimateRole, chatRole);
+    initializeCorporate(state);
+    assert.deepEqual(estimator.operationIds, ['chat']);
+    assert.match(estimator.instructions, /расчёты стоимости и черновики коммерческих предложений/);
+    assert.equal(custom.instructions, 'Используй внутренний прайс.');
+    assert.deepEqual(estimateRole.operationIds, ['chat']);
+    assert.deepEqual(estimateRole.profileIds, ['estimator', custom.id]);
+    assert.deepEqual(chatRole.profileIds, ['universal']);
+    const revisions = [estimator.revision, estimateRole.revision, chatRole.revision];
+    initializeCorporate(state);
+    assert.deepEqual([estimator.revision, estimateRole.revision, chatRole.revision], revisions);
+    assert.deepEqual((await f.req('GET', '/api/admin/operations', f.admin)).json(), ['chat', 'technology', 'accounting']);
+  } finally { await f.app.close(); }
+});
+
 test('profile grants apply to ERP sessions, configuration is private, and closed execution fails before Codex', async () => {
   const f = await fixture(); try {
     assert.equal((await f.req('GET', '/api/admin/profiles', f.token)).statusCode, 403);
@@ -412,13 +500,18 @@ test('profile grants apply to ERP sessions, configuration is private, and closed
     const estimator = f.workspace.corporate.data.profiles.find(p => p.id === 'estimator')!;
     const { id, ...input } = estimator;
     assert.equal((await f.req('PUT', '/api/admin/profiles/estimator', f.admin, { ...input, enabled: true })).statusCode, 200);
-    const role = { name: 'Менеджер', enabled: true, profileIds: ['estimator'], operationIds: ['estimate'], readDatasetIds: [], instructions: 'Только утверждённый результат' };
+    const { id: technologistId, ...technologist } = f.workspace.corporate.data.profiles.find(p => p.id === 'technologist')!;
+    assert.equal((await f.req('PUT', '/api/admin/profiles/' + technologistId, f.admin, { ...technologist, enabled: true })).statusCode, 200);
+    const role = { name: 'Менеджер', enabled: true, profileIds: ['estimator', technologistId], operationIds: ['chat', 'technology'], readDatasetIds: [], instructions: 'Только утверждённый результат' };
     assert.equal((await f.req('PUT', '/api/admin/roles/manager', f.admin, role)).statusCode, 200);
     await f.req('PATCH', '/api/users/' + f.employee.id, f.admin, { roleId: 'manager' });
-    const agents = (await f.req('GET', '/api/agents', f.token)).json(); assert.equal(agents.length, 1); assert.equal(agents[0].id, 'estimator'); assert.equal(agents[0].available, false); assert.ok(!JSON.stringify(agents).includes('instructions'));
+    const agents = (await f.req('GET', '/api/agents', f.token)).json();
+    assert.deepEqual(agents.map((agent: { id: string; available: boolean }) => [agent.id, agent.available]), [['estimator', true], ['technologist', false]]);
+    assert.ok(!JSON.stringify(agents).includes('instructions'));
     const route = `/api/projects/${f.project.id}/chats`;
     assert.equal((await f.req('POST', route, f.token, { agentProfileId: 'universal' })).statusCode, 403);
-    assert.equal((await f.req('POST', route, f.token, { agentProfileId: 'estimator' })).statusCode, 409); assert.equal(f.calls.length, 0);
+    assert.equal((await f.req('POST', route, f.token, { agentProfileId: 'estimator' })).statusCode, 201);
+    assert.equal((await f.req('POST', route, f.token, { agentProfileId: technologistId })).statusCode, 409); assert.equal(f.calls.length, 0);
     assert.equal((await f.req('PUT', '/api/admin/roles/manager', f.token, role)).statusCode, 403);
   } finally { await f.app.close(); }
 });
@@ -666,7 +759,7 @@ test('dataset registry and profile configuration persist and cannot expose close
   const f = await fixture(); try {
     assert.equal((await f.req('PUT', '/api/admin/datasets/prices', f.admin, { name: 'Прайсы', directory: path.join(f.root, 'project'), projectIds: [f.project.id], classification: 'restricted' })).statusCode, 200);
     const base = f.workspace.corporate.data.profiles[0]; const { id, revision, ...input } = base;
-    const profile: Omit<AgentProfile, 'revision'> = { ...input, id: 'pricing_test', name: 'Проверка прайса', datasetIds: ['prices'], outputMode: 'chat', enabled: true };
+    const profile: Omit<AgentProfile, 'revision'> = { ...input, id: 'pricing_test', name: 'Проверка прайса', datasetIds: ['prices'], enabled: true };
     const { id: target, ...body } = profile;
     assert.equal((await f.req('PUT', '/api/admin/profiles/' + target, f.admin, body)).statusCode, 200);
     assert.equal((await f.req('POST', `/api/projects/${f.project.id}/chats`, f.admin, { agentProfileId: target })).statusCode, 409); assert.equal(f.calls.length, 0);

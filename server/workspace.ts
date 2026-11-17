@@ -311,7 +311,7 @@ export class Workspace {
         chat.fastkoreBinding?.installationId === binding.installationId && chat.fastkoreBinding.externalUserId === binding.externalUserId && chat.fastkoreBinding.key === binding.key))) {
         throw new BridgeError('Проект, в котором хранится история этого контекста, недоступен.', 403);
       }
-      const chat = await this.addChat(projectId, undefined, '', actor.id, authorize, agentProfileId, binding);
+      const chat = await this.addChat(projectId, binding.contextName ?? binding.entityName, '', actor.id, authorize, agentProfileId, binding);
       return { chat, projectId, created: true };
     });
   }
@@ -330,16 +330,18 @@ export class Workspace {
       throw new BridgeError('Дождитесь завершения заданий в этом диалоге.', 409);
     }
   }
-  resetFastkoreChat(projectId: string, chatId: string, authorize: () => User) {
+  resetFastkoreChat(projectId: string, chatId: string, authorize: () => User, title?: string) {
     return this.admit(async () => {
       this.writable();
       const actor = authorize(), project = this.project(projectId), chat = this.chat(projectId, chatId);
       this.assertChatIdle(projectId, chatId);
       if (!chat.messages.length) return chat;
       const createdAt = new Date().toISOString();
+      const contextTitle = chat.fastkoreBinding?.contextName ?? chat.fastkoreBinding?.entityName ?? title;
+      const binding = chat.fastkoreBinding && contextTitle ? { ...chat.fastkoreBinding, contextName: contextTitle } : chat.fastkoreBinding;
       const replacement: Chat = {
-        id: randomUUID(), title: 'Новый диалог', updatedAt: createdAt, messages: [],
-        ownerId: chat.ownerId, visibility: 'private', fastkoreBinding: chat.fastkoreBinding,
+        id: randomUUID(), title: contextTitle ?? 'Новый диалог', titleCustomized: contextTitle ? true : undefined, updatedAt: createdAt, messages: [],
+        ownerId: chat.ownerId, visibility: 'private', fastkoreBinding: binding,
         agentProfileId: chat.agentProfileId, model: chat.model, reasoningEffort: chat.reasoningEffort,
       };
       chat.archivedAt = createdAt;
@@ -366,13 +368,13 @@ export class Workspace {
       return { title: name };
     });
   }
-  moveChat(projectId: string, chatId: string, destinationId: string, title: string, authorize: () => User) {
+  moveChat(projectId: string, chatId: string, destinationId: string, title: string | undefined, authorize: () => User) {
     return this.admit(async () => {
       this.writable();
       const source = this.project(projectId), destination = this.project(destinationId);
       const chat = this.chat(projectId, chatId), state = this.store.state;
-      const name = title.trim();
-      if (!name || /[\r\n]/.test(name)) throw new BridgeError('Введите название чата в одну строку.');
+      const name = title?.trim();
+      if (name !== undefined && (!name || /[\r\n]/.test(name))) throw new BridgeError('Введите название чата в одну строку.');
       if (source === destination) throw new BridgeError('Выберите другой проект.');
       const check = () => {
         const actor = authorize();
@@ -382,7 +384,6 @@ export class Workspace {
         if (owner && owner.role !== 'admin' && !destination.memberIds?.includes(owner.id)) {
           throw new BridgeError('У владельца чата нет доступа к выбранному проекту.', 403);
         }
-        this.corporate.profile(owner ?? actor, chat.agentProfileId, destination);
         return actor;
       };
       check();
@@ -400,8 +401,10 @@ export class Workspace {
         }
         const actor = check();
         moved = {
-          ...chat, title: name, titleCustomized: true, cliWorkspaceProjectId: chat.cliWorkspaceProjectId ?? source.id,
-          sessionId: undefined, sessionScope: undefined, specialistSessions: undefined, knowledgeRevision: undefined,
+          ...chat, title: name ?? chat.title, titleCustomized: name === undefined ? chat.titleCustomized : true,
+          cliWorkspaceProjectId: chat.cliWorkspaceProjectId ?? source.id,
+          sessionId: undefined, sessionScope: undefined,
+          specialistSessions: undefined, knowledgeRevision: undefined,
           messages: chat.messages.map(message => ({
             ...message, attachments: message.attachments.map(file => copies.get(file.id)!),
           })),
@@ -1012,7 +1015,9 @@ export class Workspace {
     chat.messages.push({ id: randomUUID(), role: 'user', text: job.text, status: 'complete', createdAt: run.createdAt, attachments, runId: run.id, authorId: job.authorId, specialistName: job.specialistName });
     const answer: Chat['messages'][number] = { id: randomUUID(), role: 'assistant', text: '', status: 'running', createdAt: new Date().toISOString(), attachments: [], runId: run.id, model: run.model };
     chat.messages.push(answer); chat.updatedAt = new Date().toISOString();
-    if (chat.title === 'Новый диалог' && !chat.titleCustomized) chat.title = job.text.replace(/[\r\n]/g, ' ').slice(0, 48);
+    if (chat.title === 'Новый диалог' && !chat.titleCustomized && !chat.fastkoreBinding?.contextName && !chat.fastkoreBinding?.entityName) {
+      chat.title = job.text.replace(/[\r\n]/g, ' ').slice(0, 48);
+    }
     await this.store.saveRun(run, chat);
     run.progress = 'Подготовка документов…';
     const workerDirectory = this.workerFilesAvailable && (workerWrites || allowedTools.includes('fastkore')) ? path.join(await realpath(this.workerFilesRoot!), run.id) : undefined;

@@ -29,7 +29,7 @@ export interface ProjectFile { id: string; name: string; size: number; uploadedA
 export interface Attachment { id: string; name: string; path?: string; storage?: 's3'; size: number; ownerId?: string; libraryUploadedAt?: string; uploadedAt?: string }
 export interface Message { id: string; role: 'user' | 'assistant'; text: string; status: RunStatus; createdAt: string; attachments: Attachment[]; usage?: Usage; runId?: string; model?: string; authorId?: string; authorName?: string; fileScope?: string; specialistName?: string; consultedSpecialists?: string[] }
 export interface ErpContext { installationId: string; entityType: string; entityId: string }
-export interface FastkoreChatBinding { installationId: string; externalUserId?: string; key: string; view: FastkoreContext['view']; entitySetId?: string; entityId?: string; tileId?: string }
+export interface FastkoreChatBinding { installationId: string; externalUserId?: string; key: string; view: FastkoreContext['view']; entitySetId?: string; entityId?: string; entityName?: string; contextName?: string; tileId?: string }
 export interface ExternalIdentity { installationId: string; externalUserId: string; userId: string }
 export interface Chat { reasoningEffort?: ReasoningEffort; id: string; title: string; titleCustomized?: true; sessionId?: string; sessionScope?: string; cliWorkspaceProjectId?: string; consultantIds?: string[]; knowledgeRevision?: string; specialistSessions?: Record<string, Pick<Chat, 'sessionId' | 'sessionScope' | 'knowledgeRevision'>>; updatedAt: string; archivedAt?: string; messages: Message[]; model?: string; agentProfileId?: string; erpContext?: ErpContext; fastkoreBinding?: FastkoreChatBinding; fastkoreHistory?: { binding: FastkoreChatBinding; turns: number } | null; linkedToFastkore?: true; ownerId?: string; ownerName?: string; visibility?: 'private' | 'project' }
 export interface ProjectAgentConnection { profileId: string; toolIds: AgentToolId[]; fileIds: string[] | null }
@@ -71,7 +71,7 @@ export const specialistIcons = ['bot', 'message', 'calculator', 'settings', 'dat
 export type SpecialistIcon = typeof specialistIcons[number];
 export interface SpecialistInstructionFile { name: string; text: string }
 export const specialistFileLimits = { count: 5, characters: 6_000 };
-export interface AgentProfile { id: string; name: string; description: string; instructions: string; enabled: boolean; model: string; reasoningEffort: 'low' | 'medium' | 'high' | 'xhigh'; operationIds: string[]; datasetIds: string[]; skillIds: string[]; allowWrite: boolean; outputMode: 'chat' | 'restricted'; revision: number; toolIds?: AgentToolId[]; icon?: SpecialistIcon; instructionFiles?: SpecialistInstructionFile[] }
+export interface AgentProfile { id: string; name: string; description: string; instructions: string; enabled: boolean; model: string; reasoningEffort: 'low' | 'medium' | 'high' | 'xhigh'; operationIds: string[]; datasetIds: string[]; skillIds: string[]; allowWrite: boolean; revision: number; toolIds?: AgentToolId[]; icon?: SpecialistIcon; instructionFiles?: SpecialistInstructionFile[] }
 export interface Dataset { id: string; name: string; directory: string; projectIds: string[]; classification: 'shared' | 'restricted'; revision: number }
 export interface Corporate { roles: WorkRole[]; profiles: AgentProfile[]; datasets: Dataset[] }
 export interface AgentSummary { id: string; name: string; description: string; available: boolean; unavailableReason?: string; model: string; allowWrite?: boolean; toolIds: AgentToolId[] }
