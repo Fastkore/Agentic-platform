@@ -7,12 +7,13 @@ import { BridgeError, redact } from './store.js';
 import type { CliInfo, CodexLimits, LimitWindow, ModelCatalog, ModelOption, RunToolContext, Usage } from '../shared/types.js';
 import type { CodexTools } from './codex-tools.js';
 import { describeToolContext } from './tool-context.js';
+import { chatImagesUnsupportedProvider } from './chat-images.js';
 
 export interface CodexEvent { kind: 'session' | 'message' | 'message-delta' | 'message-replace' | 'tool' | 'tool-end' | 'progress' | 'usage' | 'steer-ready' | 'steer-closed'; text?: string; toolCallId?: string; toolContext?: RunToolContext; usage?: Usage }
 export type SteerResult = 'accepted' | 'rejected' | 'unknown';
 export type SteerTurn = (text: string) => Promise<SteerResult>;
 export type RegisterSteering = (steer: SteerTurn | undefined) => void;
-export interface CodexRequest { cliPath: string; workspace: string; prompt: string; developerInstructions?: string; tools?: CodexTools; sessionId?: string; allowWrite: boolean; workDirectoryId?: string; ephemeral?: boolean; consultation?: boolean; consultationKey?: string; model?: string; reasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max' }
+export interface CodexRequest { cliPath: string; workspace: string; prompt: string; imageUrls?: string[]; developerInstructions?: string; tools?: CodexTools; sessionId?: string; allowWrite: boolean; workDirectoryId?: string; ephemeral?: boolean; consultation?: boolean; consultationKey?: string; model?: string; reasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max' }
 export interface CodexResult { sessionId?: string; response: string; usage?: Usage }
 export interface CodexRunner { readonly isolated?: boolean; inspect(cliPath: string, signal?: AbortSignal, model?: string): Promise<CliInfo>; listModels?(cliPath: string): Promise<ModelCatalog>; readLimits?(cliPath: string, model?: string): Promise<CodexLimits | null>; run(request: CodexRequest, onEvent: (event: CodexEvent) => Promise<void>, signal: AbortSignal, registerSteering?: RegisterSteering): Promise<CodexResult> }
 type RateWindow = { usedPercent?: number; windowDurationMins?: number | null; resetsAt?: number | null };
@@ -202,8 +203,9 @@ export class CodexClient implements CodexRunner {
   }
   async run(request: CodexRequest, onEvent: (event: CodexEvent) => Promise<void>, signal: AbortSignal, registerSteering?: RegisterSteering) {
     signal.throwIfAborted();
-    if (request.tools || request.consultation || registerSteering && this.mode === 'worker') {
       if (this.mode !== 'worker' && request.tools?.definitions.some(tool => tool.name !== 'consult_specialist')) throw new BridgeError('Эти инструменты доступны только в изолированном исполнителе.', 403);
+    if (request.imageUrls?.length && this.provider !== 'openai') throw new BridgeError(chatImagesUnsupportedProvider, 422);
+    if (request.imageUrls?.length || request.tools || request.consultation || registerSteering && this.mode === 'worker') {
       return this.runWithTools(request, request.tools, onEvent, signal, registerSteering);
     }
     const child = this.start(request.cliPath, buildArguments(request, this.mode, this.provider), request.workspace);
@@ -256,9 +258,12 @@ export class CodexClient implements CodexRunner {
     const publicMessages = new Map<string, { text: string; streamed: boolean }>();
     let steerId = 100;
     let pendingSteer: { id: number; finish: (result: SteerResult) => void } | undefined;
+    const eventLimit = 4_000_000;
+    // App Server can echo multimodal inputs in user-message and turn notifications.
+    const echoedInputLimit = eventLimit + (request.imageUrls ?? []).reduce((length, url) => length + url.length, 0);
     // A tool call can block the event iterator while the app server acknowledges steering.
     server.lines.on('line', line => {
-      if (!pendingSteer || line.length > 4_000_000) return;
+      if (!pendingSteer || line.length > eventLimit) return;
       try {
         const message = JSON.parse(line);
         if (message.id === pendingSteer.id) pendingSteer.finish(message.error ? 'rejected' : message.result?.turnId === turnId ? 'accepted' : 'unknown');
@@ -278,8 +283,12 @@ export class CodexClient implements CodexRunner {
     try {
       for await (const line of server.lines) {
         signal.throwIfAborted();
-        if (line.length > 4_000_000) throw new BridgeError('Слишком большое событие Codex.', 502);
+        if (line.length > echoedInputLimit) throw new BridgeError('Слишком большое событие Codex.', 502);
         let message: any; try { message = JSON.parse(line); } catch { continue; }
+        if (line.length > eventLimit && message.params?.item?.type === 'userMessage') continue;
+        if (line.length > eventLimit && message.id !== 3 && message.method !== 'turn/started' && message.method !== 'turn/completed') {
+          throw new BridgeError('Слишком большое событие Codex.', 502);
+        }
         if (message.method && message.id !== undefined) {
           if (message.method !== 'item/tool/call') {
             server.send({ id: message.id, error: { code: -32601, message: 'Запрос исполнителя не разрешён.' } });
@@ -315,7 +324,9 @@ export class CodexClient implements CodexRunner {
           if (typeof id !== 'string' || !uuid.test(id) || sessionId && id !== sessionId) throw new BridgeError('Codex вернул неподходящую сессию.', 502);
           sessionId = id;
           await onEvent({ kind: 'session', text: id });
-          server.send({ id: 3, method: 'turn/start', params: { threadId: id, input: [{ type: 'text', text: request.prompt, text_elements: [] }], effort: request.reasoningEffort } });
+          const input = [{ type: 'text', text: request.prompt, text_elements: [] },
+            ...(request.imageUrls ?? []).map(url => ({ type: 'image', url }))];
+          server.send({ id: 3, method: 'turn/start', params: { threadId: id, input, effort: request.reasoningEffort } });
         } else if (message.id === 3 || message.method === 'turn/started') {
           const id = (message.result ?? message.params)?.turn?.id;
           if (typeof id === 'string' && !turnId) { turnId = id; registerSteering?.(steer); }

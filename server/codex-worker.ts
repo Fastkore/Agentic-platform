@@ -15,14 +15,17 @@ import { limitsForModel } from './google-limits.js';
 import { readGlmKey } from './glm.js';
 import { searchZai } from './internet-search.js';
 import { executorCapacity, providerCapacity } from './execution-concurrency.js';
+import { chatImagesUnsupportedProvider, chatImageUrlPattern, maxChatImages, maxChatImagePayload, maxChatImageUrlLength } from './chat-images.js';
 
 const cli = '/usr/local/bin/codex';
 const workspace = '/runner';
 const socket = '/run/bridge-codex/worker.sock';
+const workerBodyLimit = 800_000;
 const runSchema = {
   type: 'object', additionalProperties: false, required: ['prompt'],
   properties: {
     prompt: { type: 'string', minLength: 1, maxLength: 128_000 },
+    imageUrls: { type: 'array', maxItems: maxChatImages, items: { type: 'string', pattern: chatImageUrlPattern, maxLength: maxChatImageUrlLength } },
     developerInstructions: { type: 'string', minLength: 1, maxLength: 64_000 },
     sessionId: { type: 'string', pattern: '^[0-9a-fA-F-]{36}$' },
     model: { type: 'string', pattern: '^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,127}$' },
@@ -42,7 +45,7 @@ const runSchema = {
 
 export function createCodexWorker(codex: CodexRunner = new CodexClient([], 'worker'), jobsRoot = process.env.BRIDGE_CODEX_JOB_FILES,
   accounts?: ExecutionAccountStore) {
-  const app = Fastify({ logger: false, bodyLimit: 800_000, ajv: { customOptions: { removeAdditional: false, coerceTypes: false } } });
+  const app = Fastify({ logger: false, bodyLimit: workerBodyLimit, ajv: { customOptions: { removeAdditional: false, coerceTypes: false } } });
   const activeLanes = new Map<string, Set<AbortController>>();
   const activeCount = () => [...activeLanes.values()].reduce((count, lane) => count + lane.size, 0);
   const consultations = new Map<string, { signal: AbortSignal; controller: AbortController; lane: string; running: boolean }>();
@@ -137,7 +140,11 @@ export function createCodexWorker(codex: CodexRunner = new CodexClient([], 'work
       key: { type: 'string', pattern: '^[0-9a-f-]{36}$' }, text: { type: 'string', minLength: 1, maxLength: 60_000 },
     },
   } } }, async request => ({ result: await steeringTurns.get(request.body.key)?.(request.body.text) ?? 'rejected' }));
-  app.post<{ Body: WorkerRun }>('/run', { schema: { body: runSchema } }, async (request, reply) => {
+  app.post<{ Body: WorkerRun }>('/run', { bodyLimit: workerBodyLimit + maxChatImagePayload, schema: { body: runSchema } }, async (request, reply) => {
+    const imagePayload = request.body.imageUrls?.reduce((length, url) => length + url.length, 0) ?? 0;
+    if (imagePayload > maxChatImagePayload) {
+      throw new BridgeError('Общий размер изображений превышает 20 МБ.', 413);
+    }
     const consultation = request.body.consultation === true;
     const selection = accounts ? await accounts.select(request.body.model).catch((error: Error) => ({ error })) : undefined;
     const lane = selection && !('error' in selection) ? selection.account.provider : 'codex';
@@ -170,6 +177,7 @@ export function createCodexWorker(codex: CodexRunner = new CodexClient([], 'work
       const { toolDefinitions, workDirectoryId, steeringKey, ...body } = request.body;
       const selected = selection && !('error' in selection) ? selection : undefined;
       if (selected) body.model = selected.model;
+      if (body.imageUrls?.length && lane !== 'codex') throw new BridgeError(chatImagesUnsupportedProvider, 503);
       provider = selected?.account.provider === 'antigravity' ? 'Antigravity CLI' : selected?.account.provider === 'gemini' ? 'Gemini CLI' : selected?.account.provider === 'glm' ? 'GLM (Z.ai)' : 'Codex';
       let directory = workspace;
       if (workDirectoryId) {

@@ -1,6 +1,7 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
+import { createHash } from 'node:crypto';
 const args = process.argv.slice(2);
 if (args[0] === '--version') { console.log('codex mock 1.0'); process.exit(0); }
 if (args[0] === 'login') { console.error('Logged in using ChatGPT'); process.exit(0); }
@@ -23,6 +24,24 @@ if (args.includes('app-server')) {
     if (request.method === 'turn/start') {
       const threadId = request.params.threadId;
       console.log(JSON.stringify({ id: request.id, result: { turn: { id: 'turn-1' } } }));
+      if (request.params.input[0].text.includes('VERIFY_CHAT_IMAGE')) {
+        const images = request.params.input.filter(input => input.type === 'image');
+        console.log(JSON.stringify({ method: 'item/completed', params: {
+          threadId, item: { id: 'input', type: 'userMessage', content: request.params.input },
+        } }));
+        const text = JSON.stringify({
+          images: images.map(({ url }) => ({
+            mime: url.split(';')[0],
+            hash: createHash('sha256').update(Buffer.from(url.split(',')[1], 'base64')).digest('hex'),
+          })),
+          hasDocument: request.params.input[0].text.includes('Текстовый файл тоже прочитан'),
+        });
+        console.log(JSON.stringify({ method: 'item/completed', params: {
+          threadId, item: { id: 'vision', type: 'agentMessage', text },
+        } }));
+        console.log(JSON.stringify({ method: 'turn/completed', params: { threadId, turn: { status: 'completed' } } }));
+        continue;
+      }
       if (request.params.input[0].text.includes('WAIT_FOR_STEER')) {
         steeringThread = threadId;
         console.log(JSON.stringify({ id: 91, method: 'item/tool/call', params: { threadId, turnId: 'turn-1', callId: 'slow-tool', tool: 'knowledge', arguments: {} } }));

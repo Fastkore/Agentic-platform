@@ -12,6 +12,7 @@ import { Store, BridgeError, redact } from './store.js';
 import { type CodexRunner, type SteerTurn, discoverCli } from './codex.js';
 import { attachmentName, buildContext, projectFilePath, publicProjectFile } from './documents.js';
 import { FileStorage } from './file-storage.js';
+import { chatImagesUnsupportedProvider, isChatImage, readChatImages, validateChatImages } from './chat-images.js';
 import { stageWorkerFiles, workerOutputs } from './worker-files.js';
 import { withProjectFiles } from './project-file-tools.js';
 import { CorporateAccess } from './corporate.js';
@@ -724,13 +725,21 @@ export class Workspace {
       if (recommendedSpecialistId && !recommended) throw new BridgeError('Этот специалист недоступен для консультации.', 403);
       const tools = this.corporate.tools(profile, project);
       if (attachmentIds.length && !tools.includes('chat-files')) throw new BridgeError('Агенту не разрешено читать вложения в этом проекте.', 403);
-      for (const id of attachmentIds) if (!project.attachments.some(a => a.id === id && !a.libraryUploadedAt)) throw new BridgeError('Вложение не найдено в этом проекте.', 404);
+      const attachments = attachmentIds.map(id => {
+        const file = project.attachments.find(a => a.id === id && !a.libraryUploadedAt);
+        if (!file) throw new BridgeError('Вложение не найдено в этом проекте.', 404);
+        return file;
+      });
       const selectedModel = model ?? (chat.model || profile.model || this.store.state.settings.model || undefined);
       const resolvedModel = concreteModel(this.catalog?.value, selectedModel) || selectedModel;
+      const provider = providerForModel(resolvedModel) ?? executionProvider;
+      const images = attachments.filter(isChatImage);
+      if (images.length && provider && provider !== 'codex') throw new BridgeError(chatImagesUnsupportedProvider, 422);
+      validateChatImages(images);
       const oldModel = chat.model; if (model !== undefined) chat.model = model;
       const run: Run = { id: randomUUID(), projectId, chatId, ownerId: author?.id ?? chat.ownerId, agentProfileId: profile.id, profileRevision: profile.revision, status: 'queued', progress: 'Ожидает выполнения', createdAt: new Date().toISOString(), clientRequestId, requestHash: hash, model: resolvedModel || undefined,
         reasoningEffort: chat.reasoningEffort ?? this.store.state.settings.reasoningEffort ?? 'high' };
-      run.executionProvider = providerForModel(run.model) ?? executionProvider;
+      run.executionProvider = provider;
       const job: Job = { runId: run.id, kind: 'chat', text, attachmentIds, authorId: author?.id, credentialId: author?.credentialId,
         scope: this.corporate.scope(actor, profile, project),
         fastkoreContext: context,
@@ -805,7 +814,7 @@ export class Workspace {
     return profiles.length ? createHash('sha256').update(JSON.stringify(profiles.map(profile => [profile.id, profile.revision]))).digest('hex') : undefined;
   }
   private async consultSpecialist(project: Project, profile: AgentProfile, actor: User | undefined, job: Job, run: Run,
-    cliPath: string, task: string, globalInstructions: string, attachments: Attachment[], signal: AbortSignal) {
+    cliPath: string, task: string, globalInstructions: string, attachments: Attachment[], images: string[] | undefined, signal: AbortSignal) {
     const authorize = () => { this.checkJob(job, run); this.corporate.profile(actor, profile.id, project); signal.throwIfAborted(); };
     authorize();
     const allowedTools = this.corporate.tools(profile, project);
@@ -820,16 +829,20 @@ export class Workspace {
       : integration?.tools;
     const internetTools = this.isolatedCodex && job.credentialId && this.prepareInternetTools
       ? this.prepareInternetTools(tools, job.credentialId, authorize) : tools;
-    const excerpts = attachments.length && allowedTools.includes('chat-files') ? await this.attachmentExcerpts(project, attachments, signal) : '';
+    const canReadAttachments = allowedTools.includes('chat-files');
+    const excerpts = attachments.length && canReadAttachments ? await this.attachmentExcerpts(project, attachments, signal) : '';
+    const model = profile.model || run.model;
+    const provider = providerForModel(model) ?? run.executionProvider ?? 'codex';
+    const imageUrls = canReadAttachments && provider === 'codex' ? images : undefined;
     const developerInstructions = [instructionPriority, 'Общие инструкции агента\n' + globalInstructions,
       this.corporate.instructions(actor, profile), 'Подготовь консультацию по переданной подзадаче для основного агента.',
-      projectFiles.length && projectFileInstructions, excerpts && attachmentInstructions, integration?.tools && erpReadInstructions,
+      projectFiles.length && projectFileInstructions, (excerpts || imageUrls?.length) && attachmentInstructions, integration?.tools && erpReadInstructions,
     ].filter(Boolean).join('\n\n');
     const prompt = [erpPrompt(fastkoreContext), integration?.problem, task,
       excerpts && '<local_document_context>\n' + excerpts + '\n</local_document_context>'].filter(Boolean).join('\n\n');
     authorize();
-    const result = await this.codex.run({ cliPath, workspace: project.directory, prompt, developerInstructions, tools: internetTools,
-      allowWrite: false, consultation: true, ephemeral: true, model: profile.model || run.model, reasoningEffort: run.reasoningEffort ?? profile.reasoningEffort,
+    const result = await this.codex.run({ cliPath, workspace: project.directory, prompt, imageUrls, developerInstructions, tools: internetTools,
+      allowWrite: false, consultation: true, ephemeral: true, model, reasoningEffort: run.reasoningEffort ?? profile.reasoningEffort,
     }, async () => {}, signal);
     authorize();
     return result;
@@ -860,7 +873,7 @@ export class Workspace {
           developerInstructions: this.store.state.settings.agentInstructions ?? DEFAULT_AGENT_INSTRUCTIONS, allowWrite: false, ephemeral: true, model: run.model }, async () => {}, signal);
         run.response = info.provider === 'antigravity' ? 'Antigravity CLI: пробный запрос выполнен.' : info.provider === 'gemini' ? 'Gemini CLI: пробный запрос выполнен.' : 'ChatGPT: пробный запрос выполнен. Остаток лимита проверяйте в аккаунте ChatGPT.'; run.usage = result.usage;
       } else {
-        await this.executeChat(job, run, cliPath, signal, executionAccountId);
+        await this.executeChat(job, run, cliPath, signal, executionAccountId, info.provider);
       }
       this.checkJob(job, run); signal.throwIfAborted(); run.status = 'complete'; run.progress = 'Задание завершено';
     } catch (error) {
@@ -897,7 +910,7 @@ export class Workspace {
       finally { this.active.delete(run.id); this.pump(); }
     }
   }
-  private async executeChat(job: Job, run: Run, cliPath: string, signal: AbortSignal, executionAccountId?: string) {
+  private async executeChat(job: Job, run: Run, cliPath: string, signal: AbortSignal, executionAccountId?: string, executionProvider?: CliInfo['provider']) {
     const preparationStarted = performance.now();
     const timing = run.timing!;
     const project = this.project(run.projectId!), chat = this.chat(project.id, run.chatId!);
@@ -919,6 +932,11 @@ export class Workspace {
         .finally(() => { timing.erpSetupMs = elapsedMs(erpStarted); }) : undefined;
     this.checkJob(job, run); signal.throwIfAborted();
     const attachments = job.attachmentIds.map(id => project.attachments.find(a => a.id === id)!);
+    const imageFiles = attachments.filter(isChatImage);
+    const provider = executionProvider ?? run.executionProvider ?? providerForModel(run.model) ?? 'codex';
+    if (imageFiles.length && provider !== 'codex') throw new BridgeError(chatImagesUnsupportedProvider, 422);
+    let imageUrls: string[] | undefined;
+    const documents = attachments.filter(file => !isChatImage(file));
     const settings = { ...this.store.state.settings };
     const writable = settings.allowWrite && profile.allowWrite;
     const workerWrites = this.workerFilesAvailable && writable && allowedTools.includes('chat-files');
@@ -959,7 +977,7 @@ export class Workspace {
         if (++consultationCount > 4) return { success: false, text: 'Лимит консультаций для этого вопроса исчерпан.' };
         run.progress = 'Консультация · ' + specialist.name;
         const consultationSignal = AbortSignal.any([signal, callSignal, AbortSignal.timeout(180_000)]);
-        const result = await this.consultSpecialist(project, specialist, actor, job, run, cliPath, task.trim(), globalInstructions, attachments, consultationSignal);
+        const result = await this.consultSpecialist(project, specialist, actor, job, run, cliPath, task.trim(), globalInstructions, documents, imageUrls, consultationSignal);
         consultationUsage = addUsage(consultationUsage, result.usage);
         if (!result.response.trim()) return { success: false, text: 'Специалист не вернул ответ.' };
         consulted.add(specialist.name);
@@ -1010,6 +1028,7 @@ export class Workspace {
     let executorStarted = false;
     let finalizationStarted: number | undefined;
     try {
+      imageUrls = await readChatImages(imageFiles, project, this.files, signal);
       if (cliWorkspace && workerDirectory) {
         await cliWorkspace.restore(workerDirectory);
         cliRestored = true;
@@ -1026,9 +1045,9 @@ export class Workspace {
         const library = projectFiles.map(file => this.projectFile(project, file.id));
         await stageWorkerFiles(workerDirectory, this.files, project, attachments, previous, library, signal);
       }
-      const localAttachments = temp && !workerDirectory ? await this.stageAttachments(project, attachments, temp, signal) : attachments;
+      const localAttachments = temp && !workerDirectory ? await this.stageAttachments(project, documents, temp, signal) : documents;
       const context = this.isolatedCodex
-        ? workerDirectory ? '' : await this.attachmentExcerpts(project, attachments, signal)
+        ? workerDirectory ? '' : await this.attachmentExcerpts(project, documents, signal)
         : settings.includePreviews
           ? await buildContext(project.directory, localAttachments, true, signal)
           : localAttachments.map(a => a.path).join('\n');
@@ -1049,7 +1068,7 @@ export class Workspace {
       timing.preparationMs = elapsedMs(preparationStarted);
       const executorTiming = timeExecutor(timing);
       executorStarted = true;
-      const result = await this.codex.run({ cliPath, workspace: project.directory, prompt, developerInstructions, tools, sessionId: chat.sessionId,
+      const result = await this.codex.run({ cliPath, workspace: project.directory, prompt, imageUrls, developerInstructions, tools, sessionId: chat.sessionId,
         workDirectoryId: workerWrites ? run.id : undefined, allowWrite: this.isolatedCodex ? workerWrites : writable,
         model: run.model, reasoningEffort: run.reasoningEffort ?? this.store.state.settings.reasoningEffort ?? 'high' }, async event => {
         executorTiming.event(event);
