@@ -18,6 +18,19 @@ COPY deploy/gemini-runner.json /etc/gemini-cli/settings.json
 COPY --from=antigravity /usr/local/bin/agy /usr/local/bin/agy
 ENV HOME=/home/node CODEX_HOME=/home/node/.codex
 
+FROM cli AS office-python
+COPY deploy/office-requirements.txt /tmp/office-requirements.txt
+RUN apt-get update && apt-get install -y --no-install-recommends python3-venv=3.11.2-1+b1 \
+    && python3 -m venv /tmp/office-build \
+    && python3 -m venv --without-pip /opt/bridge-office \
+    && /tmp/office-build/bin/pip --python /opt/bridge-office install --no-cache-dir --only-binary=:all: \
+        --require-hashes -r /tmp/office-requirements.txt
+
+FROM node:24.19.0-bookworm-slim AS office-sandbox
+WORKDIR /tmp
+RUN apt-get update && apt-get download bubblewrap=0.8.0-2+deb12u1 \
+    && dpkg-deb -x bubblewrap_*.deb /tmp/office-sandbox
+
 FROM node:24.19.0-bookworm-slim AS build
 WORKDIR /app
 COPY package.json package-lock.json ./
@@ -27,6 +40,24 @@ COPY shared ./shared
 RUN npx --no-install tsc -p server/tsconfig.json && npm prune --omit=dev --no-audit --no-fund
 
 FROM cli
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        python3=3.11.2-1+b1 \
+        libreoffice-writer-nogui=4:7.4.7-1+deb12u14 libreoffice-calc-nogui=4:7.4.7-1+deb12u14 \
+        poppler-utils=22.12.0-2+deb12u3 \
+        fonts-liberation2=2.1.5-1 fonts-crosextra-carlito=20220224-1 fonts-crosextra-caladea=20200211-1 \
+        fonts-paratype=20181108-3 fonts-dejavu-core=2.37-6 fonts-open-sans=1.11-2 fonts-roboto-unhinted=2:0~20170802-3 \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=office-python /opt/bridge-office /opt/bridge-office
+# Keep this binary off PATH so Codex continues to use its bundled sandbox.
+COPY --from=office-sandbox /tmp/office-sandbox/usr/bin/bwrap /opt/bridge-office/bwrap
+COPY --from=office-sandbox /tmp/office-sandbox/usr/share/doc/bubblewrap/copyright /usr/share/doc/bridge-office-bubblewrap/copyright
+COPY --chmod=0755 deploy/fk-office.py /usr/local/bin/fk-office
+COPY deploy/office-fonts.conf /etc/fonts/conf.d/30-bridge-office.conf
+RUN install -d -m 0755 /opt/bridge-office/slots \
+    && touch /opt/bridge-office/slots/1 /opt/bridge-office/slots/2 \
+    && chmod 0444 /opt/bridge-office/slots/* \
+    && fc-cache -f
+ENV PATH=/opt/bridge-office/bin:$PATH
 WORKDIR /app
 COPY --from=build /app/package.json ./
 COPY --from=build /app/node_modules ./node_modules

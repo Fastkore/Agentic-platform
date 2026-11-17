@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { createCodexWorker } from '../server/codex-worker.js';
@@ -11,6 +11,35 @@ import { Store } from '../server/store.js';
 import { Workspace } from '../server/workspace.js';
 import type { CodexRunner } from '../server/codex.js';
 import type { CliInfo } from '../shared/types.js';
+
+test('the worker offers office tools only for a staged writable job', async () => {
+  const root = await realpath(await mkdtemp(path.join(tmpdir(), 'bridge-office-worker-')));
+  const workDirectoryId = randomUUID();
+  const fake: CodexRunner = {
+    inspect: async () => ({ path: '/fake', version: '0.167.1', authentication: 'chatgpt', status: 'Fixture' }),
+    run: async request => {
+      const available = request.tools?.definitions.some(tool => tool.name === 'workspace_office');
+      assert.equal(!!available, request.allowWrite);
+      if (available) {
+        assert.equal(request.workspace, path.join(root, workDirectoryId));
+        const result = await request.tools!.call('workspace_office', { program: 'sh', args: [] }, AbortSignal.timeout(1000));
+        assert.equal(result.success, false);
+      }
+      return { response: 'Completed' };
+    },
+  };
+  const worker = createCodexWorker(fake, root);
+  try {
+    await mkdir(path.join(root, workDirectoryId));
+    for (const id of [undefined, workDirectoryId]) {
+      const response = await worker.inject({ method: 'POST', url: '/run', payload: { prompt: 'Test', workDirectoryId: id } });
+      assert.match(response.body, /"response":"Completed"/);
+    }
+  } finally {
+    await worker.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 test('isolated worker transports login status, limits and chat over a private socket', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'bridge-worker-'));

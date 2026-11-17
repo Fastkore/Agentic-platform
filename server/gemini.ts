@@ -13,6 +13,7 @@ import type { CliInfo, ModelCatalog } from '../shared/types.js';
 import { BridgeError, redact } from './store.js';
 import { readGoogleLimits } from './google-limits.js';
 import { describeToolContext } from './tool-context.js';
+import { jobOfficeTool, runJobOffice } from './job-office.js';
 
 export function geminiFailure(text: string) {
   if (/UNSUPPORTED_CLIENT|This client is no longer supported/.test(text)) return 'Google отклонил Gemini CLI (UNSUPPORTED_CLIENT). Для этого аккаунта требуется переход на Antigravity CLI; повторный вход в Gemini CLI не устранит отказ.';
@@ -67,6 +68,15 @@ export class GeminiClient implements CodexRunner {
     const cwd = request.consultation ? path.join(temporary, 'runtime') : path.join(this.home, 'runtime');
     await mkdir(cwd, { recursive: true, mode: 0o700 });
     const token = randomBytes(32).toString('hex');
+    const jobToolStop = new AbortController();
+    const jobToolSignal = AbortSignal.any([signal, jobToolStop.signal]);
+    let jobToolQueue = Promise.resolve();
+    function useJobFiles<T>(operation: () => Promise<T>) {
+      // An office script can change the job tree. Finish it before checking paths in workspace_files.
+      const result = jobToolQueue.then(() => { jobToolSignal.throwIfAborted(); return operation(); });
+      jobToolQueue = result.then(() => {}, () => {});
+      return result;
+    }
     const definitions = [...(request.tools?.definitions ?? [])];
     const fileTool = 'workspace_files';
     if (request.workDirectoryId) definitions.push({
@@ -74,6 +84,7 @@ export class GeminiClient implements CodexRunner {
       inputSchema: { type: 'object', additionalProperties: false, required: ['action', 'path'],
         properties: { action: { enum: ['list', 'read', 'write', 'remove'] }, path: { type: 'string' }, text: { type: 'string', maxLength: 200000 } } },
     });
+    if (request.workDirectoryId && request.allowWrite) definitions.push(jobOfficeTool);
     const files = async (args: Record<string, unknown>) => {
       if (typeof args.path !== 'string' || !request.workDirectoryId) throw Error('Invalid file path');
       const root = await realpath(request.workspace), target = path.resolve(root, args.path);
@@ -93,7 +104,7 @@ export class GeminiClient implements CodexRunner {
       if (!request.allowWrite || target === root) throw Error('Writing unavailable');
       if (args.action === 'write' && typeof args.text === 'string' && args.text.length <= 200000) {
         await mkdir(path.dirname(target), { recursive: true });
-        await writeFile(target, args.text, { mode: 0o600, signal });
+        await writeFile(target, args.text, { mode: 0o600, signal: jobToolSignal });
         return 'Сохранено';
       }
       if (args.action === 'remove' && (await lstat(target)).isFile()) { await rm(target); return 'Удалено'; }
@@ -119,7 +130,8 @@ export class GeminiClient implements CodexRunner {
           const toolCallId = randomUUID();
           await onEvent({ kind: 'tool', text: name, toolCallId, toolContext: describeToolContext(name, args) });
           try {
-            if (name === fileTool) result = { success: true, text: await files(args) };
+            if (name === fileTool) result = { success: true, text: await useJobFiles(() => files(args)) };
+            else if (name === jobOfficeTool.name) result = await useJobFiles(() => runJobOffice(request, args, jobToolSignal));
             else if (request.tools) result = await request.tools.call(name, args, signal);
           } finally {
             await onEvent({ kind: 'tool-end', toolCallId });
@@ -141,7 +153,7 @@ export class GeminiClient implements CodexRunner {
     } : {
       security: { auth: { selectedType: 'oauth-personal' }, folderTrust: { enabled: false } },
       tools: { core: [] }, mcp: { allowed: ['bridge'] },
-      mcpServers: { bridge: { httpUrl: 'http://127.0.0.1:' + address.port, headers: { Authorization: 'Bearer ' + token }, trust: true } },
+      mcpServers: { bridge: { httpUrl: 'http://127.0.0.1:' + address.port, headers: { Authorization: 'Bearer ' + token }, trust: true, timeout: 150_000 } },
       context: { fileName: [] }, experimental: { enableAgents: false }, hooksConfig: { enabled: false },
     }), { mode: 0o600 });
     const args = this.antigravity ? ['--input-format', 'stream-json', '--output-format', 'stream-json', '--disable-slash-commands', '--settings', JSON.stringify({
@@ -212,7 +224,9 @@ export class GeminiClient implements CodexRunner {
       return { sessionId, response, usage };
     } finally {
       clearTimeout(timer); signal.removeEventListener('abort', stop); stop();
+      jobToolStop.abort();
       server.closeAllConnections(); server.close();
+      await jobToolQueue;
       await rm(settings, { force: true });
       await rm(temporary, { recursive: true, force: true });
     }

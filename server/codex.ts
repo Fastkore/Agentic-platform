@@ -34,9 +34,14 @@ function rateWindow(window?: RateWindow | null): LimitWindow[] {
   }];
 }
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+export function workerJobConfig(workspace: string) {
+  return ['-c', 'default_permissions="bridge-job"', '-c',
+    `permissions.bridge-job.filesystem={":root"="deny", ${JSON.stringify(workspace)}="write", "/opt/bridge-office"="read", "/etc/fonts"="read", "/etc/libreoffice"="read", "/var/cache/fontconfig"="read"}`];
+}
+
 function workerWriteConfig(workspace: string) {
-  return ['-c', 'default_permissions="bridge-job"', '-c', `permissions.bridge-job.filesystem={":root"="deny", ${JSON.stringify(workspace)}="write"}`,
-    '-c', 'features.shell_tool=true'];
+  return [...workerJobConfig(workspace), '-c', 'features.shell_tool=true', '-c',
+    `shell_environment_policy.set={TMPDIR=${JSON.stringify(workspace)}, XDG_CACHE_HOME=${JSON.stringify(path.join(workspace, '.cache'))}, MPLBACKEND="Agg"}`];
 }
 
 export function buildArguments(r: CodexRequest, mode: 'local' | 'worker' = 'local', provider = 'openai') {
@@ -84,7 +89,7 @@ export async function discoverCli(): Promise<string> {
   for (const root of roots) await walk(root, 0);
   return found.sort((a, b) => b.date - a.date)[0]?.file ?? '';
 }
-async function killTree(child: ChildProcess) {
+export async function killTree(child: ChildProcess) {
   if (!child.pid) return;
   if (process.platform !== 'win32') {
     try { process.kill(-child.pid, 'SIGKILL'); } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error; }
@@ -303,7 +308,7 @@ export class CodexClient implements CodexRunner {
             seenCalls.add(callId);
             await onEvent({ kind: 'tool', text: tool, toolCallId: callId, toolContext: describeToolContext(tool, args) });
             await onEvent({ kind: 'progress', text: tool === 'consult_specialist' ? 'Codex обращается к агенту…' : tool === 'knowledge' ? 'Codex читает базу знаний…' : tool.startsWith('library_') ? 'Codex ищет в библиотеке проекта…' :
-              tool === personalInstructionsTool ? 'Codex работает с личными инструкциями…' : 'Codex обращается к Fastkore…' });
+              tool === 'workspace_office' ? 'Исполнитель работает с документами…' : tool === personalInstructionsTool ? 'Codex работает с личными инструкциями…' : 'Codex обращается к Fastkore…' });
             try { if (tools) result = await tools.call(tool, args, signal); } catch { /* Never forward an upstream exception to the model. */ }
             await onEvent({ kind: 'tool-end', toolCallId: callId });
           }

@@ -16,6 +16,7 @@ import { readGlmKey } from './glm.js';
 import { searchZai } from './internet-search.js';
 import { executorCapacity, providerCapacity } from './execution-concurrency.js';
 import { chatImagesUnsupportedProvider, chatImageUrlPattern, maxChatImages, maxChatImagePayload, maxChatImageUrlLength, supportsChatImages } from './chat-images.js';
+import { jobOfficeTool, runJobOffice } from './job-office.js';
 import { defaultToolResponseChars, isFastkoreCliResponseLimit, maxFastkoreCliResponseChars } from '../shared/fastkore-cli-response-limit.js';
 
 const cli = '/usr/local/bin/codex';
@@ -191,9 +192,13 @@ export function createCodexWorker(codex: CodexRunner = new CodexClient([], 'work
         }
       }
       const executor = selected ? accounts!.runner(selected.account.id) : codex;
-      const result = await executor.run({ ...body, workDirectoryId, cliPath: cli, workspace: directory, allowWrite: !!workDirectoryId,
-        ...(toolDefinitions?.length ? { tools: { definitions: toolDefinitions, async call(name: string, args: unknown, signal: AbortSignal) {
-          if (!toolDefinitions.some(tool => tool.name === name)) return { success: false, text: 'Инструмент не разрешён для этого запроса.' };
+      const job = { ...body, workDirectoryId, cliPath: cli, workspace: directory, allowWrite: !!workDirectoryId };
+      const nativeOffice = job.allowWrite && (lane === 'codex' || lane === 'glm');
+      const definitions = [...(toolDefinitions ?? []), ...(nativeOffice ? [jobOfficeTool] : [])];
+      const result = await executor.run({ ...job,
+        ...(definitions.length ? { tools: { definitions, async call(name: string, args: unknown, signal: AbortSignal) {
+          if (nativeOffice && name === jobOfficeTool.name) return runJobOffice(job, args, AbortSignal.any([signal, runSignal]));
+          if (!toolDefinitions?.some(tool => tool.name === name)) return { success: false, text: 'Инструмент не разрешён для этого запроса.' };
           const id = randomUUID();
           const stop = AbortSignal.any([signal, runSignal, AbortSignal.timeout(name === 'consult_specialist' ? 195_000 : name.startsWith('fastkore_cli_') ? 125_000 : 45_000)]);
           if (name === 'consult_specialist') consultations.set(id, { signal: stop, controller, lane, running: false });
