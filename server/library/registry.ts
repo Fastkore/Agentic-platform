@@ -34,8 +34,18 @@ export function libraryLimitsFromEnv(env: NodeJS.ProcessEnv = process.env): Libr
     orphanGraceMs: 3600_000,
   };
 }
-/** Version of text processing; contents processed by another version are processed again. */
-export const processorVersion = 1;
+/**
+ * Version of processing required for a file kind. Version 2 added DOCX and cell references in XLSX; other files keep version 1.
+ * A prepared state processes contents below the required version again; contents of current states are brought up to date in the background.
+ */
+export const processorVersion = 2;
+const upgradedDocuments = ['xlsx', 'docx'];
+/**
+ * SQL: the content row `c` of file `f` is up to date. Extensions are ASCII, so lower() is sufficient. Version 2 also reads Windows-1251 text,
+ * so text left as "unsupported encoding" by version 1 is processed again.
+ */
+const upToDate = `(c.processor >= (CASE WHEN ${upgradedDocuments.map(e => `lower(f.path) LIKE '%.${e}'`).join(' OR ')} THEN 2 ELSE 1 END)
+  AND NOT (c.state='unsupported_encoding' AND c.processor < 2))`;
 
 const schemaVersion = 2;
 const migrations: Record<number, string> = {
@@ -113,9 +123,9 @@ export const notFound = () => new BridgeError('Папка библиотеки �
 const busy = () => new BridgeError('Папка уже обновляется. Продолжите или отмените текущую загрузку.', 409);
 const failureStates = "('failed','timeout')";
 const unsupportedStates = "('unsupported_format','unsupported_encoding','ocr_required')";
-/** Joins the processing result of each file's content (pending when not processed by the current processor). */
+/** Joins the last processing result, including results still usable during a processor upgrade. */
 const fileSelect = `SELECT f.*, coalesce(c.state,'pending') extraction_state, c.line_count, c.language, c.encoding, c.media_type, c.text_blob_id, c.note extraction_note
-  FROM state_files f LEFT JOIN contents c ON c.sha256=f.sha256 AND c.size=f.size AND c.processor=${processorVersion}`;
+  FROM state_files f LEFT JOIN contents c ON c.sha256=f.sha256 AND c.size=f.size`;
 
 /**
  * Durable catalog of library folders. Each folder has one current content; an update is prepared as an internal state and replaces the current
@@ -218,7 +228,7 @@ export class LibraryRegistry {
   stateRow(id: string) { return this.db.prepare('SELECT * FROM states WHERE id=?').get(id) as StateRow | undefined; }
   private processedCounts(stateId: string) {
     const counts = this.db.prepare(`SELECT sum(c.state IN ('indexed','limited')) n_indexed, sum(c.state IN ${unsupportedStates}) n_unsupported, sum(c.state IN ${failureStates}) n_failed
-      FROM state_files f JOIN contents c ON c.sha256=f.sha256 AND c.size=f.size AND c.processor=${processorVersion} WHERE f.state_id=?`).get(stateId) as
+      FROM state_files f JOIN contents c ON c.sha256=f.sha256 AND c.size=f.size WHERE f.state_id=?`).get(stateId) as
       { n_indexed: number | null; n_unsupported: number | null; n_failed: number | null };
     return { indexed: counts.n_indexed ?? 0, unsupported: counts.n_unsupported ?? 0, errors: counts.n_failed ?? 0 };
   }
@@ -233,6 +243,19 @@ export class LibraryRegistry {
     this.db.prepare('DELETE FROM chunk_refs WHERE content=?').run(key);
     this.db.prepare('DELETE FROM line_index WHERE content=?').run(key);
     this.db.prepare('DELETE FROM sections WHERE content=?').run(key);
+  }
+  /** One file of a current content whose processing is older than its kind requires (for example XLSX before cell references). */
+  outdatedFile() {
+    return this.db.prepare(`SELECT f.* FROM folders d JOIN state_files f ON f.state_id=d.current_state JOIN contents c ON c.sha256=f.sha256 AND c.size=f.size
+      WHERE d.deleted_at IS NULL AND NOT ${upToDate} LIMIT 1`).get() as StateFileRow | undefined;
+  }
+  /** Recounts processed files of published states that contain the content after it was processed again. */
+  refreshCoverage(key: string) {
+    const states = this.db.prepare(`SELECT DISTINCT s.id FROM state_files f JOIN states s ON s.id=f.state_id WHERE f.content=? AND s.status<>'preparing'`).all(key) as { id: string }[];
+    for (const { id } of states) {
+      const counts = this.processedCounts(id);
+      this.db.prepare('UPDATE states SET indexed_files=?, unsupported_files=?, extraction_errors=? WHERE id=?').run(counts.indexed, counts.unsupported, counts.errors, id);
+    }
   }
   private activeOperation(folderId: string) {
     return this.db.prepare("SELECT * FROM operations WHERE folder_id=? AND status IN ('open','preparing')").get(folderId) as OperationRow | undefined;
@@ -377,9 +400,9 @@ export class LibraryRegistry {
   /** Files without search with the reason (unsupported format/encoding, extraction error, timeout). */
   problems(stateId: string) {
     const where = `WHERE f.state_id=? AND coalesce(c.state,'pending') NOT IN ('indexed','limited','pending')`;
-    const counts = this.db.prepare(`SELECT coalesce(c.state,'pending') state, count(*) n FROM state_files f LEFT JOIN contents c ON c.sha256=f.sha256 AND c.size=f.size AND c.processor=${processorVersion}
+    const counts = this.db.prepare(`SELECT coalesce(c.state,'pending') state, count(*) n FROM state_files f LEFT JOIN contents c ON c.sha256=f.sha256 AND c.size=f.size
       ${where} GROUP BY 1`).all(stateId) as { state: string; n: number }[];
-    const files = this.db.prepare(`SELECT f.path, c.state, c.note FROM state_files f LEFT JOIN contents c ON c.sha256=f.sha256 AND c.size=f.size AND c.processor=${processorVersion}
+    const files = this.db.prepare(`SELECT f.path, c.state, c.note FROM state_files f LEFT JOIN contents c ON c.sha256=f.sha256 AND c.size=f.size
       ${where} ORDER BY c.state IN ${failureStates} DESC, f.path LIMIT 500`).all(stateId) as { path: string; state: string; note: string | null }[];
     return { counts: Object.fromEntries(counts.map(c => [c.state, c.n])), files };
   }
@@ -860,15 +883,15 @@ export class LibraryRegistry {
   recordImport(key: string, report: object) { this.db.prepare('INSERT OR REPLACE INTO imports VALUES (?,?,?)').run(key, new Date(this.now()).toISOString(), JSON.stringify(report)); }
   /** Contents of a state that still need processing by the current processor. */
   pendingFiles(stateId: string) {
-    return this.db.prepare(`SELECT f.* FROM state_files f WHERE f.state_id=? AND NOT EXISTS (SELECT 1 FROM contents c WHERE c.sha256=f.sha256 AND c.size=f.size AND c.processor=?)
-      ORDER BY f.path`).all(stateId, processorVersion) as StateFileRow[];
+    return this.db.prepare(`SELECT f.* FROM state_files f WHERE f.state_id=? AND NOT EXISTS (SELECT 1 FROM contents c WHERE c.sha256=f.sha256 AND c.size=f.size AND ${upToDate})
+      ORDER BY f.path`).all(stateId) as StateFileRow[];
   }
   /** Publishes a prepared state when all its contents are processed; called after preparation and by the indexer. Runs inside a transaction. */
   tryPublish(stateId: string) {
     const state = this.stateRow(stateId);
     if (!state || state.status !== 'preparing') return false;
-    if (this.db.prepare(`SELECT 1 FROM state_files f WHERE f.state_id=? AND NOT EXISTS (SELECT 1 FROM contents c WHERE c.sha256=f.sha256 AND c.size=f.size AND c.processor=?) LIMIT 1`)
-      .get(stateId, processorVersion)) return false;
+    if (this.db.prepare(`SELECT 1 FROM state_files f WHERE f.state_id=? AND NOT EXISTS (SELECT 1 FROM contents c WHERE c.sha256=f.sha256 AND c.size=f.size AND ${upToDate}) LIMIT 1`)
+      .get(stateId)) return false;
     const counts = this.processedCounts(stateId);
     this.db.prepare('UPDATE states SET indexed_files=?, unsupported_files=?, extraction_errors=? WHERE id=?').run(counts.indexed, counts.unsupported, counts.errors, stateId);
     this.db.prepare("UPDATE index_jobs SET status='done', lease_owner=NULL, lease_until=NULL, last_error=NULL WHERE state_id=?").run(stateId);

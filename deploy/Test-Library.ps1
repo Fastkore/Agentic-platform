@@ -2,7 +2,7 @@
 #   powershell -ExecutionPolicy Bypass -File deploy/Test-Library.ps1            # checks only; the running stack is not changed
 #   powershell -ExecutionPolicy Bypass -File deploy/Test-Library.ps1 -Update    # first deploys the working tree with Update-TestStack.ps1
 # Writes work/library-stand/stand-report.json. Prints no secrets. Exit code 1 when any check fails.
-param([switch]$Update)
+param([switch]$Update, [string]$BuildContext)
 $ErrorActionPreference = 'Stop'
 Set-Location (Split-Path -Parent $PSScriptRoot)
 $project = 'agentic-platformin'
@@ -18,10 +18,12 @@ $report = [ordered]@{ startedAt = (Get-Date).ToString('o'); host = $env:COMPUTER
 $failed = @()
 function Record($name, $ok, $detail) { $report.checks[$name] = [ordered]@{ ok = [bool]$ok; detail = $detail }; if (!$ok) { $script:failed += $name } }
 New-Item -ItemType Directory -Force -Path 'work/library-stand' | Out-Null
+$testContext = if ($BuildContext) { (Resolve-Path -LiteralPath $BuildContext).Path } else { '.' }
 
 # 0. Optional deployment. Without -Update the running containers are not touched.
 if ($Update) {
-    & powershell -ExecutionPolicy Bypass -File deploy/Update-TestStack.ps1
+    if ($BuildContext) { & powershell -ExecutionPolicy Bypass -File deploy/Update-TestStack.ps1 -BuildContext $testContext }
+    else { & powershell -ExecutionPolicy Bypass -File deploy/Update-TestStack.ps1 }
     if ($LASTEXITCODE -ne 0) { throw 'Update-TestStack.ps1 failed.' }
 }
 
@@ -74,7 +76,7 @@ Record 'executorNetworks' ($networks.code -eq 0 -and $networks.out -and $network
 # 4. S3 integration tests against the stack's MinIO, from a disposable container on the storage network (test buckets are separate).
 $network = "${project}_file_storage"
 $testImage = "${project}-library-test:local"
-Invoke-Docker build --target build -t $testImage .
+Invoke-Docker build --target build -t $testImage $testContext
 $secretPath = (Resolve-Path -LiteralPath 'private/minio-password').Path
 $s3 = Capture-Docker run --rm --network $network `
     --mount "type=bind,source=$secretPath,target=/run/minio-password,readonly" `

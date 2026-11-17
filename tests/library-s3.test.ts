@@ -62,18 +62,25 @@ test('S3: separate bucket required; multipart upload re-verified on the server; 
   registry.close();
 });
 
-test('S3: files rejected after the first bytes (invalid UTF-8) close their connections; processing does not exhaust the socket pool', { skip: !endpoint }, async () => {
+test('S3: accepted Windows-1251 and rejected text both release connections; processing does not exhaust the socket pool', { skip: !endpoint }, async () => {
   const config = libraryStorageFromEnv(env());
   await config.store!.check();
   const fixture = await libraryFixture({ store: config.store, limits: { partBytes: 5 * 1024 * 1024 } });
   const folder = fixture.registry.createFolder(admin, { name: 'cp1251', profile: 'code' });
   const files: Record<string, Buffer | string> = { 'zz/ok.cs': 'class Ok {}\n' };
   // More files than the S3 client's 50 pooled connections; each body is larger than the first network chunk.
-  for (let i = 0; i < 80; i++) files[`legacy/f${i}.cs`] = Buffer.concat([Buffer.from([0xcf, 0xf0, 0xe8, 0xe2, 0xe5, 0xf2, 0x0a]), Buffer.alloc(300 * 1024, 0x61 + (i % 20)), Buffer.from(String(i))]);
+  for (let i = 0; i < 80; i++) {
+    const prefix = Buffer.from([0xcf, 0xf0, i % 4 === 0 ? 0xe8 : 0x98, 0xe2, 0xe5, 0xf2, 0x0a]);
+    files[`legacy/f${i}.cs`] = Buffer.concat([prefix, Buffer.alloc(300 * 1024, 0x61 + (i % 20)), Buffer.from(String(i))]);
+  }
   const deadline = AbortSignal.timeout(90_000);
   await Promise.race([upload(fixture, folder.id, files), new Promise((_, reject) => deadline.addEventListener('abort', () => reject(new Error('processing hung'))))]);
   await fixture.indexer.stop();
   const summary = fixture.registry.getFolder(admin, folder.id);
-  assert.equal(summary.current!.indexed, 1);
-  assert.equal(summary.current!.unsupported, 80);
+  assert.equal(summary.current!.indexed, 21);
+  assert.equal(summary.current!.unsupported, 60);
+  const state = current(fixture.registry, folder.id);
+  const reader = new LibraryReader(fixture.registry);
+  const file = reader.fileByPath(state.id, 'legacy/f0.cs')!;
+  assert.equal((await reader.readLines(state.id, file.file_id, 1, 1)).lines[0].text, 'Привет');
 });

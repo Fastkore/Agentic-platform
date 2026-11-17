@@ -14,6 +14,23 @@ export function detectEncoding(head: Uint8Array): Decoded | 'binary' {
 }
 
 
+/**
+ * Windows-1251 text: bytes above 0x7F are mostly Cyrillic letters (0xC0–0xFF, Ё/ё) and typographic signs, and there are no C1 control codes
+ * that the encoding leaves undefined. Other single-byte encodings and binary data rarely pass this.
+ */
+export function looksWindows1251(data: Uint8Array) {
+  let high = 0, letters = 0;
+  const end = Math.min(data.length, 1 << 20);
+  for (let i = 0; i < end; i++) {
+    const b = data[i];
+    if (b < 0x80) { if (b < 0x09 || (b > 0x0d && b < 0x20 && b !== 0x1a)) return false; continue; }
+    if (b === 0x98) return false;
+    high++;
+    if (b >= 0xc0 || b === 0xa8 || b === 0xb8) letters++;
+  }
+  return high > 0 && letters / high >= 0.8;
+}
+
 export interface TextIndexInput {
   data: Uint8Array;
   /** object: the stored original (encoding detected here); derived: UTF-8 text extracted from a document. */
@@ -91,7 +108,16 @@ export function indexBytes(input: TextIndexInput): TextIndexResult {
     return { state: 'indexed', encoding: detected.encoding, mediaType: 'text/plain', lines: r.lines, chunks: r.chunks, offsets: r.offsets, sections: r.sections, derived };
   }
   try { new TextDecoder('utf-8', { fatal: true }).decode(data.subarray(detected.bomBytes)); }
-  catch { return { state: 'unsupported_encoding', encoding: 'unknown', note: 'Файл не является корректным UTF-8. Укажите кодировку явно или преобразуйте файл.', ...empty }; }
+  catch {
+    // Russian CSV and text exported from Excel or 1C are often Windows-1251; such files are converted to UTF-8 text for reading and search.
+    if (looksWindows1251(data)) {
+      if (data.length > input.indexTextBytes) return { state: 'unsupported_format', encoding: 'windows-1251', note: 'Файл в Windows-1251 превышает предел извлечения', ...empty };
+      const derived = new TextEncoder().encode(new TextDecoder('windows-1251').decode(data));
+      const r = indexLines(derived, 0, false, Number.POSITIVE_INFINITY);
+      return { state: 'indexed', encoding: 'windows-1251', mediaType: 'text/plain', lines: r.lines, chunks: r.chunks, offsets: r.offsets, sections: r.sections, derived };
+    }
+    return { state: 'unsupported_encoding', encoding: 'unknown', note: 'Файл не является корректным UTF-8 или Windows-1251. Сохраните его в UTF-8.', ...empty };
+  }
   const r = indexLines(data, detected.bomBytes, false, input.indexTextBytes);
   return { state: r.limited ? 'limited' : 'indexed', encoding: detected.encoding, mediaType: 'text/plain', lines: r.lines, chunks: r.chunks, offsets: r.offsets, sections: r.sections,
     note: r.limited ? `Полнотекстовый индекс ограничен первыми ${Math.round(input.indexTextBytes / 1048576)} МиБ; чтение строк доступно полностью.` : undefined };

@@ -14,11 +14,12 @@ const languages: Record<string, string> = {
   scss: 'css', less: 'css', razor: 'razor', cshtml: 'razor', sln: 'text', log: 'text', rtf: 'text', proto: 'proto', graphql: 'graphql',
 };
 const binaryExtensions = new Set(['dll', 'exe', 'pdb', 'png', 'jpg', 'jpeg', 'gif', 'bmp', 'ico', 'webp', 'zip', '7z', 'rar', 'gz', 'tar', 'mp3', 'mp4', 'avi', 'woff', 'woff2', 'ttf', 'otf', 'eot', 'so', 'dylib', 'class', 'jar', 'nupkg', 'mdb', 'accdb', 'sqlite', 'db']);
-const unsupportedDocuments = new Set(['doc', 'docx', 'xls', 'xlsb', 'xlsm', 'ppt', 'pptx', 'odt', 'ods']);
+const unsupportedDocuments = new Set(['doc', 'xls', 'xlsb', 'xlsm', 'ppt', 'pptx', 'odt', 'ods']);
 export function classify(path: string) {
   const ext = path.includes('.') ? path.slice(path.lastIndexOf('.') + 1).toLowerCase() : '';
   if (ext === 'xlsx') return { kind: 'xlsx' as const, language: 'table' };
   if (ext === 'pdf') return { kind: 'pdf' as const, language: 'document' };
+  if (ext === 'docx') return { kind: 'docx' as const, language: 'document' };
   if (binaryExtensions.has(ext)) return { kind: 'binary' as const };
   if (unsupportedDocuments.has(ext)) return { kind: 'unsupported' as const };
   return { kind: 'text' as const, language: languages[ext] ?? 'text' };
@@ -89,6 +90,8 @@ class TextIndexWorker {
   async close() { const current = this.worker; this.worker = undefined; await current?.worker.terminate(); }
 }
 
+const mediaTypes = { pdf: 'application/pdf', xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' };
 type Processed = { state: string; encoding?: string; mediaType?: string; lines?: number; language?: string; textBlobId?: string; note?: string; rows?: TextIndexResult };
 
 /**
@@ -106,6 +109,8 @@ export class LibraryIndexer {
   private readonly leaseMs: number; private readonly pollMs: number; private readonly maxAttempts: number; private readonly extractionTimeoutMs: number;
   private readonly fileTimeoutMs: number;
   private readonly textWorker: TextIndexWorker;
+  /** Set once no current content needs a newer processing version; new contents are always processed with the current one. */
+  private upgradesDone = false;
   constructor(private readonly registry: LibraryRegistry, options: IndexerOptions = {}) {
     this.workerId = options.workerId ?? randomUUID();
     this.leaseMs = options.leaseMs ?? 60_000; this.pollMs = options.pollMs ?? 2000; this.maxAttempts = options.maxAttempts ?? 5;
@@ -136,7 +141,7 @@ export class LibraryIndexer {
       this.db.prepare("UPDATE index_jobs SET status='running', lease_owner=?, lease_until=?, attempts=attempts+1 WHERE state_id=?").run(this.workerId, now + this.leaseMs, row.state_id);
       return { ...row, attempts: row.attempts + 1 };
     });
-    if (!job) return false;
+    if (!job) return this.upgradeOne();
     const heartbeat = setInterval(() => {
       this.db.prepare('UPDATE index_jobs SET lease_until=? WHERE state_id=? AND lease_owner=?').run(Date.now() + this.leaseMs, job.state_id, this.workerId);
     }, Math.max(1000, this.leaseMs / 3));
@@ -170,19 +175,13 @@ export class LibraryIndexer {
       const work = this.batch; this.batch = [];
       this.registry.tx(() => { for (const write of work) write(); });
     };
-    const insertContent = this.db.prepare('INSERT OR REPLACE INTO contents VALUES (?,?,?,?,?,?,?,?,?,?,?)');
     let lastFlush = Date.now();
     try {
       for (const file of files) {
         this.owned(stateId);
         if (this.registry.stateRow(stateId)?.status !== 'preparing') return;
         const result = await this.processFile(file);
-        const key = contentKey(file.sha256, file.size);
-        // Rows of an earlier attempt for this content are replaced together with the result.
-        this.batch.push(() => this.registry.deleteContentIndex(key));
-        if (result.rows && (result.state === 'indexed' || result.state === 'limited')) this.writeRows(key, result.rows);
-        this.batch.push(() => insertContent.run(file.sha256, file.size, processorVersion, result.state, result.mediaType ?? null, result.encoding ?? null, result.lines ?? null,
-          result.language ?? null, result.textBlobId ?? null, result.note ?? null, Date.now()));
+        this.queueResult(file, result, true);
         if (this.batch.length >= 4000 || Date.now() - lastFlush > 2000) { flush(); lastFlush = Date.now(); }
       }
       flush();
@@ -195,13 +194,50 @@ export class LibraryIndexer {
       }
     });
   }
+  /** Marks the extracted text of the content's previous result for collection; the grace period covers answers still reading it. */
+  private orphanText(file: Pick<StateFileRow, 'sha256' | 'size'>) {
+    this.db.prepare(`UPDATE blobs SET state='orphan', orphaned_at=? WHERE state='verified' AND id=(SELECT text_blob_id FROM contents WHERE sha256=? AND size=?)`)
+      .run(Date.now(), file.sha256, file.size);
+  }
+  /**
+   * Brings one file of a current content up to the processing version its kind requires, in place: the folder keeps its content and
+   * gains the new extraction (for example DOCX text or XLSX cell references). A failed upgrade keeps a previously readable result.
+   */
+  private async upgradeOne(): Promise<boolean> {
+    if (this.upgradesDone) return false;
+    const file = this.registry.outdatedFile();
+    if (!file) { this.upgradesDone = true; return false; }
+    const result = await this.processFile(file);
+    this.batch = [];
+    try {
+      this.queueResult(file, result, false);
+      this.registry.tx(() => { for (const write of this.batch) write(); });
+    } finally { this.batch = []; }
+    return true;
+  }
+  private queueResult(file: StateFileRow, result: Processed, commitEarly: boolean) {
+    const previous = this.db.prepare('SELECT state FROM contents WHERE sha256=? AND size=?').get(file.sha256, file.size) as { state: string } | undefined;
+    const usable = result.state === 'indexed' || result.state === 'limited';
+    if (!usable && (previous?.state === 'indexed' || previous?.state === 'limited')) {
+      this.batch.push(() => this.db.prepare('UPDATE contents SET processor=? WHERE sha256=? AND size=?').run(processorVersion, file.sha256, file.size));
+      return;
+    }
+    const key = contentKey(file.sha256, file.size);
+    this.batch.push(() => { this.registry.deleteContentIndex(key); this.orphanText(file); });
+    if (result.rows && usable) this.writeRows(key, result.rows, commitEarly && !previous);
+    this.batch.push(() => {
+      this.db.prepare('INSERT OR REPLACE INTO contents VALUES (?,?,?,?,?,?,?,?,?,?,?)').run(file.sha256, file.size, processorVersion, result.state, result.mediaType ?? null,
+        result.encoding ?? null, result.lines ?? null, result.language ?? null, result.textBlobId ?? null, result.note ?? null, Date.now());
+      if (previous) this.registry.refreshCoverage(key);
+    });
+  }
   private async processFile(file: StateFileRow): Promise<Processed> {
     const kind = classify(file.path);
     if (kind.kind === 'binary') return { state: 'unsupported_format', mediaType: 'application/octet-stream', note: 'Двоичный формат' };
     if (kind.kind === 'unsupported') return { state: 'unsupported_format', note: 'Формат документа пока не поддерживается' };
     const store = this.registry.store();
     const blob = this.db.prepare('SELECT object_key FROM blobs WHERE id=?').get(file.blob_id) as { object_key: string };
-    if (kind.kind === 'xlsx' || kind.kind === 'pdf') {
+    if (kind.kind === 'xlsx' || kind.kind === 'pdf' || kind.kind === 'docx') {
       if (file.size > 64 * 1024 * 1024) return { state: 'unsupported_format', note: 'Документ превышает 64 МиБ для извлечения' };
       const data = (await this.readObject(store, blob.object_key))!;
       let text: string;
@@ -211,7 +247,7 @@ export class LibraryIndexer {
           ? { state: 'timeout', note: `Извлечение текста превысило ${Math.ceil(this.extractionTimeoutMs / 1000)} с; повторите обработку.` }
           : { state: 'failed', note: 'Не удалось извлечь текст документа' };
       }
-      const mediaType = kind.kind === 'pdf' ? 'application/pdf' : 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+      const mediaType = mediaTypes[kind.kind];
       if (kind.kind === 'pdf' && !/[\p{L}\p{N}]/u.test(text.replace(/^# Страница \d+$/gm, ''))) {
         return { state: 'ocr_required', mediaType, note: 'В PDF нет текстового слоя. Требуется распознавание.' };
       }
@@ -267,7 +303,7 @@ export class LibraryIndexer {
     this.db.prepare("UPDATE blobs SET state='verified' WHERE id=?").run(id);
     return id;
   }
-  private extract(kind: 'xlsx' | 'pdf', input: Buffer) {
+  private extract(kind: 'xlsx' | 'pdf' | 'docx', input: Buffer) {
     const script = new URL(import.meta.url.endsWith('.ts') ? './extract-worker.ts' : './extract-worker.js', import.meta.url);
     const worker = new Worker(script, { workerData: { kind, input }, resourceLimits: { maxOldGenerationSizeMb: 512, maxYoungGenerationSizeMb: 48, stackSizeMb: 4 } });
     return new Promise<string>((resolve, reject) => {
@@ -277,14 +313,14 @@ export class LibraryIndexer {
       worker.once('exit', code => { clearTimeout(timer); if (code) reject(new Error('exit ' + code)); });
     });
   }
-  /** Queues the index rows of one processed content into the job batch; large files commit part of the batch early to bound memory. */
-  private writeRows(key: string, result: TextIndexResult) {
+  /** Queues the index rows of one processed content into the job batch; for prepared states large files commit part of the batch early to bound memory. */
+  private writeRows(key: string, result: TextIndexResult, commitEarly = true) {
     const insertChunk = this.db.prepare('INSERT INTO chunks (content, start_line, text) VALUES (?,?,?)');
     const insertRef = this.db.prepare('INSERT INTO chunk_refs (content, chunk_rowid) VALUES (?,?)');
     const insertOffset = this.db.prepare('INSERT OR REPLACE INTO line_index VALUES (?,?,?)');
     const insertSection = this.db.prepare('INSERT OR REPLACE INTO sections VALUES (?,?,?)');
     const commit = () => {
-      if (this.batch.length < 4000) return;
+      if (!commitEarly || this.batch.length < 4000) return;
       const work = this.batch; this.batch = [];
       this.registry.tx(() => { for (const write of work) write(); });
     };

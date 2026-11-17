@@ -101,9 +101,9 @@ test('explanation only: code blocks, encoded copies and listings are not publish
     await f.workspace.settings({ allowWrite: true });
     f.workspace.corporate.data.profiles.find(p => p.id === 'universal')!.allowWrite = true;
     const { folder, connection } = await grantedFolder(f, { 'Pricing.cs': code });
-    const chat = (await f.req('POST', `/api/projects/${f.project.id}/chats`, f.token, {})).json();
-    const route = `/api/projects/${f.project.id}/chats/${chat.id}/messages`;
     const ask = async (text: string) => {
+      const chat = (await f.req('POST', `/api/projects/${f.project.id}/chats`, f.token, {})).json();
+      const route = `/api/projects/${f.project.id}/chats/${chat.id}/messages`;
       await f.req('POST', route, f.token, { text }); await idle(f.workspace);
       return { text: (await f.req('GET', `/api/projects/${f.project.id}/chats/${chat.id}`, f.token)).json().messages.at(-1).text as string, call: f.calls.at(-1)! };
     };

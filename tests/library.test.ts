@@ -178,7 +178,8 @@ test('a file over the processing budget gets "timeout", the rest is processed, t
   f.store.stream = (async (...args: Parameters<typeof stream>) => { const s = await stream(...args); opened.push(s); return s; }) as typeof stream;
   const huge = Buffer.from('строка с текстом для индекса номер\n'.repeat(400_000));
   const files: Record<string, Buffer | string> = { 'a.txt': 'new\n', 'big/huge.txt': huge };
-  for (let i = 0; i < 60; i++) files[`legacy/cp${i}.cs`] = Buffer.concat([Buffer.from([0xcf, 0xf0, 0xe8, 0xe2, 0xe5, 0xf2, 0x0a]), Buffer.from(String(i))]);
+  // Neither UTF-8 nor Windows-1251 (0x98 is undefined there): rejected files.
+  for (let i = 0; i < 60; i++) files[`legacy/cp${i}.cs`] = Buffer.concat([Buffer.from([0xcf, 0xf0, 0x98, 0xe2, 0xe5, 0xf2, 0x0a]), Buffer.from(String(i))]);
   let beats = 0;
   const heartbeat = setInterval(() => beats++, 1);
   await upload(f, folder.id, files);
@@ -211,7 +212,8 @@ test('encodings: UTF-16 with BOM, invalid UTF-8, binary, scanned PDF and unsuppo
   const utf16 = Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from('Цена = 42\r\nИтог\r\n', 'utf16le')]);
   await upload(f, folder.id, {
     'u16.txt': utf16, 'bom.cs': Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from('class Bom {}\n')]),
-    'cp1251.txt': Buffer.from([0xcf, 0xf0, 0xe8, 0xe2, 0xe5, 0xf2, 0x0a]), 'logo.png': Buffer.from([0x89, 0x50, 0x4e, 0x47, 0, 0, 1]),
+    'cp1251.txt': Buffer.from([0xcf, 0xf0, 0xe8, 0xe2, 0xe5, 0xf2, 0x3b, 0x31, 0x0a]), 'koi8.txt': Buffer.from([0xf0, 0xd2, 0xc9, 0xd7, 0xc5, 0xd4, 0x81, 0x98, 0x0a]),
+    'logo.png': Buffer.from([0x89, 0x50, 0x4e, 0x47, 0, 0, 1]),
     'slides.pptx': Buffer.from('PK fake'), 'noext': Buffer.from([1, 2, 0, 3]),
   });
   const state = current(f.registry, folder.id);
@@ -219,13 +221,16 @@ test('encodings: UTF-16 with BOM, invalid UTF-8, binary, scanned PDF and unsuppo
   const st = (p: string) => reader.fileByPath(state.id, p)!.extraction_state;
   assert.equal(st('u16.txt'), 'indexed');
   assert.equal(st('bom.cs'), 'indexed');
-  assert.equal(st('cp1251.txt'), 'unsupported_encoding');
+  assert.equal(st('cp1251.txt'), 'indexed', 'Windows-1251 text is converted');
+  assert.equal(st('koi8.txt'), 'unsupported_encoding');
   assert.equal(st('logo.png'), 'unsupported_format');
   assert.equal(st('slides.pptx'), 'unsupported_format');
   assert.equal(st('noext'), 'unsupported_format');
   assert.equal((await reader.readLines(state.id, reader.fileByPath(state.id, 'u16.txt')!.file_id, 1, 2)).lines[0].text, 'Цена = 42');
   assert.equal((await reader.readLines(state.id, reader.fileByPath(state.id, 'bom.cs')!.file_id, 1, 1)).lines[0].text, 'class Bom {}');
-  await rejects(() => reader.readLines(state.id, reader.fileByPath(state.id, 'cp1251.txt')!.file_id, 1, 1), 422);
+  assert.equal((await reader.readLines(state.id, reader.fileByPath(state.id, 'cp1251.txt')!.file_id, 1, 1)).lines[0].text, 'Привет;1');
+  assert.equal(reader.search([{ stateId: state.id, folderId: folder.id }], 'привет').hits[0].path, 'cp1251.txt');
+  await rejects(() => reader.readLines(state.id, reader.fileByPath(state.id, 'koi8.txt')!.file_id, 1, 1), 422);
   assert.equal(f.registry.getFolder(admin, folder.id).current!.unsupported, 4, 'unsupported files are coverage, not failures');
 });
 
@@ -260,4 +265,36 @@ test('deleting a folder removes it from every project and collects its objects',
   await rejects(() => f.registry.getFolder(admin, folder.id), 404);
   await f.registry.collectGarbage({ graceMs: 0 });
   assert.equal((f.registry.db.prepare("SELECT count(*) n FROM blobs WHERE state='verified' AND folder_id=?").get(folder.id) as { n: number }).n, 0);
+});
+
+test('search: an extra word does not empty the result; lines with more words come first; several files are visible on the first page', async () => {
+  const f = await libraryFixture();
+  const folder = f.registry.createFolder(admin, { name: 'Поиск', profile: 'documents' });
+  const noisy = Array.from({ length: 60 }, (_, i) => `Строка ${i}: Suspended флаг в журнале`).join('\n') + '\n';
+  await upload(f, folder.id, {
+    'A/log.md': noisy,
+    'B/notes.md': 'Приостановка операции: статус Suspended не высвобождает станок.\n',
+    'Z/guide.md': 'Обычная строка\nПриостановленная операция Suspended сохраняет ресурс станок за собой.\n',
+    'Z/brief.md': 'Особый код: ЁЖ.\n',
+  });
+  const reader = new LibraryReader(f.registry);
+  const target = [{ stateId: current(f.registry, folder.id).id, folderId: folder.id }];
+  const single = reader.search(target, 'станок', { mode: 'fulltext' });
+  const extra = reader.search(target, 'станок абракадабра', { mode: 'fulltext' });
+  assert.equal(single.hits.length, 2);
+  assert.deepEqual(extra.hits.map(h => h.path), single.hits.map(h => h.path), 'a word with no matches does not remove matches of the other');
+  const ranked = reader.search(target, 'Suspended станок', { mode: 'fulltext' });
+  assert.deepEqual(ranked.hits.slice(0, 2).map(h => h.path).sort(), ['B/notes.md', 'Z/guide.md'], 'lines with both words first');
+  const exact = reader.search(target, 'Suspended');
+  assert.equal(exact.filesMatched, 3);
+  assert.deepEqual([...new Set(exact.hits.map(h => h.path))].sort(), ['A/log.md', 'B/notes.md', 'Z/guide.md'], 'a file sorted last is still on the first page');
+  assert.equal(exact.hits.length, 20);
+  const rest: string[] = [];
+  for (let cursor = exact.next; cursor !== undefined;) { const page = reader.search(target, 'Suspended', { offset: cursor }); rest.push(...page.hits.map(h => h.path + ':' + h.line)); cursor = page.next; }
+  const all = [...exact.hits.map(h => h.path + ':' + h.line), ...rest];
+  assert.equal(all.length, 62); assert.equal(new Set(all).size, 62, 'pages continue without repeats or gaps');
+  assert.deepEqual(reader.search(target, 'станок ёж', { mode: 'fulltext' }).hits.map(h => h.path), ['B/notes.md', 'Z/brief.md', 'Z/guide.md']);
+  assert.equal(reader.search(target, 'ёж').hits[0]?.path, 'Z/brief.md');
+  const allowed = [{ ...target[0], allow: new Set(['Z/guide.md']) }];
+  assert.deepEqual(reader.search(allowed, 'Suspended').hits.map(h => h.path), ['Z/guide.md']);
 });
