@@ -1,0 +1,14 @@
+# Project library: a separate private bucket in the stack's MinIO (see compose.minio.yaml); the executor gets no access.
+# The bucket keeps the name of the earlier deployment (agentic-platform-sources) so stored objects stay in place.
+# Analysis of closed folders stays off: BRIDGE_LIBRARY_CLOSED_ANALYSIS is set only after the executor, its sessions and logs were verified.
+services:
+  app:
+    environment:
+      BRIDGE_LIBRARY_S3_ENDPOINT: http://minio:9000
+      BRIDGE_LIBRARY_S3_BUCKET: ${BRIDGE_LIBRARY_S3_BUCKET:-agentic-platform-sources}
+      BRIDGE_LIBRARY_S3_REGION: us-east-1
+      BRIDGE_LIBRARY_S3_FORCE_PATH_STYLE: "1"
+      BRIDGE_LIBRARY_S3_ACCESS_KEY: ${BRIDGE_LIBRARY_S3_ACCESS_KEY:-agentic-platform}
+      BRIDGE_LIBRARY_S3_SECRET_KEY_FILE: /run/secrets/minio-password
+      BRIDGE_LIBRARY_S3_CREATE_BUCKET: "1"
+      BRIDGE_LIBRARY_CLOSED_ANALYSIS: ${BRIDGE_LIBRARY_CLOSED_ANALYSIS:-}

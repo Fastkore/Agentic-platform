@@ -12,6 +12,7 @@ import { migrateFastkoreChatBindings } from '../server/fastkore-chat.js';
 import type { AgentProfile } from '../shared/types.js';
 import type { CodexRequest, CodexRunner } from '../server/codex.js';
 import { erpBrowser } from './erp-browser.js';
+import { FilesystemLibraryBlobStore } from '../server/library/blob-store.js';
 const password = 'Corporate-test-password-2026';
 async function fixture(respond?: (request: CodexRequest, signal: AbortSignal) => Promise<string | undefined>) {
   const root = await mkdtemp(path.join(tmpdir(), 'bridge-corporate-')); await mkdir(path.join(root, 'project'));
@@ -24,6 +25,7 @@ async function fixture(respond?: (request: CodexRequest, signal: AbortSignal) =>
     return { sessionId: '87db344a-98f3-42c8-bba8-c7d9f3dcff11', response: (await respond?.(r, signal)) ?? 'OK', usage: { inputTokens: 200, cachedInputTokens: 100, outputTokens: 30 } };
   } };
   const store = new Store(path.join(root, 'data')), workspace = new Workspace(store, runner); await workspace.settings({ cliPath: process.execPath, includePreviews: false });
+  workspace.useLibraryStorage({ store: new FilesystemLibraryBlobStore(path.join(root, 'library-objects')) });
   const erp = erpBrowser(process.env.BRIDGE_PUBLIC_ORIGIN);
   const project = await workspace.addProject(path.join(root, 'project')), app = await createApp(workspace, erp.options);
   const req = erp.request(app);
@@ -657,46 +659,55 @@ test('Fastkore requests preserve selection context while allowing questions abou
   } finally { await f.app.close(); }
 });
 
-test('project files are managed by a local administrator and read by the agent only in the current project', async () => {
+test('former project files move into the library once, keep per-file access and are read only through the library of their project', async () => {
   const f = await fixture();
+  const projectPath = '/api/projects/' + f.project.id;
   try {
-    const route = '/api/projects/' + f.project.id + '/files';
-    const upload = (url: string, token: string, name: string, content: string) => f.app.inject({
-      method: 'POST', url, headers: {
-        authorization: 'Bearer ' + token, 'content-type': 'multipart/form-data; boundary=bridge-files',
-      }, payload: '--bridge-files\r\nContent-Disposition: form-data; name="file"; filename="' + name +
-        '"\r\nContent-Type: text/plain\r\n\r\n' + content + '\r\n--bridge-files--\r\n',
-    });
-    assert.equal((await f.req('GET', route, f.token)).statusCode, 403);
-    assert.equal((await f.req('POST', route, f.token)).statusCode, 403);
-    const uploadResult = await upload(route, f.admin, 'project-notes.txt', 'Project reference');
-    assert.equal(uploadResult.statusCode, 201, uploadResult.body);
-    const file = uploadResult.json();
-    assert.ok(!Object.hasOwn(file, 'path'));
-    assert.deepEqual((await f.req('GET', route, f.admin)).json(), [file]);
-    assert.equal((await f.req('GET', route + '/' + file.id, f.token)).statusCode, 403);
-    const download = await f.req('GET', route + '/' + file.id, f.admin);
-    assert.equal(download.body, 'Project reference');
-    assert.match(String(download.headers['content-disposition']), /attachment.*project-notes\.txt/);
+    const { id, ...profile } = f.workspace.corporate.data.profiles[0];
+    assert.equal((await f.req('PUT', '/api/admin/profiles/' + id, f.admin, { ...profile, toolIds: ['project-files', 'chat-files'] })).statusCode, 200);
+    const allowed = await f.workspace.addProjectFile(f.project.id, 'allowed.txt', Buffer.from('Allowed reference\n'), () => 'admin');
+    await f.workspace.addProjectFile(f.project.id, 'denied.txt', Buffer.from('Denied reference\n'), () => 'admin');
     const other = await f.workspace.createProject('Другой проект', () => f.employee.id);
-    const otherFile = (await upload('/api/projects/' + other.id + '/files', f.admin, 'other.txt', 'Outside this project')).json();
-    assert.equal((await f.req('GET', route + '/' + otherFile.id, f.admin)).statusCode, 404);
-    const chat = (await f.req('POST', '/api/projects/' + f.project.id + '/chats', f.token, {})).json();
-    assert.equal((await f.req('POST', '/api/projects/' + f.project.id + '/chats/' + chat.id + '/messages', f.token, { text: 'Прочитай материалы проекта' })).statusCode, 202);
+    await f.workspace.addProjectFile(other.id, 'foreign.txt', Buffer.from('Foreign reference\n'), () => 'admin');
+    const policy = { revision: 0, connections: [{ profileId: id, toolIds: ['project-files', 'chat-files'], fileIds: [allowed.id] }] };
+    assert.equal((await f.req('PUT', projectPath + '/agent-settings', f.admin, policy)).statusCode, 200);
+    // The former file routes are gone; the project has one entry «Библиотека».
+    assert.equal((await f.req('GET', projectPath + '/files', f.admin)).statusCode, 404);
+    const reports = await f.workspace.importProjectFiles();
+    assert.equal(reports.length, 2);
+    assert.deepEqual(await f.workspace.importProjectFiles(), [], 'the transfer runs once');
+    await f.workspace.library.indexer.drain();
+    const view = (await f.req('GET', projectPath + '/library', f.admin)).json();
+    assert.equal(view.connections.length, 1);
+    assert.match(view.connections[0].folderName, /Файлы проекта/);
+    assert.equal(view.connections[0].current.files, 2);
+    const cell = view.cells.find((c: { profileId: string }) => c.profileId === id);
+    assert.equal(cell.granted, true);
+    assert.equal(cell.files, 1, 'the per-file limit of the specialist is kept');
+    assert.equal((await f.req('GET', projectPath + '/library', f.token)).statusCode, 404, 'employees do not manage the library');
+
+    const chat = (await f.req('POST', projectPath + '/chats', f.token, {})).json();
+    assert.equal((await f.req('POST', projectPath + '/chats/' + chat.id + '/messages', f.token, { text: 'Прочитай материалы проекта' })).statusCode, 202);
     await idle(f.workspace);
-    const tools = f.calls[0].tools!;
+    const tools = f.calls.at(-1)!.tools!;
     const signal = new AbortController().signal;
-    assert.deepEqual(JSON.parse((await tools.call('project_files_list', {}, signal)).text).files, [file]);
-    assert.match((await tools.call('project_files_read', { id: file.id }, signal)).text, /Project reference/);
-    assert.equal((await tools.call('project_files_read', { id: otherFile.id }, signal)).success, false);
-    assert.equal((await f.req('DELETE', route + '/' + file.id, f.token)).statusCode, 403);
-    assert.equal((await f.req('DELETE', route + '/' + file.id, f.admin)).statusCode, 200);
-    assert.deepEqual((await f.req('GET', route, f.admin)).json(), []);
-    assert.equal((await tools.call('project_files_read', { id: file.id }, signal)).success, false);
+    assert.ok(!tools.definitions.some(d => d.name.startsWith('project_files')));
+    const folders = JSON.parse((await tools.call('library_list', {}, signal)).text).folders;
+    assert.equal(folders.length, 1, 'only the folder of this project');
+    const folder = folders[0].folder;
+    const tree = JSON.parse((await tools.call('library_tree', { folder }, signal)).text);
+    assert.deepEqual(tree.entries.map((e: { name: string }) => e.name), ['allowed.txt']);
+    const read = JSON.parse((await tools.call('library_read', { folder, path: 'allowed.txt' }, signal)).text);
+    assert.deepEqual(read.lines, ['1: Allowed reference']);
+    assert.equal(read.path, 'allowed.txt');
+    assert.equal((await tools.call('library_read', { folder, path: 'denied.txt' }, signal)).success, false);
+    const found = JSON.parse((await tools.call('library_search', { query: 'reference' }, signal)).text).matches;
+    assert.deepEqual(found.map((m: { path: string }) => m.path), ['allowed.txt']);
+    assert.match(f.calls.at(-1)!.developerInstructions!, /library_list/);
   } finally { await f.app.close(); }
 });
 
-test('project connections enforce selected files and access revocation while Fastkore follows the ERP role', async () => {
+test('project connections enforce access revocation while Fastkore follows the ERP role', async () => {
   const f = await fixture();
   const projectPath = '/api/projects/' + f.project.id;
   const settingsPath = projectPath + '/agent-settings';
@@ -707,7 +718,7 @@ test('project connections enforce selected files and access revocation while Fas
     });
     assert.equal(updated.statusCode, 200, updated.body);
     const allowed = await f.workspace.addProjectFile(f.project.id, 'allowed.txt', Buffer.from('Allowed source'), () => 'admin');
-    const denied = await f.workspace.addProjectFile(f.project.id, 'denied.txt', Buffer.from('Denied source'), () => 'admin');
+    await f.workspace.addProjectFile(f.project.id, 'denied.txt', Buffer.from('Denied source'), () => 'admin');
     const attachment = await f.workspace.addAttachment(f.project.id, 'attachment.txt', Buffer.from('Attachment'), () => f.employee.id);
     const other = await f.workspace.createProject('Другой проект', () => f.employee.id);
     const foreign = await f.workspace.addProjectFile(other.id, 'foreign.txt', Buffer.from('Foreign source'), () => 'admin');
@@ -721,7 +732,7 @@ test('project connections enforce selected files and access revocation while Fas
     assert.equal(saved.statusCode, 200, saved.body);
     assert.equal(saved.json().revision, 1);
     assert.equal((await f.req('PUT', settingsPath, f.admin, policy)).statusCode, 409);
-    assert.deepEqual((await f.req('GET', projectPath + '/agents', f.token)).json()[0].toolIds, ['project-files', 'fastkore']);
+    assert.deepEqual((await f.req('GET', projectPath + '/agents', f.token)).json()[0].toolIds, ['fastkore']);
     assert.equal((await f.req('GET', settingsPath, f.admin)).json().files.length, 2);
 
     let erpPrepares = 0;
@@ -737,11 +748,6 @@ test('project connections enforce selected files and access revocation while Fas
     assert.equal(erpPrepares, 1);
     assert.match(f.calls[0].prompt, /fastkore_context/);
     assert.match(f.calls[0].developerInstructions!, /Указывай источники/);
-    const tools = f.calls[0].tools!;
-    const signal = new AbortController().signal;
-    assert.deepEqual(JSON.parse((await tools.call('project_files_list', {}, signal)).text).files, [allowed]);
-    assert.equal((await tools.call('project_files_read', { id: allowed.id }, signal)).success, true);
-    assert.equal((await tools.call('project_files_read', { id: denied.id }, signal)).success, false);
 
     const running = (await f.req('POST', messages, f.token, { text: 'BLOCK' })).json();
     const deadline = Date.now() + 4000;
@@ -753,7 +759,7 @@ test('project connections enforce selected files and access revocation while Fas
     assert.deepEqual((await f.req('GET', projectPath + '/agents', f.token)).json(), []);
     assert.equal((await f.req('POST', messages, f.token, { text: 'Продолжить' })).statusCode, 403);
     assert.equal((await f.req('POST', projectPath + '/chats', f.token, {})).statusCode, 403);
-    assert.deepEqual((await f.req('GET', '/api/projects/' + other.id + '/agents', f.token)).json()[0].toolIds, ['project-files', 'fastkore']);
+    assert.deepEqual((await f.req('GET', '/api/projects/' + other.id + '/agents', f.token)).json()[0].toolIds, ['fastkore']);
     assert.equal((await f.req('POST', '/api/projects/' + other.id + '/chats', f.token, {})).statusCode, 201);
     assert.equal((await f.req('GET', projectPath + '/chats/' + chat.id, f.token)).statusCode, 200);
   } finally { await f.app.close(); }

@@ -194,52 +194,48 @@ ERP открывает `/?settings=fastkore` на публичном адрес�
 
 Для HTTPS-ответа `validate-ticket` лимит составляет 64 КиБ в UTF-8 с учётом всего JSON. Превышение лимита или некорректный набор ролей отклоняют обмен целиком.
 
-## Источники проекта
+## Библиотека
 
-Каталоги исходного кода, документации и прайс-листов (ТЗ docs/PROJECT-SOURCES-SPEC.txt; контракты docs/PROJECT-SOURCES-DESIGN.txt). Все маршруты используют обычную авторизацию API: Bearer для локального входа, cookie + `X-CSRF-Token` и Origin для сеанса Fastkore. `userId` и `profileId` никогда не берутся из тела запроса. Недоступный или неизвестный объект — нейтральный 404; причина отказа пишется в аудит источников. Коды: 400 валидация, 401 нет сеанса, 403 запрещённое административное действие, 404 недоступный объект, 409 конфликт ревизии/версии/идемпотентности, 413 квота или лимит, 429 занятость, 503 хранилище недоступно.
+Папки с материалами для агента (ТЗ docs/LIBRARY-SPEC.txt). У папки одно актуальное содержимое; внутренние состояния используются только для согласованного переключения после обработки. Оригиналы хранятся в отдельном закрытом бакете MinIO; агенту выдаются только фрагменты через инструменты библиотеки. Неизвестные и чужие идентификаторы неотличимы (404). Все изменения записываются в журнал без содержимого файлов.
 
-Хранилище и реестр (руководитель или делегированный управляющий источником):
-
-| Метод и путь | Назначение |
-| --- | --- |
-| `GET /api/admin/sources-storage`, `POST /api/admin/sources-storage/check` | Состояние отдельного бакета источников, лимиты, очередь подготовки; проверка соединения. Ключи не возвращаются. |
-| `GET /api/admin/sources` | Реестр, только разрешённые источники. |
-| `POST /api/admin/sources` | Создать `{name, description?, kind: code\|documents\|prices\|mixed, classification: shared\|restricted, outputPolicy?, quotaBytes?, managers?, projectId?}`; с `projectId` источник сразу подключается к проекту без доступа специалистам. 201 `{source, binding?}`. |
-| `GET/PATCH /api/admin/sources/{sourceId}` | Карточка; изменение с `revision` (409 при устаревшей). Права, классификацию и квоту меняет руководитель. |
-| `POST /api/admin/sources/{sourceId}/archive`, `DELETE /api/admin/sources/{sourceId}` | Архивирование `{revision}`; удаление только архивированного источника без привязок, активных загрузок, заданий и удержаний. |
-| `GET /api/admin/sources/{sourceId}/usage` | Где используется: привязки, назначения, активные наборы в доступных проектах; `deletionBlockers`. |
-| `GET /api/admin/sources/{sourceId}/snapshots` | Снимки с состоянием, покрытием и зависимостями. |
-| `PATCH /api/admin/sources/{sourceId}/snapshots/{snapshotId}` | Аудируемая редакция `{metadataRevision, label?, validFrom?, validTo?}`; содержимое неизменно. |
-| `POST …/snapshots/{snapshotId}/accept-coverage`, `…/reindex`, `…/retention {retained}`, `…/archive` | Принять частичное покрытие; новая генерация индекса; удержание; архивирование неиспользуемого снимка. |
-| `PUT …/snapshots/{snapshotId}/dependencies {platformSnapshotIds}` | Явно подтверждённая совместимость конфигурации с платформой. |
-| `GET …/snapshots/{snapshotId}/tree?path=&cursor=` | Дерево (метаданные). |
-| `GET …/snapshots/{snapshotId}/files/{fileId}/original[?download=1&line=]` | Оригинал: просмотр строк — `view_original`, скачивание — `download_original`. Агентские инструменты этот маршрут не используют. |
-
-Загрузка каталога (`upload_snapshot`):
+Папки (администратор или управляющий папкой; действия управляющего: `manage`, `upload`, `connect`, `view_original`, `download_original`, `delete`):
 
 | Метод и путь | Назначение |
 | --- | --- |
-| `POST /api/admin/sources/{sourceId}/uploads` | `{idempotencyKey, label, validFrom?, validTo?, totalFiles, totalBytes, exclusions[], baseSnapshotId?, skipUnchanged?}` → 201 сессия. При `skipUnchanged` без указанной базы выбирается последний готовый снимок. Квота резервируется до приёма байтов. Повтор с тем же ключом и телом — та же сессия, с другим телом — 409. |
-| `PUT …/uploads/{uploadId}/manifest` | Страница `{page, last, entries[{path, size, sha256, secretFindings?}]}` до 1000 записей. Пути относительные, `/`, NFC; коллизии регистра — 409. Идентичный повтор страницы — 200, иной — 409. |
-| `GET …/uploads/{uploadId}?cursor=` | Сводка, страница файлов, которым нужны байты (принятые части), отличия от базового снимка. |
-| `PUT …/uploads/{uploadId}/files/{fileId}/parts/{part}` | `application/octet-stream`, часть 8 МиБ (последняя меньше), необязательный `X-Content-SHA256`. Сервер сам считает размер и SHA-256; после последней части перечитывает объект. Повтор той же части — 200, иное содержимое — 409. |
-| `POST …/uploads/{uploadId}/files/{fileId}/secret-decision` | Аудируемое решение управляющего включить файл, похожий на секрет. |
-| `POST …/uploads/{uploadId}/complete {idempotencyKey}` | 202. При `skipUnchanged` и совпадении путей, хешей и периода действия возвращается `unchanged: true` и ID уже готового снимка. Иначе новый снимок переходит в подготовку, а выбранные в проектах версии сохраняются. |
-| `POST …/uploads/{uploadId}/cancel` | Отмена, освобождение резерва, сборка бесхозных объектов. |
-| `POST /api/admin/sources/{sourceId}/upload-tokens {ttlMinutes}`, `DELETE …/upload-tokens` | Короткоживущий токен `fksrc1.…` (5–240 мин) для локальной утилиты: действует только на маршрутах загрузки этого источника и `GET …/snapshots`, хранится хешем, показывается один раз; отзыв всех токенов. |
+| `GET /api/library/storage`, `POST /api/library/storage/check` | Состояние бакета, пределы, очередь обработки (администратор). |
+| `GET /api/library` | Папки, доступные пользователю: текущее содержимое, незавершённая операция, неопубликованное обновление, проекты. |
+| `POST /api/library` | Создать `{name, description?, profile: documents\|code, classification?: shared\|restricted, outputPolicy?, quotaBytes?, managers?}` (администратор). |
+| `GET/PATCH /api/library/{folderId}` | Карточка; изменение с `revision` (409 при устаревшей). Права, режим доступа и квоту меняет администратор. |
+| `DELETE /api/library/{folderId}?revision=` | Удалить папку во всех проектах; объекты собираются, когда их не читают начатые ответы. |
+| `GET /api/library/{folderId}/tree?path=&cursor=` | Каталог текущего содержимого (до 200 записей). |
+| `GET /api/library/{folderId}/problems[?failed=1]` | Файлы без поиска с причиной (до 500): текущего содержимого или неопубликованного обновления. |
+| `GET /api/library/{folderId}/files/{fileId}/original[?download=1]` | Просмотр текста или скачивание оригинала (`view_original` / `download_original`, аудит). |
+| `POST /api/library/{folderId}/remove-files {paths}` | Удалить файлы из папки; изменение публикуется сразу. |
+| `POST /api/library/{folderId}/retry` | Повторить обработку файлов с ошибкой или таймаутом. |
+| `POST /api/library/{folderId}/accept-coverage` | Опубликовать обновление с необработанными файлами (решение управляющего, аудит). |
 
-Перенос прежних серверных источников (руководитель): `GET /api/admin/sources-legacy` — отчёт; `POST /api/admin/sources-legacy/apply` — однократный версионируемый перенос: новые источники и выключенные привязки, без назначений специалистам (права `datasetIds`/`readDatasetIds` не расширяются); `POST /api/admin/sources-legacy/{datasetId}/import {sourceId, label, dryRun?}` — импорт зарегистрированной серверной папки тем же протоколом, без следования ссылкам.
-
-Проекты (управляющий проектом с `manage_project_binding`; сотрудник без этого права получает 404):
+Загрузка (браузер; одна операция на папку, вторая — 409 «Папка уже обновляется»):
 
 | Метод и путь | Назначение |
 | --- | --- |
-| `GET /api/projects/{projectId}/sources` | Экран источников проекта: привязки, снимки, матрица, наборы, настройки дат. |
-| `POST /api/projects/{projectId}/source-bindings`, `PUT/DELETE …/source-bindings/{bindingId}` | Подключить `{sourceId, selector: pinned\|effective_date, snapshotId?, approvedSnapshotIds?, outputPolicy?}`; изменить с `revision`; отсоединить. |
-| `PUT /api/projects/{projectId}/source-grants` | `{bindingId, profileId, enabled, outputPolicy?, bindingRevision}` — единая привязка «источник × специалист» для матрицы и экрана специалиста. |
-| `GET /api/projects/{projectId}/source-matrix` | Эффективные связи и причины недоступности, вычисленные теми же правилами, что при выполнении. |
-| `GET/POST /api/projects/{projectId}/source-bundles`, `POST …/source-bundles/{bundleId}/activate` | Наборы версий; атомарное переключение с `expectedActiveRevision`; несовместимая пара — 409. |
-| `PUT /api/projects/{projectId}/source-settings` | `{businessTimeZone, currentDateRule, revision}` для выбора прайсов по дате. |
-| `GET /api/projects/{projectId}/chats/{chatId}/source-scope`, `POST …/source-scope/switch` | Набор версий чата, отличия от проекта, история; явное переключение чата (новый контекст исполнителя). |
+| `POST /api/library/{folderId}/operations` | `{idempotencyKey, mode: replace\|add, totalFiles, totalBytes, exclusions}`. `replace` — выбранная папка становится полным содержимым; `add` — файлы добавляются или заменяют файлы с тем же путём. Проверяется логический размер нового состава. |
+| `PUT …/operations/{id}/manifest` | Страница списка `{page, last, entries: [{path, size, sha256, secretFindings?}]}` (до 1000); страницы неизменяемы. Место резервируется только для недостающих объектов. После последней страницы — `diff {added, changed, removed}`; без изменений статус `unchanged` («Библиотека актуальна»). |
+| `GET …/operations/{id}?cursor=` | Состояние и страница файлов, которым нужны части. |
+| `PUT …/operations/{id}/files/{fileId}/parts/{n}` | Часть `application/octet-stream` (8 МиБ), необязательный `X-Content-SHA256`; сервер считает SHA-256 и перечитывает собранный объект. |
+| `POST …/files/{fileId}/secret-decision` | Включить файл, отмеченный как возможный секрет (управляющий, аудит). |
+| `POST …/operations/{id}/complete {idempotencyKey}` | Завершить передачу (202). Отклоняется, если папку уже обновила другая операция. Новое содержимое заменяет текущее после обработки. |
+| `POST …/operations/{id}/cancel` | Отменить незавершённую операцию. |
 
-Инструменты агента (`sources_list`, `source_tree`, `source_search`, `source_read`, `source_symbol`, `source_references`) получают проект, сотрудника, специалиста и набор версий только из зафиксированной области задания; доступ перепроверяется при каждом вызове и перед публикацией ответа. Ответ инструмента — до 32 КиБ, поиск — до 20 совпадений, чтение — до 200 строк.
+Проекты (администратор или управляющий с правом `connect` и доступом к проекту):
+
+| Метод и путь | Назначение |
+| --- | --- |
+| `GET /api/projects/{projectId}/library` | Папки проекта, специалисты, матрица эффективного доступа с причинами, папки для подключения. |
+| `POST /api/projects/{projectId}/library {folderId, outputPolicy?}` | Подключить папку; специалистам доступ не выдаётся. |
+| `PATCH /api/projects/{projectId}/library/{folderId}` | `{revision, enabled?, outputPolicy?}`. |
+| `DELETE /api/projects/{projectId}/library/{folderId}?revision=` | Отключить папку от проекта вместе с назначениями. |
+| `PUT /api/projects/{projectId}/library/{folderId}/grants` | `{profileId, enabled, revision, outputPolicy?, allFiles?}`; `allFiles` снимает ограничение отдельными файлами, перенесённое из «Файлов проекта». |
+
+Инструменты агента: `library_list`, `library_tree {folder, path?, cursor?}`, `library_search {query, folder?, mode: exact|fulltext|files, pathPrefix?, cursor?}`, `library_read {folder, path|fileId, startLine?, lineCount?}`. Пределы: 200 записей, 20 совпадений, 200 строк, 32 КиБ на ответ, 200 вызовов на ответ. Права проверяются при каждом вызове и перед публикацией; содержимое, зафиксированное в начале ответа, может быть дочитано до конца ответа. Закрытые папки агенту в этой поставке недоступны.
+
+Прежние маршруты `/api/admin/sources*`, `/api/projects/{id}/sources`, `/api/projects/{id}/files` и инструменты `sources_*`, `project_files_*` удалены.

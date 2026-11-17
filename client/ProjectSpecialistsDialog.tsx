@@ -3,13 +3,13 @@ import { Bot, Database, Plus, Settings2 } from 'lucide-react';
 import type { ProjectAgentConnection, ProjectAgentPolicy, ProjectAgentSettings, ProjectSummary } from '../shared/types';
 import { WorkspaceDialog } from './WorkspaceDialog';
 
-export function ProjectSpecialistsDialog({ project, request, close, openSpecialist, openSources }: {
+export function ProjectSpecialistsDialog({ project, request, close, openSpecialist, openLibrary }: {
   project: ProjectSummary;
   request: <T>(url: string, init?: RequestInit) => Promise<T>;
   close: () => void;
   openSpecialist: (id?: string) => void;
   /** Opens project sources filtered to this specialist (same grants as the project matrix). */
-  openSources?: (profileId: string) => void;
+  openLibrary?: (profileId: string) => void;
 }) {
   const route = '/api/projects/' + encodeURIComponent(project.id) + '/agent-settings';
   const [settings, setSettings] = useState<ProjectAgentSettings>();
@@ -83,7 +83,7 @@ export function ProjectSpecialistsDialog({ project, request, close, openSpeciali
               {profile.description && <p>{profile.description}</p>}
             </div>
             <span className="project-specialist-actions">
-              {openSources && <button type="button" className="workspace-icon" disabled={pending} onClick={() => openSources(profile.id)}
+              {openLibrary && <button type="button" className="workspace-icon" disabled={pending} onClick={() => openLibrary(profile.id)}
                 title="Библиотека специалиста в проекте" aria-label={'Библиотека: ' + profile.name}><Database size={17} aria-hidden="true" /></button>}
               <button type="button" className="workspace-icon" disabled={pending} onClick={() => openSpecialist(profile.id)}
                 title="Настройки специалиста" aria-label={'Настройки: ' + profile.name}>

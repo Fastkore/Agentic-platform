@@ -92,7 +92,7 @@ test('the worker admits an ephemeral specialist only while its main turn is wait
         assert.equal(request.ephemeral, true);
         assert.equal(request.sessionId, undefined);
         assert.equal(request.allowWrite, false);
-        const tool = await request.tools!.call('project_files_list', {}, signal);
+        const tool = await request.tools!.call('library_list', {}, signal);
         return { response: tool.text };
       }
       const tool = await request.tools!.call('consult_specialist', {}, signal);
@@ -105,7 +105,7 @@ test('the worker admits an ephemeral specialist only while its main turn is wait
   const request = { cliPath: '/unused', workspace: '/unused', allowWrite: false, prompt: 'Проверить вопрос' };
   const toolDefinition = (name: string) => ({ type: 'function' as const, name, description: name, inputSchema: { type: 'object' } });
   const child = { ...request, consultation: true, ephemeral: true, tools: {
-    definitions: [toolDefinition('project_files_list')],
+    definitions: [toolDefinition('library_list')],
     async call() { return { success: true, text: 'Источники проверены.' }; },
   } };
   try {

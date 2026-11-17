@@ -19,7 +19,6 @@ import { ChatAccessPopover } from './ChatAccessPopover';
 import { ChatModelControls, reasoningOptions } from './ChatModelControls';
 import { runToolLabel } from './run-tool-label';
 import { WorkspaceDialog } from './WorkspaceDialog';
-import { ProjectFilesDialog } from './ProjectFilesDialog';
 import { ProjectSpecialistsDialog } from './ProjectSpecialistsDialog';
 import { VoiceDictation } from './VoiceDictation';
 import { DictationModelSettings } from './DictationModelSettings';
@@ -38,9 +37,8 @@ const UsagePanel = lazy(() => import('./UsagePanel').then(module => ({ default: 
 const FastkorePanel = lazy(() => import('./FastkorePanel').then(module => ({ default: module.FastkorePanel })));
 const KnowledgePanel = lazy(() => import('./KnowledgePanel').then(module => ({ default: module.KnowledgePanel })));
 const ChatModelPreview = lazy(() => import('./ChatModelPreview').then(module => ({ default: module.ChatModelPreview })));
-const ProjectSourcesDialog = lazy(() => import('./ProjectSourcesDialog').then(module => ({ default: module.ProjectSourcesDialog })));
-const SourcesPanel = lazy(() => import('./SourcesPanel').then(module => ({ default: module.SourcesPanel })));
-const ChatSourceScope = lazy(() => import('./ChatSourceScope').then(module => ({ default: module.ChatSourceScope })));
+const ProjectLibraryDialog = lazy(() => import('./ProjectLibraryDialog').then(module => ({ default: module.ProjectLibraryDialog })));
+const LibraryPanel = lazy(() => import('./LibraryPanel').then(module => ({ default: module.LibraryPanel })));
 
 let accessKey = sessionStorage.getItem('bridge-key') ?? '';
 const agentsUrl = (projectId: string) => projectId ? '/api/projects/' + encodeURIComponent(projectId) + '/agents' : '/api/agents';
@@ -51,7 +49,7 @@ const settingsSections = {
   employeeInstructions: { label: 'Инструкции сотрудников', icon: FileText },
   roles: { label: 'Роли', icon: ShieldCheck },
   profiles: { label: 'Специалисты', icon: Bot },
-  sources: { label: 'Библиотека', icon: Database },
+  library: { label: 'Библиотека', icon: Database },
   agent: { label: 'Общие инструкции', icon: FileText },
   knowledgeFastkore: { label: 'База знаний о Fastkore', icon: FileText },
   knowledgeCompany: { label: 'База знаний о компании', icon: Folder },
@@ -160,12 +158,12 @@ function App() {
   useEffect(() => { setProjectRequested(false); }, [projectId, chatId, contextVersion]);
   const [drafts, setDrafts] = useState<Record<string, string>>({}), [files, setFiles] = useState<Record<string, Attachment[]>>({});
   const [specialists, setSpecialists] = useState<Record<string, string | undefined>>({});
-  const [panel, setPanel] = useState<'settings' | 'project' | 'project-files' | 'project-agents' | 'project-sources' | 'rename-project' | 'search' | 'archive' | 'related' | 'rename-chat' | 'reset-chat' | null>(null);
+  const [panel, setPanel] = useState<'settings' | 'project' | 'project-agents' | 'project-library' | 'rename-project' | 'search' | 'archive' | 'related' | 'rename-chat' | 'reset-chat' | null>(null);
   const [renameDraft, setRenameDraft] = useState<{ projectId: string; chatId: string; title: string; destinationId?: string }>();
   const [modelPreview, setModelPreview] = useState<{ name: string; url: string; format: PreviewModelFormat }>();
   const projectFromComposer = useRef(false);
   const [projectActionTarget, setProjectActionTarget] = useState<ProjectSummary | null>(null);
-  const [sourceProfileId, setSourceProfileId] = useState<string>();
+  const [libraryProfileId, setLibraryProfileId] = useState<string>();
   const [renameProjectName, setRenameProjectName] = useState('');
   const projectActionFromSettings = useRef(false);
   const [initialSpecialistId, setInitialSpecialistId] = useState<string>();
@@ -209,6 +207,31 @@ function App() {
   const steerTarget = chatActiveRuns.find(run => run.canSteer && run.ownerId === user?.id);
   const isAdmin = user?.role === 'admin';
   const inFastkore = embedded || (authSource === 'fastkore' && !!webViewHost());
+  const refreshDisabled = savingScale || pending;
+  const hasUnsavedInput = knowledgeDirty || personalDirty ||
+    Object.values(drafts).some(value => value.trim()) || Object.values(files).some(items => items.length);
+  const refreshPanel = useCallback(() => {
+    if (!refreshDisabled) window.location.reload();
+  }, [refreshDisabled]);
+  useEffect(() => {
+    if (!inFastkore || !hasUnsavedInput) return;
+    const warnBeforeReload = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = '';
+    };
+    window.addEventListener('beforeunload', warnBeforeReload);
+    return () => window.removeEventListener('beforeunload', warnBeforeReload);
+  }, [inFastkore, hasUnsavedInput]);
+  useEffect(() => {
+    if (!inFastkore || !loggedIn || !user) return;
+    const onRefreshKey = (event: KeyboardEvent) => {
+      if (event.key !== 'F5' || event.altKey || event.shiftKey || event.metaKey) return;
+      event.preventDefault();
+      if (!event.repeat) refreshPanel();
+    };
+    window.addEventListener('keydown', onRefreshKey, true);
+    return () => window.removeEventListener('keydown', onRefreshKey, true);
+  }, [inFastkore, loggedIn, user?.id, refreshPanel]);
   const matchesErpChat = !!erpChatKey && relatedChats?.key === erpChatKey && relatedChats.list.some(item => item.id === chatId && item.contextMatches !== false);
   const relatedLoading = !!erpChatKey && relatedChats?.key !== erpChatKey;
   const tileList = !!currentErpContext.current.snapshot && isFastkoreTileList(currentErpContext.current.snapshot);
@@ -929,7 +952,7 @@ function App() {
     ...(serverModel && !catalogOptions.some(model => model.value === serverModel) ? [{ value: serverModel, label: modelName(serverModel) }] : []),
     ...catalogOptions,
   ];
-  function openProjectPanel(project: ProjectSummary, next: 'project-files' | 'project-agents' | 'project-sources' | 'rename-project', trigger: HTMLButtonElement) {
+  function openProjectPanel(project: ProjectSummary, next: 'project-agents' | 'project-library' | 'rename-project', trigger: HTMLButtonElement) {
     trigger.closest('details')?.removeAttribute('open');
     setError('');
     projectActionFromSettings.current = panel === 'settings';
@@ -939,9 +962,8 @@ function App() {
   }
   function renderProjectActions(project: ProjectSummary) {
     return <>
-      <button type="button" className="workspace-row" onClick={event => openProjectPanel(project, 'project-files', event.currentTarget)}><FileText size={15} />Файлы проекта</button>
       <button type="button" className="workspace-row" onClick={event => openProjectPanel(project, 'project-agents', event.currentTarget)}><Bot size={15} />Специалисты проекта</button>
-      <button type="button" className="workspace-row" onClick={event => openProjectPanel(project, 'project-sources', event.currentTarget)}><Database size={15} />Библиотека</button>
+      <button type="button" className="workspace-row" onClick={event => openProjectPanel(project, 'project-library', event.currentTarget)}><Database size={15} />Библиотека</button>
     </>;
   }
   const closeProjectPanel = () => setPanel(projectActionFromSettings.current ? 'settings' : null);
@@ -1237,7 +1259,6 @@ function App() {
                 setPanel('rename-chat');
               }}><Pencil size={15} /></button>}
           </div>
-          {projectId && <Suspense fallback={null}><ChatSourceScope request={api} projectId={projectId} chatId={chat.id} canSwitch={canEdit} revision={chat.messages.length} /></Suspense>}
           <div className="chat-access" title={dateTooltip(chat.updatedAt, chat.ownerName)}>
             {isAdmin && !chat.linkedToFastkore ? <Select label="Видимость чата" value={chat.visibility ?? 'private'} disabled={pending}
               onChange={visibility => void changeVisibility(visibility as 'private' | 'project')}
@@ -1258,6 +1279,10 @@ function App() {
           value={interfaceScale} disabled={savingScale} onChange={event => void changeInterfaceScale(Number(event.currentTarget.value) as InterfaceScale)}>
           {interfaceScales.map(scale => <option key={scale} value={scale}>{scale}%</option>)}
         </select>
+        {inFastkore && <button type="button" className="workspace-icon" aria-label="Обновить панель"
+          title="Обновить панель (F5)" aria-keyshortcuts="F5 Control+F5" disabled={refreshDisabled} onClick={refreshPanel}>
+          <RefreshCw size={16} aria-hidden="true" />
+        </button>}
         {themeButton}
       </header>
       {!embedded && chat?.erpContext && <div className="workspace-context">{chat.erpContext.entityType} / {chat.erpContext.entityId}</div>}
@@ -1372,20 +1397,18 @@ function App() {
         </div>
       </form>
     </WorkspaceDialog>}
-    {panel === 'project-files' && projectActionTarget && canManageProjects &&
-      <ProjectFilesDialog key={projectActionTarget.id} project={projectActionTarget} request={api} download={url => api<Blob>(url, {}, 'blob')} close={closeProjectPanel} />}
-    {panel === 'project-sources' && projectActionTarget && canManageProjects && <Suspense fallback={null}>
-      <ProjectSourcesDialog key={projectActionTarget.id + (sourceProfileId ?? '')} project={projectActionTarget} request={api} close={() => { setSourceProfileId(undefined); closeProjectPanel(); }} isAdmin={isAdmin} initialProfileId={sourceProfileId} /></Suspense>}
+    {panel === 'project-library' && projectActionTarget && canManageProjects && <Suspense fallback={null}>
+      <ProjectLibraryDialog key={projectActionTarget.id + (libraryProfileId ?? '')} project={projectActionTarget} request={api} close={() => { setLibraryProfileId(undefined); closeProjectPanel(); }} isAdmin={isAdmin} initialProfileId={libraryProfileId} /></Suspense>}
     {panel === 'project-agents' && projectActionTarget && canManageProjects &&
       <ProjectSpecialistsDialog key={projectActionTarget.id} project={projectActionTarget} request={api} close={closeProjectPanel}
-        openSources={profileId => { setSourceProfileId(profileId); setPanel('project-sources'); }}
+        openLibrary={profileId => { setLibraryProfileId(profileId); setPanel('project-library'); }}
         openSpecialist={id => {
           setInitialSpecialistId(id);
           setSettingsSection('profiles');
           setPanel('settings');
         }} />}
     {panel === 'settings' && visibleSettingsSections.includes(settingsSection) && <WorkspaceDialog title="Настройки"
-      className={'workspace-settings' + (instructionSettings ? ' personal-instructions-dialog' : '')} close={closePanel}
+      className={'workspace-settings' + (instructionSettings ? ' personal-instructions-dialog' : '') + (settingsSection === 'personal' ? ' personal-instructions-compact' : '')} close={closePanel}
       back={instructionSettings && visibleSettingsSections.length > 1 ? () => chooseSettingsSection('team') : undefined}>
       {instructionSettings ? <PersonalInstructionsPanel key={user.id + settingsSection} request={api} project={selectedProject}
         erp={authSource === 'fastkore'} context={currentErpContext.current.snapshot}
@@ -1421,7 +1444,7 @@ function App() {
             {!projects.length && <li className="help">Проектов пока нет.</li>}
           </ul>}
           {settingsSection === 'roles' && <ErpRolesPanel request={api} />}
-          {settingsSection === 'sources' && <SourcesPanel request={api} />}
+          {settingsSection === 'library' && <LibraryPanel request={api} isAdmin={isAdmin} />}
           {settingsSection === 'profiles' && <SpecialistsPanel request={api} globalInstructions={savedInstructions} initialProfileId={initialSpecialistId} />}
           {settingsSection === 'audit' && <AuditPanel request={api} />}
           {settingsSection === 'usage' && <UsagePanel request={api} />}

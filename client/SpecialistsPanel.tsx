@@ -13,7 +13,7 @@ type Profile = AgentProfile & { unavailableReason?: string };
 const icons = { bot: Bot, message: MessageCircle, calculator: Calculator, settings: Settings2, database: Database, chart: BarChart3, file: FileText, search: Search };
 const iconLabels: Record<SpecialistIcon, string> = { bot: 'Помощник', message: 'Диалог', calculator: 'Расчёты', settings: 'Настройки', database: 'Данные', chart: 'Аналитика', file: 'Документы', search: 'Поиск' };
 const builtInIcons: Partial<Record<string, SpecialistIcon>> = { universal: 'message', estimator: 'calculator', technologist: 'settings', accountant: 'database' };
-const toolIcons = { 'project-files': Folder, 'chat-files': Paperclip };
+const toolIcons = { 'chat-files': Paperclip };
 const newProfile: AgentProfile = { id: '', name: '', description: '', instructions: '', enabled: false, model: '', reasoningEffort: 'high', operationIds: ['chat'], datasetIds: [], skillIds: [], allowWrite: false, revision: 0, toolIds: [] };
 const editorTabs = [
   { id: 'general', label: 'Основное', icon: Bot },

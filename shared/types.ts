@@ -66,7 +66,7 @@ export interface QueuedRun extends Run { queuedText?: string; queuedFiles?: numb
 /** Trusted queue input. Never return this record from HTTP handlers. */
 export interface Job { runId: string; kind: 'chat' | 'subscription'; text: string; attachmentIds: string[]; authorId?: string; credentialId?: string; scope?: string; fastkoreContext?: FastkoreContext; recommendedSpecialistId?: string; specialistName?: string; specialistScope?: string }
 export interface User { id: string; username: string; name: string; role: 'admin' | 'employee'; roleId?: string; disabled: boolean }
-export const interfaceScales = [60, 70, 80, 90, 100] as const;
+export const interfaceScales = [60, 70, 80, 90, 100, 110] as const;
 export type InterfaceScale = typeof interfaceScales[number];
 export interface WorkRole { id: string; name: string; enabled: boolean; profileIds: string[]; operationIds: string[]; readDatasetIds: string[]; instructions: string; revision: number }
 export const specialistIcons = ['bot', 'message', 'calculator', 'settings', 'database', 'chart', 'file', 'search'] as const;

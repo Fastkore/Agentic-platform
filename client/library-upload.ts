@@ -1,5 +1,5 @@
 import { Sha256 } from '../shared/sha256';
-import { excluded, pathProblem, suspiciousSecret, type ManifestEntry, type UploadFileStatus, type UploadSummary } from '../shared/sources';
+import { excluded, pathProblem, suspiciousSecret, type ManifestEntry, type OperationMode, type OperationSummary, type UploadFileStatus } from '../shared/library';
 
 export type Request = <T>(url: string, init?: RequestInit) => Promise<T>;
 export interface ScannedFile { path: string; file: File; size: number; sha256?: string; secretFindings?: string[] }
@@ -9,22 +9,24 @@ export interface ScanResult {
 }
 const textLike = /\.(cs|vb|ts|tsx|js|jsx|json|xml|config|ini|yml|yaml|env|txt|md|sql|ps1|sh|properties|settings|cshtml|razor|py|java)$/i;
 
-/** True where the browser can pick a whole folder with relative paths (Chromium and WebView2). */
+/** True where the browser can pick a whole folder with relative paths (Chromium-based browsers). */
 export function directoryPickerSupported() {
   const input = document.createElement('input');
   return 'webkitdirectory' in input;
 }
 /** Builds the file list from <input webkitdirectory>. Absolute paths never leave the browser. */
-export function collect(list: FileList, rules: string[], limits: { maxFileBytes: number; maxPathLength: number; maxDepth: number }): ScanResult {
+export function collect(list: FileList, rules: string[], limits: { maxFileBytes: number; maxPathLength: number; maxDepth: number }, target?: { prefix: string }): ScanResult {
   const files: ScannedFile[] = [], skipped: ScanResult['excluded'] = [], problems: ScanResult['problems'] = [];
   let root = '';
   const types: Record<string, number> = {}, topFolders: Record<string, number> = {};
   let bytes = 0;
   for (const file of Array.from(list)) {
-    const relative = (file.webkitRelativePath || file.name).replaceAll('\\', '/');
-    const slash = relative.indexOf('/');
+    // Folder selection: the chosen folder itself is the root. Single files ("Добавить файлы"): the name inside the optional target folder.
+    const relative = (target ? file.name : file.webkitRelativePath || file.name).replaceAll('\\', '/');
+    const slash = target ? -1 : relative.indexOf('/');
     root ||= slash > 0 ? relative.slice(0, slash) : '';
-    const path = (slash > 0 ? relative.slice(slash + 1) : relative).normalize('NFC');
+    const name = slash > 0 ? relative.slice(slash + 1) : relative;
+    const path = ((target?.prefix ? target.prefix.replace(/^\/+|\/+$/g, '') + '/' : '') + name).normalize('NFC');
     const rule = excluded(path, rules);
     if (rule) { skipped.push({ path, rule }); continue; }
     const problem = pathProblem(path, limits);
@@ -72,37 +74,35 @@ export async function hashFiles(scan: ScanResult, partBytes: number, progress: (
   }
   scan.secrets = scan.files.filter(f => f.secretFindings?.length);
 }
-export interface UploadOptions { label: string; validFrom?: string; validTo?: string; baseSnapshotId?: string; skipUnchanged?: boolean; exclusions: string[]; includeSecrets: Set<string> }
-interface SavedUpload { uploadId: string; label: string; manifestHash?: string; options?: Omit<UploadOptions, 'includeSecrets'> & { includeSecrets: string[] } }
-const storageKey = (sourceId: string) => 'bridge-source-upload:' + sourceId;
-export function pendingUpload(sourceId: string): SavedUpload | undefined {
-  try { const value = localStorage.getItem(storageKey(sourceId)); return value ? JSON.parse(value) : undefined; } catch { return undefined; }
+export interface UploadOptions { mode: OperationMode; exclusions: string[]; includeSecrets: Set<string> }
+interface SavedUpload { operationId: string; mode: OperationMode; manifestHash?: string; options?: Omit<UploadOptions, 'includeSecrets'> & { includeSecrets: string[] } }
+const storageKey = (folderId: string) => 'bridge-library-upload:' + folderId;
+export function pendingUpload(folderId: string): SavedUpload | undefined {
+  try { const value = localStorage.getItem(storageKey(folderId)); return value ? JSON.parse(value) : undefined; } catch { return undefined; }
 }
-function rememberUpload(sourceId: string, value?: SavedUpload) {
-  try { if (value) localStorage.setItem(storageKey(sourceId), JSON.stringify(value)); else localStorage.removeItem(storageKey(sourceId)); } catch { /* storage unavailable */ }
+function rememberUpload(folderId: string, value?: SavedUpload) {
+  try { if (value) localStorage.setItem(storageKey(folderId), JSON.stringify(value)); else localStorage.removeItem(storageKey(folderId)); } catch { /* storage unavailable */ }
 }
 const key = () => Array.from(crypto.getRandomValues(new Uint8Array(16)), b => b.toString(16).padStart(2, '0')).join('');
 
-/** Creates the session and sends the manifest. Returns server status with diff and reuse counts for confirmation. */
-export async function prepareUpload(request: Request, sourceId: string, scan: ScanResult, options: UploadOptions, resumeId?: string) {
+const base = (folderId: string) => `/api/library/${encodeURIComponent(folderId)}/operations`;
+type Status = { operation: OperationSummary; files: (UploadFileStatus & { secretFindings?: string[]; secretDecision?: string; failure?: string })[]; next?: number };
+/** Creates the operation and sends the file list. Returns the server status with changes and reuse counts for confirmation. */
+export async function prepareUpload(request: Request, folderId: string, scan: ScanResult, options: UploadOptions, resumeId?: string) {
   const files = scan.files.filter(f => !f.secretFindings?.length || options.includeSecrets.has(f.path));
   const manifest = new Sha256();
   const encoder = new TextEncoder();
   for (const file of files) manifest.update(encoder.encode(JSON.stringify([file.path, file.size, file.sha256, file.secretFindings]) + '\n'));
   const manifestHash = manifest.digest();
-  const saved = resumeId ? pendingUpload(sourceId) : undefined;
-  if (saved?.uploadId === resumeId && saved?.manifestHash && saved.manifestHash !== manifestHash) {
-    throw new Error('Содержимое выбранной папки изменилось. Отмените незавершённую загрузку и начните новую.');
+  const saved = resumeId ? pendingUpload(folderId) : undefined;
+  if (saved?.operationId === resumeId && saved?.manifestHash && saved.manifestHash !== manifestHash) {
+    throw new Error('Состав выбранной папки изменился. Отмените незавершённую загрузку и начните новую.');
   }
-  const base = `/api/admin/sources/${encodeURIComponent(sourceId)}/uploads`;
-  const upload = resumeId ? { id: resumeId } : await request<UploadSummary>(base, { method: 'POST', body: JSON.stringify({
-    idempotencyKey: key(), label: options.label, validFrom: options.validFrom || undefined, validTo: options.validTo || undefined, baseSnapshotId: options.baseSnapshotId,
-    totalFiles: files.length, totalBytes: files.reduce((s, f) => s + f.size, 0), exclusions: options.exclusions, skipUnchanged: options.skipUnchanged,
+  const operation = resumeId ? { id: resumeId } : await request<OperationSummary>(base(folderId), { method: 'POST', body: JSON.stringify({
+    idempotencyKey: key(), mode: options.mode, totalFiles: files.length, totalBytes: files.reduce((s, f) => s + f.size, 0), exclusions: options.exclusions,
   }) });
-  rememberUpload(sourceId, { uploadId: upload.id, label: options.label, manifestHash, options: { ...options, includeSecrets: [...options.includeSecrets] } });
-  const url = `${base}/${upload.id}`;
-  type Status = { upload: UploadSummary; files: (UploadFileStatus & { secretFindings?: string[]; secretDecision?: string })[];
-    next?: number; diff?: { added: number; changed: number; removed: number } };
+  rememberUpload(folderId, { operationId: operation.id, mode: options.mode, manifestHash, options: { ...options, includeSecrets: [...options.includeSecrets] } });
+  const url = `${base(folderId)}/${operation.id}`;
   const pageSize = 1000;
   for (let page = 0; page * pageSize < files.length; page++) {
     const entries: (ManifestEntry & { secretFindings?: string[] })[] = files.slice(page * pageSize, (page + 1) * pageSize)
@@ -110,7 +110,8 @@ export async function prepareUpload(request: Request, sourceId: string, scan: Sc
     await request(`${url}/manifest`, { method: 'PUT', body: JSON.stringify({ page, last: (page + 1) * pageSize >= files.length, entries }) });
   }
   const status = await request<Status>(url);
-  if (options.includeSecrets.size) {
+  if (status.operation.status === 'unchanged') rememberUpload(folderId);
+  if (options.includeSecrets.size && status.operation.status === 'open') {
     let page = status;
     for (;;) {
       for (const file of page.files) if (file.secretFindings?.length && !file.secretDecision && options.includeSecrets.has(file.path)) {
@@ -123,16 +124,16 @@ export async function prepareUpload(request: Request, sourceId: string, scan: Sc
   return status;
 }
 /** Transfers missing parts with bounded concurrency. Safe to call again after a disconnect with a re-picked folder. */
-export async function transferUpload(request: Request, sourceId: string, uploadId: string, scan: ScanResult, progress: (summary: UploadSummary) => void, signal: AbortSignal,
+export async function transferUpload(request: Request, folderId: string, operationId: string, scan: ScanResult, progress: (summary: OperationSummary) => void, signal: AbortSignal,
   concurrency = 3) {
-  const base = `/api/admin/sources/${encodeURIComponent(sourceId)}/uploads/${uploadId}`;
+  const url = `${base(folderId)}/${operationId}`;
   const byPath = new Map(scan.files.map(f => [f.path, f]));
   let cursor = -1;
   for (;;) {
     signal.throwIfAborted();
-    const status = await request<{ upload: UploadSummary; files: (UploadFileStatus & { failure?: string })[]; next?: number }>(`${base}?cursor=${cursor}`);
-    progress(status.upload);
-    if (!status.upload.manifestComplete) throw new Error('Список файлов не отправлен полностью. Подготовьте загрузку заново.');
+    const status = await request<Status>(`${url}?cursor=${cursor}`);
+    progress(status.operation);
+    if (!status.operation.manifestComplete) throw new Error('Список файлов не отправлен полностью. Подготовьте загрузку заново.');
     const tasks: (() => Promise<void>)[] = [];
     for (const file of status.files) {
       const local = byPath.get(file.path);
@@ -141,13 +142,13 @@ export async function transferUpload(request: Request, sourceId: string, uploadI
       for (let part = 1; part <= file.partsTotal; part++) {
         if (file.partsReceived.includes(part)) continue;
         tasks.push(async () => {
-          const start = (part - 1) * status.upload.partBytes;
-          const body = await local.file.slice(start, start + status.upload.partBytes).arrayBuffer();
+          const start = (part - 1) * status.operation.partBytes;
+          const body = await local.file.slice(start, start + status.operation.partBytes).arrayBuffer();
           const digest = new Sha256().update(new Uint8Array(body)).digest();
           for (let attempt = 0; ; attempt++) {
             signal.throwIfAborted();
             try {
-              await request(`${base}/files/${file.fileId}/parts/${part}`, { method: 'PUT', body, signal, headers: { 'Content-Type': 'application/octet-stream', 'X-Content-SHA256': digest } });
+              await request(`${url}/files/${file.fileId}/parts/${part}`, { method: 'PUT', body, signal, headers: { 'Content-Type': 'application/octet-stream', 'X-Content-SHA256': digest } });
               return;
             } catch (error) {
               const status = (error as { status?: number }).status;
@@ -163,9 +164,9 @@ export async function transferUpload(request: Request, sourceId: string, uploadI
       while (index < tasks.length) await tasks[index++]();
     }));
     if (status.next === undefined) {
-      const after = await request<{ upload: UploadSummary; files: UploadFileStatus[] }>(`${base}?cursor=-1`);
-      progress(after.upload);
-      if (!after.files.length) return after.upload;
+      const after = await request<Status>(`${url}?cursor=-1`);
+      progress(after.operation);
+      if (!after.files.length) return after.operation;
       if (after.files.every(f => f.state === 'failed')) throw new Error('Часть файлов не прошла проверку на сервере: ' + after.files.slice(0, 3).map(f => f.path).join(', '));
       cursor = -1;
       continue;
@@ -173,13 +174,14 @@ export async function transferUpload(request: Request, sourceId: string, uploadI
     cursor = status.next;
   }
 }
-export async function completeUpload(request: Request, sourceId: string, uploadId: string) {
-  const result = await request<UploadSummary>(`/api/admin/sources/${encodeURIComponent(sourceId)}/uploads/${uploadId}/complete`, { method: 'POST', body: JSON.stringify({ idempotencyKey: 'complete-' + uploadId.slice(0, 18) }) });
-  rememberUpload(sourceId);
+export async function completeUpload(request: Request, folderId: string, operationId: string) {
+  const result = await request<OperationSummary>(`${base(folderId)}/${operationId}/complete`, { method: 'POST', body: JSON.stringify({ idempotencyKey: 'complete-' + operationId.slice(0, 18) }) });
+  rememberUpload(folderId);
   return result;
 }
-export async function cancelUpload(request: Request, sourceId: string, uploadId: string) {
-  await request(`/api/admin/sources/${encodeURIComponent(sourceId)}/uploads/${uploadId}/cancel`, { method: 'POST', body: '{}' });
-  rememberUpload(sourceId);
+export async function cancelUpload(request: Request, folderId: string, operationId: string) {
+  await request(`${base(folderId)}/${operationId}/cancel`, { method: 'POST', body: '{}' });
+  rememberUpload(folderId);
 }
+export function forgetUpload(folderId: string) { rememberUpload(folderId); }
 export const formatBytes = (n: number) => n < 1024 ? n + ' Б' : n < 1048576 ? (n / 1024).toFixed(1) + ' КиБ' : n < 1073741824 ? (n / 1048576).toFixed(1) + ' МиБ' : (n / 1073741824).toFixed(2) + ' ГиБ';

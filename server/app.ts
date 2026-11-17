@@ -4,15 +4,13 @@ import fastifyStatic from '@fastify/static';
 import multipart from '@fastify/multipart';
 import { networkInterfaces } from 'node:os';
 import { readFile } from 'node:fs/promises';
-import { createReadStream } from 'node:fs';
 import path from 'node:path';
 import { Workspace } from './workspace.js';
 import { BridgeError } from './store.js';
 import { Access, publicUser, type Principal } from './access.js';
-import { projectFilePath } from './documents.js';
 import { maxUploadBytes } from './file-storage.js';
 import { knowledgeRoutes } from './knowledge-routes.js';
-import { isUploadToken, sourceRoutes, uploadTokenRoutes } from './sources/routes.js';
+import { libraryRoutes } from './library/routes.js';
 import { editPersonalInstructions } from './personal-instructions.js';
 import { instructionTile, personalInstructionLimits as personalLimits, type PersonalInstructionsEdit } from '../shared/personal-instructions.js';
 import { instructionComponent } from './instruction-context.js';
@@ -53,7 +51,8 @@ const password = { type: 'string', minLength: 12, maxLength: 200 };
 const modelSchema = { type: 'string', maxLength: 128, pattern: '^$|^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,127}$' };
 const identifier = { type: 'string', pattern: '^[a-z][a-z0-9_-]{1,63}$' };
 const identifiers = { type: 'array', items: string(100), maxItems: 100, uniqueItems: true };
-const agentToolList = { type: 'array', items: { enum: agentToolIds }, maxItems: agentToolIds.length, uniqueItems: true };
+// 'project-files' is a retired tool (replaced by the project library); accepted in saved settings and ignored.
+const agentToolList = { type: 'array', items: { enum: [...agentToolIds, 'project-files'] }, maxItems: agentToolIds.length + 1, uniqueItems: true };
 const object = (properties: Record<string, unknown>, required: string[] = []) => ({ type: 'object', properties, required, additionalProperties: false });
 const loopback = (ip: string) => ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1';
 const erpAuditFields = new Set(['id', 'guid', 'entityid', 'entitysetid', 'orderid', 'projectid', 'taskid', 'purchaseorderid',
@@ -283,8 +282,6 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
       if (!['GET', 'HEAD', 'OPTIONS'].includes(request.method) && (request.headers.origin !== publicOrigin || !validCsrf(cookie, request.headers['x-csrf-token']))) throw new BridgeError('Не удалось подтвердить запрос страницы. Перезагрузите её.', 403);
       principals.set(request, p);
     } else {
-      // Short-lived source upload tokens of the local utility are checked by the source routes themselves and only there.
-      if (isUploadToken(authorization) && uploadTokenRoutes.has(route)) return;
       if (!authorization.startsWith('Bearer ') || authorization.length > 200) throw new BridgeError('Войдите под своей учётной записью.', 401);
       const p = access.authenticate(authorization.slice(7));
       if (p.credential.source === 'fastkore') throw new BridgeError('Для сеанса Fastkore требуется cookie.', 401);
@@ -586,19 +583,12 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
       return editPersonalInstructions(workspace.store, author.id, request.body, {}, { roleId: instructionRole(author), admin: true });
     });
   knowledgeRoutes(app, workspace.knowledge, localAdmin, uploads);
-  const sources = workspace.sources;
-  sourceRoutes(app, { registry: sources.registry, policy: sources.policy, reader: sources.reader, indexer: sources.indexer,
-    actor: request => { const u = user(request); return { id: u.id, admin: u.role === 'admin' && !u.disabled }; },
-    chat: (request, projectId, chatId) => {
-      const p = principal(request);
-      const chat = request.method === 'POST' ? access.editChat(p.user, projectId, chatId) : access.chat(p.user, projectId, chatId);
-      if (!chatIdentityMatches(p, chat)) throw new BridgeError('Диалог не найден.', 404);
-      return { userId: p.user.id, profileId: chat.agentProfileId ?? 'universal' };
-    },
-    userActor: userId => { const u = workspace.store.state.security?.users.find(item => item.id === userId && !item.disabled); return u && { id: u.id, admin: u.role === 'admin' }; },
-    legacy: { datasets: () => workspace.corporate.data.datasets, profiles: () => workspace.corporate.data.profiles, roles: () => workspace.corporate.data.roles,
-      projectExists: id => workspace.store.state.projects.some(item => item.id === id) } });
-  sources.start();
+  const library = workspace.library;
+  libraryRoutes(app, { registry: library.registry, policy: library.policy, reader: library.reader,
+    actor: request => { const u = user(request); return { id: u.id, admin: u.role === 'admin' && !u.disabled }; } });
+  library.start();
+  // Former project files move into the library once; failures are retried on the next start.
+  void workspace.importProjectFiles().catch(() => {});
   app.get('/api/admin/roles', async request => { admin(request); return workspace.corporate.data.roles; });
   app.get('/api/admin/profiles', async request => { admin(request); return workspace.corporate.data.profiles.map(p => ({ ...p, unavailableReason: workspace.corporate.unavailable(p) })); });
   app.get('/api/admin/datasets', async request => { admin(request); return workspace.corporate.data.datasets; });
@@ -829,32 +819,6 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
     authorize();
     return workspace.corporate.saveProjectPolicy(workspace.project(request.params.projectId), request.body, authorize);
   });
-  const projectFilesPath = '/api/projects/:projectId/files';
-  app.get<{ Params: { projectId: string } }>(projectFilesPath, async request => {
-    localAdmin(request);
-    return workspace.projectFiles(workspace.project(request.params.projectId));
-  });
-  app.post<{ Params: { projectId: string } }>(projectFilesPath, async (request, reply) => {
-    const authorize = () => localAdmin(request).id;
-    const actorId = authorize();
-    workspace.project(request.params.projectId);
-    const file = await uploads.receive(request, actorId, (name, data) => workspace.addProjectFile(request.params.projectId, name, data, authorize));
-    return reply.code(201).send(file);
-  });
-  app.get<{ Params: { projectId: string; fileId: string } }>(projectFilesPath + '/:fileId', async (request, reply) => {
-    localAdmin(request);
-    const project = workspace.project(request.params.projectId);
-    const file = workspace.projectFile(project, request.params.fileId);
-    const contents = file.storage === 's3' ? await workspace.files.read(project, file) : undefined;
-    const target = contents ? undefined : await projectFilePath(project, file);
-    localAdmin(request);
-    workspace.projectFile(project, file.id);
-    const name = encodeURIComponent(file.name).replace(/[!'()*]/g, c => '%' + c.charCodeAt(0).toString(16));
-    return reply.type('application/octet-stream').header('Content-Disposition', "attachment; filename*=UTF-8''" + name)
-      .send(target ? createReadStream(target) : contents);
-  });
-  app.delete<{ Params: { projectId: string; fileId: string } }>(projectFilesPath + '/:fileId', request =>
-    workspace.deleteProjectFile(request.params.projectId, request.params.fileId, () => { localAdmin(request); }));
   app.patch<{ Params: { projectId: string }; Body: { memberIds: string[] } }>('/api/projects/:projectId/members', { schema: { body: object({ memberIds: { type: 'array', maxItems: 1000, uniqueItems: true, items: string(100) } }, ['memberIds']) } }, async request => access.members(user(request), request.params.projectId, request.body.memberIds));
   app.get<{ Params: { projectId: string } }>('/api/projects/:projectId/chats', async request => {
     const p = principal(request);

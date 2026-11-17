@@ -197,7 +197,7 @@ export function PersonalInstructionsPanel({ request, project, erp, context, admi
           {authors.map(author => <option key={author.id} value={author.id}>{author.name}{author.role ? ' · ' + author.role : ''}</option>)}
         </select> : <div className="personal-add-actions">
           <button type="button" className="primary" disabled={busy || !draft || draft.notes.length >= limits.notes} onClick={() => addNote()}>
-            <Plus size={18} aria-hidden="true" />Новый приём
+            <Plus size={17} aria-hidden="true" />Добавить
           </button>
           <button type="button" className="secondary" disabled={busy || !draft || draft.notes.length >= limits.notes} onClick={() => upload.current?.click()}>
             <Upload size={17} aria-hidden="true" />Импорт

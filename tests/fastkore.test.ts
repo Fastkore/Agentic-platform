@@ -161,17 +161,17 @@ test('Fastkore restores the interface scale for the same profile after signing i
     assert.equal(await scale(session), 100);
     assert.equal((await f.asCookie(session, 'PATCH', preferences, { interfaceScale: 85 })).statusCode, 400);
     assert.equal((await f.asCookie(session, 'PATCH', preferences, { interfaceScale: 80 }, { 'x-csrf-token': 'invalid' })).statusCode, 403);
-    const saved = await f.asCookie(session, 'PATCH', preferences, { interfaceScale: 80 });
+    const saved = await f.asCookie(session, 'PATCH', preferences, { interfaceScale: 110 });
     assert.equal(saved.statusCode, 200, saved.body);
     const next = await f.login(f.userId, f.id, session.cookie);
-    assert.equal(await scale(next), 80);
+    assert.equal(await scale(next), 110);
     assert.equal(await scale(await f.login(randomUUID())), 100);
 
     await f.app.close();
     reopened = await createApp(makeWorkspace(new Store(f.root)), f.options);
     const auth = await reopened.inject({ url: '/api/auth/browser-session', headers: { ...headers, cookie: next.cookie } });
     assert.equal(auth.statusCode, 200, auth.body);
-    assert.equal(auth.json().interfaceScale, 80);
+    assert.equal(auth.json().interfaceScale, 110);
   } finally {
     await (reopened ?? f.app).close();
   }
