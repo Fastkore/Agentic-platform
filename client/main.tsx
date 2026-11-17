@@ -3,7 +3,7 @@ import { createRoot } from 'react-dom/client';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { AgentSummary, Attachment, Chat, ChatSummary, CodexLimits, FastkoreAuthentication, FileStorageStatus, ModelCatalog, ProjectSummary, RelatedChatSummary, Run, Settings, Status, User } from '../shared/types';
-import { Archive, ArrowUp, BarChart3, Bot, Box, Check, ChevronDown, ChevronRight, ClipboardList, Copy, Database, Download, EllipsisVertical, Eraser, FileText, Folder, History, Link2, LoaderCircle, LockKeyhole, LogOut, Menu, Moon, Network, PanelLeftClose, PanelLeftOpen, Pencil, Pin, Plus, RefreshCw, Search, Settings2, ShieldCheck, Square, SquarePen, Sun, Terminal, Users, X } from 'lucide-react';
+import { Archive, ArrowUp, BarChart3, Bot, Box, Check, ChevronDown, ChevronRight, ClipboardList, Copy, Database, Download, EllipsisVertical, Eraser, FileText, Folder, History, Link2, LoaderCircle, LockKeyhole, LogOut, Menu, Moon, Network, PanelLeftClose, PanelLeftOpen, Pencil, Pin, Plus, RefreshCw, Search, Settings2, ShieldCheck, Square, SquarePen, Sun, Terminal, Trash2, Users, X } from 'lucide-react';
 import './style.css';
 import './workspace.css';
 import { ChatArchiveDialog } from './ChatArchiveDialog';
@@ -683,6 +683,15 @@ function App() {
       await loadChats(p);
     });
   }
+  async function deleteEmptyChat(p = projectId, c = chatId) {
+    await action(async () => {
+      await api(`/api/projects/${p}/chats/${c}`, { method: 'DELETE' });
+      setChatLists(old => ({ ...old, [p]: (old[p] ?? []).filter(item => item.id !== c) }));
+      setRelatedChats(old => old && { ...old, list: old.list.filter(item => item.id !== c) });
+      if (selected.current.projectId === p && selected.current.chatId === c) navigateTo(p);
+      await loadChats(p);
+    });
+  }
   async function resetChat() {
     const { key, snapshot } = currentErpContext.current;
     if (!canReset || chatBusy || pending || !key || !snapshot) return;
@@ -1106,9 +1115,9 @@ function App() {
                   <button type="button" className="workspace-icon" title={item.pinned ? 'Открепить чат' : 'Закрепить чат'}
                     aria-label={(item.pinned ? 'Открепить чат «' : 'Закрепить чат «') + item.title + '»'} aria-pressed={!!item.pinned}
                     disabled={pending} onClick={() => void toggleChatPin(project.id, item)}><Pin size={14} /></button>
-                  {isAdmin && <button type="button" className="workspace-icon" title="Архивировать чат" aria-label={'Архивировать чат «' + item.title + '»'}
+                  {(isAdmin || item.ownerId === user.id && item.messageCount === 0) && <button type="button" className="workspace-icon" title={item.messageCount === 0 ? 'Удалить пустой чат' : 'Архивировать чат'} aria-label={(item.messageCount === 0 ? 'Удалить пустой чат «' : 'Архивировать чат «') + item.title + '»'}
                     disabled={pending || [...activeRuns, ...queuedRuns].some(run => run.projectId === project.id && run.chatId === item.id)}
-                    onClick={() => void archiveChat(project.id, item.id)}><Archive size={14} /></button>}
+                    onClick={() => void (item.messageCount === 0 ? deleteEmptyChat(project.id, item.id) : archiveChat(project.id, item.id))}>{item.messageCount === 0 ? <Trash2 size={14} /> : <Archive size={14} />}</button>}
                 </div>
               </div>)}
               {recent.length > 5 && <button className="workspace-row show-chats" onClick={() => setShowAll(old => ({ ...old, [project.id]: !old[project.id] }))}>{showAll[project.id] ? 'Свернуть' : 'Показать ещё'}</button>}

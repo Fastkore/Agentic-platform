@@ -241,7 +241,6 @@ test('administrators archive, restore and permanently delete chats without losin
     const chats = `/api/projects/${f.project.id}/chats`;
     const created = (await f.req('POST', chats, f.token, { title: 'В архив' })).json();
     const url = `${chats}/${created.id}`, archive = url + '/archive';
-    assert.equal((await f.req('DELETE', url, f.admin)).statusCode, 409);
     assert.equal((await f.req('PATCH', archive, f.token, { archived: true })).statusCode, 403);
     const blocked = await f.req('POST', url + '/messages', f.token, { text: 'BLOCK' });
     assert.equal(blocked.statusCode, 202);
@@ -252,6 +251,7 @@ test('administrators archive, restore and permanently delete chats without losin
     assert.equal(sent.statusCode, 202);
     await idle(f.workspace);
     const runId = sent.json().id, storedChat = f.workspace.chat(f.project.id, created.id);
+    assert.equal((await f.req('DELETE', url, f.admin)).statusCode, 409);
     const generated = await f.workspace.files.upload('local', f.project, 'result.txt', Buffer.from('result'));
     const shared = await f.workspace.addAttachment(f.project.id, 'shared.txt', Buffer.from('shared'), () => f.employee.id);
     const message = storedChat.messages.at(-1)!;
@@ -271,7 +271,7 @@ test('administrators archive, restore and permanently delete chats without losin
     assert.equal((await f.req('PATCH', archive, f.admin, { archived: false })).statusCode, 200);
     assert.equal((await f.req('GET', url, f.token)).statusCode, 200);
     assert.equal((await f.req('PATCH', archive, f.admin, { archived: true })).statusCode, 200);
-    assert.equal((await f.req('DELETE', url, f.token)).statusCode, 403);
+    assert.equal((await f.req('DELETE', url, f.token)).statusCode, 404);
 
     // Simulate storage downtime after SQLite has accepted the deletion.
     f.workspace.files.remove = async () => { throw Error('storage unavailable'); };
@@ -803,4 +803,26 @@ test('deployment mode disables inference and keeps accepted queue intact; HTTPS 
     if (execution === undefined) delete process.env.BRIDGE_EXECUTION; else process.env.BRIDGE_EXECUTION = execution;
     if (origin === undefined) delete process.env.BRIDGE_PUBLIC_ORIGIN; else process.env.BRIDGE_PUBLIC_ORIGIN = origin;
   }
+});
+
+test('owners can delete empty chats directly, but cannot delete foreign or running chats', async () => {
+  const f = await fixture();
+  try {
+    const chats = '/api/projects/' + f.project.id + '/chats';
+    const one = (await f.req('POST', chats, f.token, { title: 'Пустой чат' })).json();
+    const url = chats + '/' + one.id;
+    const other = await f.enter('Другой сотрудник');
+    await f.req('PATCH', '/api/projects/' + f.project.id + '/members', f.admin, { memberIds: [f.employee.id, other.user.id] });
+    assert.equal((await f.req('DELETE', url, other.cookie)).statusCode, 404);
+    assert.equal((await f.req('DELETE', url, f.token)).statusCode, 200);
+    assert.equal((await f.req('GET', url, f.admin)).statusCode, 404);
+    const two = (await f.req('POST', chats, f.token, {})).json();
+    const task = await f.req('POST', chats + '/' + two.id + '/messages', f.token, { text: 'BLOCK' });
+    assert.equal(task.statusCode, 202);
+    assert.equal((await f.req('DELETE', chats + '/' + two.id, f.admin)).statusCode, 409);
+    await f.req('POST', '/api/runs/' + task.json().id + '/cancel', f.token, {});
+    await idle(f.workspace);
+    const three = (await f.req('POST', chats, f.token, {})).json();
+    assert.equal((await f.req('DELETE', chats + '/' + three.id, f.admin)).statusCode, 200);
+  } finally { await f.app.close(); }
 });

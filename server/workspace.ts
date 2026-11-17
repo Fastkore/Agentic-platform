@@ -480,7 +480,7 @@ export class Workspace {
     return this.admit(async () => {
       this.writable();
       const actor = authorize(), project = this.project(projectId), chat = this.chat(projectId, chatId);
-      if (!chat.archivedAt) throw new BridgeError('Сначала перенесите чат в архив.', 409);
+      if (!chat.archivedAt && chat.messages.length) throw new BridgeError('Сначала перенесите чат в архив.', 409);
       this.assertChatIdle(projectId, chatId);
       const state = this.store.state, { runs, jobs } = state, { chats } = project;
       const remainingChats = chats.filter(item => item !== chat);

@@ -856,7 +856,13 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
       return actor;
     }, fastkoreChatTitle(context ?? undefined)));
   });
-  app.delete<{ Params: ChatParams }>(chatPath, request => workspace.deleteArchivedChat(request.params.projectId, request.params.chatId, () => admin(request)));
+  app.delete<{ Params: ChatParams }>(chatPath, request => workspace.deleteArchivedChat(request.params.projectId, request.params.chatId, () => {
+    const chat = requestChat(request), actor = user(request);
+    if (actor.role !== 'admin' && (chat.ownerId !== actor.id || chat.archivedAt || chat.messages.length)) {
+      throw new BridgeError('Удалить можно только свой пустой чат.', 403);
+    }
+    return actor;
+  }));
   app.get<{ Params: ChatParams & { messageId: string; fileId: string } }>(chatPath + '/messages/:messageId/files/:fileId', async (request, reply) => {
     const { projectId, chatId, messageId, fileId } = request.params;
     const findFile = () => {
