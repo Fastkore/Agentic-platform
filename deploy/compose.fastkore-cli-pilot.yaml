@@ -1,12 +1,12 @@
 services:
   cli:
-    image: fastkore-cli:${BRIDGE_FASTKORE_CLI_PACKAGE_VERSION:-27.0.48.0}-sso
+    image: fastkore-cli:${BRIDGE_FASTKORE_CLI_PACKAGE_VERSION:-27.0.54.0}-sso
     platform: linux/amd64
     build:
       context: .
       dockerfile: fastkore-cli-pilot.Dockerfile
       additional_contexts:
-        cli_package: ../private/fastkore-cli-pilot/${BRIDGE_FASTKORE_CLI_PACKAGE_VERSION:-27.0.48.0}-sso
+        cli_package: ../private/fastkore-cli-pilot/${BRIDGE_FASTKORE_CLI_PACKAGE_VERSION:-27.0.54.0}-sso
     init: true
     user: "1000:1000"
     restart: unless-stopped
