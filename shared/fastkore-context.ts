@@ -1,3 +1,5 @@
+import { parseFilterDisplay, type FastkoreFilterDisplay } from './fastkore-filter-display.js';
+
 const guidFields = ['tile_id', 'catalog_id', 'folder_id', 'tree_parent_id', 'owner_entity_set_id', 'owner_entity_id', 'link_id'] as const;
 const guid = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i;
 const maxSelection = 2000;
@@ -8,6 +10,9 @@ export type FastkoreEntityContext = ContextHeader & {
   entity_name?: string;
   tile_name?: string;
   entity_type_ids?: string[];
+  entity_types?: { id: string; name: string }[];
+  folder_name?: string;
+  filter_display?: FastkoreFilterDisplay;
   filter_status: 'included' | 'none' | 'unavailable'; control_uid: string | null;
   deleted: boolean | null; scope_reproducible: boolean;
 } & Record<typeof guidFields[number], string | null>;
@@ -61,10 +66,28 @@ export function parseFastkoreContext(value: unknown): FastkoreContext | null {
   const rawTypeIds = value.entity_type_ids;
   if (rawTypeIds !== undefined && rawTypeIds !== null &&
     (!Array.isArray(rawTypeIds) || rawTypeIds.length > 128 || rawTypeIds.some(id => typeof id !== 'string' || !guid.test(id)))) return null;
-  const typeIds = Array.isArray(rawTypeIds) ? [...new Set<string>(rawTypeIds.map(id => id.toLowerCase()))].sort() : [];
+  const namedTypes = new Map<string, string>();
+  if (Array.isArray(value.entity_types) && value.entity_types.length <= 128) {
+    for (const item of value.entity_types) {
+      if (typeof item?.id === 'string' && guid.test(item.id)) namedTypes.set(item.id.toLowerCase(), contextName(item.name) ?? '');
+    }
+  }
+  const typeIds = [...new Set<string>(namedTypes.size ? namedTypes.keys() : Array.isArray(rawTypeIds) ? rawTypeIds.map(id => id.toLowerCase()) : [])].sort();
+  const entityTypes = typeIds.flatMap(id => namedTypes.get(id) ? [{ id, name: namedTypes.get(id)! }] : []);
+  const folderName = ids.folder_id ? contextName(value.folder_name) : undefined;
+  const filterDisplay = filter_status === 'included' ? parseFilterDisplay(value.filter_display) : undefined;
   return { ...header, view, entity_set_id: setId, entity_set_name, ...(entityName ? { entity_name: entityName } : {}), ...(tileName ? { tile_name: tileName } : {}),
     ...(typeIds.length ? { entity_type_ids: typeIds } : {}),
+    ...(entityTypes.length ? { entity_types: entityTypes } : {}),
+    ...(folderName ? { folder_name: folderName } : {}),
+    ...(filterDisplay ? { filter_display: filterDisplay } : {}),
     filter_xml: filter_xml as string | null, filter_status, control_uid, deleted, scope_reproducible, ...ids };
+}
+
+export function fastkoreExecutionContext(context?: FastkoreContext) {
+  if (!context || context.view === 'none') return context;
+  const { entity_types, folder_name, filter_display, ...execution } = context;
+  return execution;
 }
 
 function contextName(value: unknown) {

@@ -18,7 +18,7 @@ import { UploadAdmission } from './upload-admission.js';
 import { loadDictation, maxDictationBytes, validateDictation, type TranscribeDictation } from './dictation.js';
 import { interfaceScales, specialistFileLimits, specialistIcons } from '../shared/types.js';
 import type { DictationModelId, InterfaceScale } from '../shared/types.js';
-import { fastkoreChatTitle, parseFastkoreContext } from '../shared/fastkore-context.js';
+import { fastkoreChatTitle, fastkoreExecutionContext, parseFastkoreContext } from '../shared/fastkore-context.js';
 import { canReadChatAttachment } from '../shared/chat-attachments.js';
 import { chatBinding, matchesFastkoreChat, migrateFastkoreChatBindings, parentFastkoreChatBindings } from './fastkore-chat.js';
 import { FastkoreMcp } from './fastkore-mcp.js';
@@ -152,7 +152,7 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
         let success = false;
         let responseChars: number | undefined;
         try {
-          const result = await fastkoreCli.run({ operation: 'execute', command, args, workDirectoryId: run.id, context },
+          const result = await fastkoreCli.run({ operation: 'execute', command, args, workDirectoryId: run.id, context: fastkoreExecutionContext(context) },
             sso, () => {
               const active = current();
               if (isErpReadOnly(workspace.store.state, active) && !fastkoreReadCommands.has(command)) {

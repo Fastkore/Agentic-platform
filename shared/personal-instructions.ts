@@ -12,6 +12,7 @@ export interface InstructionComponent {
   entitySetId: string;
   name: string;
   typeIds?: string[];
+  types?: { id: string; name: string }[];
 }
 
 export function instructionTile(context?: FastkoreContext): InstructionTile | undefined {

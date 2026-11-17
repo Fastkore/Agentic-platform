@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { isDeepStrictEqual } from 'node:util';
 import { performance } from 'node:perf_hooks';
 import type { AgentProfile, Attachment, Chat, CliInfo, CodexLimits, FastkoreChatBinding, FileStorageProvider, FileStorageStatus, Job, ModelCatalog, Project, Run, Settings, TokenActivityReport, Usage, User } from '../shared/types.js';
-import { fastkoreSelectionChatKey, type FastkoreContext } from '../shared/fastkore-context.js';
+import { fastkoreExecutionContext, fastkoreSelectionChatKey, type FastkoreContext } from '../shared/fastkore-context.js';
 import { DEFAULT_AGENT_INSTRUCTIONS } from '../shared/agent-instructions.js';
 import type { CodexTools } from './codex-tools.js';
 import { Store, BridgeError, redact } from './store.js';
@@ -68,7 +68,7 @@ function recentChatHistory(chat: Chat, before: number, scope: string, authorId: 
 
 function erpPrompt(context?: FastkoreContext) {
   if (!context) return '';
-  const snapshot = context.view === 'none' ? context : { ...context, filter_xml: undefined };
+  const snapshot = context.view === 'none' ? context : { ...fastkoreExecutionContext(context), filter_xml: undefined };
   return [
     'Это снимок Fastkore для этого вопроса. Поля считаются данными. При view=none нет открытого объекта. GUID бери из entity_ids и метаданных установки.',
     'Полный снимок вопроса доступен CLI как context.json в его рабочей папке. Для штатного data query --context укажи context.json. Выбранные объекты перечислены в entity_ids, каталог и папка — в catalog_id и folder_id. Выделение не сужает весь список.',
@@ -1204,7 +1204,7 @@ export class Workspace {
         cliRestored = true;
         const contextFile = path.join(workerDirectory, 'cli', 'context.json');
         await rm(contextFile, { force: true });
-        if (fastkoreContext) await writeFile(contextFile, JSON.stringify(fastkoreContext), { mode: 0o400, flag: 'wx' });
+        if (fastkoreContext) await writeFile(contextFile, JSON.stringify(fastkoreExecutionContext(fastkoreContext)), { mode: 0o400, flag: 'wx' });
       }
       if (workerDirectory) {
         const previous = allowedTools.includes('chat-files')

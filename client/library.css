@@ -96,3 +96,8 @@
 .library-breadcrumb button { padding: 0 2px; border: 0; background: none; color: var(--accent); font: inherit; cursor: pointer; }
 .library-form-grid > .library-wide { grid-column: 1 / -1; }
 .library-settings .library-danger { color: var(--danger); }
+.settings-records.project-library-connections > li { display: block; padding: 6px 10px; }
+.project-library-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 32px; }
+.project-library-row > label:not(.toggle-row) { display: flex; align-items: center; gap: 8px; margin: 0; overflow-wrap: anywhere; }
+.project-library-row input[type="checkbox"] { flex: none; }
+.project-library-details { padding: 4px 0 8px 24px; }

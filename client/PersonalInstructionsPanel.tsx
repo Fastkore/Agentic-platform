@@ -97,9 +97,13 @@ export function PersonalInstructionsPanel({ request, project, erp, context, admi
     const source = item.tile ?? (item.pendingScope === 'erp' ? tile : undefined);
     const component = item.component?.name ?? (item.pendingScope === 'erp' ? currentComponent : undefined);
     const componentId = item.component?.entitySetId ?? (item.pendingScope === 'erp' && scopeContext?.view !== 'none' ? scopeContext?.entity_set_id : undefined);
-    const key = kind ? [kind, id, componentId ?? source?.tileId].join(':') : 'general';
+    const types = item.component?.types ?? (item.pendingScope === 'erp' && scopeContext?.view !== 'none' ? scopeContext?.entity_types : undefined);
+    const typeIds = item.component?.typeIds ?? types?.map(type => type.id);
+    const typeNames = types?.map(type => type.name).join(', ');
+    const key = kind ? [kind, id, componentId ?? source?.tileId, typeIds?.join(',')].join(':') : 'general';
     const label = item.scope?.label ?? (kind === 'project' ? project?.name ?? 'Проект' : 'Fastkore');
-    const group = groups.get(key) ?? { label: component ?? source?.tileName ?? label, hint: component || source ? label : undefined, notes: [] };
+    const group = groups.get(key) ?? { label: component && typeNames ? component + ' · ' + typeNames : component ?? source?.tileName ?? label,
+      hint: component || source ? label : undefined, notes: [] };
     group.notes.push(item);
     groups.set(key, group);
   }
@@ -161,7 +165,6 @@ export function PersonalInstructionsPanel({ request, project, erp, context, admi
     key, ...group, hasInstructions: key === 'general' && matches('Указания', draft?.text ?? '', group.label),
     visible: group.notes.filter(item => matches(item.title, item.text, item.authorName ?? '', group.label, group.hint ?? '')),
   })).filter(group => group.hasInstructions || group.visible.length);
-  const selectedGroup = [...groups.values()].find(group => group.notes.some(item => item.key === selected));
   const canSave = draft && !busy && dirty && draft.notes.every(item => item.title.trim() && item.text.trim());
   const title = note ? note.title || 'Новый приём' : 'Указания';
   const textLabel = note ? 'Текст приёма' : 'Текст указаний';
@@ -184,11 +187,11 @@ export function PersonalInstructionsPanel({ request, project, erp, context, admi
   return <div className="personal-settings">
     <aside className="personal-sidebar">
       <div className="personal-sidebar-top">
-        <div className="personal-sidebar-title">
+        {administration && <div className="personal-sidebar-title">
           <span className="personal-file-icon"><Layers size={23} aria-hidden="true" /></span>
-          <h2>{administration ? 'Инструкции сотрудников' : 'Инструкции (Skills)'}</h2>
+          <h2>Инструкции сотрудников</h2>
           {draft && <span className="personal-badge">{notes.length + 1}</span>}
-        </div>
+        </div>}
         {administration ? <select aria-label="Сотрудник" value={authorId} disabled={busy || !authors.length} onChange={event => {
           if (dirty && !window.confirm('Перейти к другому сотруднику и сбросить правки?')) return;
           setDraft(undefined); setSaved(undefined); setAuthorId(event.target.value);
@@ -242,16 +245,17 @@ export function PersonalInstructionsPanel({ request, project, erp, context, admi
       {!administration && draft && <label className="personal-toggle">
         <PermissionSwitch name="Автоинструкции" checked={draft.autoInstructions} disabled={busy}
           onChange={autoInstructions => change({ ...draft, autoInstructions })} />
-        <span><strong>Автоинструкции</strong><small>Агент сохраняет проверенные способы работы из ваших чатов.</small></span>
+        <strong>Автоинструкции</strong>
+        <small>Агент сохраняет проверенный<br />способ работы из ваших чатов.</small>
       </label>}
     </aside>
     <section className="personal-editor" aria-label={note ? 'Рабочий приём' : 'Указания сотрудника'}>
       {draft && <header className="personal-editor-header">
         <span className="personal-file-icon"><FileText size={30} aria-hidden="true" /></span>
         <div className="personal-heading">
-          <h3>{title}</h3>
-          <p>{[selectedGroup?.label ?? 'Общие', note?.component && note.tile?.tileName,
-            note ? note.common ? 'Для всех ролей' : note.authorName : 'Инструкция (skill)'].filter(Boolean).join(' / ')}</p>
+          {note && editing && canEdit ? <textarea className="personal-title-input" aria-label="Название" placeholder="Новый приём"
+            rows={1} value={note.title} maxLength={limits.title} disabled={busy}
+            onChange={event => updateNote({ title: event.target.value.replace(/[\r\n]+/g, ' ') })} /> : <h3>{title}</h3>}
         </div>
         <div className="personal-editor-actions">
           {canEdit && <button type="button" className="workspace-icon personal-save" aria-label="Сохранить" title="Сохранить" disabled={!canSave}
@@ -282,15 +286,13 @@ export function PersonalInstructionsPanel({ request, project, erp, context, admi
         <span>Доступен всем ролям</span>
       </label>}
       {draft && (editing && canEdit ? <>
-        {note && <div className="personal-fields">
-          <label>Название<input value={note.title} maxLength={limits.title} disabled={busy}
-            onChange={event => updateNote({ title: event.target.value })} /></label>
-          {!note.id && <label>Применение
+        {note && !note.id && <div className="personal-fields">
+          <label>Применение
             <select value={note.pendingScope ?? ''} disabled={busy} onChange={event => updateNote({ pendingScope: event.target.value as Scope || undefined })}>
               <option value="">Все личные чаты</option>
               {project && <option value="project">Проект · {project.name}</option>}
               {erp && <option value="erp">{currentComponent ?? 'Текущая установка Fastkore'}</option>}
-            </select></label>}
+            </select></label>
         </div>}
         <textarea className="personal-text" aria-label={textLabel} value={text} maxLength={textLimit} disabled={busy}
           onChange={event => note ? updateNote({ text: event.target.value }) : change({ ...draft, text: event.target.value })} />

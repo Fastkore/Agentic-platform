@@ -64,5 +64,6 @@ export function instructionComponent(context?: FastkoreContext): InstructionComp
   if (!context || context.view === 'none') return;
   const typeIds = context.entity_type_ids?.length ? context.entity_type_ids :
     context.scope_reproducible && context.filter_xml ? filterTypes(context.filter_xml, context.entity_set_id) : undefined;
-  return { entitySetId: context.entity_set_id, name: context.entity_set_name?.trim() || 'Компонент Fastkore', typeIds };
+  return { entitySetId: context.entity_set_id, name: context.entity_set_name?.trim() || 'Компонент Fastkore', typeIds,
+    ...(context.entity_types?.length ? { types: context.entity_types } : {}) };
 }

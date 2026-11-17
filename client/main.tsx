@@ -27,6 +27,7 @@ import { DEFAULT_AGENT_INSTRUCTIONS } from '../shared/agent-instructions';
 import { concreteModel, isAutomaticModel } from '../shared/model-selection';
 import { canReadChatAttachment, previewModelFormat, type PreviewModelFormat } from '../shared/chat-attachments';
 import { fastkoreChatContextKey, fastkoreChatTitle, fastkoreContextProblem, isFastkoreContextMessage, isFastkoreTileList, parseFastkoreContext, type FastkoreContext } from '../shared/fastkore-context';
+import { formatFilterNode, type FastkoreFilterDisplay } from '../shared/fastkore-filter-display';
 
 const AccountPanel = lazy(() => import('./AccessPanel').then(module => ({ default: module.AccountPanel })));
 const TeamPanel = lazy(() => import('./AccessPanel').then(module => ({ default: module.TeamPanel })));
@@ -145,6 +146,7 @@ function App() {
   const [erpChatKey, setErpChatKey] = useState<string>();
   const [relatedChats, setRelatedChats] = useState<{ key: string; list: RelatedChatSummary[] }>();
   const [contextProblem, setContextProblem] = useState<string>();
+  const [erpFilter, setErpFilter] = useState<{ display: FastkoreFilterDisplay; folder?: string }>();
   const readySession = useRef<FastkoreAuthentication | null>(null);
   const [user, setUser] = useState<User | null>(null), [setupRequired, setSetupRequired] = useState(false), [setupName, setSetupName] = useState('Руководитель');
   const [status, setStatus] = useState<Status | null>(null), [projects, setProjects] = useState<ProjectSummary[]>([]), [chat, setChat] = useState<Chat | null>(null);
@@ -165,6 +167,8 @@ function App() {
   const [projectActionTarget, setProjectActionTarget] = useState<ProjectSummary | null>(null);
   const [libraryProfileId, setLibraryProfileId] = useState<string>();
   const [renameProjectName, setRenameProjectName] = useState('');
+  const [inlineProjectRename, setInlineProjectRename] = useState<{ id: string; name: string }>();
+  const [settingsProjectSearch, setSettingsProjectSearch] = useState('');
   const projectActionFromSettings = useRef(false);
   const [initialSpecialistId, setInitialSpecialistId] = useState<string>();
   const [settingsSection, setSettingsSection] = useState<SettingsSection>('team');
@@ -302,6 +306,7 @@ function App() {
       if (!alive) return;
       if (value?.authentication?.source === 'fastkore') {
         clearLogin();
+        setErpFilter(undefined);
         setInterfaceScale(value.interfaceScale ?? 100);
         browserSession = true; csrfToken = value.authentication.csrfToken; sessionUserId = value.user.id;
         setErpAuth(value.authentication); setAuthSource('fastkore'); setUser(value.user); setSetupRequired(false); setLoggedIn(true);
@@ -358,6 +363,8 @@ function App() {
           setPanel(panel => panel === 'reset-chat' || (!key && panel === 'related') ? null : panel);
         }
         setContextProblem(problem);
+        setErpFilter(snapshot && snapshot.view !== 'none' && snapshot.filter_display
+          ? { display: snapshot.filter_display, folder: snapshot.folder_name } : undefined);
       }
     };
     host.addEventListener('message', receive);
@@ -952,6 +959,14 @@ function App() {
     ...(serverModel && !catalogOptions.some(model => model.value === serverModel) ? [{ value: serverModel, label: modelName(serverModel) }] : []),
     ...catalogOptions,
   ];
+  async function saveProjectName(id: string, draft: string) {
+    const { name } = await api<{ name: string }>('/api/projects/' + encodeURIComponent(id), {
+      method: 'PATCH', body: JSON.stringify({ name: draft.trim() }),
+    });
+    setProjects(items => items.map(project => project.id === id ? { ...project, name } : project));
+    setRelatedChats(chats => chats && { ...chats, list: chats.list.map(chat => chat.projectId === id ? { ...chat, projectName: name } : chat) });
+  }
+  const settingsProjects = projects.filter(project => project.name.toLocaleLowerCase('ru').includes(settingsProjectSearch.trim().toLocaleLowerCase('ru')));
   function openProjectPanel(project: ProjectSummary, next: 'project-agents' | 'project-library' | 'rename-project', trigger: HTMLButtonElement) {
     trigger.closest('details')?.removeAttribute('open');
     setError('');
@@ -1033,6 +1048,11 @@ function App() {
         : <p className="composer-status" role="alert">Чат доступен для чтения</p>)}
     {codexNotice && draftEditable && <p className="composer-status" role="status">{codexNotice} Можно подготовить черновик.</p>}
     {canReadFastkore && contextProblem && <p className="composer-status" role="alert">{contextProblem}</p>}
+    {canReadFastkore && erpAuth && erpFilter && (currentErpContext.current.active || matchesErpChat || !chat?.linkedToFastkore) &&
+      <details className="composer-status">
+        <summary>{erpFilter.display.complete ? 'Фильтр Fastkore' : 'Фильтр Fastkore · частично'}{erpFilter.folder && ' · ' + erpFilter.folder}</summary>
+        <div style={{ overflowWrap: 'anywhere', maxHeight: '8em', overflow: 'auto' }}>{formatFilterNode(erpFilter.display.root)}</div>
+      </details>}
     {!!attachments.length && !canAttach && <p className="composer-status" role="status">Удалите вложения из черновика. Агенту сейчас не разрешено их читать.</p>}
     {canReadFastkore && inFastkore && status?.fastkoreToolsStatus === 'reauth' && <p className="composer-status" role="status">Для доступа к ERP откройте помощника из Fastkore заново.</p>}
     {canPromptForProject && projectRequested ? <p className="composer-status" role="alert">
@@ -1379,12 +1399,7 @@ function App() {
     {panel === 'rename-project' && projectActionTarget && canManageProjects && <WorkspaceDialog title="Переименовать проект" className="workspace-chat-rename"
       close={() => { if (!pending) closeProjectPanel(); }}>
       <form onSubmit={event => { event.preventDefault(); void action(async () => {
-        const { id } = projectActionTarget;
-        const { name } = await api<{ name: string }>('/api/projects/' + encodeURIComponent(id), {
-          method: 'PATCH', body: JSON.stringify({ name: renameProjectName.trim() }),
-        });
-        setProjects(items => items.map(project => project.id === id ? { ...project, name } : project));
-        setRelatedChats(chats => chats && { ...chats, list: chats.list.map(chat => chat.projectId === id ? { ...chat, projectName: name } : chat) });
+        await saveProjectName(projectActionTarget.id, renameProjectName);
         closeProjectPanel();
       }); }}>
         <label htmlFor="rename-project-name">Название проекта</label>
@@ -1432,17 +1447,39 @@ function App() {
           <Suspense fallback={<p role="status">Загрузка…</p>}>
           {settingsSection === 'account' && <AccountPanel request={api} renewed={saveToken} fastkore={authSource === 'fastkore'} />}
           {settingsSection === 'team' && <TeamPanel request={api} projectId={projectId} projectName={selectedProject?.name ?? ''} self={user} />}
-          {settingsSection === 'projects' && <ul className="agent-card-list">
-            {projects.map(project => <li className="agent-card" key={project.id}>
+          {settingsSection === 'projects' && <>
+            <input type="search" aria-label="Поиск по проектам" placeholder="Поиск по проектам…" value={settingsProjectSearch}
+              onChange={event => setSettingsProjectSearch(event.target.value)} />
+            <ul className="agent-card-list">
+            {settingsProjects.map(project => <li className="agent-card" key={project.id}>
               <div className="settings-project-title">
-                <Folder size={16} aria-hidden="true" /><strong>{project.name}</strong>
-                <button type="button" className="workspace-icon" aria-label={'Переименовать проект ' + project.name} title="Переименовать проект"
-                  onClick={event => openProjectPanel(project, 'rename-project', event.currentTarget)}><Pencil size={15} aria-hidden="true" /></button>
+                <Folder size={16} aria-hidden="true" />
+                {inlineProjectRename?.id === project.id ? <form className="settings-project-rename" onSubmit={event => {
+                  event.preventDefault();
+                  void action(async () => {
+                    await saveProjectName(project.id, inlineProjectRename.name);
+                    setInlineProjectRename(undefined);
+                  });
+                }} onKeyDown={event => {
+                  if (event.key === 'Escape' && !pending) {
+                    event.preventDefault(); event.stopPropagation(); setInlineProjectRename(undefined);
+                  }
+                }}>
+                  <input autoFocus aria-label="Название проекта" maxLength={100} required disabled={pending} value={inlineProjectRename.name}
+                    onFocus={event => event.currentTarget.select()}
+                    onChange={event => setInlineProjectRename({ id: project.id, name: event.currentTarget.value })} />
+                  <button type="submit" className="workspace-icon" aria-label="Сохранить название" title="Сохранить"
+                    disabled={pending || !inlineProjectRename.name.trim() || inlineProjectRename.name.trim() === project.name}><Check size={16} /></button>
+                  <button type="button" className="workspace-icon" aria-label="Отменить переименование" title="Отмена"
+                    disabled={pending} onClick={() => setInlineProjectRename(undefined)}><X size={16} /></button>
+                </form> : <><strong>{project.name}</strong>
+                  <button type="button" className="workspace-icon" aria-label={'Переименовать проект ' + project.name} title="Переименовать проект"
+                    disabled={pending} onClick={() => setInlineProjectRename({ id: project.id, name: project.name })}><Pencil size={15} aria-hidden="true" /></button></>}
               </div>
               <div className="settings-project-actions">{renderProjectActions(project)}</div>
             </li>)}
-            {!projects.length && <li className="help">Проектов пока нет.</li>}
-          </ul>}
+            {!settingsProjects.length && <li className="help">{projects.length ? 'Проекты не найдены.' : 'Проектов пока нет.'}</li>}
+          </ul></>}
           {settingsSection === 'roles' && <ErpRolesPanel request={api} />}
           {settingsSection === 'library' && <LibraryPanel request={api} isAdmin={isAdmin} />}
           {settingsSection === 'profiles' && <SpecialistsPanel request={api} globalInstructions={savedInstructions} initialProfileId={initialSpecialistId} />}

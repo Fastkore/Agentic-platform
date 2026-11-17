@@ -37,6 +37,8 @@ export function LibraryPanel({ request, isAdmin }: { request: Request; isAdmin: 
   const [folders, setFolders] = useState<LibraryFolderSummary[]>();
   const [storage, setStorage] = useState<Storage>();
   const [selected, setSelected] = useState<string>();
+  const [folderSearch, setFolderSearch] = useState('');
+  const [projectSearch, setProjectSearch] = useState('');
   const [creating, setCreating] = useState(false);
   const [draft, setDraft] = useState<Draft>(emptyDraft);
   const [editing, setEditing] = useState<Draft>();
@@ -57,6 +59,9 @@ export function LibraryPanel({ request, isAdmin }: { request: Request; isAdmin: 
     try { await work(); await load(); if (done) setNotice(done); } catch (e) { setError((e as Error).message); await load(); } finally { setPending(false); }
   }
   const folder = folders?.find(f => f.id === selected);
+  const includes = (name: string, query: string) => name.toLocaleLowerCase('ru').includes(query.trim().toLocaleLowerCase('ru'));
+  const visibleFolders = folders?.filter(item => includes(item.name, folderSearch));
+  const visibleProjects = folder?.projects.filter(project => includes(project.name ?? project.id, projectSearch));
 
   if (folder) return <div className="library-settings">
     <button type="button" className="specialist-back" onClick={() => { setSelected(undefined); setEditing(undefined); setNotice(''); }}><ChevronLeft size={16} aria-hidden="true" />Все папки</button>
@@ -72,8 +77,10 @@ export function LibraryPanel({ request, isAdmin }: { request: Request; isAdmin: 
     </section>
     <section className="specialist-card">
       <h3><Layers size={18} aria-hidden="true" />Где используется</h3>
-      {folder.projects.length ? <ul className="settings-records">{folder.projects.map(p => <li key={p.id}><div><strong>{p.name ?? p.id}</strong></div></li>)}</ul>
-        : <p className="help">Не подключена к проектам. Подключите её в «Проект → Библиотека».</p>}
+      {folder.projects.length > 0 && <input type="search" aria-label="Поиск по связанным проектам" placeholder="Поиск по проектам…"
+        value={projectSearch} onChange={event => setProjectSearch(event.target.value)} />}
+      {visibleProjects?.length ? <ul className="settings-records">{visibleProjects.map(p => <li key={p.id}><div><strong>{p.name ?? p.id}</strong></div></li>)}</ul>
+        : <p className="help">{folder.projects.length ? 'Проекты не найдены.' : 'Папка пока не подключена к проектам.'}</p>}
     </section>
     {folder.canManage && <section className="specialist-card">
       <h3>Настройки папки</h3>
@@ -129,13 +136,15 @@ export function LibraryPanel({ request, isAdmin }: { request: Request; isAdmin: 
         <div className="settings-actions"><button type="submit" className="primary" disabled={pending || !draft.name.trim()}>Создать</button>
           <button type="button" className="secondary" onClick={() => setCreating(false)}>Отмена</button></div>
       </form>}
-      {folders?.length ? <ul className="settings-records">{folders.map(f => <li key={f.id}>
+      {folders && folders.length > 0 && <input type="search" aria-label="Поиск по папкам библиотеки" placeholder="Поиск по папкам библиотеки…"
+        value={folderSearch} onChange={event => setFolderSearch(event.target.value)} />}
+      {visibleFolders?.length ? <ul className="settings-records">{visibleFolders.map(f => <li key={f.id}>
         <div>
           <strong>{f.name}</strong>
           <small>{folderLine(f)} · {profileLabels[f.profile]}{f.classification === 'restricted' ? ' · закрытая' : ''}{f.projects.length ? ' · проекты: ' + f.projects.map(p => p.name ?? p.id).join(', ') : ' · не подключена'}</small>
         </div>
-        <button type="button" className="secondary" onClick={() => { setNotice(''); setSelected(f.id); }}>Открыть</button>
-      </li>)}</ul> : folders && <p className="help">Папок пока нет.{isAdmin ? ' Создайте папку и загрузите в неё материалы.' : ''}</p>}
+        <button type="button" className="secondary" onClick={() => { setNotice(''); setProjectSearch(''); setSelected(f.id); }}>Открыть</button>
+      </li>)}</ul> : folders && <p className="help">{folders.length ? 'Папки не найдены.' : 'Папок пока нет.'}</p>}
     </section>
   </div>;
 }

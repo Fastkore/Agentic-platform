@@ -131,9 +131,11 @@ export function withPersonalInstructions(other: CodexTools | undefined, store: S
             (note.component?.typeIds ?? []).join(',') === (component?.typeIds ?? []).join(','));
           const sourceTile = old?.tile ?? (scope === 'erp' ? options.tile : undefined);
           const roleId = old?.roleId ?? options.roleId;
-          if (old?.text === noteText && old.tile === sourceTile && old.roleId === roleId) return { success: true, text: 'Этот приём уже сохранён.' };
+          const savedComponent = component && { ...component, types: component.types ?? old?.component?.types };
+          if (old?.text === noteText && old.tile === sourceTile && old.roleId === roleId &&
+            JSON.stringify(old.component) === JSON.stringify(savedComponent)) return { success: true, text: 'Этот приём уже сохранён.' };
           if (!old && current.notes.length >= limits.notes) throw new BridgeError('Список приёмов заполнен. Освободите место в «Моих инструкциях».');
-          const note = { ...old, id: old?.id ?? randomUUID(), title: noteTitle, text: noteText, scope: target, tile: sourceTile, roleId, component };
+          const note = { ...old, id: old?.id ?? randomUUID(), title: noteTitle, text: noteText, scope: target, tile: sourceTile, roleId, component: savedComponent };
           const notes = old ? current.notes.map(item => item === old ? note : item) : [...current.notes, note];
           store.savePersonalInstructions(userId, { ...current, notes });
           return { success: true, text: serialized({ title: note.title, text: note.text }) };

@@ -4,11 +4,44 @@ import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { parseFastkoreContext } from '../shared/fastkore-context.js';
+import { fastkoreChatTitle, fastkoreExecutionContext, parseFastkoreContext } from '../shared/fastkore-context.js';
+import { formatFilterNode } from '../shared/fastkore-filter-display.js';
 import { instructionTile } from '../shared/personal-instructions.js';
 import { instructionComponent } from '../server/instruction-context.js';
 import { editPersonalInstructions, withPersonalInstructions } from '../server/personal-instructions.js';
 import { Store } from '../server/store.js';
+
+test('Fastkore v1 exposes card, tile and search folder labels while retaining the executable filter', () => {
+  const entity_set_id = 'bf024d2f-34e7-4499-8f0c-dfa9efe8d3ac', entityId = 'ddc271b4-1949-4897-a2b7-490f65834f0f';
+  const tile_id = '794f098b-ac2f-46b8-94d4-b33cfa6cba0e', typeId = '0b96e686-3acc-4984-92a5-9e37fe4fa524';
+  const base = { type: 'fastkore.context', version: 1, entity_set_id, entity_set_name: 'Заказы',
+    entity_types: [{ id: typeId, name: 'Заказ' }], scope_reproducible: true };
+  const card = parseFastkoreContext({ ...base, view: 'card', entity_ids: [entityId], entity_name: 'Заказ №1673 от 19.10.2026',
+    chat_key: `card:${entity_set_id}:${entityId}`, filter_status: 'none', filter_xml: null, filter_display: null });
+  assert.equal(fastkoreChatTitle(card ?? undefined), 'Заказ №1673 от 19.10.2026');
+  assert.deepEqual(instructionComponent(card ?? undefined)?.types, base.entity_types);
+  const filter_xml = `<EntitySetFilter EntitySetGuid="${entity_set_id}"><EqualTo FirstValueDescriptor="[$Type]" SecondValue="${typeId}"/></EntitySetFilter>`;
+  const typeCondition = { kind: 'condition', field_name: 'Тип', field_id: '$Type', operator_name: 'равно', values: [{ id: typeId, label: 'Заказ' }] };
+  const tileInput = { ...base, view: 'list', entity_ids: [], tile_id, tile_name: 'Текущие заказы', chat_key: `tile:${tile_id}`,
+    filter_status: 'included', filter_xml, filter_display: { complete: true, root: typeCondition } };
+  const tile = parseFastkoreContext(tileInput);
+  assert.equal(fastkoreChatTitle(tile ?? undefined), 'Текущие заказы');
+  const status = { kind: 'condition', field_id: randomUUID(), field_name: 'Статус', operator_name: 'любое значение из',
+    values: [{ id: 'active', label: 'В работе' }, { id: 'review', label: 'На согласовании' }] };
+  const folder = parseFastkoreContext({ ...tileInput, folder_id: randomUUID(), catalog_id: randomUUID(),
+    folder_name: 'Заказы в работе и на согласовании',
+    filter_display: { complete: true, root: { kind: 'group', not: false, items: [
+      { join: null, node: { kind: 'group', not: false, items: [{ join: null, node: status }] } },
+      { join: 'and', node: typeCondition },
+    ] } } });
+  assert.ok(folder?.view === 'list' && folder.filter_display);
+  assert.equal(formatFilterNode(folder.filter_display.root), '(Статус любое значение из «В работе», «На согласовании» И Тип равно «Заказ»)');
+  assert.deepEqual(parseFastkoreContext(folder), folder);
+  const executable = fastkoreExecutionContext(folder);
+  assert.ok(executable?.view === 'list');
+  assert.equal(executable.filter_xml, filter_xml);
+  assert.equal(Object.hasOwn(executable, 'filter_display'), false);
+});
 
 test('role notes follow the component across tiles and match overlapping type GUIDs', async () => {
   const [componentId, otherComponent, purchase, sale, returns, claim] = Array.from({ length: 6 }, () => randomUUID());

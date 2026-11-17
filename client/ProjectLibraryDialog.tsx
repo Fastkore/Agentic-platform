@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { ChevronDown, ChevronRight, Database, Info, Plus, RefreshCw } from 'lucide-react';
+import { ChevronDown, ChevronRight, Info, Plus, RefreshCw } from 'lucide-react';
 import type { ProjectSummary } from '../shared/types';
 import type { LibraryCell, LibraryConnection, LibraryFolderSummary, OutputPolicy, ProjectLibraryView } from '../shared/library';
 import { WorkspaceDialog } from './WorkspaceDialog';
@@ -24,6 +24,7 @@ export function ProjectLibraryDialog({ project, request, close, isAdmin, initial
   const [folders, setFolders] = useState<LibraryFolderSummary[]>([]);
   const [tab, setTab] = useState<Tab>(initialProfileId ? 'specialists' : 'folders');
   const [expanded, setExpanded] = useState<string>();
+  const [search, setSearch] = useState('');
   const [creating, setCreating] = useState(false);
   const [draft, setDraft] = useState({ name: '', description: '', profile: 'documents' as const, classification: 'shared' as const, outputPolicy: 'explanation_only' as OutputPolicy });
   const [profileFilter, setProfileFilter] = useState(initialProfileId ?? '');
@@ -48,6 +49,7 @@ export function ProjectLibraryDialog({ project, request, close, isAdmin, initial
   const grant = (c: LibraryConnection, profileId: string, enabled: boolean, extra: Record<string, unknown> = {}) =>
     act(() => request(`${base}/${c.folderId}/grants`, { method: 'PUT', body: JSON.stringify({ profileId, enabled, revision: c.revision, ...extra }) }));
   const profiles = view?.profiles.filter(p => !profileFilter || p.id === profileFilter) ?? [];
+  const matches = (name: string) => name.toLocaleLowerCase('ru').includes(search.trim().toLocaleLowerCase('ru'));
 
   return <WorkspaceDialog title="Библиотека проекта" className="project-agents-dialog project-library-dialog" close={() => { if (!pending) close(); }}>
     <div className="project-agents-intro">
@@ -77,24 +79,25 @@ export function ProjectLibraryDialog({ project, request, close, isAdmin, initial
             <button type="button" className="secondary" onClick={() => setCreating(false)}>Отмена</button>
           </div>
         </form>}
-        {view.connections.length > 0 ? <ul className="agent-card-list">{view.connections.map(c => {
+        <input type="search" aria-label="Поиск по папкам библиотеки" placeholder="Поиск по папкам библиотеки…" value={search}
+          onChange={event => setSearch(event.target.value)} />
+        {view.connections.some(c => matches(c.folderName)) || view.available.some(f => matches(f.name)) ? <ul className="settings-records project-library-connections">{view.connections.filter(c => matches(c.folderName)).map(c => {
           const folder = folders.find(f => f.id === c.folderId);
           const assigned = view.cells.filter(cell => cell.folderId === c.folderId && cell.granted).map(cell => view.profiles.find(p => p.id === cell.profileId)?.name).filter(Boolean);
           const open = expanded === c.folderId;
-          return <li key={c.folderId} className={'agent-card' + (c.enabled ? '' : ' library-disabled')}>
-            <div className="agent-card-heading">
-              <Database size={17} aria-hidden="true" />
-              <div>
-                <strong>{c.folderName}</strong>
-                <p>{[profileLabels[c.profile], c.classification === 'restricted' ? 'Закрытая' : '', outputModes[c.outputPolicy], c.enabled ? '' : 'Отключена'].filter(Boolean).join(' · ')}
-                  {c.description && <><br />{c.description}</>}</p>
-              </div>
-              {folder && <span className="project-specialist-actions">
-                <button type="button" className="secondary" aria-expanded={open} onClick={() => setExpanded(open ? undefined : c.folderId)}>
-                  {open ? <ChevronDown size={15} aria-hidden="true" /> : <ChevronRight size={15} aria-hidden="true" />}Материалы</button>
-              </span>}
+          return <li key={c.folderId}>
+            <div className="project-library-row">
+              <label><input type="checkbox" checked={c.enabled} disabled={pending || !c.canManage}
+                onChange={event => void update(c, { enabled: event.currentTarget.checked })} />{c.folderName}</label>
+              <button type="button" className="workspace-icon" aria-label={'Подробности папки «' + c.folderName + '»'} title="Подробности"
+                aria-expanded={open} onClick={() => setExpanded(open ? undefined : c.folderId)}>
+                {open ? <ChevronDown size={15} aria-hidden="true" /> : <ChevronRight size={15} aria-hidden="true" />}
+              </button>
             </div>
+            {open && <div className="project-library-details">
             <div className="library-card-body">
+              <p className="help">{profileLabels[c.profile]} · {c.classification === 'restricted' ? 'Закрытая · ' : ''}{outputModes[c.outputPolicy]}</p>
+              {c.description && <p className="help">{c.description}</p>}
               <p className="help">{folder ? folderLine(folder) : c.current ? `${c.current.files.toLocaleString('ru')} файлов` : 'Материалов пока нет'}</p>
               {c.classification === 'restricted' && <p className="library-warning">Закрытая папка: анализ закрытых материалов в этой поставке выключен, агенту она недоступна.</p>}
               <p className="help">Специалисты: {assigned.length ? assigned.join(', ') : 'не назначены — агент папку не использует'}</p>
@@ -103,18 +106,16 @@ export function ProjectLibraryDialog({ project, request, close, isAdmin, initial
             {c.canManage && <div className="settings-actions library-card-actions">
               <Select className="settings-select" label="Режим выдачи" value={c.outputPolicy} options={options(outputModes)} disabled={pending} fitContent
                 onChange={outputPolicy => void update(c, { outputPolicy })} />
-              <button type="button" className="secondary" disabled={pending} onClick={() => void update(c, { enabled: !c.enabled })}>{c.enabled ? 'Отключить' : 'Включить'}</button>
               <button type="button" className="secondary" disabled={pending} onClick={() => {
                 if (confirm(`Отключить «${c.folderName}» от проекта? Папка останется в библиотеке для других проектов.`)) void act(() => request(`${base}/${c.folderId}?revision=${c.revision}`, { method: 'DELETE' }));
               }}>Убрать из проекта</button>
             </div>}
+            </div>}
           </li>;
-        })}</ul> : <p className="help">К проекту ещё не подключены папки.</p>}
-        {view.available.length > 0 && <div className="settings-project-actions">
-          <Select className="settings-select" label="Подключить папку из библиотеки" value="" fitContent
-            options={[{ value: '', label: 'Подключить папку из библиотеки…', disabled: true }, ...view.available.map(f => ({ value: f.id, label: f.name }))]}
-            onChange={folderId => void act(() => request(base, { method: 'POST', body: JSON.stringify({ folderId }) }))} />
-        </div>}
+        })}{view.available.filter(f => matches(f.name)).map(f => <li key={f.id}>
+          <div className="project-library-row"><label><input type="checkbox" checked={false} disabled={pending}
+            onChange={() => void act(() => request(base, { method: 'POST', body: JSON.stringify({ folderId: f.id }) }))} />{f.name}</label></div>
+        </li>)}</ul> : <p className="help">{search.trim() ? 'Папки не найдены.' : 'Доступных папок пока нет.'}</p>}
       </>}
 
       {tab === 'specialists' && <>
