@@ -15,7 +15,7 @@ import { limitsForModel } from './google-limits.js';
 import { readGlmKey } from './glm.js';
 import { searchZai } from './internet-search.js';
 import { executorCapacity, providerCapacity } from './execution-concurrency.js';
-import { chatImagesUnsupportedProvider, chatImageUrlPattern, maxChatImages, maxChatImagePayload, maxChatImageUrlLength } from './chat-images.js';
+import { chatImagesUnsupportedProvider, chatImageUrlPattern, maxChatImages, maxChatImagePayload, maxChatImageUrlLength, supportsChatImages } from './chat-images.js';
 
 const cli = '/usr/local/bin/codex';
 const workspace = '/runner';
@@ -26,6 +26,7 @@ const runSchema = {
   properties: {
     prompt: { type: 'string', minLength: 1, maxLength: 128_000 },
     imageUrls: { type: 'array', maxItems: maxChatImages, items: { type: 'string', pattern: chatImageUrlPattern, maxLength: maxChatImageUrlLength } },
+    imageQuestion: { type: 'string', maxLength: 60_000 },
     developerInstructions: { type: 'string', minLength: 1, maxLength: 64_000 },
     sessionId: { type: 'string', pattern: '^[0-9a-fA-F-]{36}$' },
     model: { type: 'string', pattern: '^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,127}$' },
@@ -177,7 +178,7 @@ export function createCodexWorker(codex: CodexRunner = new CodexClient([], 'work
       const { toolDefinitions, workDirectoryId, steeringKey, ...body } = request.body;
       const selected = selection && !('error' in selection) ? selection : undefined;
       if (selected) body.model = selected.model;
-      if (body.imageUrls?.length && lane !== 'codex') throw new BridgeError(chatImagesUnsupportedProvider, 503);
+      if (body.imageUrls?.length && !supportsChatImages(lane)) throw new BridgeError(chatImagesUnsupportedProvider, 503);
       provider = selected?.account.provider === 'antigravity' ? 'Antigravity CLI' : selected?.account.provider === 'gemini' ? 'Gemini CLI' : selected?.account.provider === 'glm' ? 'GLM (Z.ai)' : 'Codex';
       let directory = workspace;
       if (workDirectoryId) {

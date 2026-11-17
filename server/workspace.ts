@@ -12,7 +12,7 @@ import { Store, BridgeError, redact } from './store.js';
 import { type CodexRunner, type SteerTurn, discoverCli } from './codex.js';
 import { attachmentName, buildContext, projectFilePath, publicProjectFile } from './documents.js';
 import { FileStorage } from './file-storage.js';
-import { chatImagesUnsupportedProvider, isChatImage, readChatImages, validateChatImages } from './chat-images.js';
+import { chatImagesUnsupportedProvider, isChatImage, readChatImages, supportsChatImages, validateChatImages } from './chat-images.js';
 import { stageWorkerFiles, workerOutputs } from './worker-files.js';
 import { withProjectFiles } from './project-file-tools.js';
 import { CorporateAccess } from './corporate.js';
@@ -734,7 +734,7 @@ export class Workspace {
       const resolvedModel = concreteModel(this.catalog?.value, selectedModel) || selectedModel;
       const provider = providerForModel(resolvedModel) ?? executionProvider;
       const images = attachments.filter(isChatImage);
-      if (images.length && provider && provider !== 'codex') throw new BridgeError(chatImagesUnsupportedProvider, 422);
+      if (images.length && !supportsChatImages(provider)) throw new BridgeError(chatImagesUnsupportedProvider, 422);
       validateChatImages(images);
       const oldModel = chat.model; if (model !== undefined) chat.model = model;
       const run: Run = { id: randomUUID(), projectId, chatId, ownerId: author?.id ?? chat.ownerId, agentProfileId: profile.id, profileRevision: profile.revision, status: 'queued', progress: 'Ожидает выполнения', createdAt: new Date().toISOString(), clientRequestId, requestHash: hash, model: resolvedModel || undefined,
@@ -833,7 +833,8 @@ export class Workspace {
     const excerpts = attachments.length && canReadAttachments ? await this.attachmentExcerpts(project, attachments, signal) : '';
     const model = profile.model || run.model;
     const provider = providerForModel(model) ?? run.executionProvider ?? 'codex';
-    const imageUrls = canReadAttachments && provider === 'codex' ? images : undefined;
+    const imageUrls = canReadAttachments && supportsChatImages(provider) ? images : undefined;
+    const imageQuestion = imageUrls?.length && provider === 'glm' ? task : undefined;
     const developerInstructions = [instructionPriority, 'Общие инструкции агента\n' + globalInstructions,
       this.corporate.instructions(actor, profile), 'Подготовь консультацию по переданной подзадаче для основного агента.',
       projectFiles.length && projectFileInstructions, (excerpts || imageUrls?.length) && attachmentInstructions, integration?.tools && erpReadInstructions,
@@ -841,7 +842,7 @@ export class Workspace {
     const prompt = [erpPrompt(fastkoreContext), integration?.problem, task,
       excerpts && '<local_document_context>\n' + excerpts + '\n</local_document_context>'].filter(Boolean).join('\n\n');
     authorize();
-    const result = await this.codex.run({ cliPath, workspace: project.directory, prompt, imageUrls, developerInstructions, tools: internetTools,
+    const result = await this.codex.run({ cliPath, workspace: project.directory, prompt, imageUrls, imageQuestion, developerInstructions, tools: internetTools,
       allowWrite: false, consultation: true, ephemeral: true, model, reasoningEffort: run.reasoningEffort ?? profile.reasoningEffort,
     }, async () => {}, signal);
     authorize();
@@ -934,7 +935,7 @@ export class Workspace {
     const attachments = job.attachmentIds.map(id => project.attachments.find(a => a.id === id)!);
     const imageFiles = attachments.filter(isChatImage);
     const provider = executionProvider ?? run.executionProvider ?? providerForModel(run.model) ?? 'codex';
-    if (imageFiles.length && provider !== 'codex') throw new BridgeError(chatImagesUnsupportedProvider, 422);
+    if (imageFiles.length && !supportsChatImages(provider)) throw new BridgeError(chatImagesUnsupportedProvider, 422);
     let imageUrls: string[] | undefined;
     const documents = attachments.filter(file => !isChatImage(file));
     const settings = { ...this.store.state.settings };
@@ -1068,7 +1069,8 @@ export class Workspace {
       timing.preparationMs = elapsedMs(preparationStarted);
       const executorTiming = timeExecutor(timing);
       executorStarted = true;
-      const result = await this.codex.run({ cliPath, workspace: project.directory, prompt, imageUrls, developerInstructions, tools, sessionId: chat.sessionId,
+      const imageQuestion = imageUrls?.length && provider === 'glm' ? job.text : undefined;
+      const result = await this.codex.run({ cliPath, workspace: project.directory, prompt, imageUrls, imageQuestion, developerInstructions, tools, sessionId: chat.sessionId,
         workDirectoryId: workerWrites ? run.id : undefined, allowWrite: this.isolatedCodex ? workerWrites : writable,
         model: run.model, reasoningEffort: run.reasoningEffort ?? this.store.state.settings.reasoningEffort ?? 'high' }, async event => {
         executorTiming.event(event);

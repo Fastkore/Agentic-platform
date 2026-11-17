@@ -8,7 +8,7 @@ import type { CodexToolDefinition, CodexToolResult } from './codex-tools.js';
 import { BridgeError } from './store.js';
 import type { ExecutionAccounts, ExecutionProvider } from '../shared/execution-accounts.js';
 
-export type WorkerRun = Pick<CodexRequest, 'prompt' | 'imageUrls' | 'developerInstructions' | 'sessionId' | 'ephemeral' | 'consultation' | 'consultationKey' | 'model' | 'reasoningEffort' | 'workDirectoryId'> & { toolDefinitions?: CodexToolDefinition[]; steeringKey?: string };
+export type WorkerRun = Pick<CodexRequest, 'prompt' | 'imageUrls' | 'imageQuestion' | 'developerInstructions' | 'sessionId' | 'ephemeral' | 'consultation' | 'consultationKey' | 'model' | 'reasoningEffort' | 'workDirectoryId'> & { toolDefinitions?: CodexToolDefinition[]; steeringKey?: string };
 export type WorkerSteer = { key: string; text: string };
 export type WorkerToolResult = CodexToolResult & { id: string };
 export type WorkerMessage = { event: CodexEvent } | { result: CodexResult } | { error: string }
@@ -66,9 +66,9 @@ export class RemoteCodexRunner implements CodexRunner {
     return JSON.parse(body);
   }
   async run(r: CodexRequest, onEvent: (event: CodexEvent) => Promise<void>, signal: AbortSignal, registerSteering?: RegisterSteering) {
-    const { prompt, imageUrls, developerInstructions, sessionId, ephemeral, consultation, model, reasoningEffort, workDirectoryId, tools } = r;
+    const { prompt, imageUrls, imageQuestion, developerInstructions, sessionId, ephemeral, consultation, model, reasoningEffort, workDirectoryId, tools } = r;
     const steeringKey = registerSteering && !consultation ? randomUUID() : undefined;
-    const res = await this.request('/run', { prompt, imageUrls, developerInstructions, sessionId, ephemeral, consultation, steeringKey,
+    const res = await this.request('/run', { prompt, imageUrls, imageQuestion, developerInstructions, sessionId, ephemeral, consultation, steeringKey,
       consultationKey: consultation ? this.consultationContext.getStore() : undefined, model, reasoningEffort, workDirectoryId, toolDefinitions: tools?.definitions }, signal);
     const stream = createInterface({ input: res, crlfDelay: Infinity });
     try {

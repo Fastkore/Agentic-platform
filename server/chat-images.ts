@@ -1,5 +1,6 @@
 import path from 'node:path';
 import type { Attachment, Project } from '../shared/types.js';
+import type { ExecutionProvider } from '../shared/execution-accounts.js';
 import { maxUploadBytes, type FileStorage } from './file-storage.js';
 import { BridgeError } from './store.js';
 
@@ -13,7 +14,11 @@ export const maxChatImageBytes = maxUploadBytes;
 export const maxChatImageUrlLength = 4 * Math.ceil(maxChatImageBytes / 3) + 32;
 export const maxChatImagePayload = maxChatImageUrlLength + maxChatImages * 64;
 export const chatImageUrlPattern = '^data:image/(jpeg|png|webp|gif);base64,[A-Za-z0-9+/]+={0,2}$';
-export const chatImagesUnsupportedProvider = 'Для просмотра изображений выберите модель ChatGPT в этом чате.';
+export const chatImagesUnsupportedProvider = 'Для просмотра изображений выберите модель ChatGPT или GLM в этом чате.';
+
+export function supportsChatImages(provider?: ExecutionProvider) {
+  return !provider || provider === 'codex' || provider === 'glm';
+}
 
 function extension(name: string) { return path.extname(name).toLowerCase(); }
 

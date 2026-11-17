@@ -13,7 +13,7 @@ export interface CodexEvent { kind: 'session' | 'message' | 'message-delta' | 'm
 export type SteerResult = 'accepted' | 'rejected' | 'unknown';
 export type SteerTurn = (text: string) => Promise<SteerResult>;
 export type RegisterSteering = (steer: SteerTurn | undefined) => void;
-export interface CodexRequest { cliPath: string; workspace: string; prompt: string; imageUrls?: string[]; developerInstructions?: string; tools?: CodexTools; sessionId?: string; allowWrite: boolean; workDirectoryId?: string; ephemeral?: boolean; consultation?: boolean; consultationKey?: string; model?: string; reasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max' }
+export interface CodexRequest { cliPath: string; workspace: string; prompt: string; imageUrls?: string[]; imageQuestion?: string; developerInstructions?: string; tools?: CodexTools; sessionId?: string; allowWrite: boolean; workDirectoryId?: string; ephemeral?: boolean; consultation?: boolean; consultationKey?: string; model?: string; reasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max' }
 export interface CodexResult { sessionId?: string; response: string; usage?: Usage }
 export interface CodexRunner { readonly isolated?: boolean; inspect(cliPath: string, signal?: AbortSignal, model?: string): Promise<CliInfo>; listModels?(cliPath: string): Promise<ModelCatalog>; readLimits?(cliPath: string, model?: string): Promise<CodexLimits | null>; run(request: CodexRequest, onEvent: (event: CodexEvent) => Promise<void>, signal: AbortSignal, registerSteering?: RegisterSteering): Promise<CodexResult> }
 type RateWindow = { usedPercent?: number; windowDurationMins?: number | null; resetsAt?: number | null };
@@ -97,7 +97,8 @@ async function killTree(child: ChildProcess) {
 }
 export class CodexClient implements CodexRunner {
   // Prefix is injected by process integration tests only. No HTTP route can change it.
-  constructor(private readonly testPrefix: string[] = [], private readonly mode: 'local' | 'worker' = 'local', private readonly codexHome?: string, private readonly provider = 'openai') {}
+  constructor(private readonly testPrefix: string[] = [], private readonly mode: 'local' | 'worker' = 'local', private readonly codexHome?: string,
+    private readonly provider = 'openai', private readonly acceptsImages = provider === 'openai') {}
   private start(exe: string, args: string[], cwd?: string) {
     if (!existsSync(exe) || (process.platform === 'win32' && path.extname(exe).toLowerCase() !== '.exe')) throw new BridgeError('Укажите существующий исполняемый файл Codex CLI.');
     const env = this.mode === 'worker' ? {
@@ -203,9 +204,9 @@ export class CodexClient implements CodexRunner {
   }
   async run(request: CodexRequest, onEvent: (event: CodexEvent) => Promise<void>, signal: AbortSignal, registerSteering?: RegisterSteering) {
     signal.throwIfAborted();
-      if (this.mode !== 'worker' && request.tools?.definitions.some(tool => tool.name !== 'consult_specialist')) throw new BridgeError('Эти инструменты доступны только в изолированном исполнителе.', 403);
-    if (request.imageUrls?.length && this.provider !== 'openai') throw new BridgeError(chatImagesUnsupportedProvider, 422);
+    if (request.imageUrls?.length && !this.acceptsImages) throw new BridgeError(chatImagesUnsupportedProvider, 422);
     if (request.imageUrls?.length || request.tools || request.consultation || registerSteering && this.mode === 'worker') {
+      if (this.mode !== 'worker' && request.tools?.definitions.some(tool => tool.name !== 'consult_specialist')) throw new BridgeError('Эти инструменты доступны только в изолированном исполнителе.', 403);
       return this.runWithTools(request, request.tools, onEvent, signal, registerSteering);
     }
     const child = this.start(request.cliPath, buildArguments(request, this.mode, this.provider), request.workspace);

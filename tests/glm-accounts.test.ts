@@ -5,6 +5,7 @@ import path from 'node:path';
 import { tmpdir } from 'node:os';
 import { createServer } from 'node:http';
 import { randomUUID } from 'node:crypto';
+import { fileURLToPath } from 'node:url';
 import { ExecutionAccountStore } from '../server/execution-accounts.js';
 import { GlmClient, glmFailure, readGlmKey, writeGlmConfig } from '../server/glm.js';
 import { createCodexWorker } from '../server/codex-worker.js';
@@ -150,6 +151,59 @@ test('glm failures never echo the key or raw provider text', () => {
   const generic = glmFailure('stream disconnected while waiting for ' + validKey);
   assert.ok(!generic.includes(validKey));
   assert.match(generic, /GLM не выполнила запрос/);
+});
+
+test('GLM sends images to a multimodal model and gives text-only models observations from Flash', async () => {
+  const home = await mkdtemp(path.join(tmpdir(), 'bridge-glm-vision-'));
+  const image = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aJr8AAAAASUVORK5CYII=';
+  const requests: { path?: string; key?: string; body: string }[] = [];
+  let refuse = false;
+  const backend = createServer(async (request, response) => {
+    let body = '';
+    for await (const chunk of request) body += chunk;
+    requests.push({ path: request.url, key: request.headers.authorization, body });
+    response.writeHead(refuse ? 429 : 200, { 'content-type': 'application/json' });
+    response.end(JSON.stringify(refuse ? { error: validKey } : {
+      choices: [{ message: { content: 'Текстовый файл тоже прочитан' } }],
+    }));
+  });
+  await new Promise<void>(resolve => backend.listen(0, '127.0.0.1', resolve));
+  const address = backend.address();
+  assert.ok(address && typeof address === 'object');
+  const previous = process.env.BRIDGE_GLM_BASE_URL;
+  process.env.BRIDGE_GLM_BASE_URL = 'http://127.0.0.1:' + address.port + '/api/v1';
+  try {
+    await writeFile(path.join(home, 'config.toml'), `experimental_bearer_token = "${validKey}"\n`);
+    await writeFile(path.join(home, 'models.json'), JSON.stringify({ models: [
+      { slug: 'glm-5.3', input_modalities: ['text'] },
+      { slug: 'glm-5.3-flash', input_modalities: ['text', 'image'] },
+    ] }));
+    const client = new GlmClient(home, [fileURLToPath(new URL('./fake-cli.mjs', import.meta.url))]);
+    const run = (model: string) => client.run({
+      cliPath: process.execPath, workspace: home, model, allowWrite: false, imageUrls: [image],
+      imageQuestion: 'Какого цвета круг?', prompt: 'VERIFY_CHAT_IMAGE PRIVATE_ERP_CONTEXT',
+    }, async () => {}, AbortSignal.timeout(10_000), () => {});
+    const flash = JSON.parse((await run('glm-5.3-flash')).response);
+    assert.equal(flash.images.length, 1);
+    assert.equal(flash.images[0].mime, 'data:image/png');
+    assert.equal(requests.length, 0);
+    const textModel = JSON.parse((await run('glm-5.3')).response);
+    assert.deepEqual(textModel, { images: [], hasDocument: true });
+    assert.equal(requests.length, 1);
+    assert.equal(requests[0].path, '/api/coding/paas/v4/chat/completions');
+    assert.equal(requests[0].key, 'Bearer ' + validKey);
+    assert.ok(!requests[0].body.includes('PRIVATE_ERP_CONTEXT'));
+    const { model, messages } = JSON.parse(requests[0].body);
+    assert.equal(model, 'glm-5.3-flash');
+    assert.match(messages[0].content[0].text, /Какого цвета круг/);
+    assert.deepEqual(messages[0].content[1], { type: 'image_url', image_url: { url: image } });
+    refuse = true;
+    await assert.rejects(run('glm-5.3'), error => error instanceof BridgeError && /квота/.test(error.message) && !error.message.includes(validKey));
+  } finally {
+    if (previous === undefined) delete process.env.BRIDGE_GLM_BASE_URL; else process.env.BRIDGE_GLM_BASE_URL = previous;
+    await new Promise<void>(resolve => backend.close(() => resolve()));
+    await rm(home, { recursive: true, force: true });
+  }
 });
 
 test('worker stores glm keys, merges the catalog and routes glm runs', async () => {

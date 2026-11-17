@@ -69,10 +69,10 @@ test('a read-only chat sends uploaded JPEG bytes and a text attachment through t
     });
     assert.deepEqual(chat.messages[0].attachments.map(file => file.name), ['photo.JPG', 'note.txt']);
 
-    chat.model = 'glm/test';
+    chat.model = 'gemini/test';
     const unsupported = await app.inject({ method: 'POST', url, headers, payload: { text: 'Фото', attachmentIds: [imageId] } });
     assert.equal(unsupported.statusCode, 422, unsupported.body);
-    assert.match(unsupported.body, /выберите модель ChatGPT/);
+    assert.match(unsupported.body, /выберите модель ChatGPT или GLM/);
   } finally {
     await app.close();
     await worker.close();
