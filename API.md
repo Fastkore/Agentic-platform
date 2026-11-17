@@ -60,6 +60,7 @@ HTTP-маршруты обслуживают веб-интерфейс. Для �
 | POST | /api/fastkore/chats | Сеанс Fastkore. `{projectId, context, agentProfileId?, fresh?}` возвращает `{projectId, chat}`. Для снимка с `chat_key` повторно открывает активный чат этой истории, даже с `fresh: true`. Название новой карточки берётся из `entity_name`, название чата таблицы — из `tile_name` или, если его нет, из `entity_set_name`. |
 | POST | /api/projects/{projectId}/chats/{chatId}/reset | Сеанс Fastkore, автор связанного чата. `{context}` переносит текущий чат в архив и возвращает пустой чат с той же привязкой. Для пустого чата ничего не меняется. При активном или ожидающем задании возвращает 409 |
 | PATCH | /api/projects/{projectId}/chats/{chatId} | Выбрать модель чата: {model} |
+| PATCH | /api/projects/{projectId}/chats/{chatId}/pin | Закрепить или открепить доступный чат в личном списке, `{pinned: boolean}`. |
 | GET | /api/projects/{projectId}/chats/{chatId} | Чат, messages, sessionId |
 | GET | /api/projects/{projectId}/chats/{chatId}/messages | Сообщения чата |
 | POST | /api/projects/{projectId}/chats/{chatId}/messages | Отправить вопрос; 202 с заданием |

@@ -137,6 +137,36 @@ test('uploaded 3D models can be opened by their owner and an administrator withi
   } finally { await f.app.close(); }
 });
 
+test('chat pins persist independently for readers and require access to the chat', async () => {
+  const f = await fixture();
+  const owner = await f.employee('pin-owner'), reader = await f.employee('pin-reader');
+  let sharedId: string;
+  try {
+    const chats = `/api/projects/${f.project.id}/chats`;
+    assert.equal((await f.req('PATCH', `/api/projects/${f.project.id}/members`, f.admin, { memberIds: [owner.id, reader.id] })).statusCode, 200);
+    const shared = await f.workspace.addChat(f.project.id, 'Общий чат', undefined, owner.id);
+    const privateChat = await f.workspace.addChat(f.project.id, 'Личный чат', undefined, owner.id);
+    shared.visibility = 'project';
+    sharedId = shared.id;
+    await f.store.save();
+    const pin = (chatId: string, token: string, pinned: boolean) => f.req('PATCH', `${chats}/${chatId}/pin`, token, { pinned });
+    const summary = async (token: string) => (await f.req('GET', chats, token)).json().find((chat: { id: string }) => chat.id === sharedId);
+    assert.equal((await pin(privateChat.id, reader.token, true)).statusCode, 404);
+    assert.deepEqual((await pin(sharedId, reader.token, true)).json(), { pinned: true });
+    assert.equal((await summary(reader.token)).pinned, true);
+    assert.equal((await summary(owner.token)).pinned, undefined);
+    assert.deepEqual((await pin(sharedId, reader.token, false)).json(), { pinned: false });
+    assert.equal((await summary(reader.token)).pinned, undefined);
+    assert.equal((await pin(sharedId, reader.token, true)).statusCode, 200);
+    assert.equal((await pin(sharedId, reader.token, true)).statusCode, 200);
+  } finally { await f.app.close(); }
+  const reopened = new Store(f.store.root);
+  try {
+    assert.deepEqual(reopened.state.security?.users.find(user => user.id === reader.id)?.pinnedChatIds, [sharedId!]);
+    assert.equal(reopened.state.security?.users.find(user => user.id === owner.id)?.pinnedChatIds, undefined);
+  } finally { await reopened.close(); }
+});
+
 test('three employees share library but private chat metadata, messages, jobs and writes are protected', async () => {
   const f = await fixture(); try {
     const a = await f.employee('alice'), b = await f.employee('boris'), c = await f.employee('clara');

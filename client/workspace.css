@@ -188,6 +188,7 @@
 .chat-row { gap: 8px; }
 .chat-row > span { flex: 1; }
 .chat-row time { flex: 0 0 auto; color: var(--nav-muted); }
+.chat-row-pin, .chat-pin-button[aria-pressed="true"] { color: var(--accent-strong); }
 .show-chats { min-height: 32px; padding-left: 35px; color: var(--text-muted); }
 .workspace-account { position: relative; margin-top: auto; padding: 6px 10px 10px; flex: 0 0 auto; }
 .workspace-account details, .limits-control { position: relative; }
@@ -220,7 +221,7 @@
 .workspace-top h1 { min-width: 0; color: var(--text); font-size: 16px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .workspace-chat-title { display: flex; align-items: center; gap: 7px; min-width: 0; }
 .workspace-chat-title > svg { flex: none; }
-.chat-rename-button { width: 28px; height: 28px; }
+.chat-rename-button, .chat-pin-button { width: 28px; height: 28px; }
 .workspace-mobile-toggle, .workspace-mobile-close, .workspace-scrim { display: none; }
 .workspace-mobile-close { margin-left: auto; }
 .workspace-sidebar-toggle { flex: 0 0 auto; }

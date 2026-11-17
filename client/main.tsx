@@ -3,7 +3,7 @@ import { createRoot } from 'react-dom/client';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { AgentSummary, Attachment, Chat, ChatSummary, CodexLimits, FastkoreAuthentication, FileStorageStatus, ModelCatalog, ProjectSummary, RelatedChatSummary, Run, Settings, Status, User } from '../shared/types';
-import { Archive, ArrowUp, BarChart3, Bot, Box, Check, ChevronDown, ChevronRight, ClipboardList, Copy, Database, Download, EllipsisVertical, Eraser, FileText, Folder, History, Link2, LoaderCircle, LockKeyhole, LogOut, Menu, Moon, Network, PanelLeftClose, PanelLeftOpen, Pencil, Plus, RefreshCw, Search, Settings2, ShieldCheck, Square, SquarePen, Sun, Terminal, Users, X } from 'lucide-react';
+import { Archive, ArrowUp, BarChart3, Bot, Box, Check, ChevronDown, ChevronRight, ClipboardList, Copy, Database, Download, EllipsisVertical, Eraser, FileText, Folder, History, Link2, LoaderCircle, LockKeyhole, LogOut, Menu, Moon, Network, PanelLeftClose, PanelLeftOpen, Pencil, Pin, Plus, RefreshCw, Search, Settings2, ShieldCheck, Square, SquarePen, Sun, Terminal, Users, X } from 'lucide-react';
 import './style.css';
 import './workspace.css';
 import { ChatArchiveDialog } from './ChatArchiveDialog';
@@ -179,6 +179,7 @@ function App() {
   const relatedDraftKey = currentErpContext.current.active && erpChatKey ? 'erp:' + erpChatKey : '';
   const draftSlot = chatId || relatedDraftKey;
   const selectedProject = projects.find(p => p.id === projectId), draft = drafts[draftSlot] ?? '', attachments = files[chatId] ?? [];
+  const selectedChatSummary = chatLists[projectId]?.find(item => item.id === chatId);
   const specialistKey = draftSlot || 'new:' + projectId;
   const specialistId = specialists[specialistKey];
   const activeRuns = status?.activeRuns ?? (status?.activeRun ? [status.activeRun] : []);
@@ -620,7 +621,8 @@ function App() {
     setChatLists(old => ({
       ...old,
       [source]: (old[source] ?? []).filter(item => item.id !== conversation),
-      [destination]: [summary, ...(old[destination] ?? []).filter(item => item.id !== conversation)],
+      [destination]: [{ ...summary, pinned: old[source]?.find(item => item.id === conversation)?.pinned },
+        ...(old[destination] ?? []).filter(item => item.id !== conversation)],
     }));
     setRelatedChats(old => old && { ...old, list: old.list.map(item => item.id === conversation
       ? { ...item, title: newTitle, projectId: destination, projectName: projectName || item.projectName } : item) });
@@ -660,6 +662,16 @@ function App() {
       if (selected.current.projectId === p && selected.current.chatId === c) {
         setChat(old => old?.id === c ? { ...old, consultantIds: saved.consultantIds } : old);
       }
+    });
+  }
+  async function toggleChatPin() {
+    if (!selectedChatSummary || pending) return;
+    const project = projectId, conversation = selectedChatSummary.id;
+    await action(async () => {
+      const { pinned } = await api<{ pinned: boolean }>(`/api/projects/${project}/chats/${conversation}/pin`, {
+        method: 'PATCH', body: JSON.stringify({ pinned: !selectedChatSummary.pinned }),
+      });
+      setChatLists(old => ({ ...old, [project]: (old[project] ?? []).map(item => item.id === conversation ? { ...item, pinned } : item) }));
     });
   }
   async function archiveChat() {
@@ -834,18 +846,16 @@ function App() {
     if (!status) return <p role="status" className="help">Загрузка…</p>;
     const permissions = [
       { name: 'Запись файлов', enabled: writeMode, description: status.isolatedCodex
-        ? 'Создание файлов и сохранение результатов в рабочей папке задания.'
-        : 'Создание и изменение файлов в папке проекта.' },
-      { name: 'Fastkore CLI', enabled: canUseChatTools && canReadFastkore && status.toolPermissions?.cli,
-        description: 'Выполнение команд Fastkore от имени сотрудника.' },
-      { name: 'Fastkore MCP', enabled: canUseChatTools && canReadFastkore && status.toolPermissions?.mcp,
-        description: 'Вызов инструментов ERP от имени сотрудника.' },
+        ? 'Файлы сохраняются в папке задания.'
+        : 'Файлы сохраняются в папке проекта.' },
+      { name: 'Fastkore CLI', enabled: canUseChatTools && canReadFastkore && status.toolPermissions?.cli },
+      { name: 'Fastkore MCP', enabled: canUseChatTools && canReadFastkore && status.toolPermissions?.mcp },
       { name: 'Веб-поиск', enabled: canUseChatTools && status.toolPermissions?.webSearch,
         description: 'Поиск в интернете. Для него нужен активный аккаунт GLM Coding Plan.' },
     ];
     return <div className="chat-access-settings">
       <ul className="settings-records">{permissions.map(({ name, enabled, description }) => <li key={name}>
-        <div><strong>{name}</strong><small>{description}</small></div>
+        <div><strong>{name}</strong>{description && <small>{description}</small>}</div>
         <span className="chat-permission-state" data-enabled={!!enabled}>
           {enabled ? <Check size={15} aria-hidden="true" /> : <X size={15} aria-hidden="true" />}
           {enabled ? 'Разрешено' : 'Недоступно'}
@@ -1044,8 +1054,10 @@ function App() {
         {projects.map(project => {
           const open = openProjects[project.id] ?? project.id === projectId;
           const list = chatLists[project.id] ?? [];
-          const visible = showAll[project.id] ? list : list.slice(0, 5);
           const canManageProject = isAdmin && authSource === 'local' && !inFastkore;
+          const pinned = list.filter(item => item.pinned);
+          const recent = list.filter(item => !item.pinned);
+          const visible = [...pinned, ...(showAll[project.id] ? recent : recent.slice(0, 5))];
           const newChatDisabled = pending || (project.id === projectId && !newAgent);
           return <div key={project.id} className="project-group">
             <div className="project-line">
@@ -1086,10 +1098,11 @@ function App() {
             {open && <div className="project-chat-list" id={'chats-' + project.id}>
               {visible.map(item => <button key={item.id} className="workspace-row chat-row" aria-current={item.id === chatId ? 'page' : undefined}
                 onClick={() => navigateWorkspace(project.id, item.id)} title={chatTooltip(item)}>
+                {item.pinned && <Pin size={13} className="chat-row-pin" aria-label="Закреплённый чат" />}
                 <span>{item.title}</span>
                 {activeRuns.some(run => run.status === 'running' && run.projectId === project.id && run.chatId === item.id) ? <LoaderCircle size={13} className="spin" /> : <time dateTime={item.updatedAt}>{shortDate(item.updatedAt)}</time>}
               </button>)}
-              {list.length > 5 && <button className="workspace-row show-chats" onClick={() => setShowAll(old => ({ ...old, [project.id]: !old[project.id] }))}>{showAll[project.id] ? 'Свернуть' : 'Показать ещё'}</button>}
+              {recent.length > 5 && <button className="workspace-row show-chats" onClick={() => setShowAll(old => ({ ...old, [project.id]: !old[project.id] }))}>{showAll[project.id] ? 'Свернуть' : 'Показать ещё'}</button>}
             </div>}
           </div>;
         })}
@@ -1122,6 +1135,10 @@ function App() {
           <div className="workspace-chat-title">
             <Folder size={17} aria-label={selectedProject?.name} />
             <h1 title={chatTooltip(chat)}>{chat.title}</h1>
+            {!chat.archivedAt && <button type="button" className="workspace-icon chat-pin-button"
+              aria-label="Закрепить чат" aria-pressed={!!selectedChatSummary?.pinned}
+              title={selectedChatSummary?.pinned ? 'Открепить чат' : 'Закрепить чат'} disabled={pending || !selectedChatSummary}
+              onClick={() => void toggleChatPin()}><Pin size={15} aria-hidden="true" /></button>}
             {canEditChatDetails && <button type="button" className="workspace-icon chat-rename-button"
               aria-label="Переименовать чат" title="Переименовать чат" disabled={pending} onClick={() => {
                 setError('');

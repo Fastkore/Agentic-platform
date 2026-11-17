@@ -100,6 +100,18 @@ export class Access {
       || (credential.source === 'fastkore' ? !this.externalCredentialValid?.(credential) : user.role !== 'admin')) throw new BridgeError('Войдите под своей учётной записью.', 401);
     return { user, credential };
   }
+  setChatPinned(pinned: boolean, authorize: () => { actor: User; chat: Chat }) {
+    return this.changeAccess(draft => {
+      const { actor, chat } = authorize();
+      if (chat.archivedAt) throw new BridgeError('Восстановите чат из архива, чтобы закрепить его.', 409);
+      const user = draft.security!.users.find(item => item.id === actor.id)!;
+      const ids = new Set(user.pinnedChatIds);
+      if (pinned) ids.add(chat.id);
+      else ids.delete(chat.id);
+      user.pinnedChatIds = ids.size ? [...ids] : undefined;
+      return { pinned };
+    });
+  }
   bootstrap() {
     return this.changeAccess(draft => {
       if (!this.setupRequired) throw new BridgeError('Первичная настройка завершена. Войдите по логину и паролю.', 403);

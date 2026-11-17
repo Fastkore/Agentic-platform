@@ -743,7 +743,10 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
   app.patch<{ Params: { projectId: string }; Body: { memberIds: string[] } }>('/api/projects/:projectId/members', { schema: { body: object({ memberIds: { type: 'array', maxItems: 1000, uniqueItems: true, items: string(100) } }, ['memberIds']) } }, async request => access.members(user(request), request.params.projectId, request.body.memberIds));
   app.get<{ Params: { projectId: string } }>('/api/projects/:projectId/chats', async request => {
     const p = principal(request);
-    return access.project(p.user, request.params.projectId).chats.filter(c => !c.archivedAt && access.canChat(p.user, c) && chatIdentityMatches(p, c)).map(c => access.chatSummary(c));
+    const pinned = new Set(p.user.pinnedChatIds);
+    return access.project(p.user, request.params.projectId).chats
+      .filter(chat => !chat.archivedAt && access.canChat(p.user, chat) && chatIdentityMatches(p, chat))
+      .map(chat => ({ ...access.chatSummary(chat), pinned: pinned.has(chat.id) || undefined }));
   });
   const archivedChats = (include: (project: ReturnType<Workspace['project']>, chat: ReturnType<Workspace['chat']>) => boolean) =>
     workspace.store.state.projects.flatMap(project => project.chats.flatMap(chat => chat.archivedAt && include(project, chat)
@@ -811,6 +814,9 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
     return chat;
   };
   app.get<{ Params: ChatParams }>(chatPath, async request => access.viewChat(requestChat(request)));
+  app.patch<{ Params: ChatParams; Body: { pinned: boolean } }>(chatPath + '/pin', {
+    schema: { body: object({ pinned: { type: 'boolean' } }, ['pinned']) },
+  }, request => access.setChatPinned(request.body.pinned, () => ({ actor: user(request), chat: requestChat(request) })));
   app.patch<{ Params: ChatParams; Body: { consultantIds: string[] } }>(chatPath + '/specialists', {
     schema: { body: object({ consultantIds: { type: 'array', uniqueItems: true, items: identifier } }, ['consultantIds']) },
   }, request => workspace.setChatConsultants(request.params.projectId, request.params.chatId, request.body.consultantIds, () => {
