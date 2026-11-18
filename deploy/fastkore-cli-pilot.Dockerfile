@@ -1,6 +1,9 @@
 FROM node:24.19.0-bookworm-slim AS node
 FROM mcr.microsoft.com/dotnet/runtime:10.0-noble
 WORKDIR /opt/fastkore-cli
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends fontconfig fonts-liberation fonts-crosextra-carlito fonts-crosextra-caladea \
+    && rm -rf /var/lib/apt/lists/*
 COPY --from=cli_package app/ ./
 COPY --from=cli_package Docs/ ./Docs/
 COPY --from=cli_package Examples/ ./Examples/
