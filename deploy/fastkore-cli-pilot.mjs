@@ -7,6 +7,7 @@ import { promisify } from 'node:util';
 import { commandCatalog, commandArguments, jobDirectory } from './fastkore-cli-commands.mjs';
 import { CliProcessPool } from './cli-process-pool.mjs';
 import { readCommandOptions } from './fastkore-cli-reads.mjs';
+import { runCliProcess } from './fastkore-cli-output.mjs';
 
 const socket = '/run/fastkore-cli/pilot.sock';
 const serverAddress = process.env.FASTKORE_SERVER;
@@ -20,9 +21,13 @@ const cliEnv = {
   FASTKORE_SERVER: serverAddress, FASTKORE_TLS: 'true', FASTKORE_CA_FILE: caFile,
 };
 const cli = '/usr/local/bin/fastkore-cli';
-const cliOptions = { env: cliEnv, timeout: 90_000, killSignal: 'SIGKILL', maxBuffer: 512 * 1024 };
+const cliOptions = { env: cliEnv, timeout: 90_000, killSignal: 'SIGKILL' };
+const stdoutLimitBytes = Number(process.env.BRIDGE_FASTKORE_CLI_STDOUT_MAX_BYTES ?? 8 * 1024 * 1024);
+if (!Number.isSafeInteger(stdoutLimitBytes) || stdoutLimitBytes < 1 || stdoutLimitBytes > 16 * 1024 * 1024) {
+  throw new Error('BRIDGE_FASTKORE_CLI_STDOUT_MAX_BYTES must be an integer from 1 to 16777216');
+}
 const capabilitiesArgs = ['agent', 'capabilities', '--json'];
-const capabilities = await promisify(execFile)(cli, capabilitiesArgs, cliOptions)
+const capabilities = await promisify(execFile)(cli, capabilitiesArgs, { ...cliOptions, maxBuffer: stdoutLimitBytes })
   .then(({ stdout }) => JSON.parse(stdout))
   .catch(() => { throw new Error('Fastkore CLI failed its offline startup check'); });
 if (capabilities?.success !== true || capabilities.exitCode !== 0 ||
@@ -133,22 +138,23 @@ const server = createServer(async (req, res) => {
     return;
   }
   const processStarted = performance.now();
-  const onExit = async (error, stdout, stderr) => {
-    const processMs = Math.round(performance.now() - processStarted);
-    await dispose();
-    if (res.destroyed) return;
-    res.setHeader('X-Fastkore-Cli-Process-Ms', String(processMs));
-    try {
-      if (error) {
-        if (read && Number.isInteger(error.code) && error.code > 0 && error.code <= 5) {
-          const reported = json(stdout) ?? json(stderr);
-          if (reported?.exitCode !== undefined && reported.exitCode !== error.code) throw new Error();
-          send(200, { success: false, exitCode: error.code, data: reported });
-          return;
-        }
-        throw new Error();
+  try {
+      const { exitCode, stdout, stderr } = await runCliProcess(cli, args, { ...cliOptions, cwd: read?.cwd, signal: stop.signal }, read?.ticket, stdoutLimitBytes);
+      if (res.destroyed) return;
+      res.setHeader('X-Fastkore-Cli-Process-Ms', String(Math.round(performance.now() - processStarted)));
+      if (stdout.bytes > stdoutLimitBytes) {
+        const error = { code: 'cli_stdout_too_large', actualBytes: stdout.bytes, limitBytes: stdoutLimitBytes };
+        send(read ? 200 : 413, { success: exitCode === null ? null : exitCode === 0, exitCode, error });
+        return;
       }
-      const parsed = JSON.parse(stdout);
+      if (exitCode !== 0) {
+        if (!read || exitCode === null || exitCode < 1 || exitCode > 5) throw new Error();
+        const reported = json(stdout.text) ?? json(stderr.text);
+        if (reported?.exitCode !== undefined && reported.exitCode !== exitCode) throw new Error();
+        send(200, { success: false, exitCode, data: reported });
+        return;
+      }
+      const parsed = JSON.parse(stdout.text);
       if (read) {
         if (parsed.success !== true || parsed.exitCode !== 0 || !Object.hasOwn(parsed, 'data')) throw new Error();
         send(200, { success: true, exitCode: 0, data: parsed.data });
@@ -158,18 +164,9 @@ const server = createServer(async (req, res) => {
       const { name, purpose, operation, required, optional, returns } = parsed.data;
       send(200, { ok: true, authenticated: false,
         contract: { name, purpose, operation, required, optional, returns } });
-    }
-    catch { send(502, {}); }
-  };
-  let child;
-  try { child = execFile(cli, args, { ...cliOptions, cwd: read?.cwd, signal: stop.signal }, onExit); }
-  catch {
-    await dispose();
+  } catch {
     if (!res.destroyed) send(502, {});
-    return;
-  }
-  child.stdin.on('error', () => {});
-  child.stdin.end(read ? read.ticket + '\n' : undefined, 'ascii');
+  } finally { await dispose(); }
 });
 server.listen(socket, async () => { await chmod(socket, 0o660); });
 process.once('SIGTERM', () => { pool.abortAll(); server.close(); });

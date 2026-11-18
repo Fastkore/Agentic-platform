@@ -358,14 +358,14 @@ test('a valid SSO grant exposes CLI tools without MCP and only with a trusted ru
   process.env.BRIDGE_FASTKORE_CLI_SOCKET = 'test-runner';
   process.env.BRIDGE_FASTKORE_CLI_TICKETS = '1';
   let trusted = false;
-  let cliOutput = 'private ERP content';
+  let cliData: unknown = { text: 'private ERP content' };
   const check = t.mock.method(FastkoreCli.prototype, 'checkTrust', async () => {
     if (!trusted) throw new BridgeError('Адрес или CA исполнителя не совпадает.', 424);
     return { authority: 'erp.example.test', caFingerprint: 'test-fingerprint' };
   });
   t.mock.method(FastkoreCli.prototype, 'run', async (...[, , current]: Parameters<FastkoreCli['run']>) => {
     current();
-    return { success: true, exitCode: 0, data: { text: cliOutput } };
+    return { success: true, exitCode: 0, data: cliData };
   });
   const f = await fixture();
   try {
@@ -411,13 +411,23 @@ test('a valid SSO grant exposes CLI tools without MCP and only with a trusted ru
     assert.match(blockedWrite.text, /только чтение/);
     assert.equal((await ready.tools!.call('fastkore_cli_execute',
       { command: 'data get', args: ['--entity-set', entitySetId, '--entity', entityId] }, signal)).success, true);
-    cliOutput = 'x'.repeat(96_000);
+    cliData = { text: 'x'.repeat(96_000) };
     const oversized = await ready.tools!.call('fastkore_cli_execute',
       { command: 'data get', args: ['--entity-set', entitySetId, '--entity', entityId] }, signal);
-    assert.equal(oversized.success, false);
+    assert.equal(oversized.success, true);
+    const limited = JSON.parse(oversized.text);
+    assert.equal(limited.exitCode, 0);
+    assert.equal(limited.error.code, 'response_too_large');
+    assert.equal(limited.error.limitChars, 96_000);
     assert.match(oversized.text, /--detail brief.*--properties/);
     const oversizedAudit = f.store.auditEvents().find(event => event.action === 'erp.cli.command' && event.details?.responseChars);
     assert.ok(oversizedAudit && oversizedAudit.details!.responseChars! > 96_000);
+    assert.equal(oversizedAudit.details!.responseChars, limited.error.actualChars);
+    cliData = { templateSha256: 'a'.repeat(64), revision: 'rev-42', definition: 'Ж'.repeat(540_000), variables: [{ name: 'Покупатель' }] };
+    const selected = await ready.tools!.call('fastkore_cli_execute', { command: 'report definition show', args: ['--report', 'Счет'],
+      fields: ['data.templateSha256', 'data.revision'] }, signal);
+    assert.equal(selected.success, true);
+    assert.deepEqual(JSON.parse(selected.text), { success: true, exitCode: 0, data: { templateSha256: 'a'.repeat(64), revision: 'rev-42' } });
     await f.asCookie(session, 'POST', '/api/auth/logout', {});
     await assert.rejects(prepare());
   } finally { await f.app.close(); }

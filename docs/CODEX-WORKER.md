@@ -75,7 +75,9 @@ Codex хранит авторизацию и историю CLI в томе `cod
 установки по умолчанию включены. Профиль агента и подключения проекта также
 должны разрешать инструмент Fastkore ERP.
 
-Распакуйте поставку 27.0.48.0 SSO в `private/fastkore-cli-pilot/27.0.48.0-sso` и проверьте `SHA256SUMS`. Сборка использует каталог поставки и файлы из `deploy` напрямую. Требуется Docker Compose 2.17 или новее с BuildKit. Для другой установки укажите `BRIDGE_FASTKORE_CLI_SERVER=grpc://host:port` в `.env`. Адрес и публичный CA из `private/fastkore-ca/ca.pem` должны совпадать с доверенной привязкой ERP. [Документация Docker Compose](https://docs.docker.com/reference/compose-file/build/#additional_contexts)
+Импортируйте Linux-архив `27.0.57.0` SSO через `deploy/Import-FastkoreCli.ps1`. Скрипт проверит `SHA256SUMS` и разложит пакет в `private/fastkore-cli-pilot/27.0.57.0-sso`. Сборка использует каталог поставки и файлы из `deploy`. Для другой установки укажите `BRIDGE_FASTKORE_CLI_SERVER=grpc://host:port` в `.env`. Адрес и публичный CA из `private/fastkore-ca/ca.pem` должны совпадать с доверенной привязкой ERP. [Документация Docker Compose](https://docs.docker.com/reference/compose-file/build/#additional_contexts)
+
+`BRIDGE_FASTKORE_CLI_STDOUT_MAX_BYTES` задаёт предел чтения stdout в байтах и по умолчанию равен 8 МиБ. Укажите одно значение для приложения и исполнителя. `fastkore_cli_execute` принимает необязательный массив `fields` с путями внутри `data`, например `data.templateSha256`. Модель получает JSON объёмом до 96 000 символов после выбора полей. Коды `cli_stdout_too_large` и `response_too_large` указывают, какой предел достигнут. Код завершения и, если доступна, диагностика частичного результата сохраняются. Для чтения определения формы перед генерацией PDF используйте `report definition show --detail brief --json`.
 
 Для доступа по SSO включите «Разрешить доступ к ERP» в привязке Fastkore и задайте `BRIDGE_FASTKORE_CLI_TICKETS=1` в `.env` платформы. Выполните команды из корня репозитория.
 

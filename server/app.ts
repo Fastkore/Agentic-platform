@@ -28,7 +28,7 @@ import { RemoteCodexRunner } from './codex-remote.js';
 import { canAccessProject, canRenameProject, projectRoleOptions, erpRoleCatalog, restoreErpRoles, erpRolePermissions, erpCredentialPermissions, internetCredentialPermissions, isErpReadOnly, erpReadOnlyMessage, fastkoreReadCommands } from './erp-roles.js';
 import { withInternetTools } from './internet-tools.js';
 import { withFastkoreCliDescription } from './codex-tools.js';
-import { withFastkoreCliCommands } from './fastkore-cli-tools.js';
+import { formatFastkoreCliResult, withFastkoreCliCommands } from './fastkore-cli-tools.js';
 import type { AgentProfile, Credential, Dataset, FastkoreAuthentication, FastkoreInstallation, FastkoreKeyIssue, FastkoreRolePermissions, FileStorageProvider, ProjectAgentPolicy, ProjectAgentSettings, Settings, User, WorkRole } from '../shared/types.js';
 import type { AuditEvent, ProjectRolePolicy, ProjectRoleSettings, RelatedChatSummary, Run, UserRecord } from '../shared/types.js';
 import { agentToolIds } from '../shared/agent-tools.js';
@@ -148,7 +148,7 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
     current();
     const commands = run ? withFastkoreCliCommands(base, () => fastkoreCli.describe(),
       (command, callSignal) => fastkoreCli.describeCommand(command, callSignal),
-      async (command, args, callSignal) => {
+      async (command, args, callSignal, fields) => {
         const started = performance.now(), timing: FastkoreCliTiming = {};
         let success = false;
         let responseChars: number | undefined;
@@ -161,14 +161,10 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
               }
               return active;
             }, id => fastkoreMcp.invalidate(id), callSignal, timing);
-          success = result.success;
-          const text = JSON.stringify({ exitCode: result.exitCode, data: result.data });
-          if (text.length <= 96_000) return { success, text };
-          responseChars = text.length;
-          const advice = command === 'data get' ? 'Повторите чтение с --detail brief и передайте в --properties только нужные поля.'
-            : command === 'data query' ? 'Сократите список полей через --properties и читайте выборку страницами меньшего размера.'
-              : 'Если команда изменила данные, проверьте результат чтением перед повторным вызовом.';
-          return { success: false, text: 'Ответ Fastkore CLI превышает лимит в 96 000 символов. ' + advice };
+          const formatted = formatFastkoreCliResult(result, command, fields);
+          success = formatted.success;
+          responseChars = formatted.responseChars;
+          return { success, text: formatted.text };
         } finally { audit('erp.cli.command', command, { success, elapsedMs: elapsedMs(started), ...timing, responseChars }); }
       }, () => { current(); }) : descriptionOnly();
     return { tools: commands, problem: integration.problem };

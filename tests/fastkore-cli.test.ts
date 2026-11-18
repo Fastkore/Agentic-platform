@@ -8,6 +8,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import type { Credential } from '../shared/types.js';
 import { FastkoreCli, type FastkoreCliTiming } from '../server/fastkore-cli.js';
+import { formatFastkoreCliResult } from '../server/fastkore-cli-tools.js';
 import { testCertificate } from './test-certificate.js';
 
 async function requestJson(req: IncomingMessage) {
@@ -54,7 +55,12 @@ test('Fastkore CLI uses a fresh ticket per command and stops after ERP revokes t
     assert.equal(input.caFingerprint, caFingerprint);
     assert.ok(tickets.delete(input.ticket), 'every process receives a different unused ticket');
     used.push(input.operation);
+    if (input.command === 'oversized') {
+      res.end(JSON.stringify({ success: true, exitCode: 0, error: { code: 'cli_stdout_too_large', actualBytes: 9000000, limitBytes: 8388608 } }));
+      return;
+    }
     const data = input.operation === 'auth-info' ? { user: { guid: wrongUser ? randomUUID() : externalUserId } }
+      : input.operation === 'execute' ? { templateSha256: 'abc', revision: 'rev', template: 'Ж'.repeat(540_000) }
       : { entitySetId: input.entitySetId, entityId: input.entityId, note: input.ticket };
     res.setHeader('X-Fastkore-Cli-Process-Ms', '3');
     res.end(JSON.stringify({ success: true, exitCode: 0, data }));
@@ -82,6 +88,14 @@ test('Fastkore CLI uses a fresh ticket per command and stops after ERP revokes t
     assert.doesNotMatch(JSON.stringify(result), /fkct1\./);
     assert.equal((await run({ operation: 'query', entitySetId, limit: 2 })).success, true);
     assert.deepEqual(used, ['auth-info', 'get', 'query']);
+    const report = await run({ operation: 'execute', command: 'report definition show', args: [], workDirectoryId: randomUUID() });
+    assert.deepEqual(JSON.parse(formatFastkoreCliResult(report, 'report definition show', ['data.templateSha256', 'data.revision']).text),
+      { success: true, exitCode: 0, data: { templateSha256: 'abc', revision: 'rev' } });
+    const overflow = await run({ operation: 'execute', command: 'oversized', args: [], workDirectoryId: randomUUID() });
+    const output = formatFastkoreCliResult(overflow, 'data create');
+    assert.equal(output.success, true);
+    assert.equal(JSON.parse(output.text).error.code, 'cli_stdout_too_large');
+    assert.equal(JSON.parse(output.text).exitCode, 0);
     assert.equal(tickets.size, 0);
     cliEnabled = false;
     await assert.rejects(run({ operation: 'auth-info' }), /отключена/);
@@ -93,18 +107,29 @@ test('Fastkore CLI uses a fresh ticket per command and stops after ERP revokes t
     wrongTrust = false;
     wrongAudience = true;
     await assert.rejects(run({ operation: 'auth-info' }), /не выдала билет/);
-    assert.equal(used.length, 3);
+    assert.equal(used.length, 5);
     wrongAudience = false;
     wrongUser = true;
     await assert.rejects(run({ operation: 'auth-info' }), /не совпал с пользователем SSO/);
     denied = true;
     await assert.rejects(run({ operation: 'auth-info' }), /отозван/);
     assert.ok(forgotten);
-    assert.equal(used.length, 4);
+    assert.equal(used.length, 6);
   } finally {
     await Promise.all([erp, runner].map(server => new Promise<void>(resolve => {
       server.closeAllConnections();
       server.close(() => resolve());
     })));
   }
+});
+
+test('field selection keeps native partial results and oversized output keeps mutation status', () => {
+  const data = { success: false, exitCode: 5, error: { message: 'Журнал недоступен' }, data: { created: { guid: 'example' } } };
+  const partial = formatFastkoreCliResult({ success: false, exitCode: 5, data }, 'data create', ['data.unrelated']);
+  assert.deepEqual(JSON.parse(partial.text), { success: false, exitCode: 5, partial: true, data });
+  const large = formatFastkoreCliResult({ success: false, exitCode: 5, data: { ...data, data: { ...data.data, items: ['Ж'.repeat(100_000)] } } }, 'data create');
+  const limited = JSON.parse(large.text);
+  assert.equal(limited.error.code, 'response_too_large');
+  assert.equal(limited.partial, true);
+  assert.deepEqual(limited.data, data);
 });

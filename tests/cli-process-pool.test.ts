@@ -5,6 +5,7 @@ import { mkdtemp, mkdir, access, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
 import { CliProcessPool } from '../deploy/cli-process-pool.mjs';
+import { runCliProcess } from '../deploy/fastkore-cli-output.mjs';
 
 test('CLI processes overlap with isolated stdin/cwd and cancelling one does not cancel another', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'bridge-cli-pool-'));
@@ -30,4 +31,13 @@ test('CLI processes overlap with isolated stdin/cwd and cancelling one does not 
     assert.equal(result.input, 'ticket-b'); assert.equal(result.cwd, path.join(root, 'b')); assert.equal(pool.active, 0);
     const next = pool.acquire()!; next.release(); next.release(); assert.equal(pool.active, 0);
   } finally { pool.abortAll(); await Promise.allSettled([first, second]); await rm(root, { recursive: true, force: true }); }
+});
+
+test('stdout overflow is measured in bytes and keeps the process exit code', async () => {
+  const write = 'process.stdout.write("Ж".repeat(700), () => { process.exitCode = 5; });';
+  const result = await runCliProcess(process.execPath, ['-e', write], { windowsHide: true }, undefined, 1024);
+  assert.deepEqual(result.stdout, { bytes: 1400, text: undefined });
+  assert.equal(result.exitCode, 5);
+  assert.deepEqual((await runCliProcess(process.execPath, ['-e', write], { windowsHide: true }, undefined, 1400)).stdout,
+    { bytes: 1400, text: 'Ж'.repeat(700) });
 });

@@ -18,14 +18,23 @@ export type FastkoreCliReadSupport = { contextPaging: boolean; batchGet: boolean
 export type FastkoreCliTiming = { trustMs?: number; ticketMs?: number; ticketStatus?: number; cliRpcMs?: number; cliProcessMs?: number; exitCode?: number };
 export type FastkoreCliOperation = FastkoreCliRead | { operation: 'auth-info' } |
   { operation: 'execute'; command: string; args: string[]; workDirectoryId: string; context?: FastkoreContext };
-type Result = { success: boolean; exitCode: number; data?: unknown };
+export type FastkoreCliResult = { success: boolean; exitCode: number; data?: unknown; error?: undefined } |
+  { success: boolean | null; exitCode: number | null; data?: undefined; error: { code: 'cli_stdout_too_large'; actualBytes: number; limitBytes: number } };
 const audience = 'fastkore-cli';
 const unavailable = 'Исполнитель Fastkore CLI недоступен.';
 const reauth = 'Доступ к ERP завершён или отозван. Войдите в помощника из Fastkore заново.';
 const ticketPattern = /^fkct1\.[A-Za-z0-9._-]{1,4096}$(?![\s\S])/;
 
 export class FastkoreCli {
-  constructor(private readonly socketPath: string) {}
+  private readonly transportLimitBytes: number;
+  constructor(private readonly socketPath: string) {
+    const stdoutLimit = Number(process.env.BRIDGE_FASTKORE_CLI_STDOUT_MAX_BYTES ?? 8 * 1024 * 1024);
+    if (!Number.isSafeInteger(stdoutLimit) || stdoutLimit < 1 || stdoutLimit > 16 * 1024 * 1024) {
+      throw new Error('BRIDGE_FASTKORE_CLI_STDOUT_MAX_BYTES must be an integer from 1 to 16777216');
+    }
+    // Worker responses wrap parsed JSON. Compact numbers can expand when reserialized.
+    this.transportLimitBytes = Math.max(600_000, 6 * stdoutLimit + 64 * 1024);
+  }
 
   private exchange(path: string, payload?: object, signal?: AbortSignal, timing?: FastkoreCliTiming): Promise<unknown> {
     return new Promise((resolve, reject) => {
@@ -44,13 +53,14 @@ export class FastkoreCli {
           if (res.statusCode === 422) throw new BridgeError('Установленная Fastkore CLI не поддерживает этот режим чтения.', 422);
           if (res.statusCode === 400) throw new BridgeError('Проверьте имя команды, её параметры и пути. CLI использует подключение текущего сотрудника и рабочую папку cli.', 400);
           if (res.statusCode !== 200) throw fail();
-          let body = '';
-          res.setEncoding('utf8');
+          let bytes = 0;
+          const chunks: Buffer[] = [];
           for await (const chunk of res) {
-            body += chunk;
-            if (body.length > 600_000) throw fail();
+            bytes += chunk.length;
+            if (bytes > this.transportLimitBytes) throw fail();
+            chunks.push(chunk);
           }
-          resolve(JSON.parse(body));
+          resolve(JSON.parse(Buffer.concat(chunks, bytes).toString('utf8')));
         } catch (error) {
           res.destroy();
           reject(error instanceof BridgeError ? error : fail());
@@ -82,7 +92,7 @@ export class FastkoreCli {
   }
 
   async run(operation: FastkoreCliOperation, sso: Pick<FastkoreSso, 'delegationBinding' | 'openDelegation'>,
-    current: () => Credential, forget: (id: string) => Promise<void>, signal: AbortSignal, timing?: FastkoreCliTiming): Promise<Result> {
+    current: () => Credential, forget: (id: string) => Promise<void>, signal: AbortSignal, timing?: FastkoreCliTiming): Promise<FastkoreCliResult> {
     signal.throwIfAborted();
     const credential = current();
     const binding = sso.delegationBinding(credential);
@@ -128,9 +138,17 @@ export class FastkoreCli {
     check();
     const rpcStarted = performance.now();
     const result = await this.exchange('/read', { ...operation, ticket: ticket.ticket, authority, caFingerprint }, signal, timing)
-      .finally(() => { if (timing) timing.cliRpcMs = elapsedMs(rpcStarted); }) as Result;
+      .finally(() => { if (timing) timing.cliRpcMs = elapsedMs(rpcStarted); }) as FastkoreCliResult;
     check();
+    if (result?.error?.code === 'cli_stdout_too_large' &&
+      (result.exitCode === null || Number.isInteger(result.exitCode)) && result.success === (result.exitCode === null ? null : result.exitCode === 0) &&
+      Number.isSafeInteger(result.error.actualBytes) && Number.isSafeInteger(result.error.limitBytes) &&
+      result.error.limitBytes > 0 && result.error.actualBytes > result.error.limitBytes) {
+      if (timing && result.exitCode !== null) timing.exitCode = result.exitCode;
+      return { success: result.success, exitCode: result.exitCode, error: result.error };
+    }
     if (!result || typeof result.success !== 'boolean' || !Number.isInteger(result.exitCode) ||
+      result.exitCode === null || result.error ||
       (result.success ? result.exitCode !== 0 || !Object.hasOwn(result, 'data') : result.exitCode === 0)) throw new BridgeError(unavailable, 502);
     if (timing) timing.exitCode = result.exitCode;
     if (operation.operation === 'auth-info' && result.success) {
