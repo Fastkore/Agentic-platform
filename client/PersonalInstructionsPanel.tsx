@@ -115,7 +115,7 @@ export function PersonalInstructionsPanel({ request, project, erp, context, admi
   function updateNote(changes: Partial<DraftNote>) {
     if (draft) change({ ...draft, notes: draft.notes.map(item => item.key === selected ? { ...item, ...changes } : item) });
   }
-  function addNote(title = '', text = '') {
+  function addNote(title = 'Новый приём', text = '') {
     if (!draft || draft.notes.length >= limits.notes) return;
     const key = 'new-' + ++counter.current;
     const pendingScope = erp && scopeContext && scopeContext.view !== 'none' ? 'erp' : undefined;
