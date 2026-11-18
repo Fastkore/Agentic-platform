@@ -37,7 +37,9 @@ export function ProjectSettingsCard({ project, request, configure }: {
     <dl className="project-overview-details">
       {([[Database, 'Библиотеки', libraries], [Bot, 'Специалисты', specialists]] as const).map(([Icon, title, entries]) =>
         <div key={title}><dt><Icon size={16} aria-hidden="true" />{title}</dt>
-          <dd>{entries?.length ? <ul>{entries.map((item, index) => <li key={index}>{item}</li>)}</ul>
+          <dd>{entries?.length ? <ul>{entries.map((item, index) => <li key={index}>
+            <Icon size={14} aria-hidden="true" /><span>{item}</span>
+          </li>)}</ul>
             : <span className="help">{entries === undefined ? 'Загрузка…' : entries === null ? 'Не удалось загрузить' : 'Пока нет'}</span>}</dd>
         </div>
       )}
