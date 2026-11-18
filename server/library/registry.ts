@@ -47,7 +47,7 @@ const upgradedDocuments = ['xlsx', 'docx'];
 const upToDate = `(c.processor >= (CASE WHEN ${upgradedDocuments.map(e => `lower(f.path) LIKE '%.${e}'`).join(' OR ')} THEN 2 ELSE 1 END)
   AND NOT (c.state='unsupported_encoding' AND c.processor < 2))`;
 
-const schemaVersion = 2;
+const schemaVersion = 3;
 const migrations: Record<number, string> = {
   1: `
 CREATE TABLE folders (id TEXT PRIMARY KEY, name TEXT NOT NULL, description TEXT NOT NULL, profile TEXT NOT NULL CHECK(profile IN ('code','documents')),
@@ -98,9 +98,13 @@ CREATE TABLE imports (key TEXT PRIMARY KEY, done_at TEXT NOT NULL, report TEXT N
 CREATE TABLE chunk_refs (content TEXT NOT NULL, chunk_rowid INTEGER NOT NULL, PRIMARY KEY(content,chunk_rowid)) WITHOUT ROWID;
 INSERT INTO chunk_refs (content,chunk_rowid) SELECT content,rowid FROM chunks;
 `,
+  3: `
+ALTER TABLE folders ADD COLUMN active INTEGER NOT NULL DEFAULT 1 CHECK(active IN (0,1));
+UPDATE folders SET active=0 WHERE classification='restricted';
+`,
 };
 
-export type FolderRow = { id: string; name: string; description: string; profile: LibraryProfile; classification: LibraryClassification; output_policy: OutputPolicy; quota_bytes: number;
+export type FolderRow = { id: string; name: string; description: string; profile: LibraryProfile; classification: LibraryClassification; output_policy: OutputPolicy; quota_bytes: number; active: number;
   revision: number; created_by: string; created_at: string; current_state: string | null; updated_at: string | null; deleted_at: string | null; origin: string | null };
 export type StateRow = { id: string; folder_id: string; base_state: string | null; status: ContentState; created_by: string; created_at: number; ready_at: number | null; total_files: number;
   total_bytes: number; indexed_files: number; unsupported_files: number; extraction_errors: number; coverage_accepted_by: string | null; failure: string | null; manifest_hash: string | null; exclusions: string };
@@ -158,7 +162,10 @@ export class LibraryRegistry {
         const again = (this.db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version;
         if (again < version) { this.db.exec(migrations[version]); this.db.exec(`PRAGMA user_version=${version}`); }
         this.db.exec('COMMIT');
-      } catch (error) { this.db.exec('ROLLBACK'); throw error; }
+      } catch (error) {
+        if (this.db.isTransaction) this.db.exec('ROLLBACK');
+        throw error;
+      }
     }
   }
   get schemaVersion() { return (this.db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version; }
@@ -172,7 +179,10 @@ export class LibraryRegistry {
       value = write();
       inserted = events(value).map(event => this.audit.insert(event));
       this.db.exec('COMMIT');
-    } catch (error) { this.db.exec('ROLLBACK'); throw error; }
+    } catch (error) {
+      if (this.db.isTransaction) this.db.exec('ROLLBACK');
+      throw error;
+    }
     inserted.forEach(publishAudit);
     return value;
   }
@@ -274,7 +284,7 @@ export class LibraryRegistry {
     const failed = this.lastFailedState(row);
     const projects = (this.db.prepare('SELECT project_id FROM connections WHERE folder_id=? ORDER BY rowid').all(row.id) as { project_id: string }[])
       .map(c => ({ id: c.project_id, name: this.projectName(c.project_id) }));
-    return { id: row.id, name: row.name, description: row.description, profile: row.profile, classification: row.classification, outputPolicy: row.output_policy,
+    return { id: row.id, name: row.name, description: row.description, profile: row.profile, classification: row.classification, outputPolicy: row.output_policy, active: !!row.active,
       quotaBytes: row.quota_bytes, usedBytes: this.usedBytes(row.id), revision: row.revision, createdAt: row.created_at, updatedAt: row.updated_at ?? undefined,
       current: current && this.coverage(current), operation: operation && this.operationSummary(operation.id),
       failed: failed && { stateId: failed.id, coverage: this.coverage(failed), failure: failed.failure ?? undefined },
@@ -294,7 +304,7 @@ export class LibraryRegistry {
   }
   getFolder(actor: LibraryActor, id: string) { return this.summary(this.visibleFolder(actor, id), actor); }
   createFolder(actor: LibraryActor, input: { name: string; description?: string; profile?: LibraryProfile; classification?: LibraryClassification; outputPolicy?: OutputPolicy;
-    quotaBytes?: number; managers?: { userId: string; actions: LibraryAction[] }[]; origin?: string }) {
+    active?: boolean; quotaBytes?: number; managers?: { userId: string; actions: LibraryAction[] }[]; origin?: string }) {
     if (!actor.admin) throw new BridgeError('Папки библиотеки создаёт администратор.', 403);
     const name = input.name.trim();
     if (!name || name.length > 120) throw new BridgeError('Укажите название папки до 120 символов.');
@@ -304,8 +314,9 @@ export class LibraryRegistry {
     const id = 'lib_' + randomUUID().replaceAll('-', '');
     try {
       return this.tx(() => {
-        this.db.prepare('INSERT INTO folders (id, name, description, profile, classification, output_policy, quota_bytes, revision, created_by, created_at, origin) VALUES (?,?,?,?,?,?,?,1,?,?,?)')
-          .run(id, name, (input.description ?? '').trim().slice(0, 2000), input.profile ?? 'documents', input.classification ?? 'shared', input.outputPolicy ?? 'explanation_only', quota,
+        this.db.prepare('INSERT INTO folders (id, name, description, profile, classification, output_policy, quota_bytes, active, revision, created_by, created_at, origin) VALUES (?,?,?,?,?,?,?,?,1,?,?,?)')
+          .run(id, name, (input.description ?? '').trim().slice(0, 2000), input.profile ?? 'documents', input.classification ?? 'shared', input.outputPolicy ?? 'explanation_only',
+            quota, Number(input.active ?? (input.classification !== 'restricted')),
             actor.id, new Date(this.now()).toISOString(), input.origin ?? null);
         for (const m of input.managers ?? []) this.db.prepare('INSERT INTO folder_managers VALUES (?,?,?)').run(id, m.userId, JSON.stringify([...new Set(m.actions)]));
         return this.summary(this.folderRow(id)!, actor);
@@ -322,9 +333,11 @@ export class LibraryRegistry {
     }
   }
   updateFolder(actor: LibraryActor, id: string, input: { revision: number; name?: string; description?: string; profile?: LibraryProfile; classification?: LibraryClassification;
-    outputPolicy?: OutputPolicy; quotaBytes?: number; managers?: { userId: string; actions: LibraryAction[] }[] }) {
+    outputPolicy?: OutputPolicy; active?: boolean; quotaBytes?: number; managers?: { userId: string; actions: LibraryAction[] }[] }) {
     const row = this.requireFolder(actor, id, 'manage');
-    if ((input.managers || input.classification || input.quotaBytes !== undefined) && !actor.admin) throw new BridgeError('Права, режим доступа и квоту меняет администратор.', 403);
+    if ((input.managers || input.classification || input.active !== undefined || input.quotaBytes !== undefined) && !actor.admin) {
+      throw new BridgeError('Права, состояние папки и квоту меняет администратор.', 403);
+    }
     if (input.managers) this.validateManagers(input.managers);
     try {
       return this.tx(() => {
@@ -334,9 +347,9 @@ export class LibraryRegistry {
         if (!name || name.length > 120) throw new BridgeError('Укажите название папки до 120 символов.');
         const quota = input.quotaBytes ?? row.quota_bytes;
         if (!Number.isSafeInteger(quota) || quota < this.usedBytes(id)) throw new BridgeError('Квота меньше занятого объёма.', 409);
-        this.db.prepare('UPDATE folders SET name=?, description=?, profile=?, classification=?, output_policy=?, quota_bytes=?, revision=revision+1 WHERE id=?')
+        this.db.prepare('UPDATE folders SET name=?, description=?, profile=?, classification=?, output_policy=?, quota_bytes=?, active=?, revision=revision+1 WHERE id=?')
           .run(name, (input.description ?? row.description).trim().slice(0, 2000), input.profile ?? row.profile, input.classification ?? row.classification,
-            input.outputPolicy ?? row.output_policy, quota, id);
+            input.outputPolicy ?? row.output_policy, quota, input.active === undefined ? row.active : Number(input.active), id);
         if (input.managers) {
           this.db.prepare('DELETE FROM folder_managers WHERE folder_id=?').run(id);
           for (const m of input.managers) this.db.prepare('INSERT INTO folder_managers VALUES (?,?,?)').run(id, m.userId, JSON.stringify([...new Set(m.actions)]));

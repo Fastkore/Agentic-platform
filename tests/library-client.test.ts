@@ -34,6 +34,21 @@ test('browser scan keeps relative paths without the absolute root, applies exclu
   assert.deepEqual(scan.secrets.map(s => s.path).sort(), ['Settings.export', 'app.config.json']);
 });
 
+test('an unreadable browser file is identified by relative path before an upload can be prepared', async () => {
+  const locked = file('Dev/Source/Locked.cs', 'class Locked {}');
+  const originalSlice = locked.slice.bind(locked);
+  locked.slice = () => {
+    const blob = originalSlice();
+    blob.arrayBuffer = async () => { throw new DOMException('The requested file could not be read.', 'NotReadableError'); };
+    return blob;
+  };
+  const files = [file('Dev/Source/Good.cs', 'class Good {}'), locked] as unknown as FileList;
+  const scan = collect(files, defaultExclusions, limits);
+  await assert.rejects(hashFiles(scan, 8, () => {}, new AbortController().signal), /Не удалось прочитать файл «Source\/Locked\.cs»/);
+  assert.ok(scan.files[0].sha256);
+  assert.equal(scan.files[1].sha256, undefined);
+});
+
 test('browser preparation resumes the same operation and confirms selected files on later status pages', async () => {
   const files = Array.from({ length: 1001 }, (_, i) => ({ path: `file${i}.txt`, size: 1,
     file: file(`Root/file${i}.txt`, 'a'), sha256: createHash('sha256').update('a').digest('hex'), secretFindings: i === 1000 ? ['test finding'] : undefined }));

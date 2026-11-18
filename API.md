@@ -203,9 +203,9 @@ ERP открывает `/?settings=fastkore` на публичном адрес�
 | Метод и путь | Назначение |
 | --- | --- |
 | `GET /api/library/storage`, `POST /api/library/storage/check` | Состояние бакета, пределы, очередь обработки (администратор). |
-| `GET /api/library` | Папки, доступные пользователю: текущее содержимое, незавершённая операция, неопубликованное обновление, проекты. |
-| `POST /api/library` | Создать `{name, description?, profile: documents\|code, classification?: shared\|restricted, outputPolicy?, quotaBytes?, managers?}` (администратор). |
-| `GET/PATCH /api/library/{folderId}` | Карточка; изменение с `revision` (409 при устаревшей). Права, режим доступа и квоту меняет администратор. |
+| `GET /api/library` | Доступные пользователю папки с полем `active`, текущим содержимым, состоянием загрузки и связанными проектами. |
+| `POST /api/library` | Создать `{name, description?, profile: documents\|code, classification?: shared\|restricted, active?, outputPolicy?, quotaBytes?, managers?}` (администратор). |
+| `GET/PATCH /api/library/{folderId}` | Карточка и изменение с `revision` (409 при устаревшей). Администратор может задать `active: false`, чтобы исключить папку из доступа агентов во всех проектах. |
 | `DELETE /api/library/{folderId}?revision=` | Удалить папку во всех проектах; объекты собираются, когда их не читают начатые ответы. |
 | `GET /api/library/{folderId}/tree?path=&cursor=` | Каталог текущего содержимого (до 200 записей). |
 | `GET /api/library/{folderId}/problems[?failed=1]` | Файлы без поиска с причиной (до 500): текущего содержимого или неопубликованного обновления. |

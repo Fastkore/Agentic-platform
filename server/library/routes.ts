@@ -41,16 +41,16 @@ export function libraryRoutes(app: FastifyInstance, deps: LibraryRouteDeps) {
   });
   app.get(base + '/audit', async request => { admin(request); return registry.auditPage(); });
   app.get(base, async request => registry.listFolders(actor(request)));
-  app.post<{ Body: { name: string; description?: string; profile?: LibraryProfile; classification?: LibraryClassification; outputPolicy?: OutputPolicy; quotaBytes?: number;
+  app.post<{ Body: { name: string; description?: string; profile?: LibraryProfile; classification?: LibraryClassification; outputPolicy?: OutputPolicy; active?: boolean; quotaBytes?: number;
     managers?: { userId: string; actions: LibraryAction[] }[] } }>(base, { schema: { body: obj({
       name: { type: 'string', minLength: 1, maxLength: 120 }, description: { type: 'string', maxLength: 2000 }, profile: { enum: ['code', 'documents'] },
-      classification: { enum: ['shared', 'restricted'] }, outputPolicy, quotaBytes: { type: 'integer', minimum: 1 }, managers }, ['name']) } },
+      classification: { enum: ['shared', 'restricted'] }, outputPolicy, active: { type: 'boolean' }, quotaBytes: { type: 'integer', minimum: 1 }, managers }, ['name']) } },
   async (request, reply) => reply.code(201).send(registry.createFolder(actor(request), request.body)));
   app.get<{ Params: { folderId: string } }>(base + '/:folderId', { schema: { params: folderParams } }, async request => registry.getFolder(actor(request), request.params.folderId));
   app.patch<{ Params: { folderId: string }; Body: { revision: number; name?: string; description?: string; profile?: LibraryProfile; classification?: LibraryClassification;
-    outputPolicy?: OutputPolicy; quotaBytes?: number; managers?: { userId: string; actions: LibraryAction[] }[] } }>(base + '/:folderId', { schema: { params: folderParams, body: obj({
+    outputPolicy?: OutputPolicy; active?: boolean; quotaBytes?: number; managers?: { userId: string; actions: LibraryAction[] }[] } }>(base + '/:folderId', { schema: { params: folderParams, body: obj({
       revision, name: { type: 'string', minLength: 1, maxLength: 120 }, description: { type: 'string', maxLength: 2000 }, profile: { enum: ['code', 'documents'] },
-      classification: { enum: ['shared', 'restricted'] }, outputPolicy, quotaBytes: { type: 'integer', minimum: 1 }, managers }, ['revision']) } },
+      classification: { enum: ['shared', 'restricted'] }, outputPolicy, active: { type: 'boolean' }, quotaBytes: { type: 'integer', minimum: 1 }, managers }, ['revision']) } },
   async request => registry.updateFolder(actor(request), request.params.folderId, request.body));
   app.delete<{ Params: { folderId: string }; Querystring: { revision: string } }>(base + '/:folderId',
     { schema: { params: folderParams, querystring: obj({ revision: { type: 'string', pattern: '^[0-9]{1,10}$' } }, ['revision']) } },

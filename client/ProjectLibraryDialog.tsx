@@ -2,31 +2,27 @@ import { useCallback, useEffect, useState } from 'react';
 import { ChevronDown, ChevronRight, Info, Plus, RefreshCw } from 'lucide-react';
 import type { ProjectSummary } from '../shared/types';
 import type { LibraryCell, LibraryConnection, LibraryFolderSummary, OutputPolicy, ProjectLibraryView } from '../shared/library';
-import { WorkspaceDialog } from './WorkspaceDialog';
 import { Select } from './Select';
 import { PermissionSwitch } from './PermissionSwitch';
 import type { Request } from './library-upload';
 import { folderLine, LibraryFolderCard } from './LibraryFolderCard';
-import { FolderForm, outputModes, profileLabels } from './LibraryPanel';
+import { emptyFolderDraft, FolderForm, outputModes, profileLabels } from './LibraryPanel';
 import './specialists.css';
 import './library.css';
 
-type Tab = 'folders' | 'specialists';
-const tabs: [Tab, string][] = [['folders', 'Папки'], ['specialists', 'Специалисты']];
 const options = (record: Record<string, string>) => Object.entries(record).map(([value, label]) => ({ value, label }));
 
 /** Project → Library: the project's folders, their state and access of specialists; the same server rule decides for the agent. */
-export function ProjectLibraryDialog({ project, request, close, isAdmin, initialProfileId }: {
-  project: ProjectSummary; request: Request; close: () => void; isAdmin: boolean; initialProfileId?: string;
+export function ProjectLibraryPanel({ project, request, section, isAdmin, initialProfileId, pendingChanged }: {
+  project: ProjectSummary; request: Request; section: 'folders' | 'access'; isAdmin: boolean; initialProfileId?: string; pendingChanged: (pending: boolean) => void;
 }) {
   const base = '/api/projects/' + encodeURIComponent(project.id) + '/library';
   const [view, setView] = useState<ProjectLibraryView>();
   const [folders, setFolders] = useState<LibraryFolderSummary[]>([]);
-  const [tab, setTab] = useState<Tab>(initialProfileId ? 'specialists' : 'folders');
   const [expanded, setExpanded] = useState<string>();
   const [search, setSearch] = useState('');
   const [creating, setCreating] = useState(false);
-  const [draft, setDraft] = useState({ name: '', description: '', profile: 'documents' as const, classification: 'shared' as const, outputPolicy: 'explanation_only' as OutputPolicy });
+  const [draft, setDraft] = useState(emptyFolderDraft);
   const [profileFilter, setProfileFilter] = useState(initialProfileId ?? '');
   const [detail, setDetail] = useState<LibraryCell>();
   const [error, setError] = useState('');
@@ -41,8 +37,8 @@ export function ProjectLibraryDialog({ project, request, close, isAdmin, initial
   const reload = useCallback(() => { void load(); }, [load]);
   async function act(work: () => Promise<unknown>) {
     if (pending) return;
-    setPending(true); setError('');
-    try { await work(); await load(); } catch (e) { await load(); setError((e as Error).message); } finally { setPending(false); }
+    setPending(true); pendingChanged(true); setError('');
+    try { await work(); await load(); } catch (e) { await load(); setError((e as Error).message); } finally { setPending(false); pendingChanged(false); }
   }
   const update = (c: LibraryConnection, patch: Record<string, unknown>) =>
     act(() => request(`${base}/${c.folderId}`, { method: 'PATCH', body: JSON.stringify({ revision: c.revision, ...patch }) }));
@@ -51,28 +47,25 @@ export function ProjectLibraryDialog({ project, request, close, isAdmin, initial
   const profiles = view?.profiles.filter(p => !profileFilter || p.id === profileFilter) ?? [];
   const matches = (name: string) => name.toLocaleLowerCase('ru').includes(search.trim().toLocaleLowerCase('ru'));
 
-  return <WorkspaceDialog title="Библиотека проекта" className="project-agents-dialog project-library-dialog" close={() => { if (!pending) close(); }}>
+  return <div className="project-library-settings">
     <div className="project-agents-intro">
-      <div><strong>{project.name}</strong><p>Папки с материалами, по которым агент отвечает в этом проекте.</p></div>
+      <strong>{section === 'folders' ? 'Папки библиотеки' : 'Доступ специалистов к папкам'}</strong>
       <span className="project-specialist-actions">
         <button type="button" className="workspace-icon" title="Обновить" aria-label="Обновить" disabled={pending} onClick={() => void load()}><RefreshCw size={16} /></button>
-        {isAdmin && <button type="button" className="secondary" aria-expanded={creating} onClick={() => { setTab('folders'); setCreating(!creating); }}><Plus size={16} aria-hidden="true" />Новая папка</button>}
+        {section === 'folders' && isAdmin && <button type="button" className="secondary" aria-expanded={creating} onClick={() => setCreating(!creating)}><Plus size={16} aria-hidden="true" />Новая папка</button>}
       </span>
-    </div>
-    <div className="specialist-tabs library-tabs" role="tablist" aria-label="Разделы библиотеки">
-      {tabs.map(([id, label]) => <button key={id} type="button" role="tab" aria-selected={tab === id} onClick={() => setTab(id)}>{label}</button>)}
     </div>
     {error && <p className="inline-error" role="alert">{error}</p>}
     {!view && !error && <p role="status">Загрузка…</p>}
-    {view && <div className="project-agent-scroll library-panel">
+    {view && <div className="library-panel">
 
-      {tab === 'folders' && <>
+      {section === 'folders' && <>
         {creating && <form className="agent-card library-form" onSubmit={e => { e.preventDefault(); void act(async () => {
           const created = await request<LibraryFolderSummary>('/api/library', { method: 'POST', body: JSON.stringify(draft) });
           await request(base, { method: 'POST', body: JSON.stringify({ folderId: created.id }) });
-          setCreating(false); setExpanded(created.id); setDraft({ ...draft, name: '', description: '' });
+          setCreating(false); setExpanded(created.id); setDraft(emptyFolderDraft);
         }); }}>
-          <FolderForm draft={draft} setDraft={next => setDraft(next as typeof draft)} isAdmin={isAdmin} />
+          <FolderForm draft={draft} setDraft={setDraft} isAdmin={isAdmin} />
           <p className="help">Папка появится в общей библиотеке и подключится к проекту. Агент начнёт её использовать после загрузки материалов и назначения специалистам.</p>
           <div className="settings-actions">
             <button type="submit" className="primary" disabled={pending || !draft.name.trim()}>Создать и подключить</button>
@@ -96,10 +89,10 @@ export function ProjectLibraryDialog({ project, request, close, isAdmin, initial
             </div>
             {open && <div className="project-library-details">
             <div className="library-card-body">
-              <p className="help">{profileLabels[c.profile]} · {c.classification === 'restricted' ? 'Закрытая · ' : ''}{outputModes[c.outputPolicy]}</p>
+              <p className="help">{c.folderActive ? 'Активна' : 'Неактивна'} · {profileLabels[c.profile]} · {outputModes[c.outputPolicy]}</p>
               {c.description && <p className="help">{c.description}</p>}
               <p className="help">{folder ? folderLine(folder) : c.current ? `${c.current.files.toLocaleString('ru')} файлов` : 'Материалов пока нет'}</p>
-              {c.classification === 'restricted' && <p className="library-warning">Закрытая папка: анализ закрытых материалов в этой поставке выключен, агенту она недоступна.</p>}
+              {c.folderActive && c.classification === 'restricted' && <p className="library-warning">Для этой папки также действуют правила закрытого анализа.</p>}
               <p className="help">Специалисты: {assigned.length ? assigned.join(', ') : 'не назначены — агент папку не использует'}</p>
             </div>
             {open && folder && <LibraryFolderCard request={request} folder={folder} isAdmin={isAdmin} reload={reload} />}
@@ -118,7 +111,7 @@ export function ProjectLibraryDialog({ project, request, close, isAdmin, initial
         </li>)}</ul> : <p className="help">{search.trim() ? 'Папки не найдены.' : 'Доступных папок пока нет.'}</p>}
       </>}
 
-      {tab === 'specialists' && <>
+      {section === 'access' && <>
         <div className="library-field-row library-filter">
           <label htmlFor="library-profile-filter">Специалист</label>
           <Select id="library-profile-filter" className="settings-select" value={profileFilter} fitContent
@@ -139,7 +132,7 @@ export function ProjectLibraryDialog({ project, request, close, isAdmin, initial
               </td>;
             })}
           </tr>)}</tbody>
-        </table></div> : <p className="help">Сначала подключите папки на вкладке «Папки».</p>}
+        </table></div> : <p className="help">Сначала подключите папки в разделе «Библиотека».</p>}
         {detail && (() => {
           const c = view.connections.find(x => x.folderId === detail.folderId);
           const p = view.profiles.find(x => x.id === detail.profileId);
@@ -153,5 +146,5 @@ export function ProjectLibraryDialog({ project, request, close, isAdmin, initial
         })()}
       </>}
     </div>}
-  </WorkspaceDialog>;
+  </div>;
 }

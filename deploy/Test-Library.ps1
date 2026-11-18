@@ -54,7 +54,7 @@ if (out.library) { const d = new DatabaseSync('/data/library.sqlite', { readOnly
 console.log(JSON.stringify(out));
 '@
 $database = Invoke-Probe app commonjs $db
-Record 'database' ($database.code -eq 0 -and $database.out -match '"library":true' -and $database.out -match '"schema":2' -and $database.out -match '"oldModule":false') $database.out
+Record 'database' ($database.code -eq 0 -and $database.out -match '"library":true' -and $database.out -match '"schema":3' -and $database.out -match '"oldModule":false') $database.out
 
 # 3. Executor boundary: library tools allowed by the worker, no storage keys, no route to MinIO, no library database, read-only root.
 $iso = @'

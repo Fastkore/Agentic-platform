@@ -480,7 +480,6 @@
   max-width: calc(var(--workspace-viewport-width) - 12px);
   max-height: min(var(--dialog-max-height, 760px), calc(var(--workspace-viewport-height) - 12px));
 }
-.workspace-shell .workspace-settings { --dialog-max-height: 1000px; }
 .workspace-dialog > header {
   position: sticky; z-index: 1; top: 0; background: var(--surface); display: flex; align-items: center;
   justify-content: space-between; padding: 11px 0; gap: 12px;
@@ -511,6 +510,20 @@
 .project-agents-dialog > header, .project-agents-intro, .project-agents-dialog > .inline-error { flex: none; }
 .project-agents-dialog > form { display: flex; flex-direction: column; min-height: 0; }
 .project-agent-scroll { min-height: 0; overflow: auto; padding: 1px 3px 10px 1px; }
+.project-settings-dialog {
+  width: min(960px, calc(var(--workspace-viewport-width) - 24px));
+  height: min(700px, calc(var(--workspace-viewport-height) - 24px));
+}
+.project-settings-tabs { flex: none; margin-bottom: 14px; }
+.project-specialist-picker { width: min(520px, calc(var(--workspace-viewport-width) - 24px)); }
+.project-specialist-picker .project-specialist-options { min-height: 0; overflow: auto; }
+.project-specialist-options > li { padding: 0; }
+.project-specialist-options > li > label {
+  display: flex; align-items: flex-start; gap: 10px; width: 100%; padding: 10px 12px; margin: 0; cursor: pointer;
+}
+.project-specialist-options > li > label > span { min-width: 0; margin: 0; overflow-wrap: anywhere; }
+.project-specialist-options input { flex: none; margin-top: 2px; }
+.project-specialist-picker .settings-dialog-actions { flex: none; }
 .project-agents-intro { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px 16px; margin: 0 0 16px; }
 .project-agents-intro p { margin: 0; color: var(--text-muted); font-size: 13px; line-height: 1.5; }
 .project-agents-intro strong { font-size: 16px; overflow-wrap: anywhere; }
@@ -526,6 +539,16 @@
 .project-agents-dialog .agent-card-heading > div { flex-basis: 0; }
 .project-specialist-actions { display: flex; align-items: center; align-self: center; flex: none; gap: 4px; }
 .project-specialist-actions .secondary { white-space: nowrap; }
+.project-overview-header { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 16px; }
+.project-overview-details { display: grid; gap: 8px; margin: 12px 0 0; }
+.project-overview-details > div { display: grid; grid-template-columns: 120px minmax(0, 1fr); gap: 8px; }
+.project-overview-details dt { display: flex; align-items: flex-start; gap: 8px; color: var(--text-muted); }
+.project-overview-details dt svg { flex: none; }
+.project-overview-details dd { margin: 0; overflow-wrap: anywhere; }
+.project-overview-details ul { list-style: none; padding: 0; margin: 0; }
+@container workspace-settings (width <= 430px) {
+  .project-overview-details > div { grid-template-columns: minmax(0, 1fr); gap: 3px; }
+}
 .settings-project-title { display: flex; align-items: center; gap: 8px; }
 .settings-project-title > svg { flex: none; color: var(--text-muted); }
 .settings-project-title > strong { overflow-wrap: anywhere; }
@@ -533,7 +556,6 @@
 .settings-project-rename { display: flex; align-items: center; gap: 4px; min-width: 0; width: min(100%, 360px); }
 .workspace-dialog .settings-project-rename > input:not([type="checkbox"]) { min-width: 0; margin: 0; padding: 4px 8px; font: inherit; }
 .settings-project-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 10px; }
-.settings-project-actions.project-specialist-add { margin: 0 0 12px; }
 .settings-project-actions .workspace-row { width: auto; padding-inline: 10px; gap: 6px; }
 .settings-project-actions select { max-width: 100%; }
 .agent-tool-list, .project-agent-controls, .agent-file-selection { min-inline-size: 0; margin: 14px 0; padding: 0; border: 0; }
@@ -583,7 +605,18 @@
 .search-results { max-height: 52dvh; overflow: auto; }
 .search-project { color: var(--text); }
 .search-results .chat-row { padding-left: 35px; }
-.workspace-settings { width: min(1400px, calc(100vw - 64px)); height: min(860px, calc(100dvh - 64px)); max-height: none; padding: 0; overflow: hidden; }
+.workspace-shell .workspace-settings {
+  --settings-width: 1400px;
+  --settings-height: 860px;
+  --settings-gutters: clamp(16px, 4vw, 64px);
+  width: calc(min(var(--settings-width), 100vw - var(--settings-gutters)) / var(--interface-scale, 1));
+  height: calc(min(var(--settings-height), 100dvh - var(--settings-gutters)) / var(--interface-scale, 1));
+  max-width: none; max-height: none; padding: 0; overflow: hidden;
+  container: workspace-settings / size;
+}
+.workspace-shell[data-fastkore] .workspace-settings {
+  width: var(--workspace-viewport-width); height: var(--workspace-viewport-height); border-radius: 0;
+}
 .chat-access-settings .settings-records > li { gap: 8px 16px; flex-wrap: wrap; }
 .chat-permission-state { display: inline-flex; align-items: center; gap: 6px; color: var(--text-muted); font-size: 12px; white-space: nowrap; }
 .chat-permission-state[data-enabled="true"] { color: var(--success); }
@@ -606,7 +639,8 @@
 .settings-instructions-actions { display: flex; justify-content: flex-end; }
 .workspace-dialog-heading { display: flex; align-items: center; gap: 12px; min-width: 0; }
 .workspace-dialog.personal-instructions-dialog {
-  width: min(1800px, calc(100vw - 20px)); height: min(1000px, calc(100dvh - 16px)); border-radius: 18px;
+  --settings-width: 1800px; --settings-height: 1000px;
+  border-radius: 18px;
 }
 .personal-instructions-dialog > header { min-height: 62px; padding-inline: 22px; border-bottom: 1px solid var(--border); }
 .personal-settings { display: grid; grid-template-columns: clamp(265px, 26.4%, 460px) minmax(0, 1fr); min-height: 0; }
@@ -682,7 +716,7 @@
 .personal-editor-footer { display: flex; justify-content: space-between; color: var(--text-muted); }
 .workspace-shell[data-theme="light"] .personal-add-actions > .primary:not(:disabled) { background: #1457bb; color: #fff; }
 .workspace-shell[data-theme="light"] .personal-add-actions > .primary:hover:not(:disabled) { background: #114894; }
-@media (min-width: 1450px) and (min-height: 750px) {
+@container workspace-settings (width >= 1400px) and (height >= 700px) {
   .personal-instructions-dialog > header { min-height: 74px; padding-inline: 27px; }
   .personal-instructions-dialog > header h2 { font-size: 25px; }
   .personal-instructions-dialog > header .workspace-icon { width: 44px; height: 44px; }
@@ -703,22 +737,8 @@
   .personal-editor-actions { gap: 9px; }
   .personal-editor-actions .workspace-icon { width: 49px; height: 49px; }
 }
-@media (max-width: 720px) {
-  .personal-settings { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(145px, 42%) minmax(0, 1fr); }
-  .personal-sidebar { gap: 6px; padding: 8px 12px; border-inline-end: 0; border-bottom: 1px solid var(--border); }
-  .personal-sidebar-top { gap: 6px; }
-  .personal-sidebar-title .personal-file-icon { display: none; }
-  .personal-sidebar label.personal-toggle { padding-top: 6px; }
-  .personal-toggle small { display: none; }
-  .personal-editor { gap: 8px; padding: 10px 12px; }
-  .personal-editor-header { flex-wrap: wrap; gap: 7px; margin-bottom: 0; }
-  .personal-editor-header .personal-file-icon { display: none; }
-  .personal-editor-actions .workspace-icon { width: 33px; height: 33px; }
-  .personal-fields { grid-template-columns: minmax(0, 1fr); }
-}
 .workspace-dialog.personal-instructions-compact {
-  width: min(1120px, calc(var(--workspace-viewport-width) - 32px));
-  height: min(720px, calc(var(--workspace-viewport-height) - 32px));
+  --settings-width: 1120px; --settings-height: 720px;
 }
 .workspace-settings.personal-instructions-compact > header { min-height: 48px; padding: 6px 15px; }
 .workspace-settings.personal-instructions-compact > header h2 { font-size: 18px; gap: 8px; }
@@ -751,12 +771,22 @@
 .personal-instructions-compact .personal-editor-actions .workspace-icon svg { width: 17px; height: 17px; }
 .personal-instructions-compact .personal-fields select { font-size: 12px; }
 .personal-instructions-compact :is(.personal-text, .personal-preview) { font-size: 13px; }
-@media (max-width: 720px) {
-  .workspace-dialog.personal-instructions-compact {
-    width: calc(var(--workspace-viewport-width) - 16px);
-    height: min(720px, calc(var(--workspace-viewport-height) - 16px));
+@container workspace-settings (width <= 680px) {
+  .personal-instructions-dialog .personal-settings {
+    grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(145px, 42%) minmax(0, 1fr);
   }
-  .personal-instructions-compact .personal-settings { grid-template-columns: minmax(0, 1fr); }
+  .personal-instructions-dialog .personal-sidebar {
+    gap: 6px; padding: 8px 12px; border-inline-end: 0; border-bottom: 1px solid var(--border);
+  }
+  .personal-instructions-dialog .personal-sidebar-top { gap: 6px; }
+  .personal-sidebar-title .personal-file-icon { display: none; }
+  .personal-sidebar label.personal-toggle { padding-top: 6px; }
+  .personal-instructions-dialog .personal-toggle small { display: none; }
+  .personal-instructions-dialog .personal-editor { gap: 8px; padding: 10px 12px; }
+  .personal-instructions-dialog .personal-editor-header { flex-wrap: wrap; gap: 7px; margin-bottom: 0; }
+  .personal-editor-header .personal-file-icon { display: none; }
+  .personal-editor-actions .workspace-icon { width: 33px; height: 33px; }
+  .personal-fields { grid-template-columns: minmax(0, 1fr); }
 }
 .settings-list-toolbar { display: flex; justify-content: flex-end; margin-bottom: 12px; }
 .settings-records { margin: 0; padding: 0; list-style: none; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); }
@@ -988,9 +1018,7 @@
   .erp-role-heading > button { grid-column: 2; justify-self: start; }
   .erp-role-heading > .erp-role-switches { grid-column: 2; gap: 12px; }
 }
-@media (max-width: 1150px) {
-  .settings-layout { grid-template-columns: 210px minmax(0,1fr); }
-  .settings-content { padding: 23px 22px; }
+@container workspace-settings (width <= 1086px) {
   .audit-summary, .audit-filters { grid-template-columns: repeat(2,minmax(0,1fr)); }
   .team-table th, .team-table td { padding: 14px 12px; }
 }
@@ -1020,14 +1048,12 @@
   .conversation-footer { padding-bottom: 15px; }
   .composer-project { min-height: 41px; }
   .bridge-editor textarea { min-height: 69px; }
+}
 
-  .workspace-settings {
-    width: min(1400px, calc(100vw - 24px));
-    height: min(860px, calc(100dvh - 24px));
-  }
+@container workspace-settings (width <= 1350px) or (height <= 796px) {
   .workspace-settings > header { padding: 10px 18px; min-height: 52px; }
   :where(.workspace-shell:not([data-fastkore])) .workspace-settings > header h2 { font-size: 18px; }
-  .settings-layout { grid-template-columns: clamp(168px, 15vw, 200px) minmax(0, 1fr); }
+  .settings-layout { grid-template-columns: clamp(168px, 15cqw, 200px) minmax(0, 1fr); }
   .settings-nav { padding: 12px 9px; gap: 2px; }
   .settings-nav .workspace-row {
     min-height: 35px; padding: 4px 9px; gap: 9px;
@@ -1075,7 +1101,8 @@
   .composer-actions { gap: 3px; }
   .editor-model .workspace-select { font-size: 12px; max-width: 38vw; }
   .limits-popover { right: -67px; }
-  .workspace-settings { width: calc(100vw - 16px); height: calc(100dvh - 16px); }
+}
+@container workspace-settings (width <= 680px) {
   .workspace-settings > header { padding-inline: 14px; }
   .settings-layout { grid-template: auto minmax(0, 1fr) / minmax(0, 1fr); }
   .settings-nav { display: none; }

@@ -20,6 +20,7 @@ const strictest = (...policies: (OutputPolicy | null | undefined)[]): OutputPoli
   policies.every(p => !p || p === 'excerpts_allowed') ? 'excerpts_allowed' : 'explanation_only';
 const parsePaths = (value: string | null) => { try { return value ? JSON.parse(value) as string[] : undefined; } catch { return []; } };
 export const accessReasons: Record<string, string> = {
+  folder_inactive: 'Папка неактивна',
   project_access: 'Нет доступа к проекту', connection_disabled: 'Папка отключена в проекте', not_assigned: 'Папка не назначена специалисту',
   profile_not_connected: 'Специалист не подключён к проекту', profile_forbidden: 'Специалист недоступен сотруднику',
   closed_analysis_off: 'Закрытая папка: анализ закрытых материалов в этой поставке выключен', no_content: 'В папке ещё нет готовых материалов',
@@ -113,7 +114,7 @@ export class LibraryPolicy {
   private publicConnection(actor: LibraryActor, row: ConnectionRow, folder: FolderRow): LibraryConnection {
     const current = folder.current_state ? this.registry.stateRow(folder.current_state) : undefined;
     const preparing = !!this.db.prepare("SELECT 1 FROM operations WHERE folder_id=? AND status IN ('open','preparing')").get(folder.id);
-    return { projectId: row.project_id, folderId: folder.id, folderName: folder.name, description: folder.description, profile: folder.profile, classification: folder.classification,
+    return { projectId: row.project_id, folderId: folder.id, folderName: folder.name, description: folder.description, profile: folder.profile, classification: folder.classification, folderActive: !!folder.active,
       outputPolicy: row.output_policy, enabled: !!row.enabled, revision: row.revision, current: current && this.registry.coverage(current), updatedAt: folder.updated_at ?? undefined,
       preparing, canManage: this.manageable(actor, folder.id) };
   }
@@ -128,6 +129,7 @@ export class LibraryPolicy {
     const folder = this.registry.folderRow(folderId);
     if (!connection || !folder) return { allowed: false, reasons: ['connection_disabled'] as string[] };
     if (userId !== undefined && !this.directory.canAccessProject(userId, projectId)) reasons.push('project_access');
+    if (!folder.active) reasons.push('folder_inactive');
     if (!connection.enabled) reasons.push('connection_disabled');
     const grant = this.db.prepare('SELECT * FROM grants WHERE project_id=? AND profile_id=? AND folder_id=?').get(projectId, profileId, folderId) as GrantRow | undefined;
     if (!grant) reasons.push('not_assigned');

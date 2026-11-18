@@ -1,7 +1,5 @@
 /* Project library: layout on top of the shared dialog, card, record and control styles. Colours come from theme tokens only. */
-.project-library-dialog { width: min(980px, calc(100vw - 24px)); }
-.project-library-dialog .project-agents-intro p.library-selection { display: flex; align-items: center; gap: 6px; margin-top: 4px; }
-.project-library-dialog .library-tabs { flex: none; margin-bottom: 12px; }
+.project-library-settings .project-agents-intro p.library-selection { display: flex; align-items: center; gap: 6px; margin-top: 4px; }
 .library-panel { display: grid; align-content: start; gap: 12px; }
 .library-panel > .agent-card-list { gap: 12px; }
 .library-disabled { opacity: .62; }
@@ -13,11 +11,15 @@
 .library-form > strong { font-size: 14px; font-weight: 650; }
 .library-form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
 .library-form-grid > div, .library-field-row { display: grid; gap: 6px; min-width: 0; }
-.project-library-dialog :is(.library-form-grid, .library-field-row, .library-upload) label:not(.agent-tool-choice) { margin: 0; }
-.project-library-dialog :is(.library-form-grid, .library-field-row) input:not([type="checkbox"]) { margin: 0; min-height: 40px; padding: 8px 10px; font-size: 14px; }
+.library-active-field > span { color: var(--text-secondary); font-size: 12px; font-weight: 500; }
+.library-form .library-active-field > label {
+  display: flex; align-items: center; gap: 8px; min-height: max(40px, 2.75rem); font-size: 14px; margin: 0;
+}
+.project-library-settings :is(.library-form-grid, .library-field-row, .library-upload) label:not(.agent-tool-choice) { margin: 0; }
+.project-library-settings :is(.library-form-grid, .library-field-row) input:not([type="checkbox"]) { margin: 0; min-height: 40px; padding: 8px 10px; font-size: 14px; }
 .library-field-row { max-width: 420px; }
 .library-filter { grid-template-columns: auto minmax(200px, 320px); align-items: center; gap: 10px; }
-.project-library-dialog .help, .library-settings .help { margin: 0; }
+.project-library-settings .help, .library-settings .help { margin: 0; }
 .library-warning { color: var(--warning); }
 .library-upload textarea { width: 100%; min-height: 120px; margin-top: 8px; resize: vertical; }
 .library-upload .agent-advanced { margin: 0; }
@@ -60,8 +62,15 @@
 
 /* Settings → Library. */
 .library-settings { display: grid; gap: 14px; }
+.library-heading, .library-storage-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 12px; }
+.library-settings > h2, .library-heading h2 { margin: 0; font-size: 22px; font-weight: 650; line-height: 1.2; overflow-wrap: anywhere; }
+.library-heading .specialist-back { margin: 0; }
+.library-settings :is(.library-card-body, .library-card-actions) { margin-inline-start: 0; }
 .library-settings .settings-records strong { display: inline-flex; align-items: center; gap: 6px; }
-.library-settings .setting-section .settings-model-row { margin-bottom: 10px; }
+.library-folders .settings-model-row { margin-bottom: 10px; }
+.library-storage { display: grid; gap: 6px; padding-top: 8px; border-top: 1px solid var(--border); }
+.library-storage-row strong { display: inline-flex; align-items: center; gap: 6px; }
+.library-storage-row .secondary { min-height: 32px; padding: 5px 10px; font-size: 12px; }
 .library-snapshot-row { flex-wrap: wrap; }
 .library-snapshot-row > div { flex: 1 1 360px; }
 
@@ -71,13 +80,13 @@
 }
 
 /* Toggle row and inline selects. */
-.project-library-dialog .personal-toggle { align-items: center; }
-.project-library-dialog .personal-toggle > span { display: grid; gap: 2px; margin: 0; color: var(--text); font-size: 14px; font-weight: 500; }
-.project-library-dialog .personal-toggle small { margin: 0; color: var(--text-muted); font-size: 12px; font-weight: 400; }
+.project-library-settings .personal-toggle { align-items: center; }
+.project-library-settings .personal-toggle > span { display: grid; gap: 2px; margin: 0; color: var(--text); font-size: 14px; font-weight: 500; }
+.project-library-settings .personal-toggle small { margin: 0; color: var(--text-muted); font-size: 12px; font-weight: 400; }
 .library-card-actions { align-items: center; }
 .library-card-actions .workspace-select.settings-select { width: auto; min-width: 210px; flex: 0 0 auto; }
 .settings-project-actions .workspace-select.settings-select { width: auto; min-width: 280px; }
-.project-library-dialog label.personal-toggle { display: flex; align-items: center; gap: 12px; margin: 0; }
+.project-library-settings label.personal-toggle { display: flex; align-items: center; gap: 12px; margin: 0; }
 .library-card-actions .workspace-select.settings-select { min-height: 38px; margin: 0; padding-block: 6px; }
 .library-settings .settings-records small + small { margin-top: 2px; }
 .library-problems { margin-top: 8px; }
@@ -101,3 +110,14 @@
 .project-library-row > label:not(.toggle-row) { display: flex; align-items: center; gap: 8px; margin: 0; overflow-wrap: anywhere; }
 .project-library-row input[type="checkbox"] { flex: none; }
 .project-library-details { padding: 4px 0 8px 24px; }
+
+.library-form .library-form-grid > div { align-content: start; }
+
+.library-form .library-form-grid > div > :is(label, input, .settings-select) {
+  margin-block: 0;
+}
+
+.library-form .library-form-grid > div > :is(input, .settings-select) {
+  box-sizing: border-box;
+  block-size: max(40px, 2.75rem);
+}

@@ -6,6 +6,7 @@ import { LibraryUploadPanel } from './LibraryUploadPanel';
 
 interface Problems { counts: Record<string, number>; files: { path: string; state: string; note: string | null }[] }
 interface Tree { path: string; entries: { name: string; type: 'dir' | 'file'; fileId?: string; size?: number; extraction?: string }[]; next?: string }
+type FileView = { kind: 'tree'; tree: Tree } | { kind: 'problems'; failed: boolean; data: Problems };
 export const problemStates: Record<string, string> = {
   timeout: 'Таймаут', failed: 'Ошибка извлечения', unsupported_encoding: 'Кодировка не поддерживается', unsupported_format: 'Формат не поддерживается',
   ocr_required: 'Требуется распознавание', pending: 'Ожидает обработки',
@@ -32,8 +33,9 @@ export function folderLine(folder: LibraryFolderSummary) {
 export function LibraryFolderCard({ request, folder, isAdmin, reload }: { request: Request; folder: LibraryFolderSummary; isAdmin: boolean; reload: () => void }) {
   const base = '/api/library/' + encodeURIComponent(folder.id);
   const [upload, setUpload] = useState<OperationMode>();
-  const [problems, setProblems] = useState<{ failed: boolean; data: Problems }>();
-  const [tree, setTree] = useState<Tree>();
+  const [view, setView] = useState<FileView>();
+  const tree = view?.kind === 'tree' ? view.tree : undefined;
+  const problems = view?.kind === 'problems' ? view : undefined;
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [pending, setPending] = useState(false);
@@ -50,8 +52,12 @@ export function LibraryFolderCard({ request, folder, isAdmin, reload }: { reques
     try { await work(); reload(); if (done) setNotice(done); } catch (e) { setError((e as Error).message); reload(); } finally { setPending(false); }
   }
   const post = (url: string, body: unknown = {}) => request(url, { method: 'POST', body: JSON.stringify(body) });
-  const browse = useCallback(async (path: string) => { setTree(await request<Tree>(`${base}/tree?path=${encodeURIComponent(path)}`)); }, [base, request]);
-  const showProblems = (failed: boolean) => act(async () => setProblems({ failed, data: await request<Problems>(`${base}/problems${failed ? '?failed=1' : ''}`) }));
+  const browse = useCallback(async (path: string) => {
+    setView({ kind: 'tree', tree: await request<Tree>(`${base}/tree?path=${encodeURIComponent(path)}`) });
+  }, [base, request]);
+  const showProblems = (failed: boolean) => act(async () => {
+    setView({ kind: 'problems', failed, data: await request<Problems>(`${base}/problems${failed ? '?failed=1' : ''}`) });
+  });
   const projects = folder.projects.map(p => p.name ?? p.id);
   const removeFile = (path: string) => {
     const where = projects.length ? `\nФайл исчезнет во всех подключённых проектах: ${projects.join(', ')}.` : '';
@@ -68,17 +74,17 @@ export function LibraryFolderCard({ request, folder, isAdmin, reload }: { reques
       {folder.operation?.status === 'preparing' && <p className="help" role="status">Идёт подготовка к поиску. До её окончания агент использует прежнее содержимое папки.</p>}
       <div className="settings-actions library-card-actions">
         {folder.canUpload && <>
-          <button type="button" className="secondary" disabled={pending || preparing} onClick={() => setUpload('replace')}>
+          <button type="button" className={folder.current ? 'secondary' : 'primary'} disabled={pending || preparing} onClick={() => setUpload('replace')}>
             {folder.operation?.status === 'open' ? <><Upload size={16} aria-hidden="true" />Продолжить загрузку</>
               : <><FolderOpen size={16} aria-hidden="true" />{folder.current ? 'Обновить из папки' : 'Загрузить папку'}</>}</button>
-          {folder.operation?.status !== 'open' && <button type="button" className="secondary" disabled={pending || preparing} onClick={() => setUpload('add')}><FilePlus2 size={16} aria-hidden="true" />Добавить файлы</button>}
+          {folder.operation?.status !== 'open' && <button type="button" className="secondary" disabled={pending} onClick={() => setUpload('add')}><FilePlus2 size={16} aria-hidden="true" />Добавить файлы</button>}
         </>}
-        {folder.current && <button type="button" className="secondary" aria-expanded={!!tree} disabled={pending} onClick={() => tree ? setTree(undefined) : void act(() => browse(''))}>
+        {folder.current && <button type="button" className="secondary" aria-expanded={!!tree} disabled={pending} onClick={() => tree ? setView(undefined) : void act(() => browse(''))}>
           <Folder size={16} aria-hidden="true" />Файлы</button>}
         {!!folder.current && folder.current.unsupported + folder.current.errors > 0 && <button type="button" className="secondary" disabled={pending}
-          onClick={() => problems && !problems.failed ? setProblems(undefined) : void showProblems(false)}><ListX size={16} aria-hidden="true" />Файлы без поиска</button>}
+          aria-expanded={!!problems && !problems.failed} onClick={() => problems && !problems.failed ? setView(undefined) : void showProblems(false)}><ListX size={16} aria-hidden="true" />Файлы без поиска</button>}
         {folder.failed && !folder.operation && <button type="button" className="secondary" disabled={pending}
-          onClick={() => problems?.failed ? setProblems(undefined) : void showProblems(true)}><ListX size={16} aria-hidden="true" />Что не обработано</button>}
+          aria-expanded={!!problems?.failed} onClick={() => problems?.failed ? setView(undefined) : void showProblems(true)}><ListX size={16} aria-hidden="true" />Что не обработано</button>}
         {folder.canUpload && !folder.operation && (folder.failed || folder.current?.errors) ? <button type="button" className="secondary" disabled={pending}
           onClick={() => void act(() => post(`${base}/retry`), 'Повторная обработка запущена.')}><RefreshCw size={16} aria-hidden="true" />Повторить обработку</button> : null}
         {canManage && folder.failed?.failure === 'partial_index' && !folder.operation && <button type="button" className="secondary" disabled={pending} onClick={() => {

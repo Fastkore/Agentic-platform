@@ -19,7 +19,8 @@ import { ChatAccessPopover } from './ChatAccessPopover';
 import { ChatModelControls, reasoningOptions } from './ChatModelControls';
 import { runToolLabel } from './run-tool-label';
 import { WorkspaceDialog } from './WorkspaceDialog';
-import { ProjectSpecialistsDialog } from './ProjectSpecialistsDialog';
+import { ProjectSettingsDialog } from './ProjectSpecialistsDialog';
+import { ProjectSettingsCard } from './ProjectSettingsCard';
 import { VoiceDictation } from './VoiceDictation';
 import { DictationModelSettings } from './DictationModelSettings';
 import { PersonalInstructionsPanel } from './PersonalInstructionsPanel';
@@ -38,7 +39,6 @@ const UsagePanel = lazy(() => import('./UsagePanel').then(module => ({ default: 
 const FastkorePanel = lazy(() => import('./FastkorePanel').then(module => ({ default: module.FastkorePanel })));
 const KnowledgePanel = lazy(() => import('./KnowledgePanel').then(module => ({ default: module.KnowledgePanel })));
 const ChatModelPreview = lazy(() => import('./ChatModelPreview').then(module => ({ default: module.ChatModelPreview })));
-const ProjectLibraryDialog = lazy(() => import('./ProjectLibraryDialog').then(module => ({ default: module.ProjectLibraryDialog })));
 const LibraryPanel = lazy(() => import('./LibraryPanel').then(module => ({ default: module.LibraryPanel })));
 
 let accessKey = sessionStorage.getItem('bridge-key') ?? '';
@@ -160,14 +160,11 @@ function App() {
   useEffect(() => { setProjectRequested(false); }, [projectId, chatId, contextVersion]);
   const [drafts, setDrafts] = useState<Record<string, string>>({}), [files, setFiles] = useState<Record<string, Attachment[]>>({});
   const [specialists, setSpecialists] = useState<Record<string, string | undefined>>({});
-  const [panel, setPanel] = useState<'settings' | 'project' | 'project-agents' | 'project-library' | 'rename-project' | 'search' | 'archive' | 'related' | 'rename-chat' | 'reset-chat' | null>(null);
+  const [panel, setPanel] = useState<'settings' | 'project' | 'project-settings' | 'search' | 'archive' | 'related' | 'rename-chat' | 'reset-chat' | null>(null);
   const [renameDraft, setRenameDraft] = useState<{ projectId: string; chatId: string; title: string; destinationId?: string }>();
   const [modelPreview, setModelPreview] = useState<{ name: string; url: string; format: PreviewModelFormat }>();
   const projectFromComposer = useRef(false);
   const [projectActionTarget, setProjectActionTarget] = useState<ProjectSummary | null>(null);
-  const [libraryProfileId, setLibraryProfileId] = useState<string>();
-  const [renameProjectName, setRenameProjectName] = useState('');
-  const [inlineProjectRename, setInlineProjectRename] = useState<{ id: string; name: string }>();
   const [settingsProjectSearch, setSettingsProjectSearch] = useState('');
   const projectActionFromSettings = useRef(false);
   const [initialSpecialistId, setInitialSpecialistId] = useState<string>();
@@ -965,21 +962,15 @@ function App() {
     });
     setProjects(items => items.map(project => project.id === id ? { ...project, name } : project));
     setRelatedChats(chats => chats && { ...chats, list: chats.list.map(chat => chat.projectId === id ? { ...chat, projectName: name } : chat) });
+    return name;
   }
   const settingsProjects = projects.filter(project => project.name.toLocaleLowerCase('ru').includes(settingsProjectSearch.trim().toLocaleLowerCase('ru')));
-  function openProjectPanel(project: ProjectSummary, next: 'project-agents' | 'project-library' | 'rename-project', trigger: HTMLButtonElement) {
+  function openProjectSettings(project: ProjectSummary, trigger: HTMLButtonElement) {
     trigger.closest('details')?.removeAttribute('open');
     setError('');
     projectActionFromSettings.current = panel === 'settings';
     setProjectActionTarget(project);
-    if (next === 'rename-project') setRenameProjectName(project.name);
-    setPanel(next);
-  }
-  function renderProjectActions(project: ProjectSummary) {
-    return <>
-      <button type="button" className="workspace-row" onClick={event => openProjectPanel(project, 'project-agents', event.currentTarget)}><Bot size={15} />Специалисты проекта</button>
-      <button type="button" className="workspace-row" onClick={event => openProjectPanel(project, 'project-library', event.currentTarget)}><Database size={15} />Библиотека</button>
-    </>;
+    setPanel('project-settings');
   }
   const closeProjectPanel = () => setPanel(projectActionFromSettings.current ? 'settings' : null);
   const closePanel = () => {
@@ -1213,8 +1204,7 @@ function App() {
                     event.currentTarget.closest('details')?.removeAttribute('open');
                     void newChat(project.id, false);
                   }}><SquarePen size={15} />Новый чат</button>
-                  {renderProjectActions(project)}
-                  <button type="button" className="workspace-row" onClick={event => openProjectPanel(project, 'rename-project', event.currentTarget)}><Pencil size={15} />Переименовать проект</button>
+                  <button type="button" className="workspace-row" onClick={event => openProjectSettings(project, event.currentTarget)}><Settings2 size={15} />Настроить проект</button>
                 </div>
               </details>}
             </div>
@@ -1396,27 +1386,9 @@ function App() {
         <button className="primary w-full" disabled={pending}>{folderPath.trim() && canManageProjects ? 'Подключить папку' : 'Создать проект'}</button>
       </form>
     </WorkspaceDialog>}
-    {panel === 'rename-project' && projectActionTarget && canManageProjects && <WorkspaceDialog title="Переименовать проект" className="workspace-chat-rename"
-      close={() => { if (!pending) closeProjectPanel(); }}>
-      <form onSubmit={event => { event.preventDefault(); void action(async () => {
-        await saveProjectName(projectActionTarget.id, renameProjectName);
-        closeProjectPanel();
-      }); }}>
-        <label htmlFor="rename-project-name">Название проекта</label>
-        <input id="rename-project-name" data-dialog-focus value={renameProjectName} onChange={event => setRenameProjectName(event.target.value)}
-          onFocus={event => event.currentTarget.select()} required maxLength={100} disabled={pending} />
-        {error && <p className="inline-error" role="alert">{error}</p>}
-        <div className="settings-dialog-actions">
-          <button type="button" className="secondary" onClick={closeProjectPanel} disabled={pending}>Отмена</button>
-          <button type="submit" className="primary" disabled={pending || !renameProjectName.trim() || renameProjectName.trim() === projectActionTarget.name}>Сохранить</button>
-        </div>
-      </form>
-    </WorkspaceDialog>}
-    {panel === 'project-library' && projectActionTarget && canManageProjects && <Suspense fallback={null}>
-      <ProjectLibraryDialog key={projectActionTarget.id + (libraryProfileId ?? '')} project={projectActionTarget} request={api} close={() => { setLibraryProfileId(undefined); closeProjectPanel(); }} isAdmin={isAdmin} initialProfileId={libraryProfileId} /></Suspense>}
-    {panel === 'project-agents' && projectActionTarget && canManageProjects &&
-      <ProjectSpecialistsDialog key={projectActionTarget.id} project={projectActionTarget} request={api} close={closeProjectPanel}
-        openLibrary={profileId => { setLibraryProfileId(profileId); setPanel('project-library'); }}
+    {panel === 'project-settings' && projectActionTarget && canManageProjects &&
+      <ProjectSettingsDialog key={projectActionTarget.id} project={projectActionTarget} request={api} close={closeProjectPanel} isAdmin={isAdmin}
+        rename={name => saveProjectName(projectActionTarget.id, name)}
         openSpecialist={id => {
           setInitialSpecialistId(id);
           setSettingsSection('profiles');
@@ -1442,7 +1414,7 @@ function App() {
         <section key={settingsSection} className={'panel-body settings-content' + (settingsSection === 'server' ? ' settings-server' : '')}
           aria-labelledby="settings-section-title">
           <div className={'settings-pane' + (settingsSection === 'agent' ? ' settings-pane-instructions' : '')}>
-          {settingsSection !== 'profiles' && <h2 id="settings-section-title">{settingsSections[settingsSection].label}</h2>}
+          {settingsSection !== 'profiles' && settingsSection !== 'library' && <h2 id="settings-section-title">{settingsSections[settingsSection].label}</h2>}
           {error && <div className="inline-error" role="alert">{error}</div>}
           <Suspense fallback={<p role="status">Загрузка…</p>}>
           {settingsSection === 'account' && <AccountPanel request={api} renewed={saveToken} fastkore={authSource === 'fastkore'} />}
@@ -1451,33 +1423,8 @@ function App() {
             <input type="search" aria-label="Поиск по проектам" placeholder="Поиск по проектам…" value={settingsProjectSearch}
               onChange={event => setSettingsProjectSearch(event.target.value)} />
             <ul className="agent-card-list">
-            {settingsProjects.map(project => <li className="agent-card" key={project.id}>
-              <div className="settings-project-title">
-                <Folder size={16} aria-hidden="true" />
-                {inlineProjectRename?.id === project.id ? <form className="settings-project-rename" onSubmit={event => {
-                  event.preventDefault();
-                  void action(async () => {
-                    await saveProjectName(project.id, inlineProjectRename.name);
-                    setInlineProjectRename(undefined);
-                  });
-                }} onKeyDown={event => {
-                  if (event.key === 'Escape' && !pending) {
-                    event.preventDefault(); event.stopPropagation(); setInlineProjectRename(undefined);
-                  }
-                }}>
-                  <input autoFocus aria-label="Название проекта" maxLength={100} required disabled={pending} value={inlineProjectRename.name}
-                    onFocus={event => event.currentTarget.select()}
-                    onChange={event => setInlineProjectRename({ id: project.id, name: event.currentTarget.value })} />
-                  <button type="submit" className="workspace-icon" aria-label="Сохранить название" title="Сохранить"
-                    disabled={pending || !inlineProjectRename.name.trim() || inlineProjectRename.name.trim() === project.name}><Check size={16} /></button>
-                  <button type="button" className="workspace-icon" aria-label="Отменить переименование" title="Отмена"
-                    disabled={pending} onClick={() => setInlineProjectRename(undefined)}><X size={16} /></button>
-                </form> : <><strong>{project.name}</strong>
-                  <button type="button" className="workspace-icon" aria-label={'Переименовать проект ' + project.name} title="Переименовать проект"
-                    disabled={pending} onClick={() => setInlineProjectRename({ id: project.id, name: project.name })}><Pencil size={15} aria-hidden="true" /></button></>}
-              </div>
-              <div className="settings-project-actions">{renderProjectActions(project)}</div>
-            </li>)}
+            {settingsProjects.map(project => <ProjectSettingsCard key={project.id} project={project} request={api}
+              configure={trigger => openProjectSettings(project, trigger)} />)}
             {!settingsProjects.length && <li className="help">{projects.length ? 'Проекты не найдены.' : 'Проектов пока нет.'}</li>}
           </ul></>}
           {settingsSection === 'roles' && <ErpRolesPanel request={api} />}

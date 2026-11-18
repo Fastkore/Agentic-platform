@@ -9,6 +9,16 @@ export interface ScanResult {
 }
 const textLike = /\.(cs|vb|ts|tsx|js|jsx|json|xml|config|ini|yml|yaml|env|txt|md|sql|ps1|sh|properties|settings|cshtml|razor|py|java)$/i;
 
+async function readLocalFile(item: ScannedFile, start: number, end: number) {
+  try {
+    const bytes = await item.file.slice(start, end).arrayBuffer();
+    if (bytes.byteLength !== Math.min(end, item.size) - start) throw new Error('Размер файла изменился.');
+    return bytes;
+  } catch (cause) {
+    throw new Error(`Не удалось прочитать файл «${item.path}». Проверьте, что он доступен и не меняется во время загрузки.`, { cause });
+  }
+}
+
 /** True where the browser can pick a whole folder with relative paths (Chromium-based browsers). */
 export function directoryPickerSupported() {
   const input = document.createElement('input');
@@ -57,14 +67,15 @@ export async function hashFiles(scan: ScanResult, partBytes: number, progress: (
     signal.throwIfAborted();
     const hash = new Sha256();
     const sampleLimit = item.size <= 1024 * 1024 && textLike.test(item.path) ? 1024 * 1024 : 256 * 1024;
-    const sample = new Uint8Array(await item.file.slice(0, sampleLimit).arrayBuffer());
+    const sample = new Uint8Array(await readLocalFile(item, 0, sampleLimit));
     const decoder = new TextDecoder();
     const serverSample = sample.subarray(0, 256 * 1024);
     const findings = new Set(!serverSample.includes(0) ? suspiciousSecret(decoder.decode(serverSample)) : []);
     if (!sample.includes(0) && sample.length > serverSample.length) for (const found of suspiciousSecret(decoder.decode(sample))) findings.add(found);
     item.secretFindings = findings.size ? [...findings] : undefined;
     for (let offset = 0; offset < item.size || offset === 0; offset += partBytes) {
-      const chunk = new Uint8Array(await item.file.slice(offset, offset + partBytes).arrayBuffer());
+      signal.throwIfAborted();
+      const chunk = new Uint8Array(await readLocalFile(item, offset, offset + partBytes));
       hash.update(chunk);
       done += chunk.length;
       progress(done, scan.bytes);
@@ -143,7 +154,8 @@ export async function transferUpload(request: Request, folderId: string, operati
         if (file.partsReceived.includes(part)) continue;
         tasks.push(async () => {
           const start = (part - 1) * status.operation.partBytes;
-          const body = await local.file.slice(start, start + status.operation.partBytes).arrayBuffer();
+          signal.throwIfAborted();
+          const body = await readLocalFile(local, start, start + status.operation.partBytes);
           const digest = new Sha256().update(new Uint8Array(body)).digest();
           for (let attempt = 0; ; attempt++) {
             signal.throwIfAborted();
@@ -151,6 +163,7 @@ export async function transferUpload(request: Request, folderId: string, operati
               await request(`${url}/files/${file.fileId}/parts/${part}`, { method: 'PUT', body, signal, headers: { 'Content-Type': 'application/octet-stream', 'X-Content-SHA256': digest } });
               return;
             } catch (error) {
+              signal.throwIfAborted();
               const status = (error as { status?: number }).status;
               if (attempt < 4 && (status === 429 || status === 503 || status === undefined)) { await new Promise(r => setTimeout(r, 500 * 2 ** attempt)); continue; }
               throw error;
@@ -160,9 +173,13 @@ export async function transferUpload(request: Request, folderId: string, operati
       }
     }
     let index = 0;
+    let failure: { cause: unknown } | undefined;
     await Promise.all(Array.from({ length: Math.min(concurrency, tasks.length) }, async () => {
-      while (index < tasks.length) await tasks[index++]();
+      while (!failure && index < tasks.length) {
+        try { await tasks[index++](); } catch (cause) { failure ??= { cause }; }
+      }
     }));
+    if (failure) throw failure.cause;
     if (status.next === undefined) {
       const after = await request<Status>(`${url}?cursor=-1`);
       progress(after.operation);

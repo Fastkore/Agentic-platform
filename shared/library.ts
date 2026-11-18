@@ -27,6 +27,7 @@ export interface OperationSummary {
 }
 export interface LibraryFolderSummary {
   id: string; name: string; description: string; profile: LibraryProfile; classification: LibraryClassification; outputPolicy: OutputPolicy;
+  active: boolean;
   quotaBytes: number; usedBytes: number; revision: number; createdAt: string;
   /** Date of the last successful update of the current content. */
   updatedAt?: string;
@@ -43,6 +44,7 @@ export interface ManifestEntry { path: string; size: number; sha256: string }
 export interface UploadFileStatus { fileId: string; path: string; size: number; sha256: string; state: UploadFileState; partsTotal: number; partsReceived: number[] }
 export interface LibraryConnection {
   projectId: string; folderId: string; folderName: string; description: string; profile: LibraryProfile; classification: LibraryClassification;
+  folderActive: boolean;
   outputPolicy: OutputPolicy; enabled: boolean; revision: number; current?: Coverage; updatedAt?: string; preparing: boolean; canManage: boolean;
 }
 export interface LibraryCell { folderId: string; profileId: string; granted: boolean; allowed: boolean; outputPolicy?: OutputPolicy; files?: number; reasons: string[] }

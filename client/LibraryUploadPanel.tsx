@@ -22,6 +22,7 @@ export function LibraryUploadPanel({ request, folder, mode: initialMode, canDeci
   const input = useRef<HTMLInputElement>(null);
   const controller = useRef<AbortController | null>(null);
   const open = folder.operation?.status === 'open' ? folder.operation : undefined;
+  const indexing = folder.operation?.status === 'preparing';
   const saved = pendingUpload(folder.id);
   const [mode, setMode] = useState<OperationMode>(open?.mode ?? initialMode);
   const [stage, setStage] = useState<Stage>('pick');
@@ -31,6 +32,7 @@ export function LibraryUploadPanel({ request, folder, mode: initialMode, canDeci
   const [prefix, setPrefix] = useState('');
   const [includeSecrets, setIncludeSecrets] = useState(new Set<string>());
   const [prepared, setPrepared] = useState<OperationSummary>();
+  const [comparing, setComparing] = useState(false);
   const [progress, setProgress] = useState<OperationSummary>();
   const [error, setError] = useState('');
   const [resumeId, setResumeId] = useState<string>();
@@ -58,14 +60,19 @@ export function LibraryUploadPanel({ request, folder, mode: initialMode, canDeci
     } catch (e) { if ((e as Error).name !== 'AbortError') { setError((e as Error).message); setStage('error'); } }
   }
   async function prepare() {
-    if (!scan) return;
+    if (!scan || comparing || indexing) return;
+    setComparing(true);
     setError('');
     try {
       const status = await prepareUpload(request, folder.id, scan, { mode, exclusions: ruleList(), includeSecrets });
       setPrepared(status.operation);
       if (status.operation.status === 'unchanged') { setStage('unchanged'); done(); }
       else setStage('prepared');
-    } catch (e) { setError((e as Error).message); }
+    } catch (e) { setError((e as Error).message); } finally { setComparing(false); }
+  }
+  function addMore() {
+    setMode('add'); setScan(undefined); setPrepared(undefined); setProgress(undefined);
+    setResumeId(undefined); setIncludeSecrets(new Set()); setError(''); setStage('pick');
   }
   async function transfer(operationId: string, files = scan!) {
     setStage('transfer'); setError('');
@@ -78,7 +85,7 @@ export function LibraryUploadPanel({ request, folder, mode: initialMode, canDeci
       done();
     } catch (e) {
       if ((e as Error).name === 'AbortError') return;
-      setError((e as Error).message + ' Передачу можно продолжить: выберите ту же папку ещё раз.');
+      setError((e as Error).message + (folderPicker ? ' Выберите ту же папку, чтобы продолжить передачу.' : ' Выберите те же файлы, чтобы продолжить передачу.'));
       setResumeId(operationId);
       setStage('error');
     }
@@ -101,6 +108,9 @@ export function LibraryUploadPanel({ request, folder, mode: initialMode, canDeci
           : 'Выбранная папка станет полным содержимым: новые файлы добавятся, изменённые заменятся, отсутствующие удалятся.'} До подтверждения на сервер ничего не передаётся.</p></div>
     </div>
     {!supported && <p className="inline-error">Этот браузер не умеет выбирать папку целиком. Откройте платформу в Chrome или Edge.</p>}
+    {indexing && (stage === 'pick' || stage === 'preview') && <p className="help" role="status">
+      Можно выбрать следующие файлы. Сравнение будет доступно, когда закончится обработка предыдущей загрузки.
+    </p>}
     <input ref={input} type="file" hidden multiple {...(folderPicker ? { webkitdirectory: '', directory: '' } : {})}
       onChange={event => { void picked(event.target.files); event.target.value = ''; }} />
 
@@ -153,8 +163,8 @@ export function LibraryUploadPanel({ request, folder, mode: initialMode, canDeci
         </label>)}
       </fieldset>}
       <div className="settings-actions">
-        <button type="button" className="primary" disabled={!scan.files.length} onClick={() => void prepare()}>Сравнить с библиотекой</button>
-        <button type="button" className="secondary" onClick={() => setStage('pick')}>Выбрать другое</button>
+        <button type="button" className="primary" disabled={indexing || comparing || !scan.files.length} onClick={() => void prepare()}>Сравнить с библиотекой</button>
+        <button type="button" className="secondary" disabled={comparing} onClick={() => setStage('pick')}>Выбрать другое</button>
       </div>
     </>}
 
@@ -171,7 +181,10 @@ export function LibraryUploadPanel({ request, folder, mode: initialMode, canDeci
 
     {stage === 'unchanged' && <>
       <p role="status"><strong>Библиотека актуальна.</strong> Выбранные файлы совпадают с текущим содержимым: обновление не требуется.</p>
-      <div className="settings-actions"><button type="button" className="secondary" onClick={close}>Закрыть</button></div>
+      <div className="settings-actions">
+        {mode === 'add' && <button type="button" className="primary" onClick={addMore}>Добавить ещё файлы</button>}
+        <button type="button" className="secondary" onClick={close}>Закрыть</button>
+      </div>
     </>}
 
     {(stage === 'transfer' || stage === 'done') && progress && <>
@@ -181,13 +194,18 @@ export function LibraryUploadPanel({ request, folder, mode: initialMode, canDeci
       </div>
       {stage === 'done' && <p className="help"><strong>Файлы приняты.</strong> Идёт подготовка к поиску; до её окончания агент использует прежнее содержимое папки.</p>}
       <div className="settings-actions">
-        {stage === 'transfer' ? <button type="button" className="secondary" onClick={() => void cancel()}>Отменить загрузку</button>
-          : <button type="button" className="secondary" onClick={close}>Закрыть</button>}
+        {stage === 'transfer' ? <button type="button" className="secondary" onClick={() => void cancel()}>Отменить загрузку</button> : <>
+          <button type="button" className="primary" onClick={addMore}>Добавить ещё файлы</button>
+          <button type="button" className="secondary" onClick={close}>Закрыть</button>
+        </>}
       </div>
     </>}
     {error && <p className="inline-error" role="alert">{error}</p>}
     {stage === 'error' && <div className="settings-actions">
-      {resumeId && <button type="button" className="primary" onClick={() => input.current?.click()}><FolderOpen size={16} aria-hidden="true" />Выбрать и продолжить</button>}
+      <button type="button" className="primary" disabled={!supported} onClick={() => input.current?.click()}>
+        {folderPicker ? <FolderOpen size={16} aria-hidden="true" /> : <FilePlus2 size={16} aria-hidden="true" />}
+        {resumeId ? 'Выбрать и продолжить' : folderPicker ? 'Выбрать папку снова' : 'Выбрать файлы снова'}
+      </button>
       <button type="button" className="secondary" onClick={() => void cancel()}>Отменить загрузку</button>
     </div>}
   </section>;
