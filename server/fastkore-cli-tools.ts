@@ -1,8 +1,8 @@
 import { redact } from './store.js';
 import type { CodexTools, CodexToolDefinition, CodexToolResult } from './codex-tools.js';
 import type { FastkoreCliResult } from './fastkore-cli.js';
+import { defaultToolResponseChars, isFastkoreCliResponseLimit, maxFastkoreCliResponseChars } from '../shared/fastkore-cli-response-limit.js';
 
-const responseLimitChars = 96_000;
 const maxFields = 64, maxFieldLength = 200;
 const forbiddenKeys = new Set(['__proto__', 'constructor', 'prototype']);
 const record = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value);
@@ -57,7 +57,8 @@ function keepDiagnostics(value: unknown): unknown {
   return entries.length ? Object.fromEntries(entries) : undefined;
 }
 
-export function formatFastkoreCliResult(result: FastkoreCliResult, command: string, fields?: string[]): CodexToolResult & { responseChars?: number } {
+export function formatFastkoreCliResult(result: FastkoreCliResult, command: string, fields?: string[], maxResponseChars?: number): CodexToolResult & { responseChars?: number } {
+  const responseLimitChars = isFastkoreCliResponseLimit(maxResponseChars) ? maxResponseChars : defaultToolResponseChars;
   const { success, exitCode } = result;
   const partial = exitCode === 5 ? true : undefined;
   const retryAdvice = ' Перед повтором команды записи проверьте состояние чтением.';
@@ -75,7 +76,8 @@ export function formatFastkoreCliResult(result: FastkoreCliResult, command: stri
     : command === 'data query' ? ' Для чтения доступны --properties и пагинация.'
       : command === 'report definition show' ? ' Для печатной формы используйте --detail brief --json.' : '';
   const error = { code: 'response_too_large', actualChars: text.length, limitChars: responseLimitChars,
-    message: 'Ответ Fastkore CLI слишком большой. Сузьте fields или размер страницы.' + advice + retryAdvice };
+    message: 'Ответ Fastkore CLI слишком большой. Сузьте fields или размер страницы.' +
+      (text.length <= maxFastkoreCliResponseChars ? ' Если нужен весь ответ, укажите maxResponseChars для вызова.' : '') + advice + retryAdvice };
   const summary = { success, exitCode, partial, error };
   const details = success ? undefined : keepDiagnostics(result.data);
   const compact = JSON.stringify({ ...summary, data: details });
@@ -84,7 +86,7 @@ export function formatFastkoreCliResult(result: FastkoreCliResult, command: stri
 
 export function withFastkoreCliCommands(tools: CodexTools, catalog: () => Promise<unknown>,
   describe: (command: string, signal: AbortSignal) => Promise<unknown>,
-  execute: (command: string, args: string[], signal: AbortSignal, fields?: string[]) => Promise<CodexToolResult>,
+  execute: (command: string, args: string[], signal: AbortSignal, fields?: string[], maxResponseChars?: number) => Promise<CodexToolResult>,
   authorize: () => void): CodexTools {
   const definitions: CodexToolDefinition[] = [
     { type: 'function', name: 'fastkore_cli_catalog', description: 'Каталог всех команд установленной Fastkore CLI с назначением и параметрами.',
@@ -92,10 +94,11 @@ export function withFastkoreCliCommands(tools: CodexTools, catalog: () => Promis
     { type: 'function', name: 'fastkore_cli_command_describe', description: 'Штатное agent describe для команды установленной Fastkore CLI.',
       inputSchema: { type: 'object', additionalProperties: false, required: ['command'], properties: { command: { type: 'string' } } } },
     { type: 'function', name: 'fastkore_cli_execute',
-      description: 'Запускает Fastkore CLI. command — имя команды, args — её штатные параметры отдельными строками. fields выбирает поля JSON-ответа по путям, например data.templateSha256. Для чтения определения печатной формы перед генерацией PDF используйте report definition show с --detail brief --json. Снимок вопроса доступен по --context context.json. Пути относительны рабочей папке cli этого чата. Соединение и билет сотрудника передаёт исполнитель.',
+      description: 'Запускает Fastkore CLI. command — имя команды, args — её штатные параметры отдельными строками. fields выбирает поля JSON-ответа по путям, например data.templateSha256. maxResponseChars повышает лимит ответа для этого вызова с 96000 до 200000 символов. Для чтения определения печатной формы перед генерацией PDF используйте report definition show с --detail brief --json. Снимок вопроса доступен по --context context.json. Пути относительны рабочей папке cli этого чата. Соединение и билет сотрудника передаёт исполнитель.',
       inputSchema: { type: 'object', additionalProperties: false, required: ['command', 'args'],
         properties: { command: { type: 'string' }, args: { type: 'array', maxItems: 160, items: { type: 'string', maxLength: 32000 } },
-          fields: { type: 'array', minItems: 1, maxItems: maxFields, items: { type: 'string', maxLength: maxFieldLength } } } } },
+          fields: { type: 'array', minItems: 1, maxItems: maxFields, items: { type: 'string', maxLength: maxFieldLength } },
+          maxResponseChars: { type: 'integer', minimum: defaultToolResponseChars, maximum: maxFastkoreCliResponseChars } } } },
   ];
   return { definitions: [...tools.definitions, ...definitions], async call(name, args, signal) {
     if (!definitions.some(definition => definition.name === name)) return tools.call(name, args, signal);
@@ -106,11 +109,12 @@ export function withFastkoreCliCommands(tools: CodexTools, catalog: () => Promis
       let result: unknown;
       if (name === 'fastkore_cli_catalog' && !Object.keys(input).length) result = await catalog();
       else if (name === 'fastkore_cli_command_describe' && Object.keys(input).length === 1 && typeof input.command === 'string') result = await describe(input.command, signal);
-      else if (name === 'fastkore_cli_execute' && Object.keys(input).every(key => ['command', 'args', 'fields'].includes(key)) && typeof input.command === 'string' &&
+      else if (name === 'fastkore_cli_execute' && Object.keys(input).every(key => ['command', 'args', 'fields', 'maxResponseChars'].includes(key)) && typeof input.command === 'string' &&
         Array.isArray(input.args) && input.args.length <= 160 && input.args.every(arg => typeof arg === 'string' && arg.length <= 32000) &&
-        (input.fields === undefined || Array.isArray(input.fields) && input.fields.length > 0 && input.fields.length <= maxFields && input.fields.every(fieldPath))) {
-        return await execute(input.command, input.args, signal, input.fields);
-      } else return { success: false, text: 'Проверьте command, args и поля fields с путями внутри data.' };
+        (input.fields === undefined || Array.isArray(input.fields) && input.fields.length > 0 && input.fields.length <= maxFields && input.fields.every(fieldPath)) &&
+        (input.maxResponseChars === undefined || isFastkoreCliResponseLimit(input.maxResponseChars))) {
+        return await execute(input.command, input.args, signal, input.fields, input.maxResponseChars);
+      } else return { success: false, text: 'Проверьте command, args, пути fields внутри data и целочисленный maxResponseChars от 96000 до 200000.' };
       authorize(); signal.throwIfAborted();
       return { success: true, text: redact(JSON.stringify(result)) };
     } catch (error) {

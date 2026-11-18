@@ -82,6 +82,35 @@ test('isolated worker transports login status, limits and chat over a private so
     await rm(root, { recursive: true, force: true });
   }
 });
+test('the worker accepts a large tool response only for a CLI call with its own requested limit', async () => {
+  const id = randomUUID();
+  const socket = process.platform === 'win32' ? '\\\\.\\pipe\\bridge-' + id : path.join(tmpdir(), 'bridge-' + id + '.sock');
+  const controller = new AbortController();
+  const text = 'Ж'.repeat(186_687);
+  const fake: CodexRunner = {
+    inspect: async () => ({ path: '/fake', version: 'test', authentication: 'chatgpt', status: '' }),
+    run: async (request, _event, signal) => {
+      const name = request.prompt === 'other tool' ? 'knowledge' : 'fastkore_cli_execute';
+      const args = request.prompt === 'default CLI' ? {} : { maxResponseChars: 200_000 };
+      const result = await request.tools!.call(name, args, signal);
+      assert.equal(result.text, text);
+      return { response: 'Received' };
+    },
+  };
+  const worker = createCodexWorker(fake), remote = new RemoteCodexRunner(socket);
+  const input = { cliPath: '/unused', workspace: '/unused', allowWrite: false, tools: {
+    definitions: ['fastkore_cli_execute', 'knowledge'].map(name => ({ type: 'function' as const, name, description: 'Fixture', inputSchema: { type: 'object' } })),
+    call: async () => ({ success: true, text }),
+  } };
+  const run = (prompt: string) => remote.run({ ...input, prompt }, async () => {}, controller.signal);
+  try {
+    await worker.listen({ path: socket });
+    assert.equal((await run('expanded CLI')).response, 'Received');
+    await assert.rejects(run('default CLI'), /отклонил запрос/);
+    await assert.rejects(run('other tool'), /отклонил запрос/);
+  } finally { controller.abort(); await worker.close(); }
+});
+
 test('the worker admits an ephemeral specialist only while its main turn is waiting for a consultation', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'bridge-worker-consultation-'));
   const socket = process.platform === 'win32' ? '\\\\.\\pipe\\bridge-' + randomUUID() : path.join(root, 'worker.sock');

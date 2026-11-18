@@ -16,6 +16,7 @@ import { readGlmKey } from './glm.js';
 import { searchZai } from './internet-search.js';
 import { executorCapacity, providerCapacity } from './execution-concurrency.js';
 import { chatImagesUnsupportedProvider, chatImageUrlPattern, maxChatImages, maxChatImagePayload, maxChatImageUrlLength, supportsChatImages } from './chat-images.js';
+import { defaultToolResponseChars, isFastkoreCliResponseLimit, maxFastkoreCliResponseChars } from '../shared/fastkore-cli-response-limit.js';
 
 const cli = '/usr/local/bin/codex';
 const workspace = '/runner';
@@ -52,7 +53,7 @@ export function createCodexWorker(codex: CodexRunner = new CodexClient([], 'work
   const consultations = new Map<string, { signal: AbortSignal; controller: AbortController; lane: string; running: boolean }>();
   let changingAccount = false;
   const runner = async (model?: string) => accounts ? accounts.runner((await accounts.select(model)).account.id) : codex;
-  const pendingTools = new Map<string, (result: CodexToolResult) => void>();
+  const pendingTools = new Map<string, { resolve: (result: CodexToolResult) => void; maxResponseChars: number }>();
   const steeringTurns = new Map<string, SteerTurn>();
   const inspect = async (signal?: AbortSignal, model?: string) => {
     const selection = accounts && await accounts.select(model).catch((error: Error) => ({ error }));
@@ -126,14 +127,15 @@ export function createCodexWorker(codex: CodexRunner = new CodexClient([], 'work
   app.post<{ Params: { id: string }; Body: { key: string } }>('/accounts/:id/key', { schema: { body: {
     type: 'object', additionalProperties: false, required: ['key'], properties: { key: { type: 'string', minLength: 1, maxLength: 2048 } },
   } } }, request => changeAccount(() => accounts!.setKey(request.params.id, request.body.key)));
-  app.post<{ Body: WorkerToolResult }>('/tool-result', { schema: { body: {
+  app.post<{ Body: WorkerToolResult }>('/tool-result', { bodyLimit: 6 * maxFastkoreCliResponseChars + 1024, schema: { body: {
     type: 'object', additionalProperties: false, required: ['id', 'success', 'text'],
-    properties: { id: { type: 'string', maxLength: 36 }, success: { type: 'boolean' }, text: { type: 'string', maxLength: 96_000 } },
+    properties: { id: { type: 'string', maxLength: 36 }, success: { type: 'boolean' }, text: { type: 'string', maxLength: maxFastkoreCliResponseChars } },
   } } }, async request => {
-    const resolve = pendingTools.get(request.body.id);
-    if (!activeLanes.size || !resolve) throw new BridgeError('Вызов инструмента завершён.', 409);
+    const pending = pendingTools.get(request.body.id);
+    if (!activeLanes.size || !pending) throw new BridgeError('Вызов инструмента завершён.', 409);
+    if (request.body.text.length > pending.maxResponseChars) throw new BridgeError('Ответ превышает лимит вызова инструмента.', 413);
     pendingTools.delete(request.body.id);
-    resolve({ success: request.body.success, text: request.body.text });
+    pending.resolve({ success: request.body.success, text: request.body.text });
     return { ok: true };
   });
   app.post<{ Body: WorkerSteer }>('/steer', { schema: { body: {
@@ -195,8 +197,11 @@ export function createCodexWorker(codex: CodexRunner = new CodexClient([], 'work
           const id = randomUUID();
           const stop = AbortSignal.any([signal, runSignal, AbortSignal.timeout(name === 'consult_specialist' ? 195_000 : name.startsWith('fastkore_cli_') ? 125_000 : 45_000)]);
           if (name === 'consult_specialist') consultations.set(id, { signal: stop, controller, lane, running: false });
-          const result = new Promise<CodexToolResult>(resolve => pendingTools.set(id, resolve));
-          const cancel = () => pendingTools.get(id)?.({ success: false, text: 'Вызов инструмента не завершён.' });
+          const requestedLimit = name === 'fastkore_cli_execute' && args && typeof args === 'object'
+            ? (args as Record<string, unknown>).maxResponseChars : undefined;
+          const maxResponseChars = isFastkoreCliResponseLimit(requestedLimit) ? requestedLimit : defaultToolResponseChars;
+          const result = new Promise<CodexToolResult>(resolve => pendingTools.set(id, { resolve, maxResponseChars }));
+          const cancel = () => pendingTools.get(id)?.resolve({ success: false, text: 'Вызов инструмента не завершён.' });
           stop.addEventListener('abort', cancel, { once: true });
           try {
             stop.throwIfAborted();

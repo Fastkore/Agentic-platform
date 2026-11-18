@@ -148,7 +148,7 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
     current();
     const commands = run ? withFastkoreCliCommands(base, () => fastkoreCli.describe(),
       (command, callSignal) => fastkoreCli.describeCommand(command, callSignal),
-      async (command, args, callSignal, fields) => {
+      async (command, args, callSignal, fields, maxResponseChars) => {
         const started = performance.now(), timing: FastkoreCliTiming = {};
         let success = false;
         let responseChars: number | undefined;
@@ -161,7 +161,7 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
               }
               return active;
             }, id => fastkoreMcp.invalidate(id), callSignal, timing);
-          const formatted = formatFastkoreCliResult(result, command, fields);
+          const formatted = formatFastkoreCliResult(result, command, fields, maxResponseChars);
           success = formatted.success;
           responseChars = formatted.responseChars;
           return { success, text: formatted.text };

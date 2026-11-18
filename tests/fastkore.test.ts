@@ -428,6 +428,16 @@ test('a valid SSO grant exposes CLI tools without MCP and only with a trusted ru
       fields: ['data.templateSha256', 'data.revision'] }, signal);
     assert.equal(selected.success, true);
     assert.deepEqual(JSON.parse(selected.text), { success: true, exitCode: 0, data: { templateSha256: 'a'.repeat(64), revision: 'rev-42' } });
+    cliData = { definition: 'Ж'.repeat(186_000) };
+    const report = { command: 'report definition show', args: ['--report', 'Счет'] };
+    const expanded = await ready.tools!.call('fastkore_cli_execute', { ...report, maxResponseChars: 200_000 }, signal);
+    assert.equal(expanded.success, true);
+    assert.deepEqual(JSON.parse(expanded.text).data, cliData);
+    const standard = JSON.parse((await ready.tools!.call('fastkore_cli_execute', report, signal)).text);
+    assert.equal(standard.error.limitChars, 96_000);
+    const invalidLimit = await ready.tools!.call('fastkore_cli_execute', { ...report, maxResponseChars: 200_001 }, signal);
+    assert.equal(invalidLimit.success, false);
+    assert.match(invalidLimit.text, /maxResponseChars/);
     await f.asCookie(session, 'POST', '/api/auth/logout', {});
     await assert.rejects(prepare());
   } finally { await f.app.close(); }
