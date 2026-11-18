@@ -183,6 +183,15 @@
 .project-row > svg:last-child { opacity: .65; }
 .project-new-chat { width: 28px; opacity: 0; }
 .project-line:hover .project-new-chat, .project-line:focus-within .project-new-chat { opacity: 1; }
+.project-rename, .project-rename-form .workspace-icon { width: 26px; height: 30px; }
+.project-name-editor { flex: 1; min-width: 0; }
+.project-rename-form { display: flex; align-items: center; gap: 2px; }
+.project-rename-form input:not([type=checkbox]) {
+  flex: 1; min-width: 0; height: 30px; margin: 0; padding: 4px 8px;
+  background: var(--control); color: var(--nav-text); font: inherit;
+}
+.project-line:has(.project-rename-form) .project-new-chat { display: none; }
+.project-rename-error { margin: 4px 0; font-size: 12px; color: var(--danger); overflow-wrap: anywhere; }
 .project-actions { position: relative; flex: 0 0 auto; }
 .project-actions summary { width: 28px; list-style: none; cursor: pointer; }
 .project-actions summary::-webkit-details-marker { display: none; }
@@ -225,6 +234,9 @@
 .account-row > svg:last-child { margin-left: auto; color: var(--text-muted); }
 .workspace-account details > summary { cursor: pointer; }
 .workspace-account > .account-row:hover { background: transparent; }
+.fastkore-account-actions { gap: 6px; }
+.fastkore-account-actions > .fastkore-account-name { flex: 1; }
+.fastkore-account-actions > .workspace-icon { width: 26px; height: 30px; }
 .account-initial {
   width: 29px; height: 29px; flex: 0 0 auto; display: grid; place-items: center;
   border-radius: 50%; background: var(--avatar); color: var(--avatar-ink); font-weight: 600;
@@ -456,6 +468,10 @@
 .empty-new-chat { position: absolute; top: calc(100% + 14px); left: 50%; transform: translateX(-50%); display: flex; align-items: center; gap: 7px; white-space: nowrap; border: 1px solid var(--control-border); border-radius: 8px; padding: 7px 11px; }
 .empty-new-chat:hover { background: var(--hover); }
 .workspace-shell .attachment-chips > span { background: var(--nav-raised); color: var(--text); border-color: var(--border); }
+.draft-screenshot-thumb { display: block; flex: none; border-radius: 4px; overflow: hidden; }
+.draft-screenshot-thumb img { display: block; width: 46px; height: 34px; object-fit: contain; }
+.workspace-dialog.draft-screenshot-dialog { width: min(960px, calc(100vw - 24px)); }
+.draft-screenshot-dialog > img { display: block; max-width: 100%; max-height: 75dvh; margin-inline: auto; object-fit: contain; }
 
 .limits-control summary { list-style: none; cursor: pointer; }
 .limit-ring { fill: none; stroke-width: 2.5; }

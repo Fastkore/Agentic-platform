@@ -15,6 +15,7 @@ export interface Principal { user: UserRecord; credential: Credential }
 export class Access {
   readonly data: Security;
   private queue: Promise<unknown> = Promise.resolve();
+  private readonly browserCodes = new Map<string, { sessionId: string; expiresAt: number }>();
   externalCredentialValid?: (credential: Credential) => boolean;
   onSessionsRemoved?: (sessions: Credential[]) => void;
   constructor(readonly workspace: Workspace) {
@@ -77,15 +78,15 @@ export class Access {
     const candidate = await derive(value, salt, 64) as Buffer, expected = Buffer.from(hash, 'hex');
     return candidate.length === expected.length && timingSafeEqual(candidate, expected);
   }
-  private issueSession(user: UserRecord, name: string, external?: Pick<Credential, 'source' | 'installationId' | 'externalUserId' | 'externalDisplayName' | 'externalRoles'>,
-    data = this.data, seal?: (credential: Credential) => Credential['erpDelegation']) {
+  private issueSession(user: UserRecord, name: string, external?: Pick<Credential, 'source' | 'installationId' | 'externalUserId' | 'externalDisplayName' | 'externalRoles' | 'browserParentId'>,
+    data = this.data, seal?: (credential: Credential) => Credential['erpDelegation'], maxExpiresAt = Infinity) {
     const token = 'ccb_s_' + randomBytes(32).toString('hex');
-    const expiresAt = new Date(Date.now() + (external?.source === 'fastkore' ? 1800_000 : 12 * 3600_000)).toISOString();
+    const expiresAt = new Date(Math.min(maxExpiresAt, Date.now() + (external?.source === 'fastkore' ? 1800_000 : 12 * 3600_000))).toISOString();
     const record: Credential = { id: randomUUID(), userId: user.id, kind: 'session', hash: digest(token), name, createdAt: new Date().toISOString(), expiresAt, ...external };
     if (seal) record.erpDelegation = seal(record);
     data.credentials = data.credentials.filter(c => !c.expiresAt || Date.parse(c.expiresAt) > Date.now());
     const old = data.credentials.filter(c => c.userId === user.id);
-    for (const c of old.slice(0, Math.max(0, old.length - 19))) data.credentials.splice(data.credentials.indexOf(c), 1);
+    for (const c of old.filter(c => c.id !== external?.browserParentId).slice(0, Math.max(0, old.length - 19))) data.credentials.splice(data.credentials.indexOf(c), 1);
     data.credentials.push(record); return { token, user: publicUser(user), expiresAt };
   }
   authenticate(token: string): Principal {
@@ -97,7 +98,53 @@ export class Access {
     const user = credential && this.data.users.find(u => u.id === credential.userId && !u.disabled);
     if (!credential || credential.kind !== 'session' || !user || (credential.expiresAt && Date.parse(credential.expiresAt) <= Date.now())
       || (credential.source === 'fastkore' ? !this.externalCredentialValid?.(credential) : user.role !== 'admin')) throw new BridgeError('Войдите под своей учётной записью.', 401);
+    if (credential.browserParentId) {
+      const parent = this.data.credentials.find(c => c.id === credential.browserParentId);
+      if (!parent || user.role !== 'admin' || !this.canOpenBrowserSettings({ user, credential: parent }) ||
+        parent.installationId !== credential.installationId || parent.externalUserId !== credential.externalUserId) {
+        throw new BridgeError('Вход в настройки завершён. Откройте их заново из Fastkore.', 401);
+      }
+    }
     return { user, credential };
+  }
+  canOpenBrowserSettings({ user, credential }: Principal) {
+    return user.role === 'admin' && !user.disabled && credential.userId === user.id && credential.kind === 'session' &&
+      credential.source === 'fastkore' && !credential.browserParentId && Date.parse(credential.expiresAt ?? '') > Date.now() &&
+      !!this.externalCredentialValid?.(credential);
+  }
+  issueBrowserCode(principal: Principal) {
+    if (!this.canOpenBrowserSettings(principal)) throw new BridgeError('Откройте настройки из сеанса администратора Fastkore.', 403);
+    const now = Date.now(), sessionId = principal.credential.id;
+    for (const [key, entry] of this.browserCodes) {
+      if (entry.expiresAt <= now || entry.sessionId === sessionId) this.browserCodes.delete(key);
+    }
+    if (this.browserCodes.size >= 2048) throw new BridgeError('Слишком много запросов на вход. Попробуйте позже.', 429);
+    const code = randomBytes(32).toString('base64url');
+    const expiresAt = Math.min(now + 60_000, Date.parse(principal.credential.expiresAt!));
+    this.browserCodes.set(digest(code), { sessionId, expiresAt });
+    return { code, expiresAt };
+  }
+  redeemBrowserCode(code: string, previousToken: string) {
+    const key = digest(code), grant = this.browserCodes.get(key);
+    this.browserCodes.delete(key);
+    const invalid = () => new BridgeError('Ссылка истекла или уже использована. Откройте настройки из Fastkore заново.', 401);
+    if (!grant || grant.expiresAt <= Date.now()) throw invalid();
+    return this.changeAccess(draft => {
+      if (grant.expiresAt <= Date.now()) throw invalid();
+      const parent = this.authenticateCredential(grant.sessionId);
+      if (!this.canOpenBrowserSettings(parent)) throw invalid();
+      const data = draft.security!;
+      const credential = parent.credential;
+      const previous = previousToken && data.credentials.find(c => c.hash === digest(previousToken));
+      if (previous && Date.parse(previous.expiresAt ?? '') > Date.now() && previous.userId !== parent.user.id) {
+        throw new BridgeError('В браузере уже открыт сеанс другого сотрудника. Выйдите из него и снова откройте настройки из Fastkore.', 409);
+      }
+      if (previous && previous.browserParentId) data.credentials = data.credentials.filter(c => c.id !== previous.id);
+      const { installationId, externalUserId, externalDisplayName, externalRoles } = credential;
+      this.audit(parent.user.id, 'sso.browser.login', installationId!, data);
+      return this.issueSession(parent.user, 'Настройки из Fastkore', { source: 'fastkore', installationId, externalUserId,
+        externalDisplayName, externalRoles, browserParentId: credential.id }, data, undefined, Date.parse(credential.expiresAt!));
+    });
   }
   changeInterfaceScale(current: () => Principal, interfaceScale: InterfaceScale) {
     return this.changeAccess(draft => {

@@ -8,6 +8,7 @@ type Request = <T>(url: string, init?: RequestInit) => Promise<T>;
 const labels: Record<string, string> = {
   setup: 'Настройка руководителя', 'user.create': 'Создан пользователь', 'sso.user.create': 'Создан пользователь',
   'sso.login': 'Вход через Fastkore', 'sso.identity.link': 'Связана учётная запись Fastkore',
+  'sso.browser.login': 'Вход в настройки из Fastkore',
   'user.update': 'Изменён пользователь', 'user.projects': 'Изменён доступ к проектам',
   'project.members': 'Изменены участники проекта', 'project.roles': 'Изменены роли проекта',
   'project.agents': 'Изменены агенты проекта', 'project.rename': 'Проект переименован',
@@ -30,7 +31,7 @@ const groups = [
   { id: 'access', label: 'Доступ к проектам', icon: LockKeyhole },
 ];
 function category(action: string) {
-  if (action === 'sso.login' || action === 'login') return 'login';
+  if (action === 'sso.login' || action === 'sso.browser.login' || action === 'login') return 'login';
   if (['user.projects', 'project.members', 'project.roles', 'project.agents', 'chat.private', 'chat.project'].includes(action)) return 'access';
   if (action.endsWith('.update') || action.startsWith('sso.installation') || action === 'password.change' || action === 'setup') return 'settings';
   return 'action';

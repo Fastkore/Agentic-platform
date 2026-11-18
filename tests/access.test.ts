@@ -53,6 +53,63 @@ test('migration keeps session IDs, assigns private legacy chats to boss and reti
     const stored = await readFile(f.store.file, 'utf8'); assert.ok(!stored.includes(password)); assert.ok(!stored.includes(f.admin));
   } finally { await f.app.close(); }
 });
+
+test('a linked Fastkore administrator can open browser settings with a one-time code', async () => {
+  const f = await fixture();
+  try {
+    const enter = await f.pair(), externalUserId = randomUUID();
+    const external = await enter('Администратор ERP', externalUserId, [{ id: randomUUID(), name: 'Системный администратор' }]);
+    const issuePath = '/api/auth/fastkore/browser-code', exchangePath = '/auth/fastkore/browser/exchange';
+    assert.equal((await f.req('POST', issuePath, external.cookie, {})).statusCode, 403);
+    assert.equal((await f.req('POST', issuePath, f.admin, {})).statusCode, 403);
+    const { installationId } = (await f.req('GET', '/api/auth/me', external.cookie)).json().authentication;
+    assert.equal((await f.req('PUT', '/api/admin/fastkore/identities', f.admin, { installationId, externalUserId, userId: f.adminId })).statusCode, 200);
+    const parent = await enter('Администратор ERP', externalUserId);
+    const auth = (await f.req('GET', '/api/auth/me', parent.cookie)).json().authentication;
+    assert.equal(auth.canOpenBrowserSettings, true);
+    assert.equal((await f.req('GET', '/api/admin/instructions', parent.cookie)).statusCode, 403);
+    const projectRoles = `/api/projects/${f.project.id}/roles`;
+    assert.equal((await f.req('GET', projectRoles, parent.cookie)).statusCode, 403);
+
+    const issue = async () => {
+      const response = await f.req('POST', issuePath, parent.cookie, {});
+      assert.equal(response.statusCode, 200, response.body);
+      assert.equal(response.headers['cache-control'], 'no-store');
+      const { url, expiresAt } = response.json();
+      const link = new URL(url);
+      assert.equal(link.pathname, '/auth/fastkore/browser');
+      assert.equal(link.search, '');
+      assert.ok(expiresAt > Date.now() && expiresAt <= Date.now() + 60_000);
+      const code = new URLSearchParams(link.hash.slice(1)).get('code');
+      assert.match(code ?? '', /^[A-Za-z0-9_-]{43}$/);
+      return code!;
+    };
+    const exchange = (code: string) => f.req('POST', exchangePath, '', { code });
+    const superseded = await issue(), code = await issue();
+    assert.equal((await exchange(superseded)).statusCode, 401);
+    const crossSite = await f.app.inject({ method: 'POST', url: exchangePath,
+      headers: { host: 'agents.example.test', origin: 'https://example.test', 'x-forwarded-proto': 'https' }, payload: { code } });
+    assert.equal(crossSite.statusCode, 403);
+    const responses = await Promise.all([exchange(code), exchange(code)]);
+    assert.deepEqual(responses.map(response => response.statusCode).sort((a, b) => a - b), [200, 401]);
+    const signedIn = responses.find(response => response.statusCode === 200)!;
+    assert.deepEqual(signedIn.json(), { redirect: '/?settings=team' });
+    assert.match(String(signedIn.headers['set-cookie']), /; Secure; HttpOnly; SameSite=Lax/);
+    const cookie = String(signedIn.headers['set-cookie']).split(';')[0];
+    const browser = (await f.req('GET', '/api/auth/browser-session', cookie)).json();
+    assert.equal(browser.user.id, parent.user.id);
+    assert.equal(browser.authentication.browserSettings, true);
+    assert.equal(browser.authentication.canOpenBrowserSettings, false);
+    assert.ok(Date.parse(browser.authentication.expiresAt) <= Date.parse(auth.expiresAt));
+    assert.equal((await f.req('POST', issuePath, cookie, {})).statusCode, 403);
+    assert.equal((await f.req('GET', projectRoles, cookie)).statusCode, 200);
+    assert.equal((await f.req('GET', '/api/admin/instructions', cookie)).statusCode, 200);
+    assert.equal((await f.req('GET', '/api/admin/fastkore/installations', cookie)).statusCode, 403);
+    assert.equal((await f.req('POST', '/api/auth/logout', parent.cookie, {})).statusCode, 200);
+    assert.equal((await f.req('GET', projectRoles, cookie)).statusCode, 401);
+  } finally { await f.app.close(); }
+});
+
 test('ERP role grants control creating an isolated project and can be changed by the administrator', async () => {
   const f = await fixture();
   try {
@@ -86,20 +143,38 @@ test('ERP role grants control creating an isolated project and can be changed by
   } finally { await f.app.close(); }
 });
 
-test('renaming a project updates its display name and preserves its directory and chats', async () => {
+test('renaming a project from Fastkore requires a permitted role assigned to that project', async () => {
   const f = await fixture();
   try {
-    const employee = await f.employee('colleague');
+    const assigned = { id: randomUUID(), name: 'Участник' };
+    const unrelated = { id: randomUUID(), name: 'Другая роль' };
+    const employee = await f.employee('colleague', [assigned, unrelated]);
     const route = '/api/projects/' + f.project.id;
     const { directory } = f.project;
-    assert.equal((await f.req('PATCH', route, employee.token, { name: 'Другое имя' })).statusCode, 403);
+    const rename = (token: string, name: string) => f.req('PATCH', route, token, { name });
+    const canRename = async () => (await f.req('GET', '/api/projects', employee.token)).json()[0]?.canRename;
+    const grant = (roleId: string, renameProjects: boolean, revision = 0) => f.req('PATCH',
+      `/api/admin/erp-roles/${employee.projectRoles[0].installationId}/${roleId}/permissions`, f.admin,
+      { mcp: true, cli: true, renameProjects, revision });
+    assert.equal((await rename(employee.token, 'Другое имя')).statusCode, 404);
+    assert.equal((await f.setProjectRoles(employee.projectRoles.filter(role => role.roleId === assigned.id))).statusCode, 200);
+    assert.equal(await canRename(), false);
+    assert.equal((await grant(unrelated.id, true)).statusCode, 200);
+    assert.equal(await canRename(), false);
+    assert.equal((await rename(employee.token, 'Другое имя')).statusCode, 403);
     assert.equal((await f.req('PATCH', route, f.admin, { name: '   ' })).statusCode, 400);
-    const updated = await f.req('PATCH', route, f.admin, { name: ' Новое имя ' });
+    assert.equal((await rename(f.admin, 'Имя от администратора')).statusCode, 200);
+    assert.equal((await grant(assigned.id, true)).statusCode, 200);
+    assert.equal(await canRename(), true);
+    const updated = await rename(employee.token, ' Новое имя ');
     assert.equal(updated.statusCode, 200, updated.body);
     assert.deepEqual(updated.json(), { name: 'Новое имя' });
     assert.equal(f.workspace.project(f.project.id).directory, directory);
     assert.equal((await f.req('GET', route + '/chats/' + f.legacy.id, f.admin)).statusCode, 200);
     assert.equal((await f.req('GET', '/api/projects', f.admin)).json()[0].name, 'Новое имя');
+    assert.equal((await grant(assigned.id, false, 1)).statusCode, 200);
+    assert.equal(await canRename(), false);
+    assert.equal((await rename(employee.token, 'Имя после отзыва')).statusCode, 403);
   } finally { await f.app.close(); }
 });
 

@@ -1,0 +1,48 @@
+diff --git a/Source/Controls/EntityView/AIAssistantButton.xaml.cs b/Source/Controls/EntityView/AIAssistantButton.xaml.cs
+--- a/Source/Controls/EntityView/AIAssistantButton.xaml.cs
++++ b/Source/Controls/EntityView/AIAssistantButton.xaml.cs
+@@ -449,6 +449,44 @@
+                                 themeConfirmed = root.GetProperty("theme").GetString() == AgentPlatformTheme;
+                                 showReady();
+                             }
++                            else if (type == "fastkore.open_browser")
++                            {
++                                if (!root.TryGetProperty("request_id", out JsonElement requestIdValue) ||
++                                    requestIdValue.ValueKind != JsonValueKind.String ||
++                                    !Guid.TryParseExact(requestIdValue.GetString(), "D", out _))
++                                    return;
++
++                                bool opened = false;
++                                // Only the Agent Platform browser-settings handoff may leave the WebView.
++                                if (phase == "ready" && source.AbsolutePath == "/" &&
++                                    root.TryGetProperty("url", out JsonElement urlValue) && urlValue.ValueKind == JsonValueKind.String &&
++                                    Uri.TryCreate(urlValue.GetString(), UriKind.Absolute, out Uri browserUrl) &&
++                                    browserUrl.Scheme == Uri.UriSchemeHttps && browserUrl.GetLeftPart(UriPartial.Authority) == origin &&
++                                    string.IsNullOrEmpty(browserUrl.UserInfo) && string.IsNullOrEmpty(browserUrl.Query) &&
++                                    browserUrl.AbsolutePath == "/auth/fastkore/browser" &&
++                                    System.Text.RegularExpressions.Regex.IsMatch(browserUrl.Fragment, @"\A#code=[A-Za-z0-9_-]{43}\z"))
++                                {
++                                    try
++                                    {
++                                        System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
++                                        {
++                                            FileName = browserUrl.AbsoluteUri,
++                                            UseShellExecute = true
++                                        })?.Dispose();
++                                        opened = true;
++                                    }
++                                    catch (System.ComponentModel.Win32Exception) { }
++                                    catch (InvalidOperationException) { }
++                                }
++
++                                webView.CoreWebView2.PostWebMessageAsJson(JsonSerializer.Serialize(new
++                                {
++                                    type = "fastkore.browser_result",
++                                    version = 1,
++                                    request_id = requestIdValue.GetString(),
++                                    ok = opened
++                                }));
++                            }
+                             else if (type == "fastkore.sso.required" && (phase == "ready" || phase == "reload"))
+                             {
+                                 QueueAgentPlatformError(webView, host, "Сессия Agent Platform завершена. Повторите вход из ERP.");

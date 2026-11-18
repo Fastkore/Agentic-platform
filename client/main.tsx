@@ -9,7 +9,8 @@ import './workspace.css';
 import { ChatArchiveDialog } from './ChatArchiveDialog';
 import { shortUserName } from './user-name';
 import { chatTooltip, dateTooltip, shortDate } from './chat-date';
-import { openFastkoreTarget, parseHostTheme, webViewHost, type Theme } from './fastkore';
+import { openFastkoreBrowser, openFastkoreTarget, parseHostTheme, webViewHost, type Theme } from './fastkore';
+import { Settings as SettingsIcon } from 'lucide-react';
 import { Select, type SelectHandle } from './Select';
 import { ExecutionAccountsPanel } from './ExecutionAccountsPanel';
 import { executionConnected } from '../shared/execution-accounts';
@@ -288,19 +289,21 @@ function App() {
   const canPromptForProject = !!status && !chatId && !projectId && !(relatedLoading && currentErpContext.current.active);
   const canSend = !!status && !(relatedLoading && currentErpContext.current.active) && !status.executionDisabled && !codexUnavailable && (!canReadFastkore || !contextProblem || !!currentErpContext.current.snapshot) && (!attachments.length || canAttach)
     && !!messageAgent?.available && (!specialistId || otherSpecialists.some(agent => agent.id === specialistId)) && (chatId ? canEdit : canStartChat);
-  const canManageSettings = isAdmin && !inFastkore;
-  const canManageProjects = canManageSettings && authSource === 'local';
+  const canManageSettings = isAdmin && !inFastkore && (authSource === 'local' || !!erpAuth?.browserSettings);
+  const canManageProjects = canManageSettings;
+  const canAttachProjectDirectory = canManageProjects && authSource === 'local';
   const visibleSettingsSections = (Object.keys(settingsSections) as SettingsSection[]).filter(section =>
-    section === 'projects' || section === 'employeeInstructions' ? canManageProjects : canManageSettings || section === 'personal');
+    section === 'fastkore' ? canManageSettings && authSource === 'local' : canManageSettings || section === 'personal');
   const instructionSettings = settingsSection === 'personal' || settingsSection === 'employeeInstructions';
   const relatedPanelOpen = panel === 'related';
   useEffect(() => {
-    if (!loggedIn || !isAdmin || authSource !== 'local' || inFastkore || setupRequired || openedFastkoreSettings.current) return;
-    if (new URLSearchParams(location.search).get('settings') !== 'fastkore') return;
+    if (!loggedIn || !canManageSettings || setupRequired || openedFastkoreSettings.current) return;
+    const requested = new URLSearchParams(location.search).get('settings');
+    if (!(requested === 'fastkore' && authSource === 'local') && !(requested === 'team' && erpAuth?.browserSettings)) return;
     openedFastkoreSettings.current = true;
-    setSettingsSection('fastkore');
+    setSettingsSection(requested === 'fastkore' ? 'fastkore' : 'team');
     setPanel('settings');
-  }, [loggedIn, isAdmin, authSource, inFastkore, setupRequired]);
+  }, [loggedIn, canManageSettings, authSource, erpAuth?.browserSettings, setupRequired]);
   const theme = inFastkore ? erpTheme?.theme ?? initialErpTheme : browserTheme;
   const modelName = (id?: string) => id ? (catalog?.models.find(m => m.id === id)?.name ?? id) : 'Модель';
   const selected = useRef({ projectId, chatId }); selected.current = { projectId, chatId };
@@ -1217,11 +1220,15 @@ function App() {
           const visible = [...pinned, ...(showAll[project.id] ? recent : recent.slice(0, 5))];
           const canManageProject = canManageProjects;
           const newChatDisabled = pending || (project.id === projectId && !newAgent);
+          const projectRow = <button className="workspace-row project-row" onClick={() => toggleProject(project.id)} aria-expanded={open}
+            aria-controls={'chats-' + project.id} title={project.name}>
+            <Folder size={14} /><span>{project.name}</span>{open ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+          </button>;
           return <div key={project.id} className="project-group">
             <div className="project-line">
-              <button className="workspace-row project-row" onClick={() => toggleProject(project.id)} aria-expanded={open} aria-controls={'chats-' + project.id} title={project.name}>
-                <Folder size={14} /><span>{project.name}</span>{open ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-              </button>
+              {inFastkore && project.canRename ? <FastkoreProjectRename name={project.name} save={name => saveProjectName(project.id, name)}>
+                {projectRow}
+              </FastkoreProjectRename> : projectRow}
               {!canManageProject && <button className="workspace-icon project-new-chat" title="Новый чат в проекте" aria-label={'Новый чат в проекте ' + project.name} disabled={newChatDisabled} onClick={() => void newChat(project.id, false)}><SquarePen size={17} /></button>}
               {canManageProject && <details className="project-actions" onBlur={e => {
                 if (!e.currentTarget.contains(e.relatedTarget)) e.currentTarget.open = false;
@@ -1279,14 +1286,18 @@ function App() {
         <Archive size={17} aria-hidden="true" />Архив чатов
       </button></div>}
       <div className="workspace-account">
-        {isAdmin && !inFastkore ? <details ref={accountMenu} onBlur={e => { if (!e.currentTarget.contains(e.relatedTarget)) e.currentTarget.open = false; }}
+        {canManageSettings ? <details ref={accountMenu} onBlur={e => { if (!e.currentTarget.contains(e.relatedTarget)) e.currentTarget.open = false; }}
           onKeyDown={e => { if (e.key === 'Escape') { e.currentTarget.open = false; e.currentTarget.querySelector('summary')?.focus(); } }}>
           <summary className="workspace-row account-row" title={user.name}><span className="account-initial">{user.name.trim()[0]?.toUpperCase()}</span><span>{shortUserName(user.name)}</span><ChevronDown size={14} /></summary>
           <div className="account-actions">
             <button className="workspace-row" onClick={showSettings}><Settings2 size={17} />Настройки</button>
             <button className="workspace-row" onClick={logout}><LogOut size={17} />Выйти</button>
           </div>
-        </details> : <button type="button" className="workspace-row account-row" aria-label="Настройки" title="Настройки" onClick={showSettings}>
+        </details> : inFastkore && erpAuth?.canOpenBrowserSettings && isAdmin ? <div className="workspace-row account-row fastkore-account-actions">
+          <span className="account-initial">{user.name.trim()[0]?.toUpperCase()}</span><span className="fastkore-account-name">{shortUserName(user.name)}</span>
+          <FastkoreBrowserSettingsButton />
+          <button type="button" className="workspace-icon" aria-label="Личные настройки" title="Личные настройки" onClick={showSettings}><Settings2 size={16} aria-hidden="true" /></button>
+        </div> : <button type="button" className="workspace-row account-row" aria-label="Настройки" title="Настройки" onClick={showSettings}>
           <span className="account-initial">{user.name.trim()[0]?.toUpperCase()}</span><span>{shortUserName(user.name)}</span><Settings2 size={16} aria-hidden="true" />
         </button>}
       </div>
@@ -1412,7 +1423,7 @@ function App() {
       <form onSubmit={e => { e.preventDefault(); void action(async () => {
         const selectForChat = projectFromComposer.current || (!!relatedDraftKey && !chatId);
         const previous = selected.current, navigation = contextNavigation.current;
-        const p = await post<ProjectSummary>('/api/projects', { ...(folderPath.trim() && canManageProjects ? { directory: folderPath.trim() } : {}), ...(projectName.trim() ? { name: projectName.trim() } : {}) });
+        const p = await post<ProjectSummary>('/api/projects', { ...(folderPath.trim() && canAttachProjectDirectory ? { directory: folderPath.trim() } : {}), ...(projectName.trim() ? { name: projectName.trim() } : {}) });
         setProjects(await api('/api/projects'));
         closePanel(); setFolderPath(''); setProjectName('');
         if (selected.current.projectId !== previous.projectId || selected.current.chatId !== previous.chatId ||
@@ -1421,10 +1432,10 @@ function App() {
         else navigateTo(p.id);
       }); }}>
         <input id="project-name" aria-label="Название проекта" placeholder="Введите название" value={projectName}
-          onChange={e => setProjectName(e.target.value)} required={!canManageProjects || !folderPath.trim()} maxLength={100} autoFocus />
-        {canManageProjects && <><label htmlFor="directory">Папка на сервере <span>необязательно</span></label><input id="directory" value={folderPath} onChange={e => setFolderPath(e.target.value)} placeholder={status?.executionDisabled ? '/projects/Финансы' : 'C:\\Проекты\\Финансы'} /></>}
+          onChange={e => setProjectName(e.target.value)} required={!canAttachProjectDirectory || !folderPath.trim()} maxLength={100} autoFocus />
+        {canAttachProjectDirectory && <><label htmlFor="directory">Папка на сервере <span>необязательно</span></label><input id="directory" value={folderPath} onChange={e => setFolderPath(e.target.value)} placeholder={status?.executionDisabled ? '/projects/Финансы' : 'C:\\Проекты\\Финансы'} /></>}
         {error && <div className="inline-error" role="alert">{error}</div>}
-        <button className="primary w-full" disabled={pending}>{folderPath.trim() && canManageProjects ? 'Подключить папку' : 'Создать проект'}</button>
+        <button className="primary w-full" disabled={pending}>{folderPath.trim() && canAttachProjectDirectory ? 'Подключить папку' : 'Создать проект'}</button>
       </form>
     </WorkspaceDialog>}
     {panel === 'project-settings' && projectActionTarget && canManageProjects &&
@@ -1460,7 +1471,7 @@ function App() {
           {error && <div className="inline-error" role="alert">{error}</div>}
           <Suspense fallback={<p role="status">Загрузка…</p>}>
           {settingsSection === 'account' && <AccountPanel request={api} renewed={saveToken} fastkore={authSource === 'fastkore'} />}
-          {settingsSection === 'team' && <TeamPanel request={api} self={user} />}
+          {settingsSection === 'team' && <TeamPanel request={api} self={user} manageAdministrators={authSource === 'local'} />}
           {settingsSection === 'projects' && <>
             <input type="search" aria-label="Поиск по проектам" placeholder="Поиск по проектам…" value={settingsProjectSearch}
               onChange={event => setSettingsProjectSearch(event.target.value)} />
@@ -1488,9 +1499,9 @@ function App() {
             </div>
           </form>}
           {settingsSection === 'server' && <>
-            {status?.isolatedCodex && authSource === 'local' && !inFastkore && <ExecutionAccountsPanel request={api} busy={busy || pending}
+            {status?.isolatedCodex && canManageSettings && <ExecutionAccountsPanel request={api} busy={busy || pending}
               changed={async () => { await post('/api/cli/check'); setStatus(await api('/api/status')); await loadModels(true); }} />}
-            {canManageProjects && !projects.length && <section className="setting-section"><h3>История настольной версии</h3><button className="secondary w-full" disabled={pending || busy} onClick={() => void action(async () => {
+            {canAttachProjectDirectory && !projects.length && <section className="setting-section"><h3>История настольной версии</h3><button className="secondary w-full" disabled={pending || busy} onClick={() => void action(async () => {
               await post('/api/migrations/desktop'); setProjects(await api('/api/projects')); setStatus(await api('/api/status')); closePanel();
             })}>Перенести проекты и историю</button></section>}
             <section className="setting-section"><h3>Адрес сервера</h3>
@@ -1528,13 +1539,13 @@ function App() {
               <Toggle checked={status?.settings.allowWrite ?? false} disabled={busy || pending} title="Разрешить запись в проект" onChange={allowWrite => void saveSettings({ allowWrite })} />
               <Toggle checked={status?.settings.includePreviews ?? true} disabled={busy || pending} title="Добавлять выдержки из документов" onChange={includePreviews => void saveSettings({ includePreviews })} />
             </section>}
-            {status?.workerFilesAvailable && authSource === 'local' && !inFastkore && <section className="setting-section">
+            {status?.workerFilesAvailable && canManageSettings && <section className="setting-section">
               <h3>Рабочая папка агента</h3>
               <Toggle checked={status.settings.allowWrite} disabled={busy || pending}
                 title="Разрешить запись в рабочую папку" onChange={allowWrite => void saveSettings({ allowWrite })} />
               <p className="help">Запись также должна быть разрешена в профиле агента. Готовые файлы можно скачать из чата.</p>
             </section>}
-            {status?.fileStorage && authSource === 'local' && !inFastkore && <section className="setting-section">
+            {status?.fileStorage && canManageSettings && <section className="setting-section">
               <h3>Хранилище файлов</h3>
               <label htmlFor="file-storage">Куда сохранять новые файлы</label>
               <Select id="file-storage" value={status.fileStorage.provider} disabled={pending}
@@ -1565,6 +1576,97 @@ function App() {
 
 const remainingPercent = (used: number) => Math.min(100, Math.max(0, 100 - used));
 const limitPercentFormat = new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 2 });
+
+function FastkoreBrowserSettingsButton() {
+  const [opening, setOpening] = useState(false), [copied, setCopied] = useState(false);
+  const [link, setLink] = useState<{ url: string; expiresAt: number }>();
+  const [error, setError] = useState('');
+  useEffect(() => {
+    if (!link) return;
+    const timer = setTimeout(() => { setLink(undefined); setError('Ссылка истекла. Получите новую.'); }, Math.max(0, link.expiresAt - Date.now()));
+    return () => clearTimeout(timer);
+  }, [link]);
+  async function open() {
+    if (opening) return;
+    setOpening(true);
+    setLink(undefined);
+    setError('');
+    setCopied(false);
+    try {
+      const value = await post<{ url: string; expiresAt: number }>('/api/auth/fastkore/browser-code');
+      const url = new URL(value.url);
+      if (url.origin !== location.origin || url.pathname !== '/auth/fastkore/browser' || url.search ||
+        !/^#code=[A-Za-z0-9_-]{43}$/.test(url.hash) || !Number.isFinite(value.expiresAt)) throw new Error('Сервер вернул некорректную ссылку для входа.');
+      if (!await openFastkoreBrowser(url.href)) setLink({ ...value, url: url.href });
+    } catch (cause) {
+      if ((cause as Error).name !== 'AbortError') setError((cause as Error).message);
+    } finally { setOpening(false); }
+  }
+  async function copy() {
+    if (!link) return;
+    try { await navigator.clipboard.writeText(link.url); setCopied(true); }
+    catch { setError('Скопируйте ссылку из поля вручную.'); }
+  }
+  return <>
+    <button type="button" className="workspace-icon" aria-label="Настройки в браузере" title="Настройки в браузере" disabled={opening}
+      onClick={() => void open()}>{opening ? <LoaderCircle size={17} className="spin" aria-hidden="true" /> : <SettingsIcon size={17} aria-hidden="true" />}</button>
+    {(link || error) && <WorkspaceDialog title="Настройки в браузере" className="workspace-chat-rename" close={() => { setLink(undefined); setError(''); }}>
+      <div className="panel-body">
+        {link && <><p className="help">Откройте одноразовую ссылку в обычном браузере.</p>
+          <input readOnly aria-label="Одноразовая ссылка" value={link.url} onFocus={event => event.currentTarget.select()} data-dialog-focus /></>}
+        {error && <p className="inline-error" role="alert">{error}</p>}
+        <div className="settings-dialog-actions">
+          {link ? <button type="button" className="primary" onClick={() => void copy()}>{copied ? 'Скопировано' : 'Скопировать ссылку'}</button>
+            : <button type="button" className="primary" onClick={() => void open()}>Получить новую ссылку</button>}
+        </div>
+      </div>
+    </WorkspaceDialog>}
+  </>;
+}
+
+function FastkoreProjectRename({ children, name, save }: {
+  children: React.ReactNode; name: string; save: (name: string) => Promise<string>;
+}) {
+  const [draft, setDraft] = useState<string>();
+  const [saving, setSaving] = useState(false), [error, setError] = useState('');
+  const button = useRef<HTMLButtonElement>(null);
+  const restoreFocus = useRef(false);
+  const editing = draft !== undefined;
+  useEffect(() => {
+    if (!editing && restoreFocus.current) {
+      restoreFocus.current = false;
+      button.current?.focus();
+    }
+  }, [editing]);
+  function close() {
+    setError('');
+    restoreFocus.current = true;
+    setDraft(undefined);
+  }
+  async function submit() {
+    const title = draft?.trim();
+    if (saving || !title) return;
+    if (title === name) { close(); return; }
+    setSaving(true);
+    setError('');
+    try { await save(title); close(); }
+    catch (cause) { setError((cause as Error).message); }
+    finally { setSaving(false); }
+  }
+  if (!editing) return <>{children}<button ref={button} type="button" className="workspace-icon project-rename"
+    title="Переименовать проект" aria-label={`Переименовать проект «${name}»`} onClick={() => setDraft(name)}><Pencil size={15} aria-hidden="true" /></button></>;
+  return <div className="project-name-editor">
+    <form className="project-rename-form" onSubmit={event => { event.preventDefault(); void submit(); }} onKeyDown={event => {
+      if (event.key === 'Escape' && !saving) { event.preventDefault(); event.stopPropagation(); close(); }
+    }}>
+      <input aria-label="Название проекта" value={draft} maxLength={100} required autoFocus readOnly={saving}
+        onFocus={event => event.currentTarget.select()} onChange={event => setDraft(event.currentTarget.value)} />
+      <button className="workspace-icon" type="submit" title="Сохранить название" aria-label="Сохранить название" disabled={saving || !draft.trim()}><Check size={15} aria-hidden="true" /></button>
+      <button className="workspace-icon" type="button" title="Отменить переименование" aria-label="Отменить переименование" disabled={saving} onClick={close}><X size={15} aria-hidden="true" /></button>
+    </form>
+    {error && <p className="project-rename-error" role="alert">{error}</p>}
+  </div>;
+}
 
 function LinkedFastkoreNotice({ target }: { target?: FastkoreNavigationTarget }) {
   const [pending, setPending] = useState(false);

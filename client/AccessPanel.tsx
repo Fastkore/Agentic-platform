@@ -56,7 +56,7 @@ export function AccountPanel({ request, renewed, fastkore }: { request: Request;
   </>;
 }
 
-export function TeamPanel({ request, self }: { request: Request; self: User }) {
+export function TeamPanel({ request, self, manageAdministrators }: { request: Request; self: User; manageAdministrators: boolean }) {
   const [users, setUsers] = useState<TeamUser[]>([]);
   const [error, setError] = useState(''), [busy, setBusy] = useState(false);
 
@@ -100,7 +100,7 @@ export function TeamPanel({ request, self }: { request: Request; self: User }) {
           </div></td>
           <td><div className="team-access-actions">
             <label className={"check-setting team-access" + (user.disabled ? " inactive" : " active")}>
-              <input type="checkbox" checked={!user.disabled} disabled={busy || user.id === self.id}
+              <input type="checkbox" checked={!user.disabled} disabled={busy || user.id === self.id || (user.role === 'admin' && !manageAdministrators)}
                 aria-label={'Активен · ' + user.name}
                 onChange={e => {
                   const disabled = !e.target.checked;

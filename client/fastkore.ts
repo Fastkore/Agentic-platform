@@ -6,6 +6,28 @@ export interface WebViewHost {
   removeEventListener(type: 'message', listener: (event: { data: unknown }) => void): void;
 }
 export function webViewHost(): WebViewHost | undefined { return (window as Window & { chrome?: { webview?: WebViewHost } }).chrome?.webview; }
+
+export function openFastkoreBrowser(url: string) {
+  const host = webViewHost();
+  if (!host) return Promise.resolve(false);
+  return new Promise<boolean>(resolve => {
+    const request_id = crypto.randomUUID();
+    const finish = (ok: boolean) => {
+      clearTimeout(timer);
+      host.removeEventListener('message', receive);
+      resolve(ok);
+    };
+    const receive = ({ data }: { data: unknown }) => {
+      if (!data || typeof data !== 'object') return;
+      const { type, version, request_id: id, ok } = data as Record<string, unknown>;
+      if (type === 'fastkore.browser_result' && version === 1 && id === request_id && typeof ok === 'boolean') finish(ok);
+    };
+    const timer = setTimeout(() => finish(false), 1800);
+    host.addEventListener('message', receive);
+    try { host.postMessage({ type: 'fastkore.open_browser', version: 1, request_id, url }); }
+    catch { finish(false); }
+  });
+}
 export type Theme = 'light' | 'dark';
 export function parseHostTheme(value: unknown): Theme | null {
   if (!value || typeof value !== 'object') return null;

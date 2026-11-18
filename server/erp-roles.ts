@@ -15,6 +15,15 @@ export function projectAllowsRoles(project: Project, installationId?: string, ro
     roles?.some(current => current.id === role.roleId)) ?? false;
 }
 
+export function canRenameProject(state: RoleState, user: User, project: Project, credential: Credential) {
+  if (user.disabled) return false;
+  if (user.role === 'admin') return true;
+  const { installationId, externalRoles } = credential;
+  if (credential.source !== 'fastkore' || credential.userId !== user.id || !installationId) return false;
+  const roles = externalRoles?.filter(role => erpRolePermissions(state, installationId, role.id).renameProjects);
+  return projectAllowsRoles(project, installationId, roles);
+}
+
 export function projectRoleOptions(state: RoleState): ProjectRoleLabel[] {
   const names = new Map(state.sso?.installations?.map(({ id, name }) => [id, name]));
   return (state.sso?.roles ?? []).map(({ id, name, installationId }) => ({
@@ -29,6 +38,7 @@ export function erpRolePermissions(state: RoleState, installationId: string, rol
     webSearch: saved?.webSearch ?? saved?.webRead ?? false,
     webRequests: saved?.webRequests ?? false, readOnly: saved?.readOnly ?? false,
     createProjects: saved?.createProjects ?? projectCreationRoles.has(roleName?.trim().toLocaleLowerCase('ru-RU') ?? ''),
+    renameProjects: saved?.renameProjects ?? false,
     revision: saved?.revision ?? 0 };
 }
 

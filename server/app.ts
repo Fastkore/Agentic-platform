@@ -25,12 +25,12 @@ import { FastkoreMcp } from './fastkore-mcp.js';
 import { FastkoreCli, type FastkoreCliTiming } from './fastkore-cli.js';
 import { elapsedMs } from './run-timing.js';
 import { RemoteCodexRunner } from './codex-remote.js';
-import { canAccessProject, projectRoleOptions, erpRoleCatalog, restoreErpRoles, erpRolePermissions, erpCredentialPermissions, internetCredentialPermissions, isErpReadOnly, erpReadOnlyMessage, fastkoreReadCommands } from './erp-roles.js';
+import { canAccessProject, canRenameProject, projectRoleOptions, erpRoleCatalog, restoreErpRoles, erpRolePermissions, erpCredentialPermissions, internetCredentialPermissions, isErpReadOnly, erpReadOnlyMessage, fastkoreReadCommands } from './erp-roles.js';
 import { withInternetTools } from './internet-tools.js';
 import { withFastkoreCliDescription } from './codex-tools.js';
 import { withFastkoreCliCommands } from './fastkore-cli-tools.js';
 import type { AgentProfile, Credential, Dataset, FastkoreAuthentication, FastkoreInstallation, FastkoreKeyIssue, FastkoreRolePermissions, FileStorageProvider, ProjectAgentPolicy, ProjectAgentSettings, Settings, User, WorkRole } from '../shared/types.js';
-import type { AuditEvent, ProjectRolePolicy, ProjectRoleSettings, RelatedChatSummary, Run } from '../shared/types.js';
+import type { AuditEvent, ProjectRolePolicy, ProjectRoleSettings, RelatedChatSummary, Run, UserRecord } from '../shared/types.js';
 import { agentToolIds } from '../shared/agent-tools.js';
 import { operationIds } from './corporate.js';
 import { FastkoreSso, loadSsoKey, cookieToken, csrfFor, validCsrf, setSessionCookie, setStartCookie, startCookie, normalizeTheme, uuid, type InstallationPatch, type PairingClient, type Theme, type TicketValidator } from './fastkore.js';
@@ -68,6 +68,7 @@ function erpAuditIds(parameters: Record<string, unknown>) {
 }
 export interface AppOptions { clientRoot?: string; port?: number; lan?: boolean; publicOrigin?: string; trustedProxies?: string[]; ssoKey?: Buffer; ticketValidator?: TicketValidator; pairingClient?: PairingClient; transcribeDictation?: TranscribeDictation }
 const ssoStart = '/auth/fastkore/start', ssoExchange = '/auth/fastkore/exchange';
+const ssoBrowser = '/auth/fastkore/browser';
 function ssoPage(theme: Theme, challenge?: string) {
   const message = challenge ? 'Вход через Fastkore' : 'Откройте помощника из ERP заново.';
   const bootstrap = challenge ? '<meta name="fastkore-login-challenge" content="' + challenge + '"><script defer src="/auth/fastkore/challenge.js"></script>' : '';
@@ -212,6 +213,13 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
     if (p.credential.source === 'fastkore') throw new BridgeError('Требуется локальный вход руководителя.', 403);
     access.admin(p.user); return p.user;
   };
+  const isSettingsAdmin = ({ user, credential }: Principal) => user.role === 'admin' &&
+    (credential.source !== 'fastkore' || !!credential.browserParentId);
+  const settingsAdmin = (r: FastifyRequest) => {
+    const p = principal(r);
+    if (!isSettingsAdmin(p)) throw new BridgeError('Откройте настройки в браузере из сеанса администратора.', 403);
+    return p.user;
+  };
   const configuredSso = () => {
     if (!sso) throw new BridgeError('На сервере не настроен ключ шифрования Fastkore.', 503);
     return sso;
@@ -221,6 +229,7 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
   let logins = 0;
   const starts = new Map<string, { count: number; until: number }>();
   const exchanges = new Map<string, { count: number; until: number }>();
+  const browserExchanges = new Map<string, { count: number; until: number }>();
   const throttled = () => new BridgeError('Слишком много попыток входа. Повторите позже.', 429);
   const rateLimit = (key: string, bucket: typeof attempts, max: number) => {
     const now = Date.now();
@@ -357,11 +366,38 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
       return reply.header('Set-Cookie', [setStartCookie('', 0), setSessionCookie(issued.token, maxAge)]).code(303).header('Location', '/?embedded=fastkore&theme=' + theme).send();
     } finally { logins--; }
   });
+  app.get(ssoBrowser, { exposeHeadRoute: false }, (request, reply) => {
+    secureRequest(request);
+    return reply.type('text/html; charset=utf-8').send('<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width">'
+      + '<title>Вход в настройки Agent Platform</title><script defer src="/fastkore-browser-settings.js"></script>'
+      + '<style>:root{color-scheme:light dark;font:16px system-ui}body{margin:2rem}</style></head><body>'
+      + '<p role="status">Открываем настройки Agent Platform…</p></body></html>');
+  });
+  app.post('/api/auth/fastkore/browser-code', request => {
+    secureRequest(request);
+    const { code, expiresAt } = access.issueBrowserCode(principal(request));
+    return { url: publicOrigin + ssoBrowser + '#code=' + code, expiresAt };
+  });
+  app.post<{ Body: { code: string } }>(ssoBrowser + '/exchange', {
+    bodyLimit: 512,
+    schema: { body: object({ code: { type: 'string', pattern: '^[A-Za-z0-9_-]{43}$' } }, ['code']) },
+  }, async (request, reply) => {
+    secureRequest(request);
+    const site = request.headers['sec-fetch-site'];
+    if (request.headers.origin !== publicOrigin || (site && site !== 'same-origin') || request.headers.authorization || request.url.includes('?')) {
+      throw new BridgeError('Откройте ссылку на настройки из Fastkore.', 403);
+    }
+    rateLimit(request.ip, browserExchanges, 120).count++;
+    const issued = await access.redeemBrowserCode(request.body.code, cookieToken(request.headers.cookie));
+    const maxAge = Math.floor((Date.parse(issued.expiresAt) - Date.now()) / 1000);
+    return reply.header('Set-Cookie', setSessionCookie(issued.token, Math.max(0, maxAge))).send({ redirect: '/?settings=team' });
+  });
   await app.register(multipart, { limits: { fileSize: maxUploadBytes, files: 1, fields: 0, parts: 1 } });
   app.get('/api/health', async () => ({ name: 'Codex Chat Bridge', version: '0.6.0', ok: true }));
   const authDetails = (p: Principal, token: string): FastkoreAuthentication => ({
     source: 'fastkore', installationId: p.credential.installationId!, externalUserId: p.credential.externalUserId!,
     expiresAt: p.credential.expiresAt!, csrfToken: csrfFor(token), canChangePassword: false, roles: p.credential.externalRoles,
+    canOpenBrowserSettings: access.canOpenBrowserSettings(p), browserSettings: !!p.credential.browserParentId,
   });
   app.get('/api/auth/browser-session', async request => {
     const token = cookieToken(request.headers.cookie);
@@ -407,7 +443,7 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
   app.patch<{ Params: { installationId: string; roleId: string }; Body: FastkoreRolePermissions }>(
     '/api/admin/erp-roles/:installationId/:roleId/permissions', { schema: { body: object({ mcp: { type: 'boolean' }, cli: { type: 'boolean' },
       webSearch: { type: 'boolean' }, webRead: { type: 'boolean' }, webRequests: { type: 'boolean' },
-      readOnly: { type: 'boolean' }, createProjects: { type: 'boolean' },
+      readOnly: { type: 'boolean' }, createProjects: { type: 'boolean' }, renameProjects: { type: 'boolean' },
       revision: { type: 'integer', minimum: 0 } }, ['mcp', 'cli', 'revision']) } }, async request => {
       admin(request);
       return workspace.store.changeAccess(draft => {
@@ -418,13 +454,14 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
         const records = draft.sso.rolePermissions ??= [];
         const value = { installationId, roleId, mcp: request.body.mcp, cli: request.body.cli,
           readOnly: request.body.readOnly ?? previous.readOnly, createProjects: request.body.createProjects ?? previous.createProjects,
+          renameProjects: request.body.renameProjects ?? previous.renameProjects,
           webSearch: request.body.webSearch ?? previous.webSearch,
           webRead: request.body.webRead ?? previous.webRead, webRequests: request.body.webRequests ?? previous.webRequests, revision: previous.revision + 1 };
         const index = records.findIndex(item => item.installationId === installationId && item.roleId === roleId);
         if (index < 0) records.push(value); else records[index] = value;
         draft.security?.audit.unshift({ id: randomUUID(), actorId: actor.id, action: 'erp.role.permissions', targetId: installationId + '/' + roleId, createdAt: new Date().toISOString() });
         draft.security?.audit.splice(1000);
-        return { mcp: value.mcp, cli: value.cli, readOnly: value.readOnly, createProjects: value.createProjects,
+        return { mcp: value.mcp, cli: value.cli, readOnly: value.readOnly, createProjects: value.createProjects, renameProjects: value.renameProjects,
           webSearch: value.webSearch, webRead: value.webRead, webRequests: value.webRequests, revision: value.revision };
       });
     });
@@ -572,14 +609,14 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
     return instructionView(actor, credential);
   });
   app.get('/api/admin/instructions', async request => {
-    localAdmin(request);
+    settingsAdmin(request);
     const authors = new Set(workspace.store.personalInstructionAuthors());
     return access.data.users.filter(actor => authors.has(actor.id)).map(actor => ({
       id: actor.id, name: actor.name, role: workspace.corporate.role(actor)?.name,
     }));
   });
   const instructionAuthor = (request: FastifyRequest<{ Params: { id: string } }>) => {
-    localAdmin(request);
+    settingsAdmin(request);
     const author = access.data.users.find(actor => actor.id === request.params.id);
     if (!author) throw new BridgeError('Сотрудник не найден.', 404);
     return author;
@@ -591,7 +628,7 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
       const author = instructionAuthor(request);
       return editPersonalInstructions(workspace.store, author.id, request.body, {}, { roleId: instructionRole(author), admin: true });
     });
-  knowledgeRoutes(app, workspace.knowledge, localAdmin, uploads);
+  knowledgeRoutes(app, workspace.knowledge, settingsAdmin, uploads);
   const library = workspace.library;
   libraryRoutes(app, { registry: library.registry, policy: library.policy, reader: library.reader,
     actor: request => {
@@ -620,11 +657,12 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
     return (credential.externalRoles ?? []).filter(role => known.has(role.id) && erpRolePermissions(state, installationId, role.id).createProjects)
       .map(role => ({ installationId, roleId: role.id }));
   };
-  const canCreateProject = (u: User, credential: Credential) => credential.source === 'fastkore'
-    ? creationRoles(credential).length > 0 : u.role === 'admin';
+  const canCreateProject = (u: UserRecord, credential: Credential) => isSettingsAdmin({ user: u, credential }) ||
+    (credential.source === 'fastkore' && creationRoles(credential).length > 0);
   app.get('/api/status', async request => {
     const cli = await workspace.codexConnection();
     const { user: u, credential } = principal(request);
+    const manageSettings = isSettingsAdmin({ user: u, credential });
     const settings = workspace.store.state.settings;
     const fastkoreToolsStatus = credential.source === 'fastkore' ? fastkoreMcp?.status(credential) : undefined;
     const isolatedToolsEnabled = workspace.isolatedCodex && !workspace.executionDisabled;
@@ -664,12 +702,12 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
       cli: u.role === 'admin' ? cli : cli && { ...cli, path: '', status: '' },
       isolatedCodex: workspace.isolatedCodex, workerFilesAvailable: workspace.workerFilesAvailable, codexLimitsRevision: workspace.codexLimitsRevision,
       settings: { ...settings, cliPath: u.role === 'admin' ? settings.cliPath : '',
-        agentInstructions: u.role === 'admin' && credential.source !== 'fastkore' ? settings.agentInstructions : undefined },
+        agentInstructions: manageSettings ? settings.agentInstructions : undefined },
       addresses: publicOrigin ? [publicOrigin] : addresses(port, lan), port, lan, executionDisabled: workspace.executionDisabled,
       dictationAvailable: !!transcribeDictation, dictationEnabled: dictationEnabled(),
       fastkoreToolsStatus, toolPermissions,
       storageWarning: u.role === 'admin' ? workspace.store.warning : undefined,
-      fileStorage: u.role === 'admin' && credential.source === 'local' ? workspace.fileStorageStatus : undefined };
+      fileStorage: manageSettings ? workspace.fileStorageStatus : undefined };
   });
   app.get('/api/dictation/models', async request => {
     admin(request);
@@ -737,22 +775,21 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
   app.post('/api/subscription/check', async (request, reply) => { admin(request); const run = await workspace.subscription(); return reply.code(202).header('Location', `/api/runs/${run.id}`).send(run); });
   app.patch<{ Body: Partial<Settings> }>('/api/settings', { schema: { body: object({ cliPath: { type: 'string', maxLength: 2000 }, allowWrite: { type: 'boolean' }, includePreviews: { type: 'boolean' }, model: modelSchema, reasoningEffort: { enum: ['low', 'medium', 'high', 'xhigh'] }, dictationEnabled: { type: 'boolean' }, agentInstructions: string(8000) }) } }, async request => {
     admin(request);
-    if (request.body.agentInstructions !== undefined) localAdmin(request);
-    if (workspace.isolatedCodex && request.body.allowWrite !== undefined) localAdmin(request);
+    if (request.body.agentInstructions !== undefined || (workspace.isolatedCodex && request.body.allowWrite !== undefined)) settingsAdmin(request);
     if (request.body.dictationEnabled && !transcribeDictation) throw new BridgeError('Сервис распознавания речи не настроен.', 409);
     const settings = await workspace.settings(request.body);
-    return principal(request).credential.source === 'fastkore' ? { ...settings, agentInstructions: undefined } : settings;
+    return isSettingsAdmin(principal(request)) ? settings : { ...settings, agentInstructions: undefined };
   });
   app.patch<{ Body: { provider: FileStorageProvider } }>('/api/settings/file-storage', {
     schema: { body: object({ provider: { enum: ['local', 's3'] } }, ['provider']) },
-  }, request => workspace.changeFileStorage(request.body.provider, () => { localAdmin(request); }));
+  }, request => workspace.changeFileStorage(request.body.provider, () => { settingsAdmin(request); }));
   app.get('/api/diagnostics', async request => { admin(request); return { text: (await readFile(path.join(workspace.store.root, 'diagnostics.log'), 'utf8').catch(() => '')).slice(-12_000) }; });
   workspace.prepareInternetTools = (other, credentialId, authorize) => withInternetTools(other,
     () => { authorize(); return internetCredentialPermissions(workspace.store.state, access.authenticateCredential(credentialId).credential); },
     authorize, (query, signal) => accountWorker ? accountWorker.searchInternet(query, signal)
       : Promise.resolve({ success: false, text: 'Интернет-поиск требует отдельного исполнителя.' }));
   const accountAccess = (request: FastifyRequest, changing = false) => {
-    localAdmin(request);
+    settingsAdmin(request);
     if (!accountWorker) throw new BridgeError('Управление аккаунтами требует отдельного исполнителя.', 503);
     if (changing && workspace.busy) throw new BridgeError('Дождитесь завершения заданий или остановите их.', 409);
     return accountWorker;
@@ -787,9 +824,10 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
   });
   app.get('/api/projects', async request => {
     const p = principal(request);
-    const catalog = p.user.role === 'admin' && p.credential.source !== 'fastkore' ? projectRoleOptions(workspace.store.state) : undefined;
+    const catalog = isSettingsAdmin(p) ? projectRoleOptions(workspace.store.state) : undefined;
     return workspace.store.state.projects.filter(project => canAccessProject(p.user, project, p.credential)).map(project => ({
       id: project.id, name: project.name, directory: project.directory,
+      canRename: canRenameProject(workspace.store.state, p.user, project, p.credential),
       chatCount: project.chats.filter(chat => !chat.archivedAt && access.canChat(p.user, chat) && chatIdentityMatches(p, chat)).length,
       roles: catalog?.filter(role => project.rolePolicy?.roles.some(selected => selected.installationId === role.installationId && selected.roleId === role.roleId)),
     }));
@@ -812,10 +850,17 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
   });
   app.patch<{ Params: { projectId: string }; Body: { name: string } }>('/api/projects/:projectId', {
     schema: { body: object({ name: string(100) }, ['name']) },
-  }, request => workspace.renameProject(request.params.projectId, request.body.name, () => localAdmin(request).id));
+  }, request => workspace.renameProject(request.params.projectId, request.body.name, () => {
+    const principalNow = principal(request);
+    const project = access.project(principalNow.user, request.params.projectId, principalNow.credential);
+    if (!canRenameProject(workspace.store.state, principalNow.user, project, principalNow.credential)) {
+      throw new BridgeError('У вас нет права переименовать этот проект.', 403);
+    }
+    return principalNow.user.id;
+  }));
   const projectRolesPath = '/api/projects/:projectId/roles';
   app.get<{ Params: { projectId: string } }>(projectRolesPath, async (request): Promise<ProjectRoleSettings> => {
-    localAdmin(request);
+    settingsAdmin(request);
     const project = workspace.project(request.params.projectId);
     return { ...(project.rolePolicy ?? { revision: 0, roles: [] }), available: projectRoleOptions(workspace.store.state) };
   });
@@ -824,13 +869,13 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
       revision: { ...revision, minimum: 0 },
       roles: { type: 'array', maxItems: 1000, uniqueItems: true, items: object({ installationId: string(100), roleId: string(100) }, ['installationId', 'roleId']) },
     }, ['revision', 'roles']) },
-  }, request => access.setProjectRoles(() => localAdmin(request), request.params.projectId, request.body));
+  }, request => access.setProjectRoles(() => settingsAdmin(request), request.params.projectId, request.body));
   app.get<{ Params: { projectId: string } }>('/api/projects/:projectId/agents', async request => {
     return workspace.corporate.list(user(request), requestProject(request, request.params.projectId));
   });
   const projectAgentSettings = '/api/projects/:projectId/agent-settings';
   app.get<{ Params: { projectId: string } }>(projectAgentSettings, async (request): Promise<ProjectAgentSettings> => {
-    localAdmin(request);
+    settingsAdmin(request);
     const project = workspace.project(request.params.projectId);
     const files = workspace.projectFiles(project);
     const fileIds = new Set(files.map(file => file.id));
@@ -856,7 +901,7 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
       }, ['profileId', 'toolIds', 'fileIds']) },
     }, ['revision', 'connections']) },
   }, async request => {
-    const authorize = () => localAdmin(request);
+    const authorize = () => settingsAdmin(request);
     authorize();
     return workspace.corporate.saveProjectPolicy(workspace.project(request.params.projectId), request.body, authorize);
   });

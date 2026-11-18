@@ -88,13 +88,13 @@ export interface StoredErpDelegation { sealedGrant: string; expiresAt: number; r
 export interface FastkoreRole { id: string; name: string }
 export interface FastkoreRoleRecord extends FastkoreRole { installationId: string; lastSeenAt: string }
 export interface FastkoreRoleSnapshot { installationId: string; externalUserId: string; roles?: FastkoreRole[]; updatedAt: string }
-export interface FastkoreRolePermissions { mcp: boolean; cli: boolean; readOnly?: boolean; createProjects?: boolean; webSearch?: boolean; webRead?: boolean; webRequests?: boolean; revision: number }
+export interface FastkoreRolePermissions { mcp: boolean; cli: boolean; readOnly?: boolean; createProjects?: boolean; renameProjects?: boolean; webSearch?: boolean; webRead?: boolean; webRequests?: boolean; revision: number }
 export interface FastkoreRoleSummary extends FastkoreRoleRecord { installationName: string; userCount: number; permissions: FastkoreRolePermissions }
 export interface TeamUser extends User {
   erpRoles: { installationId: string; roles?: FastkoreRole[] }[];
   projects: { id: string; name: string }[];
 }
-export interface Credential { id: string; userId: string; kind: 'session' | 'api'; hash: string; name: string; createdAt: string; expiresAt?: string; source?: 'local' | 'fastkore'; installationId?: string; externalUserId?: string; externalDisplayName?: string; externalRoles?: FastkoreRole[]; erpDelegation?: StoredErpDelegation; erpDelegationRevoked?: true }
+export interface Credential { id: string; userId: string; kind: 'session' | 'api'; hash: string; name: string; createdAt: string; expiresAt?: string; source?: 'local' | 'fastkore'; installationId?: string; externalUserId?: string; externalDisplayName?: string; externalRoles?: FastkoreRole[]; erpDelegation?: StoredErpDelegation; erpDelegationRevoked?: true; browserParentId?: string }
 export interface AuditEvent {
   id: string; actorId: string; action: string; targetId: string; createdAt: string;
   details?: {
@@ -111,7 +111,7 @@ export interface FastkoreTlsInfo { origin: string; fingerprint: string; subject:
 export interface FastkoreTlsTrust extends FastkoreTlsInfo { pem: string }
 export interface FastkoreInstallation { id: string; name: string; validateTicketUrl: string; mcpUrl?: string; mcpEnabled?: boolean; cliEnabled?: boolean; enabled: boolean; autoProvision: true; defaultRoleId: 'sso_pending'; sessionTtlSeconds: 1800; pairingStatus: 'manual' | 'unpaired' | 'pending' | 'paired'; pairedAt?: string; pairingRotationPending?: boolean; tlsFingerprint?: string; tlsConfirmationRequired?: boolean }
 export interface FastkoreKeyIssue { installationId: string; connectionKey: string; erpKeyVerifier: string }
-export interface FastkoreAuthentication { source: 'fastkore'; installationId: string; externalUserId: string; expiresAt: string; csrfToken: string; canChangePassword: false; roles?: FastkoreRole[] }
+export interface FastkoreAuthentication { source: 'fastkore'; installationId: string; externalUserId: string; expiresAt: string; csrfToken: string; canChangePassword: false; roles?: FastkoreRole[]; canOpenBrowserSettings?: boolean; browserSettings?: boolean }
 export interface FastkorePairingAttempt {
   codeHash: string; origin: string; revision: string; expiresAt: number; rotate: boolean;
   encryptedKey?: string; completed?: true;
@@ -123,7 +123,7 @@ export interface StoredFastkoreInstallation extends Omit<FastkoreInstallation, '
 }
 export interface State { schemaVersion: 1; settings: Settings; projects: Project[]; runs: Run[]; jobs?: Job[]; externalIdentities?: ExternalIdentity[]; sso?: { installations?: StoredFastkoreInstallation[]; roles?: FastkoreRoleRecord[]; roleSnapshots?: FastkoreRoleSnapshot[]; rolePermissions?: (FastkoreRolePermissions & { installationId: string; roleId: string })[] }; security?: Security; corporate?: Corporate }
 export interface CliInfo { provider?: 'codex' | 'gemini' | 'antigravity' | 'glm'; accountId?: string; catalogRevision?: string; path: string; version: string; authentication: 'chatgpt' | 'google' | 'glm' | 'api-key' | 'signed-out' | 'unknown'; status: string }
-export interface ProjectSummary { id: string; name: string; directory: string; chatCount: number; roles?: ProjectRoleLabel[] }
+export interface ProjectSummary { id: string; name: string; directory: string; chatCount: number; roles?: ProjectRoleLabel[]; canRename?: boolean }
 export interface ChatSummary { id: string; title: string; updatedAt: string; messageCount: number; ownerId?: string; ownerName?: string; visibility?: 'private' | 'project'; linkedToFastkore?: true; pinned?: boolean }
 export interface ArchivedChatSummary extends ChatSummary { projectId: string; projectName: string; archivedAt: string }
 export interface RelatedChatSummary extends ChatSummary { projectId: string; projectName: string; parent?: true; contextMatches?: false; legacyContext?: true }
