@@ -362,6 +362,11 @@ test('administrators archive, restore and permanently delete chats without losin
 
     assert.equal((await f.req('PATCH', archive, f.admin, { archived: true })).statusCode, 200);
     assert.deepEqual((await f.req('GET', chats, f.admin)).json(), []);
+    const projectHistory = await f.req('GET', chats + '?includeArchived=true', f.admin);
+    assert.equal(projectHistory.statusCode, 200, projectHistory.body);
+    assert.deepEqual(projectHistory.json().map(({ id, archivedAt }: { id: string; archivedAt?: string }) => ({ id, archivedAt })),
+      [{ id: created.id, archivedAt: storedChat.archivedAt }]);
+    assert.equal((await f.req('GET', chats + '?includeArchived=true', f.token)).statusCode, 403);
     assert.equal((await f.req('GET', '/api/projects', f.admin)).json()[0].chatCount, 0);
     assert.equal((await f.req('GET', '/api/admin/chats/archive', f.token)).statusCode, 403);
     assert.equal((await f.req('GET', '/api/admin/chats/archive', f.admin)).json()[0].id, created.id);

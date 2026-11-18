@@ -1,15 +1,16 @@
-import { lazy, Suspense, useEffect, useId, useState } from 'react';
+import { lazy, Suspense, useEffect, useId, useState, type ReactNode } from 'react';
 import { Bot, Check, Database, Pencil, Plus, Settings2, Trash2, X } from 'lucide-react';
-import type { ProjectAgentConnection, ProjectAgentPolicy, ProjectAgentSettings, ProjectRoleLabel, ProjectSummary } from '../shared/types';
+import type { ChatView, ProjectAgentConnection, ProjectAgentPolicy, ProjectAgentSettings, ProjectRoleLabel, ProjectSummary } from '../shared/types';
 import { WorkspaceDialog } from './WorkspaceDialog';
 import { ProjectRolesPanel } from './ProjectRolesPanel';
+import { ProjectChatsPanel } from './ProjectChatsPanel';
 import './specialists.css';
 
 const ProjectLibraryPanel = lazy(() => import('./ProjectLibraryDialog').then(module => ({ default: module.ProjectLibraryPanel })));
-const sections = [['specialists', 'Агенты'], ['library', 'Библиотека'], ['access', 'Доступ к материалам'], ['roles', 'Роли']] as const;
+const sections = [['specialists', 'Агенты'], ['library', 'Библиотека'], ['access', 'Доступ к материалам'], ['roles', 'Роли'], ['chats', 'Чаты']] as const;
 type Section = typeof sections[number][0];
 
-export function ProjectSettingsDialog({ project, request, close, openSpecialist, rename, remove, isAdmin, rolesChanged }: {
+export function ProjectSettingsDialog({ project, request, close, openSpecialist, rename, remove, isAdmin, rolesChanged, renderChat, chatError }: {
   project: ProjectSummary;
   request: <T>(url: string, init?: RequestInit) => Promise<T>;
   close: () => void;
@@ -18,6 +19,8 @@ export function ProjectSettingsDialog({ project, request, close, openSpecialist,
   remove: () => Promise<void>;
   isAdmin: boolean;
   rolesChanged: (roles: ProjectRoleLabel[]) => void;
+  renderChat: (chat: ChatView, projectId: string) => ReactNode;
+  chatError: string;
 }) {
   const route = '/api/projects/' + encodeURIComponent(project.id) + '/agent-settings';
   const [settings, setSettings] = useState<ProjectAgentSettings>();
@@ -118,7 +121,9 @@ export function ProjectSettingsDialog({ project, request, close, openSpecialist,
         onClick={() => openSection(id)}>{label}</button>)}
     </div>
     {error && !adding && <p className="inline-error" role="alert">{error}</p>}
-    <div id={tabs + '-panel'} role="tabpanel" aria-labelledby={tabs + section} tabIndex={0} className="project-agent-scroll">
+    {section === 'chats' && chatError && <p className="inline-error" role="alert">{chatError}</p>}
+    <div id={tabs + '-panel'} role="tabpanel" aria-labelledby={tabs + section} tabIndex={0}
+      className={section === 'chats' ? 'project-chats-panel' : 'project-agent-scroll'}>
     {section === 'specialists' ? <>
     <div className="project-agents-intro">
       <strong>Подключённые агенты</strong>
@@ -152,7 +157,8 @@ export function ProjectSettingsDialog({ project, request, close, openSpecialist,
         </li>)}
       </ul> : <p className="help">В проекте пока нет подключённых агентов.</p>}
     </div>}
-    </> : section !== 'roles' ? <Suspense fallback={<p role="status">Загрузка…</p>}>
+    </> : section === 'chats' ? <ProjectChatsPanel projectId={project.id} request={request} renderChat={renderChat} />
+      : section !== 'roles' ? <Suspense fallback={<p role="status">Загрузка…</p>}>
       <ProjectLibraryPanel key={libraryProfile ?? ''} project={project} request={request} section={section === 'library' ? 'folders' : 'access'}
         isAdmin={isAdmin} initialProfileId={libraryProfile} pendingChanged={setLibraryPending} />
     </Suspense> : null}

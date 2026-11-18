@@ -52,7 +52,7 @@ HTTP-маршруты обслуживают веб-интерфейс. Для �
 | POST | /api/projects | Подключить папку сервера: {directory, name?} |
 | DELETE | /api/projects/{projectId} | Администратор удаляет проект. Чаты и вложения сохраняются. При активных или ожидающих заданиях возвращается 409. |
 | GET | /api/chats/without-project | Активные чаты из удалённых проектов, доступные владельцу или администратору. `projectId` сохраняется как ключ маршрута истории. |
-| GET | /api/projects/{projectId}/chats | [{id, title, updatedAt, messageCount}] |
+| GET | /api/projects/{projectId}/chats | [{id, title, updatedAt, messageCount}]. В настройках администратора `?includeArchived=true` включает доступные архивные чаты с полем `archivedAt`. |
 | POST | /api/projects/{projectId}/chats | Создать чат: {} или {title, model?} |
 | GET | /api/admin/chats/archive | Только руководитель. Архив по всем проектам, от недавно архивированных чатов к более старым |
 | GET | /api/chats/archive | Сеанс Fastkore. Архив собственных связанных чатов в текущей установке и доступных проектах |

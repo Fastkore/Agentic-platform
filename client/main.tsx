@@ -316,7 +316,7 @@ function App() {
   const visibleSettingsSections = (Object.keys(settingsSections) as SettingsSection[]).filter(section =>
     section === 'fastkore' ? canManageSettings && authSource === 'local' : canManageSettings || section === 'personal');
   const instructionSettings = settingsSection === 'personal' || settingsSection === 'employeeInstructions';
-  const standaloneInstructions = instructionSettings && (!canManageSettings || settingsSection === 'employeeInstructions');
+  const standaloneInstructions = instructionSettings && !canManageSettings;
   const relatedPanelOpen = panel === 'related';
   useEffect(() => {
     if (!loggedIn || !canManageSettings || setupRequired || openedFastkoreSettings.current) return;
@@ -1580,6 +1580,7 @@ function App() {
     </WorkspaceDialog>}
     {panel === 'project-settings' && projectActionTarget && canManageProjects &&
       <ProjectSettingsDialog key={projectActionTarget.id} project={projectActionTarget} request={api} close={closeProjectPanel} isAdmin={isAdmin}
+        renderChat={renderHistory} chatError={error}
         rename={name => saveProjectName(projectActionTarget.id, name)}
         remove={() => deleteProject(projectActionTarget)}
         rolesChanged={roles => setProjects(items => items.map(item => item.id === projectActionTarget.id ? { ...item, roles } : item))}
@@ -1603,12 +1604,12 @@ function App() {
           onChange={event => chooseSettingsSection(event.target.value as SettingsSection)}>
           {visibleSettingsSections.map(id => <option key={id} value={id}>{settingsSections[id].label}</option>)}
         </select>
-        <section key={settingsSection} className={'panel-body settings-content' + (settingsSection === 'server' ? ' settings-server' : settingsSection === 'personal' ? ' settings-personal' : '')}
+        <section key={settingsSection} className={'panel-body settings-content' + (settingsSection === 'server' ? ' settings-server' : instructionSettings ? ' settings-personal' : '')}
           aria-labelledby="settings-section-title">
           <div className={'settings-pane' + (settingsSection === 'agent' ? ' settings-pane-instructions' : '')}>
           {settingsSection !== 'profiles' && settingsSection !== 'library' && <h2 id="settings-section-title">{settingsSections[settingsSection].label}</h2>}
           {error && <div className="inline-error" role="alert">{error}</div>}
-          {settingsSection === 'personal' && instructionsPanel}
+          {instructionsPanel}
           <Suspense fallback={<p role="status">Загрузка…</p>}>
           {settingsSection === 'account' && <AccountPanel request={api} renewed={saveToken} fastkore={authSource === 'fastkore'} />}
           {settingsSection === 'team' && <TeamPanel request={api} self={user} manageAdministrators={authSource === 'local'} />}

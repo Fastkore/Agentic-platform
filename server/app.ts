@@ -902,12 +902,16 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
     authorize();
     return workspace.corporate.saveProjectPolicy(workspace.activeProject(request.params.projectId), request.body, authorize);
   });
-  app.get<{ Params: { projectId: string } }>('/api/projects/:projectId/chats', async request => {
+  app.get<{ Params: { projectId: string }; Querystring: { includeArchived?: 'true' | 'false' } }>('/api/projects/:projectId/chats', {
+    schema: { querystring: { type: 'object', properties: { includeArchived: { enum: ['true', 'false'] } } } },
+  }, async request => {
     const p = principal(request);
+    const includeArchived = request.query.includeArchived === 'true';
+    if (includeArchived) settingsAdmin(request);
     const pinned = new Set(p.user.pinnedChatIds);
     return access.project(p.user, request.params.projectId, p.credential).chats
-      .filter(chat => !chat.archivedAt && access.canChat(p.user, chat) && chatIdentityMatches(p, chat))
-      .map(chat => ({ ...access.chatSummary(chat), pinned: pinned.has(chat.id) || undefined }));
+      .filter(chat => (includeArchived || !chat.archivedAt) && access.canChat(p.user, chat) && chatIdentityMatches(p, chat))
+      .map(chat => ({ ...access.chatSummary(chat), pinned: pinned.has(chat.id) || undefined, archivedAt: chat.archivedAt }));
   });
   app.get('/api/chats/without-project', async (request): Promise<UnassignedChatSummary[]> => {
     const p = principal(request);
