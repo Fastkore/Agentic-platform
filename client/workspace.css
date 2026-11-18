@@ -1008,8 +1008,8 @@
 .erp-role-heading { display: grid; grid-template-columns: 48px minmax(180px, 1fr) minmax(0, auto) auto; align-items: center; gap: 16px; }
 .erp-role-icon { height: 48px; display: grid; place-items: center; border-radius: 12px; background: color-mix(in srgb, var(--accent) 17%, var(--surface)); color: var(--accent-strong); }
 .erp-role-heading > div { min-width: 0; }
-.erp-role-heading h3 { margin: 0; font-size: 18px; font-weight: 600; overflow-wrap: anywhere; }
-.erp-role-heading p { margin: 6px 0 0; color: var(--text-muted); }
+.erp-role-heading h3 { margin: 0; font-size: 18px; font-weight: 600; line-height: 1.2; overflow-wrap: anywhere; }
+.erp-role-heading p { margin: 2px 0 0; color: var(--text-muted); line-height: 1.25; overflow-wrap: anywhere; }
 .erp-role-switches { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 12px 20px; }
 .erp-role-switch-column { display: grid; gap: 10px; max-width: 100%; }
 .erp-role-switches label.erp-role-permission { display: grid; grid-template-columns: 16px minmax(0, 1fr) auto; align-items: center; gap: 7px; margin: 0; font-size: 12px; cursor: pointer; }
