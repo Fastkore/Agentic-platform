@@ -9,6 +9,7 @@ import './workspace.css';
 import { ChatArchiveDialog } from './ChatArchiveDialog';
 import { shortUserName } from './user-name';
 import { chatTooltip, dateTooltip, shortDate } from './chat-date';
+import { hideAttachedOutputLinks } from './chat-markdown';
 import { openFastkoreBrowser, openFastkoreTarget, parseHostScreenshotCapability, parseHostScreenshotResult, parseHostTheme, webViewHost, type Theme } from './fastkore';
 import { Settings as SettingsIcon } from 'lucide-react';
 import { Select, type SelectHandle } from './Select';
@@ -1103,7 +1104,9 @@ function App() {
   const renderHistory = (conversation: Chat, project: string) => <>
       {conversation.messages.filter(message => message.status !== 'running' || message.text.trim() || message.attachments.length)
         .map(message => <article key={message.id} className={'conversation-message is-' + message.role}>
-        {message.role === 'assistant' ? message.text && <div className="markdown"><ReactMarkdown remarkPlugins={[remarkGfm]} components={{
+        {message.role === 'assistant' ? message.text && <div className="markdown"><ReactMarkdown remarkPlugins={[remarkGfm]}
+          rehypePlugins={inFastkore && message.status === 'complete' && message.attachments.length
+            ? [[hideAttachedOutputLinks, { origin: location.origin, files: message.attachments }]] : undefined} components={{
           img: ({ alt }) => <span>[Изображение: {alt}]</span>,
           a: ({ href, children }) => <a href={href} target="_blank" rel="noreferrer">{children}</a>,
         }}>{message.text}</ReactMarkdown></div> :
