@@ -16,7 +16,7 @@ import { instructionTile, personalInstructionLimits as personalLimits, type Pers
 import { instructionComponent } from './instruction-context.js';
 import { UploadAdmission } from './upload-admission.js';
 import { loadDictation, maxDictationBytes, validateDictation, type TranscribeDictation } from './dictation.js';
-import { interfaceScales, specialistFileLimits, specialistIcons } from '../shared/types.js';
+import { interfaceScales, specialistFileLimits, specialistIcons, unassignedChatsLabel } from '../shared/types.js';
 import type { DictationModelId, InterfaceScale } from '../shared/types.js';
 import { fastkoreChatTitle, fastkoreExecutionContext, parseFastkoreContext } from '../shared/fastkore-context.js';
 import { canReadChatAttachment } from '../shared/chat-attachments.js';
@@ -30,7 +30,7 @@ import { withInternetTools } from './internet-tools.js';
 import { withFastkoreCliDescription } from './codex-tools.js';
 import { formatFastkoreCliResult, withFastkoreCliCommands } from './fastkore-cli-tools.js';
 import type { AgentProfile, Credential, Dataset, FastkoreAuthentication, FastkoreInstallation, FastkoreKeyIssue, FastkoreRolePermissions, FileStorageProvider, ProjectAgentPolicy, ProjectAgentSettings, Settings, User, WorkRole } from '../shared/types.js';
-import type { AuditEvent, ProjectRolePolicy, ProjectRoleSettings, RelatedChatSummary, Run, UserRecord } from '../shared/types.js';
+import type { AuditEvent, ProjectRolePolicy, ProjectRoleSettings, RelatedChatSummary, Run, UnassignedChatSummary, UserRecord } from '../shared/types.js';
 import { agentToolIds } from '../shared/agent-tools.js';
 import { operationIds } from './corporate.js';
 import { FastkoreSso, loadSsoKey, cookieToken, csrfFor, validCsrf, setSessionCookie, setStartCookie, startCookie, normalizeTheme, uuid, type InstallationPatch, type PairingClient, type Theme, type TicketValidator } from './fastkore.js';
@@ -687,11 +687,10 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
     });
     const unreadChatReplies: Record<string, string> = {};
     for (const project of workspace.store.state.projects) {
-      if (!canAccessProject(u, project, credential)) continue;
       for (const chat of project.chats) {
         const replyId = chat.lastCompletedReplyId;
         if (replyId && !chat.archivedAt && u.readChatReplies?.[chat.id] !== replyId &&
-          access.canChat(u, chat) && chatIdentityMatches({ user: u, credential }, chat)) unreadChatReplies[chat.id] = replyId;
+          access.canAccessChat(u, project, chat, credential) && chatIdentityMatches({ user: u, credential }, chat)) unreadChatReplies[chat.id] = replyId;
       }
     }
     return { version: '0.6.0', activeRun, activeRuns, queuedRuns, unreadChatReplies, busy: workspace.busy, user: publicUser(u), setupRequired: access.setupRequired, canCreateProject: canCreateProject(u, credential),
@@ -854,10 +853,12 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
     }
     return principalNow.user.id;
   }));
+  app.delete<{ Params: { projectId: string } }>('/api/projects/:projectId', request =>
+    workspace.deleteProject(request.params.projectId, () => settingsAdmin(request)));
   const projectRolesPath = '/api/projects/:projectId/roles';
   app.get<{ Params: { projectId: string } }>(projectRolesPath, async (request): Promise<ProjectRoleSettings> => {
     settingsAdmin(request);
-    const project = workspace.project(request.params.projectId);
+    const project = workspace.activeProject(request.params.projectId);
     return { ...(project.rolePolicy ?? { revision: 0, roles: [] }), available: projectRoleOptions(workspace.store.state) };
   });
   app.put<{ Params: { projectId: string }; Body: ProjectRolePolicy }>(projectRolesPath, {
@@ -872,7 +873,7 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
   const projectAgentSettings = '/api/projects/:projectId/agent-settings';
   app.get<{ Params: { projectId: string } }>(projectAgentSettings, async (request): Promise<ProjectAgentSettings> => {
     settingsAdmin(request);
-    const project = workspace.project(request.params.projectId);
+    const project = workspace.activeProject(request.params.projectId);
     const files = workspace.projectFiles(project);
     const fileIds = new Set(files.map(file => file.id));
     const policy = project.agentPolicy ?? workspace.corporate.defaultProjectPolicy(true);
@@ -899,7 +900,7 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
   }, async request => {
     const authorize = () => settingsAdmin(request);
     authorize();
-    return workspace.corporate.saveProjectPolicy(workspace.project(request.params.projectId), request.body, authorize);
+    return workspace.corporate.saveProjectPolicy(workspace.activeProject(request.params.projectId), request.body, authorize);
   });
   app.get<{ Params: { projectId: string } }>('/api/projects/:projectId/chats', async request => {
     const p = principal(request);
@@ -908,9 +909,17 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
       .filter(chat => !chat.archivedAt && access.canChat(p.user, chat) && chatIdentityMatches(p, chat))
       .map(chat => ({ ...access.chatSummary(chat), pinned: pinned.has(chat.id) || undefined }));
   });
+  app.get('/api/chats/without-project', async (request): Promise<UnassignedChatSummary[]> => {
+    const p = principal(request);
+    const pinned = new Set(p.user.pinnedChatIds);
+    return workspace.store.state.projects.flatMap(project => project.deletedAt ? project.chats
+      .filter(chat => !chat.archivedAt && access.canAccessChat(p.user, project, chat, p.credential) && chatIdentityMatches(p, chat))
+      .map(chat => ({ ...access.chatSummary(chat), projectId: project.id, pinned: pinned.has(chat.id) || undefined })) : [])
+      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  });
   const archivedChats = (include: (project: ReturnType<Workspace['project']>, chat: ReturnType<Workspace['chat']>) => boolean) =>
     workspace.store.state.projects.flatMap(project => project.chats.flatMap(chat => chat.archivedAt && include(project, chat)
-      ? [{ ...access.chatSummary(chat), archivedAt: chat.archivedAt, projectId: project.id, projectName: project.name }] : []))
+      ? [{ ...access.chatSummary(chat), archivedAt: chat.archivedAt, projectId: project.id, projectName: project.deletedAt ? unassignedChatsLabel : project.name }] : []))
       .sort((a, b) => b.archivedAt.localeCompare(a.archivedAt));
   app.get('/api/admin/chats/archive', async request => {
     admin(request);
@@ -919,9 +928,10 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
   app.get('/api/chats/archive', async request => {
     const { user: actor, credential } = principal(request);
     if (credential.source !== 'fastkore' || !credential.installationId) throw new BridgeError('Личный архив доступен в сеансе Fastkore.', 403);
-    return archivedChats((project, chat) => chat.ownerId === actor.id && chat.fastkoreBinding?.installationId === credential.installationId &&
-      (!chat.fastkoreBinding?.externalUserId || chat.fastkoreBinding.externalUserId === credential.externalUserId) &&
-      canAccessProject(actor, project, credential));
+    return archivedChats((project, chat) => chat.ownerId === actor.id &&
+      (project.deletedAt ? chatIdentityMatches({ user: actor, credential }, chat) :
+        chat.fastkoreBinding?.installationId === credential.installationId && chatIdentityMatches({ user: actor, credential }, chat)) &&
+      access.canAccessChat(actor, project, chat, credential));
   });
   const relatedChatContext = (request: FastifyRequest, raw: unknown) => {
     const p = principal(request);
@@ -940,14 +950,14 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
     const rows = new Map<string, RelatedChatSummary>();
     for (const parent of parents) {
       const source = workspace.relatedFastkoreChats(actor, parent, credential)[0];
-      if (source) rows.set(source.chat.id, { ...access.chatSummary(source.chat), projectId: source.project.id, projectName: source.project.name,
+      if (source) rows.set(source.chat.id, { ...access.chatSummary(source.chat), projectId: source.project.id, projectName: source.project.deletedAt ? unassignedChatsLabel : source.project.name,
         parent: true, contextMatches: false });
     }
     for (const { project, chat } of workspace.relatedFastkoreChats(actor, binding, credential)) {
-      rows.set(chat.id, { ...access.chatSummary(chat), projectId: project.id, projectName: project.name, parent: rows.get(chat.id)?.parent });
+      rows.set(chat.id, { ...access.chatSummary(chat), projectId: project.id, projectName: project.deletedAt ? unassignedChatsLabel : project.name, parent: rows.get(chat.id)?.parent });
     }
     for (const { project, chat } of workspace.relatedFastkoreChats(actor, binding, credential, context)) {
-      if (!rows.has(chat.id)) rows.set(chat.id, { ...access.chatSummary(chat), projectId: project.id, projectName: project.name, legacyContext: true });
+      if (!rows.has(chat.id)) rows.set(chat.id, { ...access.chatSummary(chat), projectId: project.id, projectName: project.deletedAt ? unassignedChatsLabel : project.name, legacyContext: true });
     }
     return [...rows.values()];
   });
@@ -1064,6 +1074,7 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
   app.post<{ Params: ChatParams; Body: { text: string; attachmentIds?: string[]; clientRequestId?: string; model?: string; fastkoreContext?: unknown; recommendedSpecialistId?: string } }>(chatPath + '/messages', { schema: { body: object({ text: string(60_000), attachmentIds: { type: 'array', items: string(100), maxItems: 8, uniqueItems: true }, clientRequestId: string(100), model: modelSchema, fastkoreContext: { type: 'object' }, recommendedSpecialistId: identifier }, ['text']) } }, async (request, reply) => {
     const check = () => {
       const u = user(request); requestChat(request, true);
+      if (workspace.project(request.params.projectId).deletedAt) throw new BridgeError('Сначала выберите проект для чата.', 409);
       const p = requestProject(request, request.params.projectId);
       for (const id of request.body.attachmentIds ?? []) if (!p.attachments.some(a => a.id === id && !a.libraryUploadedAt && (u.role === 'admin' || a.ownerId === u.id))) throw new BridgeError('Вложение не найдено.', 404);
     }; check();

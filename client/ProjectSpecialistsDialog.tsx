@@ -1,5 +1,5 @@
 import { lazy, Suspense, useEffect, useId, useState } from 'react';
-import { Bot, Check, Database, Pencil, Plus, Settings2, X } from 'lucide-react';
+import { Bot, Check, Database, Pencil, Plus, Settings2, Trash2, X } from 'lucide-react';
 import type { ProjectAgentConnection, ProjectAgentPolicy, ProjectAgentSettings, ProjectRoleLabel, ProjectSummary } from '../shared/types';
 import { WorkspaceDialog } from './WorkspaceDialog';
 import { ProjectRolesPanel } from './ProjectRolesPanel';
@@ -9,12 +9,13 @@ const ProjectLibraryPanel = lazy(() => import('./ProjectLibraryDialog').then(mod
 const sections = [['specialists', 'Агенты'], ['library', 'Библиотека'], ['access', 'Доступ к материалам'], ['roles', 'Роли']] as const;
 type Section = typeof sections[number][0];
 
-export function ProjectSettingsDialog({ project, request, close, openSpecialist, rename, isAdmin, rolesChanged }: {
+export function ProjectSettingsDialog({ project, request, close, openSpecialist, rename, remove, isAdmin, rolesChanged }: {
   project: ProjectSummary;
   request: <T>(url: string, init?: RequestInit) => Promise<T>;
   close: () => void;
   openSpecialist: (id: string) => void;
   rename: (name: string) => Promise<string>;
+  remove: () => Promise<void>;
   isAdmin: boolean;
   rolesChanged: (roles: ProjectRoleLabel[]) => void;
 }) {
@@ -31,6 +32,8 @@ export function ProjectSettingsDialog({ project, request, close, openSpecialist,
   const [libraryProfile, setLibraryProfile] = useState<string>();
   const [name, setName] = useState(project.name);
   const [renameDraft, setRenameDraft] = useState<string>();
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [deleteError, setDeleteError] = useState('');
   const tabs = useId();
   const busy = pending || libraryPending || rolesPending;
 
@@ -72,6 +75,13 @@ export function ProjectSettingsDialog({ project, request, close, openSpecialist,
       setError((cause as Error).message);
     } finally { setPending(false); }
   }
+  async function deleteProject() {
+    if (busy) return;
+    setPending(true); setDeleteError('');
+    try { await remove(); }
+    catch (cause) { setDeleteError((cause as Error).message); }
+    finally { setPending(false); }
+  }
 
   const connections = settings?.policy.connections ?? [];
   const connectedIds = new Set(connections.map(connection => connection.profileId));
@@ -90,6 +100,8 @@ export function ProjectSettingsDialog({ project, request, close, openSpecialist,
         <button type="submit" className="workspace-icon" aria-label="Сохранить название" disabled={busy || !renameDraft.trim() || renameDraft.trim() === name}><Check size={16} /></button>
         <button type="button" className="workspace-icon" aria-label="Отменить переименование" disabled={busy} onClick={() => setRenameDraft(undefined)}><X size={16} /></button>
       </form>}
+      {isAdmin && <button type="button" className="secondary project-delete" disabled={busy} aria-haspopup="dialog"
+        onClick={() => { setDeleteError(''); setConfirmDelete(true); }}><Trash2 size={16} aria-hidden="true" />Удалить проект</button>}
     </div>
     <div className="specialist-tabs project-settings-tabs" role="tablist" aria-label="Разделы настроек проекта" onKeyDown={event => {
       if (busy) return;
@@ -149,6 +161,15 @@ export function ProjectSettingsDialog({ project, request, close, openSpecialist,
     </div>}
     </div>
   </WorkspaceDialog>
+  {confirmDelete && <WorkspaceDialog title="Удалить проект?" className="workspace-chat-rename"
+    close={() => { if (!pending) setConfirmDelete(false); }}>
+    <p>Проект «{name}» будет удалён. Чаты и вложения сохранятся в разделе «Без проекта». Общие чаты станут личными.</p>
+    {deleteError && <p className="inline-error" role="alert">{deleteError}</p>}
+    <div className="settings-dialog-actions">
+      <button type="button" className="secondary" data-dialog-focus disabled={pending} onClick={() => setConfirmDelete(false)}>Отмена</button>
+      <button type="button" className="secondary project-delete" disabled={pending} onClick={() => void deleteProject()}>Удалить проект</button>
+    </div>
+  </WorkspaceDialog>}
   {adding && <WorkspaceDialog title="Добавить агентов" className="project-agents-dialog project-specialist-picker"
     close={() => { if (!pending) { setAdding(false); setError(''); } }}>
     {error && <p className="inline-error" role="alert">{error}</p>}

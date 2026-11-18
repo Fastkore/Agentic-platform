@@ -94,7 +94,7 @@ export class Workspace {
   get library() { return this.projectLibrary ??= new ProjectLibrary(this.store.root, this.libraryStorage ?? libraryStorageFromEnv(process.env), this.libraryDirectory()); }
   private libraryDirectory(): PlatformDirectory {
     const user = (id: string) => this.store.state.security?.users.find(u => u.id === id && !u.disabled);
-    const project = (id: string) => this.store.state.projects.find(p => p.id === id);
+    const project = (id: string) => this.store.state.projects.find(p => p.id === id && !p.deletedAt);
     return {
       projectExists: id => !!project(id),
       projectName: id => project(id)?.name,
@@ -161,6 +161,11 @@ export class Workspace {
   private executionAllowed() { if (this.executionDisabled) throw new BridgeError('Выполнение заданий выключено до проверки среды. Настройки и история доступны.', 503); }
   private async cliPath() { return this.isolatedCodex ? 'codex-worker' : this.store.state.settings.cliPath || await discoverCli(); }
   project(id: string): Project { const p = this.store.state.projects.find(p => p.id === id); if (!p) throw new BridgeError('Проект не найден.', 404); return p; }
+  activeProject(id: string): Project {
+    const project = this.project(id);
+    if (project.deletedAt) throw new BridgeError('Проект не найден.', 404);
+    return project;
+  }
   projectFiles(project: Project) {
     return project.attachments.filter(file => file.libraryUploadedAt).map(publicProjectFile).reverse();
   }
@@ -359,7 +364,31 @@ export class Workspace {
     });
   }
   chat(projectId: string, chatId: string): Chat { const c = this.project(projectId).chats.find(c => c.id === chatId); if (!c) throw new BridgeError('Диалог не найден в этом проекте.', 404); return c; }
-  listProjects() { return this.store.state.projects.map(p => ({ id: p.id, name: p.name, directory: p.directory, chatCount: p.chats.length })); }
+  listProjects() { return this.store.state.projects.filter(p => !p.deletedAt).map(p => ({ id: p.id, name: p.name, directory: p.directory, chatCount: p.chats.length })); }
+
+  deleteProject(projectId: string, authorize: () => User) {
+    return this.admit(async () => {
+      this.writable();
+      const actor = authorize(), project = this.project(projectId);
+      if (project.deletedAt) return { ok: true };
+      if (this.activeRuns.some(run => run.projectId === projectId) || this.queuedRuns.some(run => run.projectId === projectId)) {
+        throw new BridgeError('Дождитесь завершения заданий в проекте.', 409);
+      }
+      const createdAt = new Date().toISOString();
+      // Keep the storage key and directory so existing chat links and attachments remain valid.
+      const shared = project.chats.filter(chat => chat.visibility === 'project');
+      project.deletedAt = createdAt;
+      for (const chat of shared) chat.visibility = 'private';
+      try {
+        await this.store.save({ audit: { id: randomUUID(), actorId: actor.id, action: 'project.delete', targetId: projectId, createdAt } });
+      } catch (error) {
+        delete project.deletedAt;
+        for (const chat of shared) chat.visibility = 'project';
+        throw error;
+      }
+      return { ok: true };
+    });
+  }
   listChats(projectId: string) { return this.project(projectId).chats.map(c => ({ id: c.id, title: c.title, updatedAt: c.updatedAt, messageCount: c.messages.length })); }
   renameProject(projectId: string, title: string, authorize: () => string) {
     return this.admit(async () => {
@@ -410,7 +439,7 @@ export class Workspace {
     if (!path.isAbsolute(directory)) throw new BridgeError('Укажите абсолютный путь к папке на сервере.');
     const resolved = await realpath(directory).catch(() => { throw new BridgeError('Папка на сервере недоступна.'); });
     if (!(await stat(resolved)).isDirectory()) throw new BridgeError('Выберите папку проекта.');
-    const existing = this.store.state.projects.find(p => p.directory.toLowerCase() === resolved.toLowerCase()); if (existing) return existing;
+    const existing = this.store.state.projects.find(p => !p.deletedAt && p.directory.toLowerCase() === resolved.toLowerCase()); if (existing) return existing;
     const project: Project = { id: randomUUID(), name: name?.trim() || path.basename(resolved) || resolved, directory: resolved, chats: [], attachments: [] };
     this.store.state.projects.push(project); await this.store.save(); return project;
   }
@@ -418,7 +447,7 @@ export class Workspace {
     this.writable();
     await this.validateModel(model);
     authorize?.();
-    const project = this.project(projectId);
+    const project = this.activeProject(projectId);
     this.corporate.profile(this.store.state.security?.users.find(u => u.id === ownerId), agentProfileId, project);
     const customTitle = title?.trim();
     const chat: Chat = { id: randomUUID(), title: customTitle || 'Новый диалог', titleCustomized: customTitle ? true : undefined,
@@ -430,7 +459,7 @@ export class Workspace {
   }
   relatedFastkoreChats(actor: User, binding: FastkoreChatBinding, credential: Credential, context?: FastkoreContext) {
     return this.store.state.projects.flatMap(project => {
-      if (!canAccessProject(actor, project, credential)) return [];
+      if (!project.deletedAt && !canAccessProject(actor, project, credential)) return [];
       return project.chats.filter(chat => {
         const saved = chat.fastkoreBinding;
         return !chat.archivedAt && chat.ownerId === actor.id && !!saved && saved.installationId === binding.installationId &&
@@ -492,7 +521,7 @@ export class Workspace {
   resetFastkoreChat(projectId: string, chatId: string, authorize: () => User, title?: string) {
     return this.admit(async () => {
       this.writable();
-      const actor = authorize(), project = this.project(projectId), chat = this.chat(projectId, chatId);
+      const actor = authorize(), project = this.activeProject(projectId), chat = this.chat(projectId, chatId);
       this.assertChatIdle(projectId, chatId);
       if (!chat.messages.length) return chat;
       const createdAt = new Date().toISOString();
@@ -530,7 +559,7 @@ export class Workspace {
   moveChat(projectId: string, chatId: string, destinationId: string, title: string | undefined, authorize: () => Principal) {
     return this.admit(async () => {
       this.writable();
-      const source = this.project(projectId), destination = this.project(destinationId);
+      const source = this.project(projectId), destination = this.activeProject(destinationId);
       const chat = this.chat(projectId, chatId), state = this.store.state;
       const name = title?.trim();
       if (name !== undefined && (!name || /[\r\n]/.test(name))) throw new BridgeError('Введите название чата в одну строку.');
@@ -874,6 +903,7 @@ export class Workspace {
     return this.admit(async () => {
       this.writable(); authorize?.();
       const chat = this.chat(projectId, chatId);
+      if (this.project(projectId).deletedAt) throw new BridgeError('Сначала выберите проект для чата.', 409);
       if (chat.archivedAt) throw new BridgeError('Восстановите чат из архива, чтобы продолжить диалог.', 409);
       const previous = clientRequestId && this.store.state.runs.find(r => r.clientRequestId === clientRequestId);
       if (previous) {

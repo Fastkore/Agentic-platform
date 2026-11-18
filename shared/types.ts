@@ -46,7 +46,7 @@ export interface ProjectRole { installationId: string; roleId: string }
 export interface ProjectRolePolicy { revision: number; roles: ProjectRole[] }
 export interface ProjectRoleLabel extends ProjectRole { name: string; installationName: string }
 export interface ProjectRoleSettings extends ProjectRolePolicy { available: ProjectRoleLabel[] }
-export interface Project { id: string; name: string; directory: string; chats: Chat[]; attachments: Attachment[]; rolePolicy?: ProjectRolePolicy; agentPolicy?: ProjectAgentPolicy }
+export interface Project { id: string; name: string; directory: string; chats: Chat[]; attachments: Attachment[]; rolePolicy?: ProjectRolePolicy; agentPolicy?: ProjectAgentPolicy; deletedAt?: string }
 export type RunToolKind = 'cli' | 'mcp' | 'internet' | 'knowledge' | 'specialist' | 'other';
 export interface RunTiming {
   queueMs: number;
@@ -125,6 +125,8 @@ export interface State { schemaVersion: 1; settings: Settings; projects: Project
 export interface CliInfo { provider?: 'codex' | 'gemini' | 'antigravity' | 'glm'; accountId?: string; catalogRevision?: string; path: string; version: string; authentication: 'chatgpt' | 'google' | 'glm' | 'api-key' | 'signed-out' | 'unknown'; status: string }
 export interface ProjectSummary { id: string; name: string; directory: string; chatCount: number; roles?: ProjectRoleLabel[]; canRename?: boolean }
 export interface ChatSummary { id: string; title: string; updatedAt: string; messageCount: number; ownerId?: string; ownerName?: string; visibility?: 'private' | 'project'; linkedToFastkore?: true; pinned?: boolean }
+export const unassignedChatsLabel = 'Без проекта';
+export interface UnassignedChatSummary extends ChatSummary { projectId: string }
 export interface ArchivedChatSummary extends ChatSummary { projectId: string; projectName: string; archivedAt: string }
 export interface RelatedChatSummary extends ChatSummary { projectId: string; projectName: string; parent?: true; contextMatches?: false; legacyContext?: true }
 export interface ToolPermissions { cli: boolean; mcp: boolean; webSearch: boolean; webRead?: boolean }

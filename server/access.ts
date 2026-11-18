@@ -1,6 +1,6 @@
 import { randomBytes, randomUUID, createHash, scrypt, timingSafeEqual } from 'node:crypto';
 import { promisify } from 'node:util';
-import type { Chat, ChatSummary, ChatView, Credential, InterfaceScale, ProjectRolePolicy, Security, StoredFastkoreInstallation, TeamUser, User, UserRecord } from '../shared/types.js';
+import type { Chat, ChatSummary, ChatView, Credential, InterfaceScale, Project, ProjectRolePolicy, Security, StoredFastkoreInstallation, TeamUser, User, UserRecord } from '../shared/types.js';
 import { BridgeError, type AccessDraft } from './store.js';
 import type { Workspace } from './workspace.js';
 import type { ErpDelegation, TicketIdentity } from './fastkore.js';
@@ -285,9 +285,13 @@ export class Access {
     return user.role === 'admin' || chat.ownerId === user.id && !!chat.fastkoreBinding
       || !chat.archivedAt && (chat.ownerId === user.id || chat.visibility === 'project');
   }
+  canAccessChat(user: User, project: Project, chat: Chat, credential?: Credential) {
+    if (project.deletedAt) return !user.disabled && (user.role === 'admin' || chat.ownerId === user.id);
+    return canAccessProject(user, project, credential) && this.canChat(user, chat);
+  }
   chat(user: User, projectId: string, chatId: string, credential?: Credential) {
-    this.project(user, projectId, credential); const chat = this.workspace.chat(projectId, chatId);
-    if (!this.canChat(user, chat)) throw new BridgeError('Диалог не найден.', 404); return chat;
+    const project = this.workspace.project(projectId), chat = this.workspace.chat(projectId, chatId);
+    if (!this.canAccessChat(user, project, chat, credential)) throw new BridgeError('Диалог не найден.', 404); return chat;
   }
   editChat(user: User, projectId: string, chatId: string, credential?: Credential) {
     const chat = this.chat(user, projectId, chatId, credential);
@@ -322,7 +326,7 @@ export class Access {
     return this.data.users.map(item => {
       const erpRoles = erpRolesForUser(state, item.id);
       const projects = item.disabled ? [] : state.projects
-        .filter(project => item.role === 'admin' || erpRoles.some(({ installationId, roles }) => projectAllowsRoles(project, installationId, roles)))
+        .filter(project => !project.deletedAt && (item.role === 'admin' || erpRoles.some(({ installationId, roles }) => projectAllowsRoles(project, installationId, roles))))
         .map(({ id, name }) => ({ id, name }));
       return { ...publicUser(item), erpRoles, projects };
     });
@@ -383,7 +387,7 @@ export class Access {
     return this.changeAccess(draft => {
       const actor = authorize();
       this.admin(actor);
-      const project = this.workspace.project(projectId);
+      const project = this.workspace.activeProject(projectId);
       if (input.revision !== (project.rolePolicy?.revision ?? 0)) throw new BridgeError('Роли проекта изменились. Откройте актуальные настройки.', 409);
       const known = new Set(draft.sso?.roles?.map(role => role.installationId + '/' + role.id));
       if (input.roles.some(role => !known.has(role.installationId + '/' + role.roleId))) throw new BridgeError('Выберите существующие роли Fastkore.');
@@ -396,6 +400,7 @@ export class Access {
   visibility(actor: User, projectId: string, chatId: string, visibility: 'private' | 'project') {
     this.admin(actor); return this.change(() => {
       const chat = this.editChat(actor, projectId, chatId);
+      if (this.workspace.project(projectId).deletedAt) throw new BridgeError('Сначала выберите проект для чата.', 409);
       if (chat.fastkoreBinding && visibility === 'project') throw new BridgeError('Связанный чат Fastkore доступен его автору и руководителям.', 409);
       if (chat.visibility !== 'project' && visibility === 'project' && this.workspace.activeRuns.some(run => run.projectId === projectId && run.chatId === chatId)) {
         throw new BridgeError('Дождитесь ответа, чтобы поделиться чатом.', 409);

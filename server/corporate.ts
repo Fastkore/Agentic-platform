@@ -191,7 +191,7 @@ export class CorporateAccess {
     if (!path.isAbsolute(input.directory)) throw new BridgeError('Укажите абсолютную папку на сервере.');
     const directory = await realpath(input.directory).catch(() => { throw new BridgeError('Папка источника недоступна.'); });
     if (!(await stat(directory)).isDirectory()) throw new BridgeError('Укажите папку источника.');
-    if (input.projectIds.some(id => !this.store.state.projects.some(p => p.id === id))) throw new BridgeError('Проект не найден.');
+    if (input.projectIds.some(id => !this.store.state.projects.some(p => p.id === id && !p.deletedAt))) throw new BridgeError('Проект не найден.');
     const old = this.data.datasets.find(d => d.id === input.id); if (old && old.revision !== input.revision) throw new BridgeError('Источник изменён. Обновите настройки.', 409);
     const value: Dataset = { ...input, directory, name: input.name.trim(), revision: (old?.revision ?? 0) + 1 };
     if (old) Object.assign(old, value); else this.data.datasets.push(value);

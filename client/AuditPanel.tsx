@@ -11,7 +11,7 @@ const labels: Record<string, string> = {
   'sso.browser.login': 'Вход в настройки из Fastkore',
   'user.update': 'Изменён пользователь', 'user.projects': 'Изменён доступ к проектам',
   'project.members': 'Изменены участники проекта', 'project.roles': 'Изменены роли проекта',
-  'project.agents': 'Изменены агенты проекта', 'project.rename': 'Проект переименован',
+  'project.agents': 'Изменены агенты проекта', 'project.rename': 'Проект переименован', 'project.delete': 'Проект удалён',
   'role.update': 'Изменена рабочая роль', 'profile.update': 'Изменён агент', 'dataset.update': 'Изменён источник',
   'chat.private': 'Чат сделан личным', 'chat.project': 'Чат открыт проекту',
   'chat.archive': 'Чат перемещён в архив', 'chat.restore': 'Чат восстановлен из архива', 'chat.delete': 'Чат удалён',

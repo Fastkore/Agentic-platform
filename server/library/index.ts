@@ -18,7 +18,7 @@ export class ProjectLibrary {
   constructor(root: string, storage: LibraryStorageConfig, directory: PlatformDirectory, limits: LibraryLimits = libraryLimitsFromEnv()) {
     this.registry = new LibraryRegistry(root, storage, limits);
     this.registry.projectName = id => directory.projectName(id);
-    this.registry.canSeeProject = (actor, projectId) => actor.admin || directory.canAccessProject(actor.id, projectId, actor.credentialId);
+    this.registry.canSeeProject = (actor, projectId) => directory.projectExists(projectId) && (actor.admin || directory.canAccessProject(actor.id, projectId, actor.credentialId));
     this.policy = new LibraryPolicy(this.registry, directory);
     this.reader = new LibraryReader(this.registry);
     this.indexer = new LibraryIndexer(this.registry);

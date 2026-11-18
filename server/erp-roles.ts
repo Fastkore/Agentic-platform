@@ -4,7 +4,7 @@ type RoleState = Pick<State, 'sso' | 'externalIdentities' | 'security'>;
 const projectCreationRoles = new Set(['руководитель', 'системный администратор']);
 
 export function canAccessProject(user: User, project: Project, credential?: Credential) {
-  if (user.disabled) return false;
+  if (user.disabled || project.deletedAt) return false;
   if (user.role === 'admin') return true;
   return credential?.source === 'fastkore' && credential.userId === user.id &&
     projectAllowsRoles(project, credential.installationId, credential.externalRoles);

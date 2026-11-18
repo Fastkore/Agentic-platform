@@ -74,6 +74,62 @@ test('moving a chat requires access to the destination and preserves its history
   } finally { await f.app.close(); }
 });
 
+test('deleting a project preserves chats, attachments and archive while removing shared access', async () => {
+  const f = await fixture();
+  try {
+    const source = `/api/projects/${f.project.id}`;
+    const colleague = await f.enter('Борис');
+    assert.equal((await f.setProjectRoles(f.project.id, [...f.projectRoles, ...colleague.projectRoles])).statusCode, 200);
+    const created = await f.req('POST', source + '/chats', f.token, { title: 'История проекта' });
+    assert.equal(created.statusCode, 201, created.body);
+    const chat = f.workspace.chat(f.project.id, created.json().id);
+    const url = `${source}/chats/${chat.id}`;
+    const file = await f.workspace.files.upload('local', f.project, 'result.txt', Buffer.from('Сохранённый файл'));
+    const messageId = randomUUID();
+    chat.messages.push({ id: messageId, role: 'assistant', status: 'complete', text: 'Результат', createdAt: new Date().toISOString(), attachments: [file] });
+    const archived = await f.workspace.addChat(f.project.id, 'Ранее архивированный', '', f.employee.id);
+    assert.equal((await f.req('PATCH', `${source}/chats/${archived.id}/archive`, f.admin, { archived: true })).statusCode, 200);
+    assert.equal((await f.req('PATCH', url + '/visibility', f.admin, { visibility: 'project' })).statusCode, 200);
+    assert.equal((await f.req('GET', url, colleague.cookie)).statusCode, 200);
+    assert.equal((await f.req('DELETE', source, f.token)).statusCode, 403);
+
+    const running = await f.req('POST', url + '/messages', f.token, { text: 'BLOCK' });
+    assert.equal(running.statusCode, 202, running.body);
+    assert.equal((await f.req('DELETE', source, f.admin)).statusCode, 409);
+    await f.req('POST', `/api/runs/${running.json().id}/cancel`, f.token, {});
+    await idle(f.workspace);
+
+    assert.equal((await f.req('DELETE', source, f.admin)).statusCode, 200);
+    assert.equal((await f.req('DELETE', source, f.admin)).statusCode, 200);
+    assert.deepEqual((await f.req('GET', '/api/projects', f.admin)).json(), []);
+    const list = '/api/chats/without-project';
+    assert.deepEqual((await f.req('GET', list, f.token)).json().map((item: { id: string }) => item.id), [chat.id]);
+    assert.deepEqual((await f.req('GET', list, colleague.cookie)).json(), []);
+    assert.equal((await f.req('GET', url, colleague.cookie)).statusCode, 404);
+    assert.equal((await f.req('GET', url, f.token)).json().visibility, 'private');
+    assert.equal((await f.req('GET', '/api/chats/archive', f.token)).json()[0].projectName, 'Без проекта');
+    assert.equal((await f.req('GET', source + '/agent-settings', f.admin)).statusCode, 404);
+    assert.equal((await f.req('POST', url + '/messages', f.token, { text: 'Ещё вопрос' })).statusCode, 409);
+    const stored = new Store(path.join(f.root, 'data'));
+    try {
+      assert.ok(stored.state.projects[0].deletedAt);
+      assert.equal(stored.state.projects[0].chats.find(item => item.id === chat.id)?.messages[0].attachments[0].id, file.id);
+    } finally { await stored.close(); }
+    assert.equal((await f.req('GET', `${url}/messages/${messageId}/files/${file.id}`, f.token)).body, 'Сохранённый файл');
+
+    const folder = path.join(f.root, 'destination');
+    await mkdir(folder);
+    const destination = await f.workspace.addProject(folder);
+    assert.equal((await f.setProjectRoles(destination.id, f.projectRoles)).statusCode, 200);
+    const moved = await f.req('PATCH', url + '/move', f.token, { projectId: destination.id });
+    assert.equal(moved.statusCode, 200, moved.body);
+    assert.deepEqual((await f.req('GET', list, f.token)).json(), []);
+    const copied = moved.json().messages[0].attachments[0];
+    const target = `/api/projects/${destination.id}/chats/${chat.id}/messages/${messageId}/files/${copied.id}`;
+    assert.equal((await f.req('GET', target, f.token)).body, 'Сохранённый файл');
+  } finally { await f.app.close(); }
+});
+
 test('an employee chooses a project for a new named Fastkore chat and can move it without losing its context', async () => {
   const f = await fixture();
   try {

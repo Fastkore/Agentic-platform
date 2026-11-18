@@ -3,7 +3,7 @@ import { createRoot } from 'react-dom/client';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Archive, ArrowUp, BarChart3, Bot, Box, Camera, Check, ChevronDown, ChevronRight, ClipboardList, Copy, Database, Download, EllipsisVertical, Eraser, FileText, Folder, History, Link2, LoaderCircle, LockKeyhole, LogOut, Menu, Moon, Network, PanelLeftClose, PanelLeftOpen, Pencil, Pin, Plus, RefreshCw, Search, Settings2, ShieldCheck, Square, SquarePen, Sun, Terminal, Trash2, Users, X } from 'lucide-react';
-import { interfaceScales, type AgentSummary, type Attachment, type Chat, type ChatView, type ChatSummary, type CodexLimits, type FastkoreAuthentication, type FastkoreNavigationTarget, type FileStorageStatus, type InterfaceScale, type ModelCatalog, type ProjectSummary, type RelatedChatSummary, type Run, type Settings, type Status, type User } from '../shared/types';
+import { interfaceScales, unassignedChatsLabel, type AgentSummary, type Attachment, type Chat, type ChatView, type ChatSummary, type CodexLimits, type FastkoreAuthentication, type FastkoreNavigationTarget, type FileStorageStatus, type InterfaceScale, type ModelCatalog, type ProjectSummary, type RelatedChatSummary, type Run, type Settings, type Status, type UnassignedChatSummary, type User } from '../shared/types';
 import './style.css';
 import './workspace.css';
 import { ChatArchiveDialog } from './ChatArchiveDialog';
@@ -45,6 +45,8 @@ const LibraryPanel = lazy(() => import('./LibraryPanel').then(module => ({ defau
 
 let accessKey = sessionStorage.getItem('bridge-key') ?? '';
 const agentsUrl = (projectId: string) => projectId ? '/api/projects/' + encodeURIComponent(projectId) + '/agents' : '/api/agents';
+const unassignedChatsUrl = '/api/chats/without-project';
+const unassignedGroupId = 'without-project';
 const settingsSections = {
   team: { label: 'Команда', icon: Users },
   projects: { label: 'Проекты', icon: Folder },
@@ -167,6 +169,7 @@ function App() {
   const [user, setUser] = useState<User | null>(null), [setupRequired, setSetupRequired] = useState(false), [setupName, setSetupName] = useState('Руководитель');
   const [status, setStatus] = useState<Status | null>(null), [projects, setProjects] = useState<ProjectSummary[]>([]), [chat, setChat] = useState<ChatView | null>(null);
   const [chatLists, setChatLists] = useState<Record<string, ChatSummary[]>>({});
+  const [unassignedChats, setUnassignedChats] = useState<UnassignedChatSummary[]>([]);
   const [projectsExpanded, setProjectsExpanded] = useState(() => localStorage.getItem('bridge-projects-collapsed') !== '1');
   const [openProjects, setOpenProjects] = useState<Record<string, boolean>>({});
   const [showAll, setShowAll] = useState<Record<string, boolean>>({});
@@ -214,6 +217,7 @@ function App() {
   const relatedDraftKey = currentErpContext.current.active && erpChatKey ? 'erp:' + erpChatKey : '';
   const draftSlot = chatId || relatedDraftKey;
   const selectedProject = projects.find(p => p.id === projectId), draft = drafts[draftSlot] ?? '', attachments = files[draftSlot] ?? [];
+  const withoutProject = unassignedChats.some(item => item.id === chatId && item.projectId === projectId);
   const specialistKey = draftSlot || 'new:' + projectId;
   const specialistId = specialists[specialistKey];
   const activeRuns = status?.activeRuns ?? (status?.activeRun ? [status.activeRun] : []);
@@ -283,9 +287,9 @@ function App() {
   const relatedLoading = !!erpChatKey && relatedChats?.key !== erpChatKey;
   const tileList = !!currentErpContext.current.snapshot && isFastkoreTileList(currentErpContext.current.snapshot);
   const sharedContextHistory = tileList || typeof currentErpContext.current.snapshot?.chat_key === 'string';
-  const canReset = matchesErpChat && chat?.ownerId === user?.id && !chat?.archivedAt && (chat?.messages.length ?? 0) > 0;
+  const canReset = !withoutProject && matchesErpChat && chat?.ownerId === user?.id && !chat?.archivedAt && (chat?.messages.length ?? 0) > 0;
   const canEditChatDetails = !!chat && !chat.archivedAt && (isAdmin || chat.ownerId === user?.id);
-  const canEdit = canEditChatDetails && (!chat.linkedToFastkore || matchesErpChat || !inFastkore && !erpChatKey);
+  const canEdit = !withoutProject && canEditChatDetails && (!chat.linkedToFastkore || matchesErpChat || !inFastkore && !erpChatKey);
   const codexUnavailable = status?.isolatedCodex && !executionConnected(status.cli);
   const codexNotice = status?.executionDisabled ? 'Выполнение Codex отключено на сервере.' : codexUnavailable
     ? /активный аккаунт|Модель недоступна/.test(status.cli?.status ?? '') ? status.cli!.status
@@ -312,6 +316,7 @@ function App() {
   const visibleSettingsSections = (Object.keys(settingsSections) as SettingsSection[]).filter(section =>
     section === 'fastkore' ? canManageSettings && authSource === 'local' : canManageSettings || section === 'personal');
   const instructionSettings = settingsSection === 'personal' || settingsSection === 'employeeInstructions';
+  const standaloneInstructions = instructionSettings && (!canManageSettings || settingsSection === 'employeeInstructions');
   const relatedPanelOpen = panel === 'related';
   useEffect(() => {
     if (!loggedIn || !canManageSettings || setupRequired || openedFastkoreSettings.current) return;
@@ -380,7 +385,7 @@ function App() {
   }
   useEffect(() => () => { if (screenshotRequest.current) clearTimeout(screenshotRequest.current.timer); }, []);
   function clearLogin() {
-    finishScreenshotRequest(); setReadySession(null); setScreenshotPreview(undefined);
+    finishScreenshotRequest(); setReadySession(null); setScreenshotPreview(undefined); setUnassignedChats([]);
     authEpoch++; browserSession = false; csrfToken = ''; sessionUserId = ''; sendAttempt.current = null; setErpAuth(null); currentErpContext.current = {}; autoOpenRelated.current = undefined; setErpChatKey(undefined); setRelatedChats(undefined); setContextProblem(undefined); setAgentCatalog(undefined); setPreferredAgent('universal'); setCatalog(null); setModelError(''); accessKey = ''; sessionStorage.removeItem('bridge-key'); localStorage.removeItem('bridge-project'); localStorage.removeItem('bridge-chat'); setLoggedIn(false); setUser(null); setStatus(null); setProjects([]); setChatLists({}); setOpenProjects({}); setShowAll({}); setSidebarOpen(false); setChat(null); setModelPreview(undefined); setDrafts({}); setFiles({}); setSpecialists({}); setSubscription(null); setPanel(null); setProjectId(''); setChatId(''); setDiagnostics(''); setPasswordInput('');
   }
   function logout() { void action(async () => { await post('/api/auth/logout'); clearLogin(); }); }
@@ -553,6 +558,10 @@ function App() {
     return list;
   }
   function toggleProject(project: string) {
+    if (project === unassignedGroupId) {
+      setOpenProjects(old => ({ ...old, [project]: !(old[project] ?? true) }));
+      return;
+    }
     const open = openProjects[project] ?? project === projectId;
     setOpenProjects(old => ({ ...old, [project]: !open }));
     if (!open) void loadChats(project).catch(fail);
@@ -578,12 +587,13 @@ function App() {
     async function refresh() {
       try {
         const projectAtStart = selected.current.projectId;
-        const [state, list] = await Promise.all([api<Status>('/api/status'), api<ProjectSummary[]>('/api/projects')]);
+        const [state, list, unassigned] = await Promise.all([api<Status>('/api/status'), api<ProjectSummary[]>('/api/projects'), api<UnassignedChatSummary[]>(unassignedChatsUrl)]);
         if (disposed) return;
-        setStatus(state); setUser(state.user);
+        setStatus(state); setUser(state.user); setUnassignedChats(unassigned);
         const activeProjectExists = list.some(p => p.id === selected.current.projectId);
+        const selectedUnassigned = unassigned.some(item => item.id === selected.current.chatId && item.projectId === selected.current.projectId);
         if (activeProjectExists || projectAtStart === selected.current.projectId) setProjects(list);
-        if (!activeProjectExists && projectAtStart === selected.current.projectId) {
+        if (!activeProjectExists && !selectedUnassigned && projectAtStart === selected.current.projectId) {
           const awaitingContextProject = currentErpContext.current.active && !!currentErpContext.current.key;
           if (awaitingContextProject ? projectAtStart : projectAtStart || list.length) {
             navigateTo(awaitingContextProject ? '' : list[0]?.id ?? '');
@@ -635,14 +645,14 @@ function App() {
     return () => { disposed = true; };
   }, [projectId, loggedIn, !!selectedProject]);
   useEffect(() => {
-    if (!loggedIn || !user || setupRequired || !projectId || !chatId || !selectedProject) return;
+    if (!loggedIn || !user || setupRequired || !projectId || !chatId || (!selectedProject && !withoutProject)) return;
     let disposed = false;
     const stillSelected = () => !disposed && selected.current.projectId === projectId && selected.current.chatId === chatId;
     api<Chat>(`/api/projects/${projectId}/chats/${chatId}`).then(detail => { if (stillSelected()) setChat(detail); }).catch(error => {
       if (stillSelected() && !(error instanceof ApiError && error.transient)) fail(error);
     });
     return () => { disposed = true; };
-  }, [chatId, projectId, loggedIn, !!selectedProject]);
+  }, [chatId, projectId, loggedIn, !!selectedProject, withoutProject]);
   useEffect(() => { if (stick.current) end.current?.scrollIntoView({ behavior: 'smooth' }); }, [chat?.messages.length, chat?.messages.at(-1)?.text, chatId]);
   useEffect(() => {
     if (!subscription || subscription.status !== 'running') return;
@@ -783,16 +793,17 @@ function App() {
     setChatLists(old => ({
       ...old,
       [source]: (old[source] ?? []).filter(item => item.id !== conversation),
-      [destination]: [{ ...summary, pinned: old[source]?.find(item => item.id === conversation)?.pinned },
+      [destination]: [{ ...summary, pinned: (old[source] ?? unassignedChats).find(item => item.id === conversation)?.pinned },
         ...(old[destination] ?? []).filter(item => item.id !== conversation)],
     }));
+    setUnassignedChats(old => old.filter(item => item.id !== conversation));
     setRelatedChats(old => old && { ...old, list: old.list.map(item => item.id === conversation
       ? { ...item, title: newTitle, projectId: destination, projectName: projectName || item.projectName } : item) });
     if (selected.current.projectId === source && selected.current.chatId === conversation) {
       navigateTo(destination, conversation);
       setChat(moved);
     }
-    void Promise.all([loadChats(source), loadChats(destination)]).catch(fail);
+    void Promise.all([loadChats(destination), projects.some(project => project.id === source) ? loadChats(source) : undefined]).catch(fail);
   }
   async function renameChat() {
     if (!renameDraft || pending) return;
@@ -810,6 +821,7 @@ function App() {
       });
       setChat(old => old?.id === c ? { ...old, title: updated.title } : old);
       setChatLists(old => ({ ...old, [p]: (old[p] ?? []).map(item => item.id === c ? { ...item, title: updated.title } : item) }));
+      setUnassignedChats(old => old.map(item => item.id === c ? { ...item, title: updated.title } : item));
       setRelatedChats(old => old && { ...old, list: old.list.map(item => item.id === c ? { ...item, title: updated.title } : item) });
       setPanel(current => current === 'rename-chat' ? null : current);
       setRenameDraft(undefined);
@@ -834,15 +846,18 @@ function App() {
         method: 'PATCH', body: JSON.stringify({ pinned: !summary.pinned }),
       });
       setChatLists(old => ({ ...old, [project]: (old[project] ?? []).map(item => item.id === conversation ? { ...item, pinned } : item) }));
+      setUnassignedChats(old => old.map(item => item.id === conversation ? { ...item, pinned } : item));
     });
   }
   async function archiveChat(p = projectId, c = chatId) {
     await action(async () => {
       await api(`/api/projects/${p}/chats/${c}/archive`, { method: 'PATCH', body: JSON.stringify({ archived: true }) });
       setChatLists(old => ({ ...old, [p]: (old[p] ?? []).filter(item => item.id !== c) }));
+      setUnassignedChats(old => old.filter(item => item.id !== c));
       setRelatedChats(old => old && { ...old, list: old.list.filter(item => item.id !== c) });
-      if (selected.current.projectId === p && selected.current.chatId === c) navigateTo(p);
-      await loadChats(p);
+      const projectExists = projects.some(project => project.id === p);
+      if (selected.current.projectId === p && selected.current.chatId === c) navigateTo(projectExists ? p : '');
+      if (projectExists) await loadChats(p);
     });
   }
   async function deleteEmptyChat(p = projectId, c = chatId) {
@@ -851,9 +866,11 @@ function App() {
       finishScreenshotRequest(c);
       setFiles(old => ({ ...old, [c]: [] }));
       setChatLists(old => ({ ...old, [p]: (old[p] ?? []).filter(item => item.id !== c) }));
+      setUnassignedChats(old => old.filter(item => item.id !== c));
       setRelatedChats(old => old && { ...old, list: old.list.filter(item => item.id !== c) });
-      if (selected.current.projectId === p && selected.current.chatId === c) navigateTo(p);
-      await loadChats(p);
+      const projectExists = projects.some(project => project.id === p);
+      if (selected.current.projectId === p && selected.current.chatId === c) navigateTo(projectExists ? p : '');
+      if (projectExists) await loadChats(p);
     });
   }
   async function resetChat() {
@@ -1031,10 +1048,18 @@ function App() {
   </main></div>;
 
   const hasMessages = !!chat?.messages.length;
+  const instructionsPanel = instructionSettings && <PersonalInstructionsPanel key={user.id + settingsSection} request={api} project={selectedProject}
+    erp={authSource === 'fastkore'} context={currentErpContext.current.snapshot}
+    administration={settingsSection === 'employeeInstructions'} dirtyChanged={setPersonalDirty} />;
+  const navigationGroups: ProjectSummary[] = unassignedChats.length ? [...projects, {
+    id: unassignedGroupId, name: unassignedChatsLabel, directory: '', chatCount: unassignedChats.length,
+  }] : projects;
+  const navigationChats = (group: string): UnassignedChatSummary[] => group === unassignedGroupId
+    ? unassignedChats : (chatLists[group] ?? []).map(item => ({ ...item, projectId: group }));
   const query = searchQuery.trim().toLocaleLowerCase('ru-RU');
-  const searchable = projects.flatMap(project => {
+  const searchable = navigationGroups.flatMap(project => {
     const matchesProject = project.name.toLocaleLowerCase('ru-RU').includes(query);
-    const matchingChats = (chatLists[project.id] ?? []).filter(item => matchesProject || item.title.toLocaleLowerCase('ru-RU').includes(query));
+    const matchingChats = navigationChats(project.id).filter(item => matchesProject || item.title.toLocaleLowerCase('ru-RU').includes(query));
     return matchesProject || matchingChats.length ? [{ project, matchingChats }] : [];
   });
   const draftEditable = !chatId || canEdit;
@@ -1096,6 +1121,14 @@ function App() {
     setPanel('project-settings');
   }
   const closeProjectPanel = () => setPanel(projectActionFromSettings.current ? 'settings' : null);
+  async function deleteProject(project: ProjectSummary) {
+    await api(`/api/projects/${encodeURIComponent(project.id)}`, { method: 'DELETE' });
+    setProjects(old => old.filter(item => item.id !== project.id));
+    setOpenProjects(old => ({ ...old, [unassignedGroupId]: true }));
+    if (selected.current.projectId === project.id && !selected.current.chatId) navigateTo('');
+    void api<UnassignedChatSummary[]>(unassignedChatsUrl).then(setUnassignedChats).catch(fail);
+    closeProjectPanel();
+  }
   const closePanel = () => {
     if ((knowledgeDirty || personalDirty) && !window.confirm('Закрыть настройки и удалить несохранённые изменения?')) return;
     projectFromComposer.current = false;
@@ -1157,6 +1190,7 @@ function App() {
     if (active !== field && active?.contains(event.target) && !active.closest(focusControls)) field.focus({ preventScroll: true });
   }
   const composer = <div className="bridge-composer">
+    {withoutProject && <p className="composer-status">Выберите проект, чтобы продолжить чат.</p>}
     {chat && !canEdit && (relatedLoading
       ? <p className="composer-status" role="status">Проверяем связь чата с открытым окном Fastkore…</p>
       : chat.linkedToFastkore && chat.ownerId === user.id && !chat.archivedAt
@@ -1197,10 +1231,10 @@ function App() {
         : <span className="sr-only">Ответ готовится</span>}</span>
       {(isAdmin || (run.chatId === chatId && canEdit)) && <button onClick={() => void action(async () => { await post('/api/runs/' + run.id + '/cancel'); })}><Square size={12} />Остановить</button>}
     </div>)}
-    {(!hasMessages || showChatConsultants) && <div className="composer-project">
-      {!hasMessages && <div className="composer-project-picker">
+    {(!hasMessages || withoutProject || showChatConsultants) && <div className="composer-project">
+      {(!hasMessages || withoutProject) && <div className="composer-project-picker">
         <Folder size={17} aria-hidden="true" />
-        <Select ref={projectPicker} label="Проект" placeholder="Выберите проект" value={projectId}
+        <Select ref={projectPicker} label="Проект" placeholder="Выберите проект" value={withoutProject ? '' : projectId}
           disabled={pending || (relatedLoading && !!relatedDraftKey) || (!!chatId && !canEditChatDetails)}
           onChange={project => {
             if (project === createProjectOption) {
@@ -1312,13 +1346,14 @@ function App() {
         {canCreateProject && <button className="workspace-icon" onClick={() => setPanel('project')} aria-label="Добавить проект" title="Добавить проект"><Plus size={18} /></button>}
       </div>
       <nav id="workspace-projects" className="project-tree" aria-label="Проекты и чаты" hidden={!projectsExpanded}>
-        {projects.map(project => {
-          const open = openProjects[project.id] ?? project.id === projectId;
-          const list = chatLists[project.id] ?? [];
+        {navigationGroups.map(project => {
+          const unassignedGroup = project.id === unassignedGroupId;
+          const open = openProjects[project.id] ?? (unassignedGroup || project.id === projectId);
+          const list = navigationChats(project.id);
           const pinned = list.filter(item => item.pinned);
           const recent = list.filter(item => !item.pinned);
           const visible = [...pinned, ...(showAll[project.id] ? recent : recent.slice(0, 5))];
-          const canManageProject = canManageProjects;
+          const canManageProject = canManageProjects && !unassignedGroup;
           const newChatDisabled = pending || (project.id === projectId && !newAgent);
           const projectRow = <button className="workspace-row project-row" onClick={() => toggleProject(project.id)} aria-expanded={open}
             aria-controls={'chats-' + project.id} title={project.name}>
@@ -1329,7 +1364,7 @@ function App() {
               {inFastkore && project.canRename ? <FastkoreProjectRename name={project.name} save={name => saveProjectName(project.id, name)}>
                 {projectRow}
               </FastkoreProjectRename> : projectRow}
-              {!canManageProject && <button className="workspace-icon project-new-chat" title="Новый чат в проекте" aria-label={'Новый чат в проекте ' + project.name} disabled={newChatDisabled} onClick={() => void newChat(project.id, false)}><SquarePen size={17} /></button>}
+              {!canManageProject && !unassignedGroup && <button className="workspace-icon project-new-chat" title="Новый чат в проекте" aria-label={'Новый чат в проекте ' + project.name} disabled={newChatDisabled} onClick={() => void newChat(project.id, false)}><SquarePen size={17} /></button>}
               {canManageProject && <details className="project-actions" onBlur={e => {
                 if (!e.currentTarget.contains(e.relatedTarget)) e.currentTarget.open = false;
               }} onKeyDown={e => {
@@ -1357,7 +1392,7 @@ function App() {
                 <div className="chat-row-container">
                   <button type="button" className="workspace-row chat-row" aria-current={item.id === chatId ? 'page' : undefined}
                     aria-description={running ? 'Выполняется' : unread ? 'Непрочитанный ответ' : undefined}
-                    onClick={() => navigateWorkspace(project.id, item.id)} title={chatTooltip(item)}>
+                    onClick={() => navigateWorkspace(item.projectId, item.id)} title={chatTooltip(item)}>
                     {(running || unread) && <span className="chat-row-state" aria-hidden="true">
                       {running ? <LoaderCircle size={13} className="spin" /> : <span className="chat-row-unread-dot" />}
                     </span>}
@@ -1368,10 +1403,10 @@ function App() {
                   <div className="chat-row-actions">
                     <button type="button" className="workspace-icon" title={item.pinned ? 'Открепить чат' : 'Закрепить чат'}
                       aria-label={(item.pinned ? 'Открепить чат «' : 'Закрепить чат «') + item.title + '»'} aria-pressed={!!item.pinned}
-                      disabled={pending} onClick={() => void toggleChatPin(project.id, item)}><Pin size={14} /></button>
+                      disabled={pending} onClick={() => void toggleChatPin(item.projectId, item)}><Pin size={14} /></button>
                     {(isAdmin || item.ownerId === user.id && item.messageCount === 0) && <button type="button" className="workspace-icon" title={item.messageCount === 0 ? 'Удалить пустой чат' : 'Архивировать чат'} aria-label={(item.messageCount === 0 ? 'Удалить пустой чат «' : 'Архивировать чат «') + item.title + '»'}
-                      disabled={pending || [...activeRuns, ...queuedRuns].some(run => run.projectId === project.id && run.chatId === item.id)}
-                      onClick={() => void (item.messageCount === 0 ? deleteEmptyChat(project.id, item.id) : archiveChat(project.id, item.id))}>
+                      disabled={pending || [...activeRuns, ...queuedRuns].some(run => run.projectId === item.projectId && run.chatId === item.id)}
+                      onClick={() => void (item.messageCount === 0 ? deleteEmptyChat(item.projectId, item.id) : archiveChat(item.projectId, item.id))}>
                       {item.messageCount === 0 ? <Trash2 size={14} /> : <Archive size={14} />}</button>}
                   </div>
                 </div>
@@ -1412,7 +1447,7 @@ function App() {
           aria-label="Открыть проекты" aria-controls="workspace-sidebar" aria-expanded={sidebarOpen}><Menu size={20} /></button>
         {chat && <>
           <div className="workspace-chat-title">
-            <Folder size={17} aria-label={selectedProject?.name} />
+            <Folder size={17} aria-label={withoutProject ? unassignedChatsLabel : selectedProject?.name} />
             <h1 title={chatTooltip(chat)}>{chat.title}</h1>
             {canEditChatDetails && <button type="button" className="workspace-icon chat-rename-button"
               aria-label="Переименовать чат" title="Переименовать чат" disabled={pending} onClick={() => {
@@ -1422,7 +1457,7 @@ function App() {
               }}><Pencil size={15} /></button>}
           </div>
           <div className="chat-access" title={dateTooltip(chat.updatedAt, chat.ownerName)}>
-            {isAdmin && !chat.linkedToFastkore ? <Select label="Видимость чата" value={chat.visibility ?? 'private'} disabled={pending}
+            {isAdmin && !withoutProject && !chat.linkedToFastkore ? <Select label="Видимость чата" value={chat.visibility ?? 'private'} disabled={pending}
               onChange={visibility => void changeVisibility(visibility as 'private' | 'project')}
               options={[{ value: 'private', label: 'Личный' }, { value: 'project', label: 'Общий' }]} />
               : <span><LockKeyhole size={13} />{chat.visibility === 'project' ? 'Общий' : 'Личный'}</span>}
@@ -1480,6 +1515,7 @@ function App() {
         <label htmlFor="chat-project">Проект</label>
         <select id="chat-project" value={renameDraft.destinationId ?? renameDraft.projectId} disabled={pending}
           onChange={e => setRenameDraft({ ...renameDraft, destinationId: e.target.value })}>
+          {!projects.some(project => project.id === renameDraft.projectId) && <option value={renameDraft.projectId}>{unassignedChatsLabel}</option>}
           {projects.map(project => <option key={project.id} value={project.id}>{project.name}</option>)}
         </select>
         {error && <div className="inline-error" role="alert">{error}</div>}
@@ -1498,7 +1534,7 @@ function App() {
       </div>
     </WorkspaceDialog>}
     {panel === 'archive' && (isAdmin || erpAuth) && <ChatArchiveDialog request={api} close={closePanel} renderChat={renderHistory} manage={isAdmin}
-      onRestore={project => void loadChats(project).catch(fail)} />}
+      onRestore={project => void (projects.some(item => item.id === project) ? loadChats(project) : api<UnassignedChatSummary[]>(unassignedChatsUrl).then(setUnassignedChats)).catch(fail)} />}
     {relatedPanelOpen && erpChatKey && <WorkspaceDialog title="Связанные чаты" className="related-chats-dialog" close={closePanel}>
       {error && <p className="inline-error" role="alert">{error}</p>}
       {relatedLoading ? <p className="help" role="status">Загрузка…</p> : <div className="archive-list">
@@ -1515,8 +1551,9 @@ function App() {
       {error && <div className="inline-error" role="alert">{error}</div>}
       <div className="search-results">
         {searchable.map(({ project, matchingChats }) => <div key={project.id}>
-          <button className="workspace-row search-project" onClick={() => { navigateWorkspace(project.id); closePanel(); }}><Folder size={16} />{project.name}</button>
-          {matchingChats.map(item => <button key={item.id} className="workspace-row chat-row" title={chatTooltip(item)} onClick={() => { navigateWorkspace(project.id, item.id); closePanel(); }}><span>{item.title}</span><time dateTime={item.updatedAt}>{shortDate(item.updatedAt)}</time></button>)}
+          {project.id === unassignedGroupId ? <div className="workspace-row search-project"><Folder size={16} />{project.name}</div> :
+            <button className="workspace-row search-project" onClick={() => { navigateWorkspace(project.id); closePanel(); }}><Folder size={16} />{project.name}</button>}
+          {matchingChats.map(item => <button key={item.id} className="workspace-row chat-row" title={chatTooltip(item)} onClick={() => { navigateWorkspace(item.projectId, item.id); closePanel(); }}><span>{item.title}</span><time dateTime={item.updatedAt}>{shortDate(item.updatedAt)}</time></button>)}
         </div>)}
         {searchLoading && <p className="composer-status" role="status">Загрузка…</p>}
         {!searchLoading && !searchable.length && <p className="composer-status">Ничего не найдено</p>}
@@ -1544,6 +1581,7 @@ function App() {
     {panel === 'project-settings' && projectActionTarget && canManageProjects &&
       <ProjectSettingsDialog key={projectActionTarget.id} project={projectActionTarget} request={api} close={closeProjectPanel} isAdmin={isAdmin}
         rename={name => saveProjectName(projectActionTarget.id, name)}
+        remove={() => deleteProject(projectActionTarget)}
         rolesChanged={roles => setProjects(items => items.map(item => item.id === projectActionTarget.id ? { ...item, roles } : item))}
         openSpecialist={id => {
           setInitialSpecialistId(id);
@@ -1551,11 +1589,9 @@ function App() {
           setPanel('settings');
         }} />}
     {panel === 'settings' && visibleSettingsSections.includes(settingsSection) && <WorkspaceDialog title="Настройки"
-      className={'workspace-settings' + (instructionSettings ? ' personal-instructions-dialog' : '') + (settingsSection === 'personal' ? ' personal-instructions-compact' : '')} close={closePanel}
-      back={instructionSettings && visibleSettingsSections.length > 1 ? () => chooseSettingsSection('team') : undefined}>
-      {instructionSettings ? <PersonalInstructionsPanel key={user.id + settingsSection} request={api} project={selectedProject}
-        erp={authSource === 'fastkore'} context={currentErpContext.current.snapshot}
-        administration={settingsSection === 'employeeInstructions'} dirtyChanged={setPersonalDirty} /> : <div className="settings-layout">
+      className={'workspace-settings' + (standaloneInstructions ? ' personal-instructions-dialog' : '') + (standaloneInstructions && settingsSection === 'personal' ? ' personal-instructions-compact' : '')} close={closePanel}
+      back={standaloneInstructions && visibleSettingsSections.length > 1 ? () => chooseSettingsSection('team') : undefined}>
+      {standaloneInstructions ? instructionsPanel : <div className="settings-layout">
         <nav aria-label="Разделы настроек" className="settings-nav">
           {visibleSettingsSections.map(section => {
             const { label, icon: Icon } = settingsSections[section];
@@ -1567,11 +1603,12 @@ function App() {
           onChange={event => chooseSettingsSection(event.target.value as SettingsSection)}>
           {visibleSettingsSections.map(id => <option key={id} value={id}>{settingsSections[id].label}</option>)}
         </select>
-        <section key={settingsSection} className={'panel-body settings-content' + (settingsSection === 'server' ? ' settings-server' : '')}
+        <section key={settingsSection} className={'panel-body settings-content' + (settingsSection === 'server' ? ' settings-server' : settingsSection === 'personal' ? ' settings-personal' : '')}
           aria-labelledby="settings-section-title">
           <div className={'settings-pane' + (settingsSection === 'agent' ? ' settings-pane-instructions' : '')}>
           {settingsSection !== 'profiles' && settingsSection !== 'library' && <h2 id="settings-section-title">{settingsSections[settingsSection].label}</h2>}
           {error && <div className="inline-error" role="alert">{error}</div>}
+          {settingsSection === 'personal' && instructionsPanel}
           <Suspense fallback={<p role="status">Загрузка…</p>}>
           {settingsSection === 'account' && <AccountPanel request={api} renewed={saveToken} fastkore={authSource === 'fastkore'} />}
           {settingsSection === 'team' && <TeamPanel request={api} self={user} manageAdministrators={authSource === 'local'} />}

@@ -1,5 +1,6 @@
 
 .workspace-shell, .bridge-signin {
+  --settings-badge-radius: 6px;
   --canvas: #1b1e22;
   --surface: #23272c;
   --text: #eff0f2;
@@ -524,7 +525,7 @@
 .archive-history { margin-block: 12px; border-block: 1px solid var(--border); padding-block: 10px; }
 .archive-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
 .archive-confirm p { margin-bottom: 10px; }
-.archive-actions .archive-danger { color: var(--danger); }
+.archive-actions .archive-danger, .workspace-dialog .project-delete { color: var(--danger); }
 .related-dialog-actions { margin-top: 14px; }
 .project-agents-dialog { width: min(700px, calc(100vw - 24px)); }
 .project-agents-dialog[open] { display: flex; flex-direction: column; overflow: hidden; }
@@ -570,7 +571,7 @@
 .project-summary-chips > li {
   display: inline-flex; max-width: 100%; min-height: 29px; align-items: center; gap: 6px; padding: 4px 10px;
   border: 1px solid color-mix(in srgb, var(--accent) 32%, var(--control-border));
-  border-radius: 999px; background: color-mix(in srgb, var(--accent) 9%, var(--control));
+  border-radius: var(--settings-badge-radius); background: color-mix(in srgb, var(--accent) 9%, var(--control));
   color: var(--text); font-weight: 550; line-height: 1.3;
 }
 .project-summary-chips > li > svg { flex: none; color: var(--accent-strong); }
@@ -659,6 +660,16 @@
 .settings-section-picker { display: none; }
 .settings-content { min-width: 0; padding: 28px 32px 27px; background: var(--canvas); scrollbar-gutter: stable; }
 .settings-pane { max-width: 1140px; margin-inline: auto; }
+.settings-personal .settings-pane { display: flex; flex-direction: column; min-height: 100%; }
+.settings-personal .personal-settings {
+  flex: 1; min-height: 360px; grid-template-columns: clamp(210px, 29%, 290px) minmax(0, 1fr);
+  border: 1px solid var(--border); border-radius: 9px; overflow: hidden;
+}
+@container workspace-settings (width <= 680px) {
+  .settings-personal .personal-settings { grid-template-columns: minmax(0, 1fr); }
+  .settings-personal .personal-sidebar { border-inline-end: 0; border-bottom: 1px solid var(--border); }
+  .settings-personal .personal-tree { max-height: 180px; }
+}
 .workspace-settings .settings-pane > h2 { margin: 0 0 16px; font-size: 22px; font-weight: 650; line-height: 1.2; }
 .settings-pane-instructions { display: flex; flex-direction: column; min-height: 100%; }
 .workspace-settings .settings-pane-instructions > h2 { margin-bottom: 12px; }
@@ -685,7 +696,7 @@
   color: var(--text); background: color-mix(in srgb, var(--nav-raised) 72%, var(--surface)); border-radius: 12px;
 }
 .personal-badge {
-  flex: none; min-width: 27px; padding: 3px 8px; border-radius: 20px; text-align: center;
+  flex: none; min-width: 27px; padding: 3px 8px; border-radius: var(--settings-badge-radius); text-align: center;
   background: var(--nav-raised); color: var(--text-secondary); font-size: 13px; font-variant-numeric: tabular-nums;
 }
 .personal-add-actions > .secondary { min-width: 0; flex: 1; padding: 8px; gap: 6px; }
@@ -843,7 +854,7 @@
 .execution-device-code { padding: 10px 12px; margin-top: 10px; background: var(--control); border-radius: 8px; }
 .execution-device-code code { font-size: 20px; font-weight: 650; letter-spacing: 2px; user-select: all; }
 .execution-device-code a { color: var(--accent-strong); }
-.execution-accounts label.account-active-status { display: inline-flex; align-items: center; flex: none; gap: 7px; min-width: 112px; margin: 0; padding: 5px 10px; border-radius: 18px; background: var(--control); font-size: 12px; white-space: nowrap; }
+.execution-accounts label.account-active-status { display: inline-flex; align-items: center; flex: none; gap: 7px; min-width: 112px; margin: 0; padding: 5px 10px; border-radius: var(--settings-badge-radius); background: var(--control); font-size: 12px; white-space: nowrap; }
 .account-active-status:has(input:enabled) { cursor: pointer; }
 .execution-accounts .account-active-status.inactive { color: var(--text-muted); }
 .execution-accounts .account-active-status.active { color: var(--success); background: color-mix(in srgb, var(--success) 10%, var(--surface)); }
@@ -976,7 +987,7 @@
 .person-cell small { display: block; margin-top: 4px; color: var(--text-muted); font-size: 12px; }
 .person-avatar { display: grid; place-items: center; flex: 0 0 38px; width: 38px; height: 38px; border-radius: 50%; background: var(--avatar); color: var(--avatar-ink); font-size: 13px; font-weight: 600; border: 1px solid var(--control-border); }
 .team-access-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
-.team-table .team-access { display: inline-flex; align-items: center; padding: 5px 10px; gap: 7px; border-radius: 18px; background: var(--control); font-size: 12px; white-space: nowrap; }
+.team-table .team-access { display: inline-flex; align-items: center; padding: 5px 10px; gap: 7px; border-radius: var(--settings-badge-radius); background: var(--control); font-size: 12px; white-space: nowrap; }
 .team-table .team-access.active { background: color-mix(in srgb, var(--success) 10%, var(--surface)); }
 .team-table .team-access.active input { accent-color: var(--success); }
 .settings-records, .agent-card, .config-checks, .agent-advanced, .dictation-model-row { border-color: var(--border); background: var(--surface); }
@@ -1022,7 +1033,7 @@
 .audit-empty { padding: 28px; text-align: center; color: var(--text-muted); }
 .audit-count { margin: 12px 0 0; color: var(--text-muted); font-size: 12px; }
 .team-erp-roles { display: flex; flex-wrap: wrap; gap: 6px; }
-.team-erp-roles > span { padding: 5px 8px; border: 1px solid var(--border); border-radius: 7px; font-size: 12px; color: var(--text-secondary); background: var(--control); }
+.team-erp-roles > span { padding: 5px 8px; border: 1px solid var(--border); border-radius: var(--settings-badge-radius); font-size: 12px; color: var(--text-secondary); background: var(--control); }
 .erp-roles-panel { container: erp-roles / inline-size; }
 .erp-roles-panel .roles-intro { margin: -4px 0 18px; color: var(--text-muted); font-size: 14px; }
 .roles-filters { display: grid; grid-template-columns: minmax(0,1fr) minmax(180px,25%); gap: 18px; margin-bottom: 24px; }
