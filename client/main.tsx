@@ -1379,8 +1379,8 @@ function App() {
         if (selectForChat) await selectComposerProject(p.id);
         else navigateTo(p.id);
       }); }}>
-        <label htmlFor="project-name">Название проекта</label>
-        <input id="project-name" value={projectName} onChange={e => setProjectName(e.target.value)} required={!canManageProjects || !folderPath.trim()} maxLength={100} autoFocus />
+        <input id="project-name" aria-label="Название проекта" placeholder="Введите название" value={projectName}
+          onChange={e => setProjectName(e.target.value)} required={!canManageProjects || !folderPath.trim()} maxLength={100} autoFocus />
         {canManageProjects && <><label htmlFor="directory">Папка на сервере <span>необязательно</span></label><input id="directory" value={folderPath} onChange={e => setFolderPath(e.target.value)} placeholder={status?.executionDisabled ? '/projects/Финансы' : 'C:\\Проекты\\Финансы'} /></>}
         {error && <div className="inline-error" role="alert">{error}</div>}
         <button className="primary w-full" disabled={pending}>{folderPath.trim() && canManageProjects ? 'Подключить папку' : 'Создать проект'}</button>
