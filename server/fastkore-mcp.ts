@@ -1,5 +1,5 @@
 import { request } from 'node:https';
-import type { Credential } from '../shared/types.js';
+import type { AuditEvent, Credential } from '../shared/types.js';
 import { erpReadOnlyMessage } from './erp-roles.js';
 import type { CodexTools, CodexToolDefinition } from './codex-tools.js';
 import { postErpJson, type ErpDelegation, type FastkoreSso } from './fastkore.js';
@@ -11,7 +11,8 @@ type Token = { value: string; expiresAt: number };
 type Session = { credential: Credential; delegation: ErpDelegation; revision: string; token?: Token; refresh?: Promise<Token> };
 type Tool = { upstream: string; definition: CodexToolDefinition };
 type RpcTiming = { mcpTokenMs?: number; mcpHttpMs?: number };
-type ReadAudit = RpcTiming & { tool: string; parameters: Record<string, unknown>; status?: number; success: boolean; elapsedMs: number };
+type CallDiagnostic = Pick<NonNullable<AuditEvent['details']>, 'status' | 'mcpFailure' | 'mcpErrorCode'>;
+type ReadAudit = RpcTiming & CallDiagnostic & { tool: string; parameters: Record<string, unknown>; success: boolean; elapsedMs: number };
 const audience = 'fastkore-mcp';
 const reauth = 'Доступ к ERP завершён или отозван. Откройте помощника из Fastkore заново.';
 const unavailable = 'Инструменты Fastkore сейчас недоступны. Чат доступен.';
@@ -33,7 +34,8 @@ function record(value: unknown): Record<string, any> | undefined {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
 }
 
-function postMcp(url: string, token: string, ca: string | undefined, body: unknown, headers: Record<string, string>, signal: AbortSignal) {
+function postMcp(url: string, token: string, ca: string | undefined, body: unknown, headers: Record<string, string>, signal: AbortSignal,
+  diagnostic?: CallDiagnostic) {
   return new Promise<{ status: number; value?: unknown; sessionId?: string }>((resolve, reject) => {
     const json = JSON.stringify(body);
     const requestSignal = AbortSignal.any([signal, AbortSignal.timeout(30_000)]);
@@ -43,7 +45,10 @@ function postMcp(url: string, token: string, ca: string | undefined, body: unkno
     } }, async res => {
       try {
         const status = res.statusCode ?? 502;
-        if (status < 200 || status >= 300 || status === 202 || status === 204) { res.destroy(); resolve({ status }); return; }
+        if (diagnostic) diagnostic.status = status;
+        if (status === 401 || status === 202 || status === 204 || (!diagnostic && (status < 200 || status >= 300))) {
+          res.destroy(); resolve({ status }); return;
+        }
         const rawId = res.headers['mcp-session-id'];
         if (rawId !== undefined && (typeof rawId !== 'string' || !/^[\x21-\x7e]{1,256}$/.test(rawId))) throw new Error();
         const sessionId = typeof rawId === 'string' ? rawId : undefined;
@@ -166,7 +171,7 @@ export class FastkoreMcp {
     let sessionId: string | undefined;
     let protocol: string | undefined;
     let id = 0;
-    const rpc = async (method: string, params: Record<string, unknown>, signal: AbortSignal, timing?: RpcTiming) => {
+    const rpc = async (method: string, params: Record<string, unknown>, signal: AbortSignal, timing?: RpcTiming, diagnostic?: CallDiagnostic) => {
       check(); signal.throwIfAborted();
       const tokenStarted = performance.now();
       const token = await this.token(state, binding).finally(() => { if (timing) timing.mcpTokenMs = elapsedMs(tokenStarted); });
@@ -179,14 +184,20 @@ export class FastkoreMcp {
       const httpStarted = performance.now();
       const response = await postMcp(url, token.value, binding.mcpCa,
         { jsonrpc: '2.0', ...(notification ? {} : { id: requestId }), method, params },
-        { ...(sessionId ? { 'Mcp-Session-Id': sessionId } : {}), ...(protocol ? { 'MCP-Protocol-Version': protocol } : {}) }, signal)
+        { ...(sessionId ? { 'Mcp-Session-Id': sessionId } : {}), ...(protocol ? { 'MCP-Protocol-Version': protocol } : {}) }, signal, diagnostic)
         .finally(() => { if (timing) timing.mcpHttpMs = elapsedMs(httpStarted); });
       if (response.status === 401 && state.token === token) state.token = undefined;
-      if (response.status < 200 || response.status >= 300) return { status: response.status };
       check();
+      const value = record(response.value);
+      if (value?.jsonrpc === '2.0' && value.id === requestId && !('result' in value)) {
+        const error = record(value.error);
+        if (error && typeof error.code === 'number' && Number.isSafeInteger(error.code) && typeof error.message === 'string') {
+          return { status: response.status, error: { code: error.code, message: redact(error.message).slice(0, 2000) } };
+        }
+      }
+      if (response.status < 200 || response.status >= 300) return { status: response.status };
       if (method === 'initialize') sessionId = response.sessionId;
       if (notification) return { status: response.status };
-      const value = record(response.value);
       if (value?.jsonrpc !== '2.0' || value.id !== requestId || value.error || !record(value.result)) throw new BridgeError(unavailable, 502);
       return { status: response.status, result: value.result };
     };
@@ -227,22 +238,36 @@ export class FastkoreMcp {
           const supplied = record(args);
           if (!tool || !supplied || Buffer.byteLength(JSON.stringify(supplied)) > 128_000) return { success: false, text: 'Инструмент или его аргументы недоступны.' };
           const started = performance.now(), timing: RpcTiming = {};
-          let status: number | undefined;
+          const diagnostic: CallDiagnostic = {};
           let success = false;
           try {
-            const result = await rpc('tools/call', { name: tool.upstream, arguments: supplied }, callSignal, timing);
-            status = result.status;
-            if (result.status === 401) return { success: false, text: 'Fastkore отклонил токен. Повторный вызов не отправлен. Проверьте состояние операции чтением.' };
-            if (!result.result) return { success: false, text: 'Fastkore не подтвердил результат операции. Проверьте состояние чтением.' };
+            const result = await rpc('tools/call', { name: tool.upstream, arguments: supplied }, callSignal, timing, diagnostic);
+            if (result.status === 401) {
+              diagnostic.mcpFailure = 'http';
+              return { success: false, text: 'Fastkore отклонил токен. Повторный вызов не отправлен. Проверьте состояние операции чтением.' };
+            }
+            if (result.error) {
+              diagnostic.mcpFailure = 'rpc';
+              diagnostic.mcpErrorCode = result.error.code;
+              return { success: false, text: JSON.stringify({ error: result.error }) };
+            }
+            if (!result.result) throw new BridgeError(unavailable, 502);
             const text = redact(JSON.stringify(result.result));
+            if (result.result.isError === true) diagnostic.mcpFailure = 'tool';
             if (text.length > 96_000) return { success: false, text: 'Ответ Fastkore слишком большой. Уточните выборку.' };
             success = result.result.isError !== true;
             return { success, text };
           } catch (error) {
             if (error instanceof BridgeError && [reauth, erpReadOnlyMessage].includes(error.message)) return { success: false, text: error.message };
+            const status = diagnostic.status;
+            if (status !== undefined && (status < 200 || status >= 300)) {
+              diagnostic.mcpFailure = 'http';
+              return { success: false, text: `MCP Fastkore вернул HTTP ${status}. Проверьте состояние операции чтением перед повтором.` };
+            }
+            if (timing.mcpHttpMs !== undefined) diagnostic.mcpFailure = status === undefined ? 'transport' : 'invalid_response';
             return { success: false, text: 'Fastkore не подтвердил результат операции. Проверьте состояние чтением перед повтором.' };
           } finally {
-            audit?.({ tool: tool.upstream, parameters: supplied, status, success, elapsedMs: elapsedMs(started), ...timing });
+            audit?.({ tool: tool.upstream, parameters: supplied, ...diagnostic, success, elapsedMs: elapsedMs(started), ...timing });
           }
         },
       } };

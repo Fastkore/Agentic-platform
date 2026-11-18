@@ -7,7 +7,7 @@ import { notFound, type FolderRow, type LibraryActor, type LibraryRegistry } fro
 export interface PlatformDirectory {
   projectExists(projectId: string): boolean;
   projectName(projectId: string): string | undefined;
-  canAccessProject(userId: string, projectId: string): boolean;
+  canAccessProject(userId: string, projectId: string, credentialId?: string): boolean;
   /** Profiles connected to the project through ProjectAgentPolicy (all enabled profiles when the project has no policy). */
   connectedProfiles(projectId: string): { id: string; name: string }[];
   canUseProfile(userId: string, profileId: string): boolean;
@@ -21,8 +21,8 @@ const strictest = (...policies: (OutputPolicy | null | undefined)[]): OutputPoli
 const parsePaths = (value: string | null) => { try { return value ? JSON.parse(value) as string[] : undefined; } catch { return []; } };
 export const accessReasons: Record<string, string> = {
   folder_inactive: 'Папка неактивна',
-  project_access: 'Нет доступа к проекту', connection_disabled: 'Папка отключена в проекте', not_assigned: 'Папка не назначена специалисту',
-  profile_not_connected: 'Специалист не подключён к проекту', profile_forbidden: 'Специалист недоступен сотруднику',
+  project_access: 'Нет доступа к проекту', connection_disabled: 'Папка отключена в проекте', not_assigned: 'Папка не назначена агенту',
+  profile_not_connected: 'Агент не подключён к проекту', profile_forbidden: 'Агент недоступен сотруднику',
   closed_analysis_off: 'Закрытая папка: анализ закрытых материалов в этой поставке выключен', no_content: 'В папке ещё нет готовых материалов',
 };
 export interface ScopeEntry {
@@ -32,21 +32,21 @@ export interface ScopeEntry {
   /** Grant restricted to listed files (carried over from per-file access of the former project files). */
   paths?: string[];
 }
-export interface RunLibraryScope { projectId: string; actorId: string; profileId: string; entries: ScopeEntry[]; hash: string }
+export interface RunLibraryScope { projectId: string; actorId: string; profileId: string; credentialId?: string; entries: ScopeEntry[]; hash: string }
 
 export class LibraryPolicy {
   constructor(readonly registry: LibraryRegistry, readonly directory: PlatformDirectory) {}
   private get db() { return this.registry.db; }
   connection(projectId: string, folderId: string) { return this.db.prepare('SELECT * FROM connections WHERE project_id=? AND folder_id=?').get(projectId, folderId) as ConnectionRow | undefined; }
   private requireProject(actor: LibraryActor, projectId: string) {
-    if (!this.directory.projectExists(projectId) || !actor.admin && !this.directory.canAccessProject(actor.id, projectId)) throw new BridgeError('Проект не найден.', 404);
+    if (!this.directory.projectExists(projectId) || !actor.admin && !this.directory.canAccessProject(actor.id, projectId, actor.credentialId)) throw new BridgeError('Проект не найден.', 404);
   }
   private manageable(actor: LibraryActor, folderId: string) { return this.registry.can(actor, folderId, 'connect'); }
   /** A project library manager: project access plus the right to connect at least one folder (administrators always). */
   canManageProject(actor: LibraryActor, projectId: string) {
     if (!this.directory.projectExists(projectId)) return false;
     if (actor.admin) return true;
-    if (!this.directory.canAccessProject(actor.id, projectId)) return false;
+    if (!this.directory.canAccessProject(actor.id, projectId, actor.credentialId)) return false;
     return this.registry.listFolders(actor).some(f => this.manageable(actor, f.id));
   }
   private requireManager(actor: LibraryActor, projectId: string) {
@@ -99,7 +99,7 @@ export class LibraryPolicy {
   setGrant(actor: LibraryActor, projectId: string, folderId: string, input: { profileId: string; enabled: boolean; outputPolicy?: OutputPolicy | null; revision: number;
     /** Opens the whole folder for an assignment that was limited to files. */ allFiles?: boolean }) {
     this.requireConnection(actor, projectId, folderId);
-    if (input.enabled && !this.directory.connectedProfiles(projectId).some(p => p.id === input.profileId)) throw new BridgeError('Сначала подключите специалиста к проекту.', 409);
+    if (input.enabled && !this.directory.connectedProfiles(projectId).some(p => p.id === input.profileId)) throw new BridgeError('Сначала подключите агента к проекту.', 409);
     return this.registry.tx(() => {
       const connection = this.connection(projectId, folderId)!;
       if (connection.revision !== input.revision) throw new BridgeError('Настройки изменены другим пользователем. Обновите данные.', 409);
@@ -123,12 +123,12 @@ export class LibraryPolicy {
    * The single access rule: project membership ∩ specialist availability ∩ connection ∩ assignment ∩ folder mode.
    * userId=undefined evaluates the configured policy (matrix) without a particular employee.
    */
-  effective(userId: string | undefined, projectId: string, profileId: string, folderId: string) {
+  effective(userId: string | undefined, projectId: string, profileId: string, folderId: string, credentialId?: string) {
     const reasons: string[] = [];
     const connection = this.connection(projectId, folderId);
     const folder = this.registry.folderRow(folderId);
     if (!connection || !folder) return { allowed: false, reasons: ['connection_disabled'] as string[] };
-    if (userId !== undefined && !this.directory.canAccessProject(userId, projectId)) reasons.push('project_access');
+    if (userId !== undefined && !this.directory.canAccessProject(userId, projectId, credentialId)) reasons.push('project_access');
     if (!folder.active) reasons.push('folder_inactive');
     if (!connection.enabled) reasons.push('connection_disabled');
     const grant = this.db.prepare('SELECT * FROM grants WHERE project_id=? AND profile_id=? AND folder_id=?').get(projectId, profileId, folderId) as GrantRow | undefined;
@@ -142,7 +142,7 @@ export class LibraryPolicy {
   }
   /** Rights only: content updates during an answer are allowed and not checked (owner decision). */
   stillAllowed(scope: RunLibraryScope, entry: ScopeEntry) {
-    const access = this.effective(scope.actorId, scope.projectId, scope.profileId, entry.folderId);
+    const access = this.effective(scope.actorId, scope.projectId, scope.profileId, entry.folderId, scope.credentialId);
     return !!access.folder && access.reasons.every(r => r === 'no_content') && access.outputPolicy === entry.outputPolicy
       && access.folder.classification === entry.classification && JSON.stringify(access.paths ?? null) === JSON.stringify(entry.paths ?? null);
   }
@@ -163,20 +163,20 @@ export class LibraryPolicy {
       available: this.registry.listFolders(actor).filter(f => !connected.has(f.id) && this.manageable(actor, f.id) && !this.connection(projectId, f.id)).map(f => ({ id: f.id, name: f.name })) };
   }
   /** Folders a run may use, from the same rule as the matrix; fixed when the answer starts. */
-  runScope(userId: string, projectId: string, profileId: string): RunLibraryScope {
+  runScope(userId: string, projectId: string, profileId: string, credentialId?: string): RunLibraryScope {
     const entries: ScopeEntry[] = [];
     for (const row of this.db.prepare('SELECT * FROM connections WHERE project_id=? AND enabled=1 ORDER BY rowid').all(projectId) as ConnectionRow[]) {
-      const access = this.effective(userId, projectId, profileId, row.folder_id);
+      const access = this.effective(userId, projectId, profileId, row.folder_id, credentialId);
       if (!access.allowed || !access.folder) continue;
       entries.push({ folderId: row.folder_id, name: access.folder.name, description: access.folder.description, profile: access.folder.profile, outputPolicy: access.outputPolicy!,
         classification: access.folder.classification, stateId: access.folder.current_state!, paths: access.paths });
     }
     // The hash covers rights only. Content updates do not create a new executor context: every answer with library tools starts a new one anyway.
     const hash = createHash('sha256').update(JSON.stringify(entries.map(e => [e.folderId, e.outputPolicy, e.classification, e.paths ?? null]))).digest('hex');
-    return { projectId, actorId: userId, profileId, entries, hash };
+    return { projectId, actorId: userId, profileId, credentialId, entries, hash };
   }
-  admitRun(runId: string, userId: string, projectId: string, profileId: string) {
-    const scope = this.runScope(userId, projectId, profileId);
+  admitRun(runId: string, userId: string, projectId: string, profileId: string, credentialId?: string) {
+    const scope = this.runScope(userId, projectId, profileId, credentialId);
     this.db.prepare('INSERT OR REPLACE INTO run_scopes VALUES (?,?,?,?,?,?,NULL)').run(runId, projectId, userId, profileId, JSON.stringify(scope), Date.now());
     return scope;
   }

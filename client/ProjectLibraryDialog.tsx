@@ -49,7 +49,7 @@ export function ProjectLibraryPanel({ project, request, section, isAdmin, initia
 
   return <div className="project-library-settings">
     <div className="project-agents-intro">
-      <strong>{section === 'folders' ? 'Папки библиотеки' : 'Доступ специалистов к папкам'}</strong>
+      <strong>{section === 'folders' ? 'Папки библиотеки' : 'Доступ агентов к папкам'}</strong>
       <span className="project-specialist-actions">
         <button type="button" className="workspace-icon" title="Обновить" aria-label="Обновить" disabled={pending} onClick={() => void load()}><RefreshCw size={16} /></button>
         {section === 'folders' && isAdmin && <button type="button" className="secondary" aria-expanded={creating} onClick={() => setCreating(!creating)}><Plus size={16} aria-hidden="true" />Новая папка</button>}
@@ -66,7 +66,7 @@ export function ProjectLibraryPanel({ project, request, section, isAdmin, initia
           setCreating(false); setExpanded(created.id); setDraft(emptyFolderDraft);
         }); }}>
           <FolderForm draft={draft} setDraft={setDraft} isAdmin={isAdmin} />
-          <p className="help">Папка появится в общей библиотеке и подключится к проекту. Агент начнёт её использовать после загрузки материалов и назначения специалистам.</p>
+          <p className="help">Папка появится в общей библиотеке и подключится к проекту. Агент начнёт её использовать после загрузки материалов и назначения агентам.</p>
           <div className="settings-actions">
             <button type="submit" className="primary" disabled={pending || !draft.name.trim()}>Создать и подключить</button>
             <button type="button" className="secondary" onClick={() => setCreating(false)}>Отмена</button>
@@ -93,7 +93,7 @@ export function ProjectLibraryPanel({ project, request, section, isAdmin, initia
               {c.description && <p className="help">{c.description}</p>}
               <p className="help">{folder ? folderLine(folder) : c.current ? `${c.current.files.toLocaleString('ru')} файлов` : 'Материалов пока нет'}</p>
               {c.folderActive && c.classification === 'restricted' && <p className="library-warning">Для этой папки также действуют правила закрытого анализа.</p>}
-              <p className="help">Специалисты: {assigned.length ? assigned.join(', ') : 'не назначены — агент папку не использует'}</p>
+              <p className="help">Агенты: {assigned.length ? assigned.join(', ') : 'не назначены — агент папку не использует'}</p>
             </div>
             {open && folder && <LibraryFolderCard request={request} folder={folder} isAdmin={isAdmin} reload={reload} />}
             {c.canManage && <div className="settings-actions library-card-actions">
@@ -113,7 +113,7 @@ export function ProjectLibraryPanel({ project, request, section, isAdmin, initia
 
       {section === 'access' && <>
         <div className="library-field-row library-filter">
-          <label htmlFor="library-profile-filter">Специалист</label>
+          <label htmlFor="library-profile-filter">Агент</label>
           <Select id="library-profile-filter" className="settings-select" value={profileFilter} fitContent
             options={[{ value: '', label: 'Все подключённые' }, ...view.profiles.map(p => ({ value: p.id, label: p.name }))]} onChange={setProfileFilter} />
         </div>
@@ -138,7 +138,7 @@ export function ProjectLibraryPanel({ project, request, section, isAdmin, initia
           const p = view.profiles.find(x => x.id === detail.profileId);
           return <div className="agent-card library-detail" role="status">
             <strong>{c?.folderName} — {p?.name}</strong>
-            <p className="help">{detail.allowed ? 'Агент этого специалиста может использовать папку.' : detail.reasons.join('; ')}</p>
+            <p className="help">{detail.allowed ? 'Агент может использовать папку.' : detail.reasons.join('; ')}</p>
             {detail.files !== undefined && <p className="help">Доступ ограничен {detail.files} файлами (перенесено из прежних «Файлов проекта»).
               {c?.canManage && <> <button type="button" className="secondary" disabled={pending} onClick={() => void grant(c, detail.profileId, true, { allFiles: true }).then(() => setDetail(undefined))}>Открыть всю папку</button></>}</p>}
             <div className="settings-actions"><button type="button" className="secondary" onClick={() => setDetail(undefined)}>Закрыть</button></div>

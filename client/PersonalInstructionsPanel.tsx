@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Check, ChevronRight, Download, Eye, FileText, Folder, Layers, Pencil, Plus, Search, Trash2, Undo2, Upload, Users } from 'lucide-react';
+import { Check, ChevronRight, Download, FileText, Folder, Layers, Plus, Search, Trash2, Undo2, Upload, Users } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { instructionTile, personalInstructionLimits as limits, type PersonalInstructions, type PersonalInstructionsEdit, type PersonalInstructionsView, type SharedWorkNote, type WorkNote } from '../shared/personal-instructions';
@@ -43,7 +43,6 @@ export function PersonalInstructionsPanel({ request, project, erp, context, admi
   const [draft, setDraft] = useState<Draft>();
   const [sharedNotes, setSharedNotes] = useState<SharedWorkNote[]>([]);
   const [selected, setSelected] = useState('');
-  const [editing, setEditing] = useState(true);
   const [search, setSearch] = useState('');
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const [authors, setAuthors] = useState<Author[]>([]);
@@ -63,7 +62,7 @@ export function PersonalInstructionsPanel({ request, project, erp, context, admi
     return request<PersonalInstructionsView>(endpoint, { signal }).then(document => {
       if (signal?.aborted) return;
       const next = toDraft(document);
-      setSaved(next); setDraft(next); setSharedNotes(document.sharedNotes ?? []); setSelected(''); setEditing(true);
+      setSaved(next); setDraft(next); setSharedNotes(document.sharedNotes ?? []); setSelected('');
       setSearch(''); setCollapsed(new Set()); setConflict(false);
     }).catch(cause => {
       if (!signal?.aborted) setError((cause as Error).message);
@@ -109,9 +108,6 @@ export function PersonalInstructionsPanel({ request, project, erp, context, admi
   }
   const text = note?.text ?? draft?.text ?? '';
   const change = (next: Draft) => { setDraft(next); setNotice(''); };
-  const select = (key: string) => {
-    setSelected(key); setEditing(!notes.find(item => item.key === key)?.authorName);
-  };
   function updateNote(changes: Partial<DraftNote>) {
     if (draft) change({ ...draft, notes: draft.notes.map(item => item.key === selected ? { ...item, ...changes } : item) });
   }
@@ -121,7 +117,7 @@ export function PersonalInstructionsPanel({ request, project, erp, context, admi
     const pendingScope = erp && scopeContext && scopeContext.view !== 'none' ? 'erp' : undefined;
     change({ ...draft, notes: [...draft.notes, { key, title, text, pendingScope }] });
     setSearch(''); setCollapsed(new Set());
-    setSelected(key); setEditing(true); setError('');
+    setSelected(key); setError('');
   }
   async function importNote(file: File) {
     try {
@@ -173,14 +169,14 @@ export function PersonalInstructionsPanel({ request, project, erp, context, admi
   function revert() {
     if (!saved) return;
     change(saved); setError(''); setConflict(false);
-    if (note && canEdit && !saved.notes.some(item => item.key === note.key)) select('');
+    if (note && canEdit && !saved.notes.some(item => item.key === note.key)) setSelected('');
   }
 
   function remove() {
     if (!draft || !canEdit) return;
     if (note) {
       change({ ...draft, notes: draft.notes.filter(item => item.key !== note.key) });
-      select('');
+      setSelected('');
     } else change({ ...draft, text: '' });
   }
 
@@ -199,7 +195,7 @@ export function PersonalInstructionsPanel({ request, project, erp, context, admi
           {!authors.length && <option value="">Сотрудники</option>}
           {authors.map(author => <option key={author.id} value={author.id}>{author.name}{author.role ? ' · ' + author.role : ''}</option>)}
         </select> : <div className="personal-add-actions">
-          <button type="button" className="primary" disabled={busy || !draft || draft.notes.length >= limits.notes} onClick={() => addNote()}>
+          <button type="button" className="secondary" disabled={busy || !draft || draft.notes.length >= limits.notes} onClick={() => addNote()}>
             <Plus size={17} aria-hidden="true" />Добавить
           </button>
           <button type="button" className="secondary" disabled={busy || !draft || draft.notes.length >= limits.notes} onClick={() => upload.current?.click()}>
@@ -233,9 +229,9 @@ export function PersonalInstructionsPanel({ request, project, erp, context, admi
             <span className="personal-badge">{group.visible.length + Number(group.hasInstructions)}</span>
           </summary>
           {group.hasInstructions && <button type="button" className="workspace-row" aria-current={!selected ? 'page' : undefined}
-            onClick={() => select('')}><FileText size={16} aria-hidden="true" /><span>Указания</span></button>}
+            onClick={() => setSelected('')}><FileText size={16} aria-hidden="true" /><span>Указания</span></button>}
           {group.visible.map(item => <button type="button" className="workspace-row" key={item.key} title={item.title}
-            aria-current={selected === item.key ? 'page' : undefined} onClick={() => select(item.key)}>
+            aria-current={selected === item.key ? 'page' : undefined} onClick={() => setSelected(item.key)}>
             <FileText size={16} aria-hidden="true" /><span>{item.title || 'Новый приём'}</span>
             {item.authorName && <Users className="personal-shared-icon" size={15} aria-label="Приём коллеги" />}
           </button>)}
@@ -253,17 +249,13 @@ export function PersonalInstructionsPanel({ request, project, erp, context, admi
       {draft && <header className="personal-editor-header">
         <span className="personal-file-icon"><FileText size={30} aria-hidden="true" /></span>
         <div className="personal-heading">
-          {note && editing && canEdit ? <textarea className="personal-title-input" aria-label="Название" placeholder="Новый приём"
+          {note && canEdit ? <textarea className="personal-title-input" aria-label="Название" placeholder="Новый приём"
             rows={1} value={note.title} maxLength={limits.title} disabled={busy}
             onChange={event => updateNote({ title: event.target.value.replace(/[\r\n]+/g, ' ') })} /> : <h3>{title}</h3>}
         </div>
         <div className="personal-editor-actions">
           {canEdit && <button type="button" className="workspace-icon personal-save" aria-label="Сохранить" title="Сохранить" disabled={!canSave}
             onClick={() => void save()}><Check size={22} aria-hidden="true" /></button>}
-          {canEdit && <button type="button" className="workspace-icon" aria-label={editing ? 'Предпросмотр' : 'Редактировать'}
-            title={editing ? 'Предпросмотр' : 'Редактировать'} onClick={() => setEditing(!editing)}>
-            {editing ? <Eye size={19} aria-hidden="true" /> : <Pencil size={19} aria-hidden="true" />}
-          </button>}
           {canEdit && <button type="button" className="workspace-icon" aria-label="Отменить правки" title="Отменить правки" disabled={!dirty || busy}
             onClick={revert}><Undo2 size={20} aria-hidden="true" /></button>}
           {note && <button type="button" className="workspace-icon" aria-label="Скачать SKILL.md" title="Скачать SKILL.md"
@@ -285,7 +277,7 @@ export function PersonalInstructionsPanel({ request, project, erp, context, admi
           onChange={checked => updateNote({ common: checked ? true : undefined })} />
         <span>Доступен всем ролям</span>
       </label>}
-      {draft && (editing && canEdit ? <>
+      {draft && (canEdit ? <>
         {note && !note.id && <div className="personal-fields">
           <label>Применение
             <select value={note.pendingScope ?? ''} disabled={busy} onChange={event => updateNote({ pendingScope: event.target.value as Scope || undefined })}>

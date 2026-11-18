@@ -7,22 +7,22 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Store } from '../server/store.js';
 import { Workspace } from '../server/workspace.js';
-import { CodexClient } from '../server/codex.js';
+import { CodexClient, type CodexRunner } from '../server/codex.js';
 import { createApp } from '../server/app.js';
 import { csrfFor } from '../server/fastkore.js';
 import type { TranscribeDictation } from '../server/dictation.js';
-import type { FastkoreRole } from '../shared/types.js';
+import type { FastkoreRole, TeamUser } from '../shared/types.js';
 import { erpBrowser } from './erp-browser.js';
 
 const password = 'Test-password-for-office-2026';
-async function fixture(transcribeDictation?: TranscribeDictation) {
+async function fixture(transcribeDictation?: TranscribeDictation, run?: CodexRunner['run']) {
   const root = await mkdtemp(path.join(tmpdir(), 'bridge-access-')), directory = path.join(root, 'library'); await mkdir(directory);
   const store = new Store(path.join(root, 'data'));
   const cli = new CodexClient([fileURLToPath(new URL('./fake-cli.mjs', import.meta.url))]);
   const workspace = new Workspace(store, {
     isolated: true,
     inspect: (_path, signal) => cli.inspect(process.execPath, signal),
-    run: (input, events, signal) => cli.run({ ...input, cliPath: process.execPath }, events, signal),
+    run: run ?? ((input, events, signal) => cli.run({ ...input, cliPath: process.execPath }, events, signal)),
   });
   await workspace.settings({ cliPath: process.execPath, includePreviews: false });
   const project = await workspace.addProject(directory), legacy = await workspace.addChat(project.id, 'Старая история'); legacy.sessionId = '87db344a-98f3-42c8-bba8-c7d9f3dcff11';
@@ -33,12 +33,13 @@ async function fixture(transcribeDictation?: TranscribeDictation) {
   const setup = await req('POST', '/api/auth/setup', boot.token, { username: 'boss', name: 'Руководитель', password }); assert.equal(setup.statusCode, 200);
   const admin = setup.json().token as string, adminId = setup.json().user.id;
   const enter = await erp.pair(app, admin);
-  async function employee(username: string, roles?: FastkoreRole[]) {
-    const { user, cookie } = await enter(username, undefined, roles);
+  async function employee(username: string, roles: FastkoreRole[] = [{ id: randomUUID(), name: username }]) {
+    const { user, cookie, projectRoles } = await enter(username, undefined, roles);
     assert.equal((await req('PATCH', '/api/users/' + user.id, admin, { roleId: 'employee' })).statusCode, 200);
-    return { id: user.id, token: cookie };
+    return { id: user.id, token: cookie, projectRoles };
   }
-  return { root, store, workspace, project, legacy, app, req, admin, adminId, employee };
+  const setProjectRoles = (roles: Awaited<ReturnType<typeof employee>>['projectRoles']) => erp.setProjectRoles(app, admin, project.id, roles);
+  return { root, store, workspace, project, legacy, app, req, admin, adminId, employee, setProjectRoles, pair: () => erp.pair(app, admin) };
 }
 async function done(workspace: Workspace) { const end = Date.now() + 10_000; while (workspace.activeRun) { assert.ok(Date.now() < end); await new Promise(r => setTimeout(r, 20)); } }
 
@@ -69,7 +70,7 @@ test('ERP role grants control creating an isolated project and can be changed by
     assert.equal(response.statusCode, 201);
     const project = response.json();
     assert.equal(project.directory, path.join(f.store.root, 'projects', project.id));
-    assert.deepEqual(f.workspace.project(project.id).memberIds, [creator.id]);
+    assert.deepEqual(f.workspace.project(project.id).rolePolicy?.roles, creator.projectRoles);
     assert.deepEqual((await f.req('GET', '/api/projects', creator.token)).json().map((item: { id: string }) => item.id), [project.id]);
     assert.equal((await f.req('POST', '/api/projects/' + project.id + '/chats', creator.token, {})).statusCode, 201);
     assert.equal((await f.req('GET', '/api/projects/' + project.id + '/chats', colleague.token)).statusCode, 404);
@@ -102,15 +103,53 @@ test('renaming a project updates its display name and preserves its directory an
   } finally { await f.app.close(); }
 });
 
-test('per-user project access controls dictation and leaves other memberships intact', async () => {
+test('project visibility combines roles within the current Fastkore installation and revokes direct access', async () => {
+  const f = await fixture();
+  try {
+    const shared = { id: randomUUID(), name: 'Общая роль' };
+    const employee = await f.employee('With roles', [{ id: randomUUID(), name: 'Другая роль' }, shared]);
+    const otherInstallation = await f.pair();
+    const foreign = await otherInstallation('Other installation', undefined, [shared]);
+    const base = '/api/projects/' + f.project.id;
+    Object.assign(f.project, { memberIds: [employee.id, foreign.user.id] });
+    assert.deepEqual((await f.req('GET', '/api/projects', employee.token)).json(), []);
+    assert.equal((await f.req('GET', base + '/chats', employee.token)).statusCode, 404);
+    const grant = await f.setProjectRoles([employee.projectRoles[1]]);
+    assert.equal(grant.statusCode, 200, grant.body);
+    assert.equal((await f.req('PUT', base + '/roles', f.admin, { roles: [], revision: 0 })).statusCode, 409);
+    assert.deepEqual((await f.req('GET', '/api/projects', foreign.cookie)).json(), []);
+    assert.equal((await f.req('GET', base + '/agents', foreign.cookie)).statusCode, 404);
+    assert.equal((await f.req('GET', base + '/library', foreign.cookie)).statusCode, 404);
+    assert.equal((await f.req('GET', '/api/projects', f.admin)).json()[0].roles[0].name, shared.name);
+    const projectsFor = async (userId: string) => {
+      const users = (await f.req('GET', '/api/users', f.admin)).json<TeamUser[]>();
+      return users.find(user => user.id === userId)!.projects;
+    };
+    const projectLabel = { id: f.project.id, name: f.project.name };
+    assert.deepEqual(await projectsFor(employee.id), [projectLabel]);
+    assert.deepEqual(await projectsFor(foreign.user.id), []);
+    assert.deepEqual(await projectsFor(f.adminId), [projectLabel]);
+    assert.equal((await f.req('GET', base + '/chats', employee.token)).statusCode, 200);
+    const created = await f.req('POST', base + '/chats', employee.token, {});
+    assert.equal(created.statusCode, 201, created.body);
+    const chatUrl = base + '/chats/' + created.json().id;
+    assert.equal((await f.req('GET', chatUrl, employee.token)).statusCode, 200);
+    assert.equal((await f.setProjectRoles([])).statusCode, 200);
+    assert.deepEqual(await projectsFor(employee.id), []);
+    assert.equal((await f.req('GET', chatUrl, employee.token)).statusCode, 404);
+    assert.equal((await f.req('GET', chatUrl, f.admin)).statusCode, 200);
+  } finally { await f.app.close(); }
+});
+
+test('project roles control dictation and leave other role grants intact', async () => {
   let transcriptions = 0;
   const f = await fixture(async () => { transcriptions++; return 'Текст черновика'; });
   try {
     const a = await f.employee('alice'), b = await f.employee('boris');
-    const accessRoute = `/api/users/${a.id}/projects`, projectRoute = `/api/projects/${f.project.id}`;
+    const accessRoute = `/api/projects/${f.project.id}/roles`;
     assert.equal((await f.req('GET', accessRoute, a.token)).statusCode, 403);
-    assert.deepEqual((await f.req('GET', accessRoute, f.admin)).json().map((p: { allowed: boolean }) => p.allowed), [false]);
-    assert.equal((await f.req('PATCH', projectRoute + '/members', f.admin, { memberIds: [b.id] })).statusCode, 200);
+    assert.deepEqual((await f.req('GET', accessRoute, f.admin)).json().roles, []);
+    assert.equal((await f.setProjectRoles(b.projectRoles)).statusCode, 200);
 
     const wav = Buffer.alloc(46);
     wav.write('RIFF', 0); wav.writeUInt32LE(38, 4); wav.write('WAVEfmt ', 8);
@@ -127,8 +166,8 @@ test('per-user project access controls dictation and leaves other memberships in
         cookie: a.token, 'x-csrf-token': csrfFor(a.token.split('=')[1]), 'content-type': request.headers.get('content-type')! }, payload });
 
     assert.equal((await dictate()).statusCode, 404);
-    assert.equal((await f.req('PATCH', accessRoute, a.token, { projectIds: [f.project.id] })).statusCode, 403);
-    assert.equal((await f.req('PATCH', accessRoute, f.admin, { projectIds: [f.project.id] })).statusCode, 200);
+    assert.equal((await f.req('PUT', accessRoute, a.token, { revision: 1, roles: a.projectRoles })).statusCode, 403);
+    assert.equal((await f.setProjectRoles([...a.projectRoles, ...b.projectRoles])).statusCode, 200);
     assert.equal((await dictate(f.legacy.id)).statusCode, 404);
     assert.equal((await f.req('PATCH', '/api/settings', a.token, { dictationEnabled: false })).statusCode, 403);
     assert.equal((await f.req('GET', '/api/dictation/models', a.token)).statusCode, 403);
@@ -139,9 +178,9 @@ test('per-user project access controls dictation and leaves other memberships in
     assert.equal(transcription.statusCode, 200, transcription.body);
     assert.deepEqual(transcription.json(), { text: 'Текст черновика' });
     assert.equal(f.legacy.messages.length, 0);
-    assert.equal((await f.req('PATCH', accessRoute, f.admin, { projectIds: [] })).statusCode, 200);
+    assert.equal((await f.setProjectRoles(b.projectRoles)).statusCode, 200);
     assert.equal((await dictate()).statusCode, 404);
-    assert.deepEqual(f.workspace.project(f.project.id).memberIds, [b.id]);
+    assert.deepEqual(f.workspace.project(f.project.id).rolePolicy?.roles, b.projectRoles);
     assert.equal(transcriptions, 1);
   } finally { await f.app.close(); }
 });
@@ -149,7 +188,7 @@ test('uploaded 3D models can be opened by their owner and an administrator withi
   const f = await fixture();
   try {
     const owner = await f.employee('model-owner'), reader = await f.employee('model-reader');
-    assert.equal((await f.req('PATCH', `/api/projects/${f.project.id}/members`, f.admin, { memberIds: [owner.id, reader.id] })).statusCode, 200);
+    assert.equal((await f.setProjectRoles([...owner.projectRoles, ...reader.projectRoles])).statusCode, 200);
     const chat = await f.workspace.addChat(f.project.id, '3D', undefined, owner.id);
     chat.visibility = 'project';
     const data = Buffer.from('solid sample\nendsolid sample\n');
@@ -178,7 +217,7 @@ test('chat pins persist independently for readers and require access to the chat
   let sharedId: string;
   try {
     const chats = `/api/projects/${f.project.id}/chats`;
-    assert.equal((await f.req('PATCH', `/api/projects/${f.project.id}/members`, f.admin, { memberIds: [owner.id, reader.id] })).statusCode, 200);
+    assert.equal((await f.setProjectRoles([...owner.projectRoles, ...reader.projectRoles])).statusCode, 200);
     const shared = await f.workspace.addChat(f.project.id, 'Общий чат', undefined, owner.id);
     const privateChat = await f.workspace.addChat(f.project.id, 'Личный чат', undefined, owner.id);
     shared.visibility = 'project';
@@ -202,13 +241,59 @@ test('chat pins persist independently for readers and require access to the chat
   } finally { await reopened.close(); }
 });
 
+test('completed chat replies stay unread for each reader until the latest reply is acknowledged', async () => {
+  const f = await fixture(undefined, async () => ({ response: 'Готово' }));
+  let sharedId!: string, latestReply!: string, readerId!: string;
+  try {
+    const owner = await f.employee('reply-owner'), reader = await f.employee('reply-reader');
+    readerId = reader.id;
+    await f.setProjectRoles([...owner.projectRoles, ...reader.projectRoles]);
+    const shared = await f.workspace.addChat(f.project.id, 'Общий чат', undefined, owner.id);
+    const personal = await f.workspace.addChat(f.project.id, 'Личный чат', undefined, owner.id);
+    shared.visibility = 'project';
+    sharedId = shared.id;
+    await f.store.save();
+    const route = (id: string) => `/api/projects/${f.project.id}/chats/${id}`;
+    const unread = async (token: string) => (await f.req('GET', '/api/status', token)).json().unreadChatReplies;
+    const read = (id: string, token: string, replyId: string) => f.req('PATCH', route(id) + '/read', token, { replyId });
+    async function respond(id: string, text: string) {
+      const submitted = await f.req('POST', route(id) + '/messages', owner.token, { text });
+      assert.equal(submitted.statusCode, 202, submitted.body);
+      await done(f.workspace);
+      const run = (await f.req('GET', '/api/runs/' + submitted.json().id, owner.token)).json();
+      assert.equal(run.status, 'complete', run.error);
+      const result = await f.req('GET', route(id), owner.token);
+      const replyId = result.json().lastCompletedReplyId;
+      assert.ok(replyId);
+      return replyId;
+    }
+    assert.deepEqual(await unread(reader.token), {});
+    const first = await respond(sharedId, 'Первый вопрос');
+    const other = await respond(personal.id, 'Личный вопрос');
+    assert.equal((await read(personal.id, reader.token, other)).statusCode, 404);
+    assert.deepEqual(await unread(reader.token), { [sharedId]: first });
+    latestReply = await respond(sharedId, 'Второй вопрос');
+    assert.notEqual(latestReply, first);
+    assert.equal((await read(sharedId, reader.token, first)).statusCode, 200);
+    assert.deepEqual(await unread(reader.token), { [sharedId]: latestReply });
+    assert.equal((await read(sharedId, reader.token, latestReply)).statusCode, 200);
+    assert.deepEqual(await unread(reader.token), {});
+    assert.equal((await unread(owner.token))[sharedId], latestReply);
+  } finally { await f.app.close(); }
+  const reopened = new Store(f.store.root);
+  try {
+    assert.equal(reopened.state.security?.users.find(user => user.id === readerId)?.readChatReplies?.[sharedId], latestReply);
+    assert.equal(reopened.state.projects[0].chats.find(chat => chat.id === sharedId)?.lastCompletedReplyId, latestReply);
+  } finally { await reopened.close(); }
+});
+
 test('three employees share library but private chat metadata, messages, jobs and writes are protected', async () => {
   const f = await fixture(); try {
     const a = await f.employee('alice'), b = await f.employee('boris'), c = await f.employee('clara');
     assert.deepEqual((await f.req('GET', '/api/projects', a.token)).json(), []);
     assert.equal((await f.req('GET', `/api/projects/${f.project.id}/chats`, a.token)).statusCode, 404);
     const base = `/api/projects/${f.project.id}`;
-    assert.equal((await f.req('PATCH', base + '/members', f.admin, { memberIds: [a.id, b.id, c.id] })).statusCode, 200);
+    assert.equal((await f.setProjectRoles([...a.projectRoles, ...b.projectRoles, ...c.projectRoles])).statusCode, 200);
     const ca = (await f.req('POST', base + '/chats', a.token, { title: 'Только Алиса' })).json();
     const cb = (await f.req('POST', base + '/chats', b.token, { title: 'Только Борис' })).json();
     const cc = (await f.req('POST', base + '/chats', c.token, {})).json();
@@ -246,7 +331,7 @@ test('three employees share library but private chat metadata, messages, jobs an
     await f.req('PATCH', route + '/visibility', f.admin, { visibility: 'private' });
     assert.equal((await f.req('GET', route, b.token)).statusCode, 404);
     assert.equal((await f.req('GET', `/api/runs/${run.id}`, b.token)).statusCode, 404);
-    await f.req('PATCH', base + '/members', f.admin, { memberIds: [b.id, c.id] });
+    assert.equal((await f.setProjectRoles([...b.projectRoles, ...c.projectRoles])).statusCode, 200);
     assert.equal((await f.req('GET', route, a.token)).statusCode, 404);
     assert.equal((await f.req('POST', route + '/messages', a.token, { text: 'revoked' })).statusCode, 404);
     assert.ok(cc.id);
@@ -257,7 +342,7 @@ test('ERP employees cannot administer the platform or set passwords; disabling a
     const a = await f.employee('alice');
     assert.equal((await f.req('GET', '/api/admin/execution/accounts', a.token)).statusCode, 403);
     assert.equal((await f.req('POST', '/api/admin/execution/accounts', a.token, { name: 'Other' })).statusCode, 403);
-    for (const [method, url, body] of [ ['GET','/api/users',undefined], ['GET','/api/audit',undefined], ['GET','/api/diagnostics',undefined], ['POST','/api/cli/check',{}], ['POST','/api/subscription/check',{}], ['PATCH','/api/settings',{allowWrite:true}], ['POST','/api/projects',{directory:f.root}], ['POST','/api/users',{username:'evil',name:'x',password,role:'admin'}], ['PATCH',`/api/projects/${f.project.id}/members`,{memberIds:[a.id]}] ] as const) assert.equal((await f.req(method,url,a.token,body)).statusCode,403,`${method} ${url}`);
+    for (const [method, url, body] of [ ['GET','/api/users',undefined], ['GET','/api/audit',undefined], ['GET','/api/diagnostics',undefined], ['POST','/api/cli/check',{}], ['POST','/api/subscription/check',{}], ['PATCH','/api/settings',{allowWrite:true}], ['POST','/api/projects',{directory:f.root}], ['POST','/api/users',{username:'evil',name:'x',password,role:'admin'}], ['PUT',`/api/projects/${f.project.id}/roles`,{revision:0,roles:a.projectRoles}] ] as const) assert.equal((await f.req(method,url,a.token,body)).statusCode,403,`${method} ${url}`);
     assert.equal((await f.req('PATCH', '/api/users/' + a.id, f.admin, { password: 'A-new-valid-password-2026' })).statusCode, 403);
     assert.equal((await f.req('POST','/api/auth/password',a.token,{currentPassword:password,password:'Self-changed-password-2026'})).statusCode,403);
     assert.equal((await f.req('POST','/api/auth/login','',{username:'alice',password})).statusCode,401);
@@ -323,7 +408,7 @@ test('simultaneous file uploads share a bounded admission per actor', async t =>
   });
   try {
     const employee = await f.employee('Uploader');
-    assert.equal((await f.req('PATCH', `/api/projects/${f.project.id}/members`, f.admin, { memberIds: [employee.id] })).statusCode, 200);
+    assert.equal((await f.setProjectRoles(employee.projectRoles)).statusCode, 200);
     const request = () => f.app.inject({
       method: 'POST', url: `/api/projects/${f.project.id}/attachments`,
       headers: { host: 'agents.example.test', 'x-forwarded-proto': 'https', origin: 'https://agents.example.test',

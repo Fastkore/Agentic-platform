@@ -22,6 +22,6 @@ export function runToolLabel(tool: string, context?: RunToolContext) {
   if (tool === 'internet_search') return 'Поиск в интернете';
   if (tool === 'internet_read') return 'Чтение страницы';
   if (tool === 'internet_request') return 'Внешний запрос';
-  if (tool === 'consult_specialist') return 'Консультация специалиста';
+  if (tool === 'consult_specialist') return 'Консультация агента';
   return 'Инструмент';
 }

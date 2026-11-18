@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { randomBytes, randomUUID } from 'node:crypto';
 import type { createApp, AppOptions } from '../server/app.js';
 import { audience, csrfFor } from '../server/fastkore.js';
-import type { FastkoreRole, User } from '../shared/types.js';
+import type { FastkoreRole, ProjectRole, ProjectRoleSettings, User } from '../shared/types.js';
 
 type App = Awaited<ReturnType<typeof createApp>>;
 const code = () => randomBytes(32).toString('base64url');
@@ -58,9 +58,16 @@ export function erpBrowser(publicOrigin = 'https://agents.example.test') {
       assert.ok(cookie);
       const me = await req('GET', '/api/auth/me', cookie);
       assert.equal(me.statusCode, 200, me.body);
-      return { user: me.json<{ user: User }>().user, cookie };
+      return { user: me.json<{ user: User }>().user, cookie,
+        projectRoles: (roles ?? []).map(role => ({ installationId: id, roleId: role.id })) };
     };
   }
 
-  return { options, request, pair };
+  async function setProjectRoles(app: App, admin: string, projectId: string, roles: ProjectRole[]) {
+    const req = request(app), url = '/api/projects/' + projectId + '/roles';
+    const current = await req('GET', url, admin);
+    assert.equal(current.statusCode, 200, current.body);
+    return req('PUT', url, admin, { revision: current.json<ProjectRoleSettings>().revision, roles });
+  }
+  return { options, request, pair, setProjectRoles };
 }

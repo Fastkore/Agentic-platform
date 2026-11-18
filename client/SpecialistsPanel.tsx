@@ -65,7 +65,7 @@ export function SpecialistsPanel({ request, globalInstructions, initialProfileId
       if (initialProfileId) {
         const profile = list.find(item => item.id === initialProfileId);
         if (profile) setEditing({ ...profile });
-        else setError('Специалист недоступен.');
+        else setError('Агент недоступен.');
       }
     }).catch(error => { if (!controller.signal.aborted) setError(error.message); });
     return () => controller.abort();
@@ -146,21 +146,21 @@ export function SpecialistsPanel({ request, globalInstructions, initialProfileId
   if (!editing) return <div className="specialist-page">
     <header className="specialist-header">
       <IconTile icon="bot" />
-      <div><h2 id="settings-section-title">Специалисты</h2><p>Помощники для отдельных задач проекта</p></div>
-      <button type="button" className="primary" disabled={!profiles || busy} onClick={() => edit(newProfile)}><Plus size={17} />Добавить специалиста</button>
+      <div><h2 id="settings-section-title">Агенты</h2><p>Помощники для отдельных задач проекта</p></div>
+      <button type="button" className="primary" disabled={!profiles || busy} onClick={() => edit(newProfile)}><Plus size={17} />Добавить агента</button>
     </header>
     <div className="specialist-filters">
       <label className="specialist-search"><Search size={17} aria-hidden="true" />
-        <input type="search" aria-label="Поиск специалистов" placeholder="Поиск специалистов" value={query} onChange={event => setQuery(event.target.value)} />
+        <input type="search" aria-label="Поиск агентов" placeholder="Поиск агентов" value={query} onChange={event => setQuery(event.target.value)} />
       </label>
-      <Select className="settings-select" label="Статус специалистов" value={filter} onChange={setFilter}
-        options={[{ value: 'all', label: 'Все специалисты' }, { value: 'enabled', label: 'Включённые' }, { value: 'disabled', label: 'Выключенные' }]} />
-      <Select className="settings-select" label="Порядок специалистов" value={sort} onChange={setSort}
+      <Select className="settings-select" label="Статус агентов" value={filter} onChange={setFilter}
+        options={[{ value: 'all', label: 'Все агенты' }, { value: 'enabled', label: 'Включённые' }, { value: 'disabled', label: 'Выключенные' }]} />
+      <Select className="settings-select" label="Порядок агентов" value={sort} onChange={setSort}
         options={[{ value: 'default', label: 'По умолчанию' }, { value: 'name', label: 'По названию' }, { value: 'enabled', label: 'Включённые сверху' }]} />
     </div>
     {error && <div className="inline-error" role="alert">{error}</div>}
     {!profiles && !error && <p role="status" className="help">Загрузка…</p>}
-    {profiles && !visible.length && <p role="status" className="help">{profiles.length ? 'Специалисты не найдены' : 'Добавьте первого специалиста'}</p>}
+    {profiles && !visible.length && <p role="status" className="help">{profiles.length ? 'Агенты не найдены' : 'Добавьте первого агента'}</p>}
     {!!visible.length && <ul className="specialist-list">{visible.map(profile => <li key={profile.id}>
       <IconTile icon={profileIcon(profile)} />
       <div className="specialist-summary">
@@ -173,10 +173,10 @@ export function SpecialistsPanel({ request, globalInstructions, initialProfileId
         {profile.enabled && profile.unavailableReason && <p className="specialist-unavailable">{profile.unavailableReason}</p>}
       </div>
       <div className="specialist-row-actions">
-        <Toggle name={'Включить специалиста «' + profile.name + '»'} checked={profile.enabled} disabled={busy}
+        <Toggle name={'Включить агента «' + profile.name + '»'} checked={profile.enabled} disabled={busy}
           onChange={enabled => void save({ ...profile, enabled }, false)} />
         <button type="button" className="secondary specialist-configure" onClick={() => edit(profile)} disabled={busy}
-          aria-label={'Настроить специалиста «' + profile.name + '»'}><Pencil size={15} /><span>Настроить</span></button>
+          aria-label={'Настроить агента «' + profile.name + '»'}><Pencil size={15} /><span>Настроить</span></button>
       </div>
     </li>)}</ul>}
   </div>;
@@ -194,9 +194,9 @@ export function SpecialistsPanel({ request, globalInstructions, initialProfileId
   const submit = (event: FormEvent) => { event.preventDefault(); if (!busy) void save(profile, true); };
   return <div className="specialist-page specialist-editor">
     <header className="specialist-header">
-      <button type="button" className="workspace-icon" disabled={busy} onClick={() => edit()} title="Все специалисты" aria-label="Все специалисты"><ChevronLeft size={18} /></button>
+      <button type="button" className="workspace-icon" disabled={busy} onClick={() => edit()} title="Все агенты" aria-label="Все агенты"><ChevronLeft size={18} /></button>
       <IconTile icon={profileIcon(profile)} />
-      <div><h2 ref={heading} id="settings-section-title" tabIndex={-1}>{profile.name || 'Новый специалист'}</h2></div>
+      <div><h2 ref={heading} id="settings-section-title" tabIndex={-1}>{profile.name || 'Новый агент'}</h2></div>
     </header>
     <form className="specialist-form specialist-editor-form" onSubmit={submit} onInvalid={event => {
       const input = event.target as HTMLInputElement;
@@ -204,7 +204,7 @@ export function SpecialistsPanel({ request, globalInstructions, initialProfileId
       const destination = editorTabs.find(item => panel?.id === 'specialist-panel-' + item.id);
       if (destination) { setTab(destination.id); requestAnimationFrame(() => input.focus()); }
     }}>
-      <div ref={tabs} className="specialist-tabs" role="tablist" aria-label="Настройки специалиста" onKeyDown={event => {
+      <div ref={tabs} className="specialist-tabs" role="tablist" aria-label="Настройки агента" onKeyDown={event => {
         const current = editorTabs.findIndex(item => item.id === tab);
         const next = event.key === 'ArrowRight' ? (current + 1) % editorTabs.length : event.key === 'ArrowLeft'
           ? (current + editorTabs.length - 1) % editorTabs.length : event.key === 'Home' ? 0 : event.key === 'End' ? editorTabs.length - 1 : -1;
@@ -223,18 +223,18 @@ export function SpecialistsPanel({ request, globalInstructions, initialProfileId
         <h3>Основная информация</h3>
         <div className="specialist-columns">
           <div><label htmlFor="config-name">Название</label><input id="config-name" maxLength={100} required value={profile.name} onChange={event => update({ name: event.target.value })} /></div>
-          <div><label htmlFor="profile-description">Когда подключать специалиста</label>
+          <div><label htmlFor="profile-description">Когда подключать агента</label>
             <input id="profile-description" maxLength={1000} required value={profile.description} aria-describedby="profile-description-help"
               placeholder="Например, для проверки расчётов" onChange={event => update({ description: event.target.value })} />
-            <p id="profile-description-help" className="help">Агент использует это описание при выборе специалиста.</p>
+            <p id="profile-description-help" className="help">Основной агент использует это описание при выборе консультанта.</p>
           </div>
           {!profile.revision && <div><label htmlFor="config-id">Идентификатор латиницей</label>
             <input id="config-id" pattern="[a-z][a-z0-9_\-]{1,63}" value={profile.id} required onChange={event => update({ id: event.target.value })} />
           </div>}
         </div>
         <div className="specialist-basics">
-          <label className="specialist-enabled"><Toggle name="Специалист включён" checked={profile.enabled} onChange={enabled => update({ enabled })} />
-            {profile.enabled ? 'Специалист включён' : 'Специалист выключен'}</label>
+          <label className="specialist-enabled"><Toggle name="Агент включён" checked={profile.enabled} onChange={enabled => update({ enabled })} />
+            {profile.enabled ? 'Агент включён' : 'Агент выключен'}</label>
           <div className="specialist-icon-select"><label htmlFor="specialist-icon">Иконка</label>
             <Select id="specialist-icon" className="settings-select" value={profileIcon(profile)} onChange={icon => update({ icon: icon as SpecialistIcon })}
               options={specialistIcons.map(value => ({ value, label: iconLabels[value] }))} />
@@ -245,7 +245,7 @@ export function SpecialistsPanel({ request, globalInstructions, initialProfileId
 
       <div role="tabpanel" id="specialist-panel-instructions" aria-labelledby="specialist-tab-instructions" className="specialist-tabpanel" hidden={tab !== 'instructions'} tabIndex={0}>
         <section className="specialist-card specialist-instructions">
-          <h3><FileText size={18} aria-hidden="true" /><label htmlFor="config-rules">Инструкции специалиста</label></h3>
+          <h3><FileText size={18} aria-hidden="true" /><label htmlFor="config-rules">Инструкции агента</label></h3>
           <textarea id="config-rules" rows={6} maxLength={20000} value={profile.instructions}
             placeholder="Опишите задачу, порядок действий и ожидаемый результат." onChange={event => update({ instructions: event.target.value })} />
         </section>
@@ -273,7 +273,7 @@ export function SpecialistsPanel({ request, globalInstructions, initialProfileId
 
       <div role="tabpanel" id="specialist-panel-tools" aria-labelledby="specialist-tab-tools" className="specialist-tabpanel" hidden={tab !== 'tools'} tabIndex={0}>
         <section className="specialist-card">
-          <h3><Layers3 size={19} aria-hidden="true" />Инструменты специалиста</h3>
+          <h3><Layers3 size={19} aria-hidden="true" />Инструменты агента</h3>
           <p className="help">Доступ к источникам уточняется в настройках проекта.</p>
           <div className="specialist-tool-list">
             {agentTools.filter(tool => tool.id !== 'fastkore').map(tool => {
@@ -287,7 +287,7 @@ export function SpecialistsPanel({ request, globalInstructions, initialProfileId
           </div>
         </section>
         <section className="specialist-card">
-          <Checks label="Библиотеки специалиста" values={profile.datasetIds} options={datasets} change={datasetIds => update({ datasetIds })} />
+          <Checks label="Библиотеки агента" values={profile.datasetIds} options={datasets} change={datasetIds => update({ datasetIds })} />
         </section>
       </div>
 
@@ -295,7 +295,7 @@ export function SpecialistsPanel({ request, globalInstructions, initialProfileId
       <section className="specialist-card">
           <label htmlFor="profile-model">Модель</label>
           <div className="specialist-model-picker">
-            <Select id="profile-model" label="Модель специалиста" className="settings-select" value={profile.model}
+            <Select id="profile-model" label="Модель агента" className="settings-select" value={profile.model}
               options={modelOptions} disabled={busy} onChange={model => update({ model })} />
             <button type="button" className="workspace-icon" aria-label="Обновить модели" title="Обновить модели" disabled={modelsLoading}
               onClick={() => setModelRefresh(value => value + 1)}><RefreshCw size={16} className={modelsLoading ? 'spin' : undefined} /></button>

@@ -7,7 +7,7 @@ import type { LibraryRegistry } from './registry.js';
 
 const folderArg = { type: 'string', description: 'ID папки из library_list' };
 const definitions: CodexToolDefinition[] = [
-  { type: 'function', name: 'library_list', description: 'Папки библиотеки проекта, доступные этому специалисту: назначение, покрытие и режим выдачи. Вызови первым.',
+  { type: 'function', name: 'library_list', description: 'Папки библиотеки проекта, доступные этому агенту: назначение, покрытие и режим выдачи. Вызови первым.',
     inputSchema: { type: 'object', additionalProperties: false, properties: {} } },
   { type: 'function', name: 'library_tree', description: 'Содержимое каталога папки (до 200 записей), с продолжением через cursor.',
     inputSchema: { type: 'object', additionalProperties: false, required: ['folder'], properties: { folder: folderArg, path: { type: 'string', maxLength: 1024 }, cursor: { type: 'string', maxLength: 1100 } } } },

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Bot, Database, Folder, Settings2 } from 'lucide-react';
+import { Bot, Database, Folder, Settings2, ShieldCheck } from 'lucide-react';
 import type { ProjectLibraryView } from '../shared/library';
 import type { ProjectAgentSettings, ProjectSummary } from '../shared/types';
 import type { Request } from './library-upload';
@@ -35,12 +35,13 @@ export function ProjectSettingsCard({ project, request, configure }: {
         aria-label={`Настроить проект «${project.name}»`}><Settings2 size={15} aria-hidden="true" />Настроить проект</button>
     </header>
     <dl className="project-overview-details">
-      {([[Database, 'Библиотеки', libraries], [Bot, 'Специалисты', specialists]] as const).map(([Icon, title, entries]) =>
+      {([[Database, 'Библиотеки', libraries, 'Пока нет'], [Bot, 'Агенты', specialists, 'Пока нет'],
+        [ShieldCheck, 'Роли', (project.roles ?? []).map(role => role.name + ' · ' + role.installationName), 'Только администраторы']] as const).map(([Icon, title, entries, empty]) =>
         <div key={title}><dt><Icon size={16} aria-hidden="true" />{title}</dt>
-          <dd>{entries?.length ? <ul>{entries.map((item, index) => <li key={index}>
+          <dd>{entries?.length ? <ul className="project-summary-chips">{entries.map((item, index) => <li key={index}>
             <Icon size={14} aria-hidden="true" /><span>{item}</span>
           </li>)}</ul>
-            : <span className="help">{entries === undefined ? 'Загрузка…' : entries === null ? 'Не удалось загрузить' : 'Пока нет'}</span>}</dd>
+            : <span className="help">{entries === undefined ? 'Загрузка…' : entries === null ? 'Не удалось загрузить' : empty}</span>}</dd>
         </div>
       )}
     </dl>

@@ -14,6 +14,7 @@ test('Fastkore MCP forwards native tool schemas and arguments, isolates SSO sess
   const calls: { user: string; name: string; args: unknown }[] = [];
   const orderSchema = { type: 'object', properties: { guid: { type: 'string', format: 'uuid' } }, required: ['guid'], additionalProperties: false };
   let denyNext = false;
+  let orderErrorStatus = 200;
   const server = createServer(tls, async (req, res) => {
     let body = ''; for await (const chunk of req) body += chunk;
     const value = JSON.parse(body);
@@ -51,12 +52,18 @@ test('Fastkore MCP forwards native tool schemas and arguments, isolates SSO sess
     if (value.method === 'tools/list') {
       const inputSchema = { type: 'object', properties: {} };
       if (value.params.cursor === 'next') rpc({ tools: [{ name: 'GetOrders', inputSchema }, { name: 'GetOrder', inputSchema: orderSchema }] });
-      else rpc({ tools: [{ name: 'GetCurrentUserInfo', inputSchema }, { name: 'CreateTask', inputSchema }], nextCursor: 'next' });
+      else rpc({ tools: [{ name: 'GetCurrentUserInfo', inputSchema }, { name: 'CreateSalesOrder', inputSchema }], nextCursor: 'next' });
       return;
     }
     assert.equal(value.method, 'tools/call');
     calls.push({ user, name: value.params.name, args: value.params.arguments });
     if (denyNext) { denyNext = false; send(401); return; }
+    if (value.params.name === 'CreateSalesOrder') {
+      send(orderErrorStatus, { jsonrpc: '2.0', id: value.id, error: {
+        code: -32001, message: 'Невозможно создать заказ: fkua1.alice.should-redact', data: 'private diagnostic',
+      } });
+      return;
+    }
     rpc({ content: [{ type: 'text', text: `user=${user}; fkua1.${user}.should-redact` }], isError: false });
   });
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
@@ -84,7 +91,7 @@ test('Fastkore MCP forwards native tool schemas and arguments, isolates SSO sess
     attach(alice); attach(boris);
     const [a, b] = await Promise.all([prepare(alice), prepare(boris)]);
     assert.ok(a.tools && b.tools);
-    assert.deepEqual(a.tools.definitions.map(tool => tool.name), ['fastkore_GetCurrentUserInfo', 'fastkore_CreateTask', 'fastkore_GetOrders', 'fastkore_GetOrder']);
+    assert.deepEqual(a.tools.definitions.map(tool => tool.name), ['fastkore_GetCurrentUserInfo', 'fastkore_CreateSalesOrder', 'fastkore_GetOrders', 'fastkore_GetOrder']);
     assert.deepEqual(a.tools.definitions.find(tool => tool.name === 'fastkore_GetOrder')?.inputSchema, orderSchema);
     assert.equal((await a.tools.call('fastkore_UnknownTool', {}, signal)).success, false);
     assert.match((await a.tools.call('fastkore_GetCurrentUserInfo', {}, signal)).text, /user=alice/);
@@ -102,7 +109,7 @@ test('Fastkore MCP forwards native tool schemas and arguments, isolates SSO sess
     assert.deepEqual(restricted.tools?.definitions.map(tool => tool.name),
       ['fastkore_GetCurrentUserInfo', 'fastkore_GetOrders', 'fastkore_GetOrder']);
     const beforeBlockedCall = calls.length;
-    const blockedWrite = await a.tools.call('fastkore_CreateTask', {}, signal);
+    const blockedWrite = await a.tools.call('fastkore_CreateSalesOrder', {}, signal);
     assert.equal(blockedWrite.success, false);
     assert.match(blockedWrite.text, /только чтение/);
     assert.equal(calls.length, beforeBlockedCall);
@@ -112,6 +119,23 @@ test('Fastkore MCP forwards native tool schemas and arguments, isolates SSO sess
     assert.ok(revoked.has('alice'));
     assert.equal((await a.tools.call('fastkore_GetOrders', {}, signal)).success, false);
     assert.equal(calls.length, 5);
+    readOnly = false;
+    const orderAudit: { status?: number; mcpFailure?: string; mcpErrorCode?: number; success: boolean }[] = [];
+    const orderTools = (await mcp.prepare(boris, () => {}, signal, event => orderAudit.push(event))).tools!;
+    for (const status of [200, 400]) {
+      orderErrorStatus = status;
+      const before = calls.length;
+      const order = { payload: { ContractorGuid: args.guid, Positions: [] } };
+      const result = await orderTools.call('fastkore_CreateSalesOrder', order, signal);
+      assert.equal(result.success, false);
+      assert.deepEqual(JSON.parse(result.text), { error: { code: -32001, message: 'Невозможно создать заказ: [REDACTED]' } });
+      assert.deepEqual(calls.slice(before), [{ user: 'boris', name: 'CreateSalesOrder', args: order }]);
+      const event = orderAudit.at(-1)!;
+      assert.equal(event.status, status);
+      assert.equal(event.mcpFailure, 'rpc');
+      assert.equal(event.mcpErrorCode, -32001);
+      assert.equal(event.success, false);
+    }
     const restarted = manager();
     assert.ok((await restarted.prepare(boris, () => {}, signal)).tools);
     assert.equal(issued.get('boris'), 2, 'restart obtains a fresh token for the same ERP user');

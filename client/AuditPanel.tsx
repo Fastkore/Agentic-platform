@@ -9,7 +9,8 @@ const labels: Record<string, string> = {
   setup: 'Настройка руководителя', 'user.create': 'Создан пользователь', 'sso.user.create': 'Создан пользователь',
   'sso.login': 'Вход через Fastkore', 'sso.identity.link': 'Связана учётная запись Fastkore',
   'user.update': 'Изменён пользователь', 'user.projects': 'Изменён доступ к проектам',
-  'project.members': 'Изменены участники проекта', 'project.agents': 'Изменены специалисты проекта', 'project.rename': 'Проект переименован',
+  'project.members': 'Изменены участники проекта', 'project.roles': 'Изменены роли проекта',
+  'project.agents': 'Изменены агенты проекта', 'project.rename': 'Проект переименован',
   'role.update': 'Изменена рабочая роль', 'profile.update': 'Изменён агент', 'dataset.update': 'Изменён источник',
   'chat.private': 'Чат сделан личным', 'chat.project': 'Чат открыт проекту',
   'chat.archive': 'Чат перемещён в архив', 'chat.restore': 'Чат восстановлен из архива', 'chat.delete': 'Чат удалён',
@@ -30,7 +31,7 @@ const groups = [
 ];
 function category(action: string) {
   if (action === 'sso.login' || action === 'login') return 'login';
-  if (['user.projects', 'project.members', 'project.agents', 'chat.private', 'chat.project'].includes(action)) return 'access';
+  if (['user.projects', 'project.members', 'project.roles', 'project.agents', 'chat.private', 'chat.project'].includes(action)) return 'access';
   if (action.endsWith('.update') || action.startsWith('sso.installation') || action === 'password.change' || action === 'setup') return 'settings';
   return 'action';
 }
@@ -129,6 +130,10 @@ export function AuditPanel({ request }: { request: Request }) {
             {event.details?.exitCode !== undefined && <div><dt>Код завершения CLI</dt><dd>{event.details.exitCode}</dd></div>}
             {event.details?.mcpTokenMs !== undefined && <div><dt>Получение токена MCP</dt><dd>{event.details.mcpTokenMs.toLocaleString('ru-RU')} мс</dd></div>}
             {event.details?.mcpHttpMs !== undefined && <div><dt>HTTP-запрос к MCP</dt><dd>{event.details.mcpHttpMs.toLocaleString('ru-RU')} мс</dd></div>}
+            {event.details?.mcpFailure && <div><dt>Ошибка MCP</dt><dd>{{
+              http: 'HTTP-ошибка', transport: 'Ответ не получен', invalid_response: 'Некорректный или неполный ответ',
+              rpc: 'JSON-RPC', tool: 'Ошибка инструмента',
+            }[event.details.mcpFailure]}{event.details.mcpErrorCode !== undefined && ` ${event.details.mcpErrorCode}`}</dd></div>}
             {event.details?.section && <><dt>Раздел</dt><dd>{event.details.section}</dd></>}
             {event.details?.previousRevision && <><dt>Предыдущая версия</dt><dd>{event.details.previousRevision}</dd></>}
             {event.details?.revision && <><dt>Новая версия</dt><dd>{event.details.revision}</dd></>}

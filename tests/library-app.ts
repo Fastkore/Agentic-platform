@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
 import { mkdtemp, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -38,9 +39,9 @@ export async function fixture(respond?: Respond, options: { workerFiles?: boolea
   const boot = (await app.inject({ method: 'POST', url: '/api/local-login', headers: { host: 'localhost', 'x-bridge-local': '1' } })).json();
   const admin = (await req('POST', '/api/auth/setup', boot.token, { username: 'admin', name: 'Руководитель', password })).json().token as string;
   const enter = await erp.pair(app, admin);
-  const { user: employee, cookie: token } = await enter('Алиса');
+  const { user: employee, cookie: token, projectRoles } = await enter('Алиса', undefined, [{ id: randomUUID(), name: 'Чтение проекта' }]);
   assert.equal((await req('PATCH', '/api/users/' + employee.id, admin, { roleId: 'employee' })).statusCode, 200);
-  await req('PATCH', `/api/projects/${project.id}/members`, admin, { memberIds: [employee.id] });
+  assert.equal((await erp.setProjectRoles(app, admin, project.id, projectRoles)).statusCode, 200);
   const headers = { host: new URL(process.env.BRIDGE_PUBLIC_ORIGIN ?? 'https://agents.example.test').host, 'x-forwarded-proto': 'https', origin: process.env.BRIDGE_PUBLIC_ORIGIN ?? 'https://agents.example.test' };
   const part = (url: string, body: Buffer, auth = admin) => app.inject({ method: 'PUT', url, payload: body, headers: { ...headers, authorization: 'Bearer ' + auth, 'content-type': 'application/octet-stream' } });
   /** Browser-equivalent upload over HTTP: list, parts and completion; then processing. */

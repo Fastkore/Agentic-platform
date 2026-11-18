@@ -12,7 +12,7 @@ import { AuditJournal, publishAudit, type NewAuditEvent } from '../audit-journal
 import { BridgeError } from '../store.js';
 import { blobKey, type LibraryStorageConfig } from './blob-store.js';
 
-export interface LibraryActor { id: string; admin: boolean }
+export interface LibraryActor { id: string; admin: boolean; credentialId?: string }
 export interface LibraryLimits {
   maxFiles: number; maxFileBytes: number; maxDepth: number; maxPathLength: number; partBytes: number; manifestPageEntries: number;
   defaultQuotaBytes: number; uploadTtlMs: number; uploadConcurrency: number; indexTextBytes: number; orphanGraceMs: number;
@@ -142,6 +142,7 @@ export class LibraryRegistry {
   private fileLocks = new Map<string, Promise<unknown>>();
   /** Project names for summaries; supplied by the workspace. */
   projectName: (projectId: string) => string | undefined = () => undefined;
+  canSeeProject: (actor: LibraryActor, projectId: string) => boolean = () => true;
   constructor(root: string, readonly storage: LibraryStorageConfig, readonly limits: LibraryLimits = libraryLimitsFromEnv(), private readonly now = () => Date.now()) {
     mkdirSync(root, { recursive: true, mode: 0o700 });
     const file = path.join(root, 'library.sqlite');
@@ -283,6 +284,7 @@ export class LibraryRegistry {
     const operation = this.activeOperation(row.id);
     const failed = this.lastFailedState(row);
     const projects = (this.db.prepare('SELECT project_id FROM connections WHERE folder_id=? ORDER BY rowid').all(row.id) as { project_id: string }[])
+      .filter(c => this.canSeeProject(actor, c.project_id))
       .map(c => ({ id: c.project_id, name: this.projectName(c.project_id) }));
     return { id: row.id, name: row.name, description: row.description, profile: row.profile, classification: row.classification, outputPolicy: row.output_policy, active: !!row.active,
       quotaBytes: row.quota_bytes, usedBytes: this.usedBytes(row.id), revision: row.revision, createdAt: row.created_at, updatedAt: row.updated_at ?? undefined,
@@ -378,7 +380,7 @@ export class LibraryRegistry {
       return { ok: true, projects };
     }, value => [{ actorId: actor.id, action: 'library.folder.delete', targetId: id, details: { objectIds: { projects: value.projects.join(',') } } }]);
     void this.collectGarbage({ graceMs: 0 }).catch(() => {});
-    return result;
+    return { ...result, projects: result.projects.filter(projectId => this.canSeeProject(actor, projectId)) };
   }
 
   // ---- current content -----------------------------------------------------------------------

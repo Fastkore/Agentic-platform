@@ -9,6 +9,7 @@ import { Workspace } from '../server/workspace.js';
 import { createApp } from '../server/app.js';
 import { initializeCorporate } from '../server/corporate.js';
 import { migrateFastkoreChatBindings } from '../server/fastkore-chat.js';
+import { fastkoreChatTitle, fastkoreExecutionContext, parseFastkoreContext } from '../shared/fastkore-context.js';
 import type { AgentProfile } from '../shared/types.js';
 import type { CodexRequest, CodexRunner } from '../server/codex.js';
 import { erpBrowser } from './erp-browser.js';
@@ -31,11 +32,13 @@ async function fixture(respond?: (request: CodexRequest, signal: AbortSignal) =>
   const req = erp.request(app);
   const boot = (await app.inject({ method: 'POST', url: '/api/local-login', headers: { host: 'localhost', 'x-bridge-local': '1' } })).json();
   const admin = (await req('POST', '/api/auth/setup', boot.token, { username: 'admin', name: 'Руководитель', password })).json().token;
-  const enter = await erp.pair(app, admin);
-  const { user: employee, cookie: token } = await enter('Алиса');
+  const login = await erp.pair(app, admin);
+  const enter = (name: string) => login(name, undefined, [{ id: randomUUID(), name }]);
+  const { user: employee, cookie: token, projectRoles } = await enter('Алиса');
   assert.equal((await req('PATCH', '/api/users/' + employee.id, admin, { roleId: 'employee' })).statusCode, 200);
-  await req('PATCH', `/api/projects/${project.id}/members`, admin, { memberIds: [employee.id] });
-  return { root, calls, store, workspace, project, app, req, admin, employee, token, enter, runner };
+  const setProjectRoles = (projectId: string, roles: typeof projectRoles) => erp.setProjectRoles(app, admin, projectId, roles);
+  assert.equal((await setProjectRoles(project.id, projectRoles)).statusCode, 200);
+  return { root, calls, store, workspace, project, app, req, admin, employee, token, enter, runner, projectRoles, setProjectRoles };
 }
 async function idle(workspace: Workspace) { const deadline = Date.now() + 6000; while (workspace.busy) { if (Date.now() > deadline) throw Error('timeout'); await new Promise(r => setTimeout(r, 10)); } }
 
@@ -59,9 +62,7 @@ test('moving a chat requires access to the destination and preserves its history
 
     const move = `${chats}/${id}/move`, body = { projectId: destination.id, title: 'Новое название' };
     assert.equal((await f.req('PATCH', move, f.token, body)).statusCode, 404);
-    assert.equal((await f.req('PATCH', `/api/projects/${destination.id}/members`, f.admin, {
-      memberIds: [f.employee.id],
-    })).statusCode, 200);
+    assert.equal((await f.setProjectRoles(destination.id, f.projectRoles)).statusCode, 200);
     const saved = await f.req('PATCH', move, f.token, body);
     assert.equal(saved.statusCode, 200, saved.body);
     assert.equal((await f.req('GET', `${chats}/${id}`, f.token)).statusCode, 404);
@@ -79,9 +80,7 @@ test('an employee chooses a project for a new named Fastkore chat and can move i
     const directory = path.join(f.root, 'second-project');
     await mkdir(directory);
     const destination = await f.workspace.addProject(directory);
-    assert.equal((await f.req('PATCH', `/api/projects/${destination.id}/members`, f.admin, {
-      memberIds: [f.employee.id],
-    })).statusCode, 200);
+    assert.equal((await f.setProjectRoles(destination.id, f.projectRoles)).statusCode, 200);
     const component = randomUUID(), tile = randomUUID(), entity = randomUUID();
     const header = { type: 'fastkore.context', version: 1, entity_set_id: component, entity_set_name: 'Заказы', filter_status: 'none', scope_reproducible: true };
     const list = { ...header, view: 'list', entity_ids: [], tile_id: tile, tile_name: '  Текущие\nзаказы  ', chat_key: 'tile:' + tile };
@@ -108,6 +107,43 @@ test('an employee chooses a project for a new named Fastkore chat and can move i
     assert.equal((await create(card)).json().chat.title, 'Заказ №42');
     const componentList = { ...header, view: 'list', entity_ids: [], chat_key: 'list:' + component };
     assert.equal((await create(componentList)).json().chat.title, 'Заказы');
+  } finally { await f.app.close(); }
+});
+
+test('Fastkore navigation uses the saved chat target and does not expose it outside the owner ERP session', async () => {
+  const f = await fixture();
+  try {
+    const authentication = (await f.req('GET', '/api/auth/me', f.token)).json().authentication;
+    const { installationId } = authentication;
+    const entitySet = randomUUID(), entity = randomUUID(), tile = randomUUID();
+    const uri = `fastkore://ERP/Instance/ShowEntity?entitySet=${entitySet.toUpperCase()}&entity=${entity}`;
+    const base = { type: 'fastkore.context', version: 1, entity_set_id: entitySet, filter_status: 'none', scope_reproducible: true };
+    const card = { ...base, view: 'card', entity_ids: [entity], chat_key: `card:${entitySet}:${entity}` };
+    const tileContext = { ...base, view: 'list', entity_ids: [entity], tile_id: tile, tile_name: 'Текущие заказы', chat_key: `tile:${tile}` };
+    const create = (context: object) => f.req('POST', '/api/fastkore/chats', f.token, { projectId: f.project.id, context });
+    const related = (context: object) => f.req('POST', '/api/fastkore/chats/related', f.token, { context });
+    const created = (await create(card)).json().chat;
+    const cardPath = `/api/projects/${f.project.id}/chats/${created.id}`;
+    assert.equal(created.fastkoreNavigation, undefined);
+    const wrongUri = uri.replace(entity, randomUUID());
+    assert.equal((await related({ ...card, entity_uri: wrongUri })).statusCode, 200);
+    assert.equal((await f.req('GET', cardPath, f.token)).json().fastkoreNavigation, undefined);
+
+    const linked = { ...card, view: 'link_list', entity_ids: [], entity_set_id: randomUUID(),
+      owner_entity_set_id: entitySet, owner_entity_id: entity, entity_uri: uri, entity_name: 'Заказ №42' };
+    assert.equal(fastkoreChatTitle(parseFastkoreContext(linked)!), linked.entity_name);
+    assert.equal((await related(linked)).json()[0].id, created.id);
+    const target = { installationId, entityUri: uri };
+    assert.deepEqual((await f.req('GET', cardPath, f.token)).json().fastkoreNavigation, target);
+    assert.equal((await f.req('GET', cardPath, f.admin)).json().fastkoreNavigation, undefined);
+    assert.equal((await related(card)).statusCode, 200);
+    assert.deepEqual((await create(card)).json().chat.fastkoreNavigation, target);
+    assert.ok(!Object.hasOwn(fastkoreExecutionContext(parseFastkoreContext(linked)!)!, 'entity_uri'));
+
+    const tileChat = (await create({ ...tileContext, entity_uri: uri })).json().chat;
+    assert.deepEqual(tileChat.fastkoreNavigation, { installationId, tileId: tile, tileName: tileContext.tile_name });
+    assert.equal((await related({ ...tileContext, entity_ids: [], folder_id: randomUUID() })).json()[0].id, tileChat.id);
+    assert.deepEqual((await f.req('GET', cardPath, f.token)).json().fastkoreNavigation, target);
   } finally { await f.app.close(); }
 });
 
@@ -327,7 +363,7 @@ test('Fastkore opens the latest personal chat for a card or tile and reuses the 
     assert.deepEqual(await ids(card), [fresh.json().chat.id, id]);
     assert.deepEqual(await ids({ ...card, entity_id: randomUUID() }), []);
     const other = await f.enter('Другой сотрудник');
-    await f.req('PATCH', `/api/projects/${projectId}/members`, f.admin, { memberIds: [f.employee.id, other.user.id] });
+    assert.equal((await f.setProjectRoles(projectId, [...f.projectRoles, ...other.projectRoles])).statusCode, 200);
     assert.deepEqual(await ids(card, other.cookie), []);
     assert.equal((await f.req('GET', `/api/projects/${projectId}/chats/${id}`, other.cookie)).statusCode, 404);
     assert.equal((await f.req('POST', messages(id), f.token, { text: 'Другой заказ', fastkoreContext: { ...card, entity_id: randomUUID() } })).statusCode, 409);
@@ -381,7 +417,7 @@ test('resetting a tile chat archives the history and opens one empty replacement
     assert.equal(initial[1].json().chat.id, id);
     const url = `/api/projects/${projectId}/chats/${id}`, reset = url + '/reset';
     const other = await f.enter('Другой автор');
-    await f.req('PATCH', `/api/projects/${projectId}/members`, f.admin, { memberIds: [f.employee.id, other.user.id] });
+    assert.equal((await f.setProjectRoles(projectId, [...f.projectRoles, ...other.projectRoles])).statusCode, 200);
     assert.equal((await f.req('POST', reset, f.admin, { context })).statusCode, 403);
     assert.equal((await f.req('POST', reset, other.cookie, { context })).statusCode, 404);
     assert.equal((await f.req('POST', reset, f.token, { context: { ...context, tile_id: randomUUID() } })).statusCode, 409);
@@ -667,7 +703,7 @@ test('former project files move into the library once, keep per-file access and 
     assert.equal((await f.req('PUT', '/api/admin/profiles/' + id, f.admin, { ...profile, toolIds: ['project-files', 'chat-files'] })).statusCode, 200);
     const allowed = await f.workspace.addProjectFile(f.project.id, 'allowed.txt', Buffer.from('Allowed reference\n'), () => 'admin');
     await f.workspace.addProjectFile(f.project.id, 'denied.txt', Buffer.from('Denied reference\n'), () => 'admin');
-    const other = await f.workspace.createProject('Другой проект', () => f.employee.id);
+    const other = await f.workspace.createProject('Другой проект', () => f.projectRoles);
     await f.workspace.addProjectFile(other.id, 'foreign.txt', Buffer.from('Foreign reference\n'), () => 'admin');
     const policy = { revision: 0, connections: [{ profileId: id, toolIds: ['project-files', 'chat-files'], fileIds: [allowed.id] }] };
     assert.equal((await f.req('PUT', projectPath + '/agent-settings', f.admin, policy)).statusCode, 200);
@@ -720,7 +756,7 @@ test('project connections enforce access revocation while Fastkore follows the E
     const allowed = await f.workspace.addProjectFile(f.project.id, 'allowed.txt', Buffer.from('Allowed source'), () => 'admin');
     await f.workspace.addProjectFile(f.project.id, 'denied.txt', Buffer.from('Denied source'), () => 'admin');
     const attachment = await f.workspace.addAttachment(f.project.id, 'attachment.txt', Buffer.from('Attachment'), () => f.employee.id);
-    const other = await f.workspace.createProject('Другой проект', () => f.employee.id);
+    const other = await f.workspace.createProject('Другой проект', () => f.projectRoles);
     const foreign = await f.workspace.addProjectFile(other.id, 'foreign.txt', Buffer.from('Foreign source'), () => 'admin');
     const policy = { revision: 0, connections: [{ profileId: id, toolIds: ['project-files', 'chat-files'], fileIds: [allowed.id] }] };
     assert.equal((await f.req('GET', settingsPath, f.token)).statusCode, 403);
@@ -826,7 +862,7 @@ test('owners can delete empty chats directly, but cannot delete foreign or runni
     const one = (await f.req('POST', chats, f.token, { title: 'Пустой чат' })).json();
     const url = chats + '/' + one.id;
     const other = await f.enter('Другой сотрудник');
-    await f.req('PATCH', '/api/projects/' + f.project.id + '/members', f.admin, { memberIds: [f.employee.id, other.user.id] });
+    assert.equal((await f.setProjectRoles(f.project.id, [...f.projectRoles, ...other.projectRoles])).statusCode, 200);
     assert.equal((await f.req('DELETE', url, other.cookie)).statusCode, 404);
     assert.equal((await f.req('DELETE', url, f.token)).statusCode, 200);
     assert.equal((await f.req('GET', url, f.admin)).statusCode, 404);

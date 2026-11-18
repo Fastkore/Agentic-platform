@@ -3,13 +3,13 @@ import { createRoot } from 'react-dom/client';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Archive, ArrowUp, BarChart3, Bot, Box, Check, ChevronDown, ChevronRight, ClipboardList, Copy, Database, Download, EllipsisVertical, Eraser, FileText, Folder, History, Link2, LoaderCircle, LockKeyhole, LogOut, Menu, Moon, Network, PanelLeftClose, PanelLeftOpen, Pencil, Pin, Plus, RefreshCw, Search, Settings2, ShieldCheck, Square, SquarePen, Sun, Terminal, Trash2, Users, X } from 'lucide-react';
-import { interfaceScales, type AgentSummary, type Attachment, type Chat, type ChatSummary, type CodexLimits, type FastkoreAuthentication, type FileStorageStatus, type InterfaceScale, type ModelCatalog, type ProjectSummary, type RelatedChatSummary, type Run, type Settings, type Status, type User } from '../shared/types';
+import { interfaceScales, type AgentSummary, type Attachment, type Chat, type ChatView, type ChatSummary, type CodexLimits, type FastkoreAuthentication, type FastkoreNavigationTarget, type FileStorageStatus, type InterfaceScale, type ModelCatalog, type ProjectSummary, type RelatedChatSummary, type Run, type Settings, type Status, type User } from '../shared/types';
 import './style.css';
 import './workspace.css';
 import { ChatArchiveDialog } from './ChatArchiveDialog';
 import { shortUserName } from './user-name';
 import { chatTooltip, dateTooltip, shortDate } from './chat-date';
-import { parseHostTheme, webViewHost, type Theme } from './fastkore';
+import { openFastkoreTarget, parseHostTheme, webViewHost, type Theme } from './fastkore';
 import { Select, type SelectHandle } from './Select';
 import { ExecutionAccountsPanel } from './ExecutionAccountsPanel';
 import { executionConnected } from '../shared/execution-accounts';
@@ -49,7 +49,7 @@ const settingsSections = {
   personal: { label: 'Мои инструкции', icon: FileText },
   employeeInstructions: { label: 'Инструкции сотрудников', icon: FileText },
   roles: { label: 'Роли', icon: ShieldCheck },
-  profiles: { label: 'Специалисты', icon: Bot },
+  profiles: { label: 'Агенты', icon: Bot },
   library: { label: 'Библиотека', icon: Database },
   agent: { label: 'Общие инструкции', icon: FileText },
   knowledgeFastkore: { label: 'База знаний о Fastkore', icon: FileText },
@@ -143,13 +143,14 @@ function App() {
   const contextNavigation = useRef(0);
   const [contextVersion, setContextVersion] = useState(0);
   const autoOpenRelated = useRef<string | undefined>(undefined);
+  const preferredRelatedChat = useRef('');
   const [erpChatKey, setErpChatKey] = useState<string>();
   const [relatedChats, setRelatedChats] = useState<{ key: string; list: RelatedChatSummary[] }>();
   const [contextProblem, setContextProblem] = useState<string>();
   const [erpFilter, setErpFilter] = useState<{ display: FastkoreFilterDisplay; folder?: string }>();
   const readySession = useRef<FastkoreAuthentication | null>(null);
   const [user, setUser] = useState<User | null>(null), [setupRequired, setSetupRequired] = useState(false), [setupName, setSetupName] = useState('Руководитель');
-  const [status, setStatus] = useState<Status | null>(null), [projects, setProjects] = useState<ProjectSummary[]>([]), [chat, setChat] = useState<Chat | null>(null);
+  const [status, setStatus] = useState<Status | null>(null), [projects, setProjects] = useState<ProjectSummary[]>([]), [chat, setChat] = useState<ChatView | null>(null);
   const [chatLists, setChatLists] = useState<Record<string, ChatSummary[]>>({});
   const [projectsExpanded, setProjectsExpanded] = useState(() => localStorage.getItem('bridge-projects-collapsed') !== '1');
   const [openProjects, setOpenProjects] = useState<Record<string, boolean>>({});
@@ -200,11 +201,40 @@ function App() {
   const specialistKey = draftSlot || 'new:' + projectId;
   const specialistId = specialists[specialistKey];
   const activeRuns = status?.activeRuns ?? (status?.activeRun ? [status.activeRun] : []);
+  const runningChats = new Set(activeRuns.filter(run => run.status === 'running').map(run => run.chatId));
   const busy = status?.busy ?? activeRuns.length > 0;
   const queuedRuns = status?.queuedRuns ?? [];
   const chatActiveRuns = activeRuns.filter(run => run.status === 'running' && run.projectId === projectId && run.chatId === chatId);
   const chatQueuedRuns = queuedRuns.filter(run => run.status === 'queued' && run.projectId === projectId && run.chatId === chatId);
   const chatBusy = chatActiveRuns.length > 0 || chatQueuedRuns.length > 0;
+  const [pageVisible, setPageVisible] = useState(() => !document.hidden);
+  const unreadReplyId = status?.unreadChatReplies?.[chatId];
+  useEffect(() => {
+    const updateVisibility = () => setPageVisible(!document.hidden);
+    document.addEventListener('visibilitychange', updateVisibility);
+    return () => document.removeEventListener('visibilitychange', updateVisibility);
+  }, []);
+  useEffect(() => {
+    if (!pageVisible || !projectId || !unreadReplyId || chat?.id !== chatId || chat.lastCompletedReplyId !== unreadReplyId) return;
+    let disposed = false;
+    let retry: ReturnType<typeof setTimeout>;
+    const replyId = unreadReplyId;
+    async function acknowledge() {
+      try {
+        await api(`/api/projects/${projectId}/chats/${chatId}/read`, { method: 'PATCH', body: JSON.stringify({ replyId }) });
+        if (disposed) return;
+        setStatus(old => {
+          if (old?.unreadChatReplies?.[chatId] !== replyId) return old;
+          const { [chatId]: read, ...unreadChatReplies } = old.unreadChatReplies;
+          return { ...old, unreadChatReplies };
+        });
+      } catch (error) {
+        if (!disposed && error instanceof ApiError && error.transient) retry = setTimeout(acknowledge, 1500);
+      }
+    }
+    void acknowledge();
+    return () => { disposed = true; clearTimeout(retry); };
+  }, [pageVisible, projectId, chatId, chat?.id, chat?.lastCompletedReplyId, unreadReplyId]);
   const steerTarget = chatActiveRuns.find(run => run.canSteer && run.ownerId === user?.id);
   const isAdmin = user?.role === 'admin';
   const inFastkore = embedded || (authSource === 'fastkore' && !!webViewHost());
@@ -350,6 +380,7 @@ function App() {
           contextNavigation.current++;
           setContextVersion(contextNavigation.current);
           autoOpenRelated.current = key;
+          preferredRelatedChat.current = selected.current.chatId;
           setErpChatKey(key);
           setRelatedChats(undefined);
           navigateTo(key ? '' : selected.current.projectId);
@@ -415,7 +446,8 @@ function App() {
         const list = await postRelated();
         if (!stillCurrent()) return;
         if (autoOpenRelated.current !== erpChatKey) { setRelatedChats({ key: erpChatKey!, list }); return; }
-        const matching = list.find(item => item.contextMatches !== false && !item.legacyContext)
+        const matching = list.find(item => item.id === preferredRelatedChat.current && item.contextMatches !== false)
+          ?? list.find(item => item.contextMatches !== false && !item.legacyContext)
           ?? (context?.view === 'list' && !context.tile_id ? list.find(item => item.legacyContext) : undefined);
         if (matching) {
           setRelatedChats({ key: erpChatKey!, list });
@@ -987,7 +1019,7 @@ function App() {
         }}>{message.text}</ReactMarkdown></div> :
           <div className="question-bubble">
             {message.authorId && message.authorId !== user.id && <small title={dateTooltip(message.createdAt, message.authorName ?? conversation.ownerName)}>{shortUserName(message.authorName ?? conversation.ownerName)}</small>}
-            {message.specialistName && <small title="Рекомендованный специалист">@{message.specialistName}</small>}
+            {message.specialistName && <small title="Рекомендованный агент">@{message.specialistName}</small>}
             {message.text}
           </div>}
         {message.attachments.length > 0 && <div className="conversation-files">{message.attachments.map(file => {
@@ -1006,7 +1038,7 @@ function App() {
           return <button type="button" key={file.id} title={'Скачать ' + file.name} onClick={download}><FileText size={16} />{file.name}</button>;
         })}</div>}
         {['error', 'cancelled', 'interrupted'].includes(message.status) && <div className="message-note">{message.status === 'error' ? 'Ошибка задания' : message.status === 'cancelled' ? 'Задание остановлено' : message.role === 'user' ? 'Доставка уточнения не подтверждена' : 'Задание прервано'}</div>}
-        {message.consultedSpecialists?.length ? <div className="message-specialists">Специалисты · {message.consultedSpecialists.join(', ')}</div> : null}
+        {message.consultedSpecialists?.length ? <div className="message-specialists">Агенты · {message.consultedSpecialists.join(', ')}</div> : null}
         <div className="message-actions">
           {message.text && <button className="workspace-icon" aria-label="Копировать сообщение" title="Копировать сообщение" onClick={() => void copyItem(message.text, message.id)}>{copied === message.id ? <Check size={14} /> : <Copy size={14} />}</button>}
           <time dateTime={message.createdAt} title={[
@@ -1035,7 +1067,8 @@ function App() {
     {chat && !canEdit && (relatedLoading
       ? <p className="composer-status" role="status">Проверяем связь чата с открытым окном Fastkore…</p>
       : chat.linkedToFastkore && chat.ownerId === user.id && !chat.archivedAt
-        ? <LinkedFastkoreNotice key={chat.id} />
+        ? <LinkedFastkoreNotice key={chat.id} target={inFastkore && erpAuth && chat.fastkoreNavigation?.installationId === erpAuth.installationId
+          ? chat.fastkoreNavigation : undefined} />
         : <p className="composer-status" role="alert">Чат доступен для чтения</p>)}
     {codexNotice && draftEditable && <p className="composer-status" role="status">{codexNotice} Можно подготовить черновик.</p>}
     {canReadFastkore && contextProblem && <p className="composer-status" role="alert">{contextProblem}</p>}
@@ -1092,18 +1125,18 @@ function App() {
           <Bot size={14} aria-hidden="true" />
           {agent.name}
           {canEdit && <button type="button" className="workspace-icon" disabled={pending}
-            aria-label={'Отключить специалиста ' + agent.name} title="Отключить специалиста"
+            aria-label={'Отключить агента ' + agent.name} title="Отключить агента"
             onClick={() => void changeChatConsultants(chatConsultants.filter(item => item.id !== agent.id).map(item => item.id))}>
             <X size={13} />
           </button>}
         </span>)}
         {canEdit && (availableConsultants.length > 0
-          ? <Select className="chat-consultants-select" label="Подключить специалиста" placeholder="Подключить специалиста"
+          ? <Select className="chat-consultants-select" label="Подключить агента" placeholder="Подключить агента"
             value="" disabled={pending} onChange={id => void changeChatConsultants([...chatConsultants.map(item => item.id), id])}
             options={availableConsultants.map(agent => ({ value: agent.id, label: agent.name }))} />
           : agentCatalog?.projectId === projectId && <span className="chat-consultant-notice">
-            {otherSpecialists.length ? 'Все доступные специалисты подключены' : unavailableConsultant
-              ? `${unavailableConsultant.name}: ${unavailableConsultant.unavailableReason}` : 'Нет доступных дополнительных специалистов'}
+            {otherSpecialists.length ? 'Все доступные агенты подключены' : unavailableConsultant
+              ? `${unavailableConsultant.name}: ${unavailableConsultant.unavailableReason}` : 'Нет доступных дополнительных агентов'}
           </span>)}
       </div>}
     </div>}
@@ -1209,14 +1242,21 @@ function App() {
               </details>}
             </div>
             {open && <div className="project-chat-list" id={'chats-' + project.id}>
-              {visible.map((item, index) => <React.Fragment key={item.id}>
+              {visible.map((item, index) => {
+                const running = runningChats.has(item.id);
+                const unread = !!status?.unreadChatReplies?.[item.id] && (!pageVisible || item.id !== chatId);
+                return <React.Fragment key={item.id}>
                 {pinned.length > 0 && index === pinned.length && <hr className="project-chat-divider" />}
                 <div className="chat-row-container">
                   <button type="button" className="workspace-row chat-row" aria-current={item.id === chatId ? 'page' : undefined}
+                    aria-description={running ? 'Выполняется' : unread ? 'Непрочитанный ответ' : undefined}
                     onClick={() => navigateWorkspace(project.id, item.id)} title={chatTooltip(item)}>
+                    {(running || unread) && <span className="chat-row-state" aria-hidden="true">
+                      {running ? <LoaderCircle size={13} className="spin" /> : <span className="chat-row-unread-dot" />}
+                    </span>}
                     {item.pinned && <Pin size={13} className="chat-row-pin" aria-label="Закреплённый чат" />}
                     <span>{item.title}</span>
-                    <span className="chat-row-time">{activeRuns.some(run => run.status === 'running' && run.projectId === project.id && run.chatId === item.id) ? <LoaderCircle size={13} className="spin" /> : <time dateTime={item.updatedAt}>{shortDate(item.updatedAt)}</time>}</span>
+                    <span className="chat-row-time"><time dateTime={item.updatedAt}>{shortDate(item.updatedAt)}</time></span>
                   </button>
                   <div className="chat-row-actions">
                     <button type="button" className="workspace-icon" title={item.pinned ? 'Открепить чат' : 'Закрепить чат'}
@@ -1228,7 +1268,8 @@ function App() {
                       {item.messageCount === 0 ? <Trash2 size={14} /> : <Archive size={14} />}</button>}
                   </div>
                 </div>
-              </React.Fragment>)}
+                </React.Fragment>;
+              })}
               {recent.length > 5 && <button className="workspace-row show-chats" onClick={() => setShowAll(old => ({ ...old, [project.id]: !old[project.id] }))}>{showAll[project.id] ? 'Свернуть' : 'Показать ещё'}</button>}
             </div>}
           </div>;
@@ -1389,6 +1430,7 @@ function App() {
     {panel === 'project-settings' && projectActionTarget && canManageProjects &&
       <ProjectSettingsDialog key={projectActionTarget.id} project={projectActionTarget} request={api} close={closeProjectPanel} isAdmin={isAdmin}
         rename={name => saveProjectName(projectActionTarget.id, name)}
+        rolesChanged={roles => setProjects(items => items.map(item => item.id === projectActionTarget.id ? { ...item, roles } : item))}
         openSpecialist={id => {
           setInitialSpecialistId(id);
           setSettingsSection('profiles');
@@ -1418,7 +1460,7 @@ function App() {
           {error && <div className="inline-error" role="alert">{error}</div>}
           <Suspense fallback={<p role="status">Загрузка…</p>}>
           {settingsSection === 'account' && <AccountPanel request={api} renewed={saveToken} fastkore={authSource === 'fastkore'} />}
-          {settingsSection === 'team' && <TeamPanel request={api} projectId={projectId} projectName={selectedProject?.name ?? ''} self={user} />}
+          {settingsSection === 'team' && <TeamPanel request={api} self={user} />}
           {settingsSection === 'projects' && <>
             <input type="search" aria-label="Поиск по проектам" placeholder="Поиск по проектам…" value={settingsProjectSearch}
               onChange={event => setSettingsProjectSearch(event.target.value)} />
@@ -1490,7 +1532,7 @@ function App() {
               <h3>Рабочая папка агента</h3>
               <Toggle checked={status.settings.allowWrite} disabled={busy || pending}
                 title="Разрешить запись в рабочую папку" onChange={allowWrite => void saveSettings({ allowWrite })} />
-              <p className="help">Запись также должна быть разрешена в профиле специалиста. Готовые файлы можно скачать из чата.</p>
+              <p className="help">Запись также должна быть разрешена в профиле агента. Готовые файлы можно скачать из чата.</p>
             </section>}
             {status?.fileStorage && authSource === 'local' && !inFastkore && <section className="setting-section">
               <h3>Хранилище файлов</h3>
@@ -1524,13 +1566,34 @@ function App() {
 const remainingPercent = (used: number) => Math.min(100, Math.max(0, 100 - used));
 const limitPercentFormat = new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 2 });
 
-function LinkedFastkoreNotice() {
-  const [showHint, setShowHint] = useState(false);
+function LinkedFastkoreNotice({ target }: { target?: FastkoreNavigationTarget }) {
+  const [pending, setPending] = useState(false);
+  const [hint, setHint] = useState<string>();
+  const request = useRef<AbortController | null>(null);
+  useEffect(() => () => request.current?.abort(), []);
+  const host = target ? webViewHost() : undefined;
+  async function open(host: NonNullable<ReturnType<typeof webViewHost>>, target: FastkoreNavigationTarget) {
+    if (request.current) return;
+    const controller = new AbortController();
+    request.current = controller;
+    setHint(undefined);
+    setPending(true);
+    try {
+      const error = await openFastkoreTarget(host, target, controller.signal);
+      if (!controller.signal.aborted) setHint(error ?? 'Ожидаем контекст открытого окна Fastkore…');
+    } catch {
+      if (!controller.signal.aborted) setHint('Не удалось отправить команду перехода. Откройте цель вручную.');
+    } finally {
+      request.current = null;
+      if (!controller.signal.aborted) setPending(false);
+    }
+  }
   return <p className="composer-status" role="status">
     Чат связан с другим окном Fastkore.{' '}
-    <button type="button" className="composer-status-link" aria-label="Открыть в Fastkore"
-      onClick={() => setShowHint(true)}>Открыть</button>
-    {showHint && ' · Переход пока недоступен. Откройте связанный список или карточку вручную.'}
+    {host && target ? <button type="button" className="composer-status-link" aria-label="Открыть в Fastkore" disabled={pending}
+      onClick={() => void open(host, target)}>{pending ? 'Открываем…' : 'Открыть'}</button>
+      : 'Откройте связанный список или карточку вручную.'}
+    {hint && ' · ' + hint}
   </p>;
 }
 

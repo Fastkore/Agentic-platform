@@ -1,7 +1,26 @@
-import type { Credential, FastkoreRole, FastkoreRoleSummary, State, TeamUser } from '../shared/types.js';
+import type { Credential, FastkoreRole, FastkoreRoleSummary, Project, ProjectRoleLabel, State, TeamUser, User } from '../shared/types.js';
 
 type RoleState = Pick<State, 'sso' | 'externalIdentities' | 'security'>;
 const projectCreationRoles = new Set(['руководитель', 'системный администратор']);
+
+export function canAccessProject(user: User, project: Project, credential?: Credential) {
+  if (user.disabled) return false;
+  if (user.role === 'admin') return true;
+  return credential?.source === 'fastkore' && credential.userId === user.id &&
+    projectAllowsRoles(project, credential.installationId, credential.externalRoles);
+}
+
+export function projectAllowsRoles(project: Project, installationId?: string, roles?: FastkoreRole[]) {
+  return project.rolePolicy?.roles.some(role => role.installationId === installationId &&
+    roles?.some(current => current.id === role.roleId)) ?? false;
+}
+
+export function projectRoleOptions(state: RoleState): ProjectRoleLabel[] {
+  const names = new Map(state.sso?.installations?.map(({ id, name }) => [id, name]));
+  return (state.sso?.roles ?? []).map(({ id, name, installationId }) => ({
+    roleId: id, name, installationId, installationName: names.get(installationId) ?? installationId,
+  })).sort((a, b) => a.name.localeCompare(b.name, 'ru') || a.installationName.localeCompare(b.installationName, 'ru'));
+}
 
 export function erpRolePermissions(state: RoleState, installationId: string, roleId: string) {
   const saved = state.sso?.rolePermissions?.find(item => item.installationId === installationId && item.roleId === roleId);

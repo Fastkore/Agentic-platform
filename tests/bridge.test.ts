@@ -130,7 +130,7 @@ test('a new executor receives the recent conversation once and stops at changes 
   };
   const workspace = new Workspace(new Store(root), runner);
   try {
-    const project = await workspace.createProject('Проект', () => 'admin');
+    const project = await workspace.createProject('Проект', () => []);
     const chat = await workspace.addChat(project.id, undefined, undefined, 'admin');
     const send = async (text: string, status = 'complete') => {
       const run = await workspace.send(project.id, chat.id, text, [], undefined, undefined, undefined, { id: 'admin', name: 'Тест' });

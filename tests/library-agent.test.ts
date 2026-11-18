@@ -157,7 +157,8 @@ test('a folder toggle pauses access across projects without removing files or sp
     const before = (await f.req('GET', url, f.admin)).json();
     assert.equal(before.active, true);
     const policy = f.workspace.library.policy;
-    const scope = policy.runScope(f.employee.id, f.project.id, 'universal');
+    const credentialId = f.workspace.store.state.security!.credentials.find(credential => credential.userId === f.employee.id)!.id;
+    const scope = policy.runScope(f.employee.id, f.project.id, 'universal', credentialId);
     assert.equal(scope.entries.length, 1);
     const turnedOff = await f.req('PATCH', url, f.admin, { revision: before.revision, active: false });
     assert.equal(turnedOff.statusCode, 200, turnedOff.body);
@@ -165,11 +166,11 @@ test('a folder toggle pauses access across projects without removing files or sp
     assert.equal(turnedOff.json().current.files, 1);
     assert.equal((await connection()).folderActive, false);
     assert.equal(policy.stillAllowed(scope, scope.entries[0]), false);
-    assert.equal(policy.runScope(f.employee.id, f.project.id, 'universal').entries.length, 0);
+    assert.equal(policy.runScope(f.employee.id, f.project.id, 'universal', credentialId).entries.length, 0);
 
     const turnedOn = await f.req('PATCH', url, f.admin, { revision: turnedOff.json().revision, active: true });
     assert.equal(turnedOn.statusCode, 200, turnedOn.body);
-    assert.equal(policy.runScope(f.employee.id, f.project.id, 'universal').entries.length, 1);
+    assert.equal(policy.runScope(f.employee.id, f.project.id, 'universal', credentialId).entries.length, 1);
   } finally { await f.app.close(); }
 });
 

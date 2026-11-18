@@ -25,12 +25,12 @@ import { FastkoreMcp } from './fastkore-mcp.js';
 import { FastkoreCli, type FastkoreCliTiming } from './fastkore-cli.js';
 import { elapsedMs } from './run-timing.js';
 import { RemoteCodexRunner } from './codex-remote.js';
-import { erpRoleCatalog, restoreErpRoles, erpRolePermissions, erpCredentialPermissions, internetCredentialPermissions, isErpReadOnly, erpReadOnlyMessage, fastkoreReadCommands } from './erp-roles.js';
+import { canAccessProject, projectRoleOptions, erpRoleCatalog, restoreErpRoles, erpRolePermissions, erpCredentialPermissions, internetCredentialPermissions, isErpReadOnly, erpReadOnlyMessage, fastkoreReadCommands } from './erp-roles.js';
 import { withInternetTools } from './internet-tools.js';
 import { withFastkoreCliDescription } from './codex-tools.js';
 import { withFastkoreCliCommands } from './fastkore-cli-tools.js';
 import type { AgentProfile, Credential, Dataset, FastkoreAuthentication, FastkoreInstallation, FastkoreKeyIssue, FastkoreRolePermissions, FileStorageProvider, ProjectAgentPolicy, ProjectAgentSettings, Settings, User, WorkRole } from '../shared/types.js';
-import type { AuditEvent, RelatedChatSummary, Run } from '../shared/types.js';
+import type { AuditEvent, ProjectRolePolicy, ProjectRoleSettings, RelatedChatSummary, Run } from '../shared/types.js';
 import { agentToolIds } from '../shared/agent-tools.js';
 import { operationIds } from './corporate.js';
 import { FastkoreSso, loadSsoKey, cookieToken, csrfFor, validCsrf, setSessionCookie, setStartCookie, startCookie, normalizeTheme, uuid, type InstallationPatch, type PairingClient, type Theme, type TicketValidator } from './fastkore.js';
@@ -190,6 +190,11 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
     return access.authenticateCredential(p.credential.id);
   };
   const user = (r: FastifyRequest) => principal(r).user;
+  const requestProject = (request: FastifyRequest, projectId: string) => {
+    const { user, credential } = principal(request);
+    return access.project(user, projectId, credential);
+  };
+  const viewChat = (request: FastifyRequest, chat: ReturnType<Workspace['chat']>) => access.viewChat(chat, principal(request).credential);
   const chatIdentityMatches = (p: Principal, chat: ReturnType<Workspace['chat']>) => {
     const binding = chat.fastkoreBinding;
     return p.credential.source !== 'fastkore' || !binding?.externalUserId ||
@@ -197,7 +202,7 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
   };
   const requestRun = (request: FastifyRequest<{ Params: { runId: string } }>) => {
     const p = principal(request);
-    const run = access.run(p.user, request.params.runId);
+    const run = access.run(p.user, request.params.runId, p.credential);
     if (run.projectId && run.chatId && !chatIdentityMatches(p, workspace.chat(run.projectId, run.chatId))) throw new BridgeError('Задание не найдено.', 404);
     return run;
   };
@@ -432,16 +437,20 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
       const index = roles?.findIndex(role => role.installationId === installationId && role.id === roleId) ?? -1;
       if (!roles || index < 0) throw new BridgeError('Роль не найдена.', 404);
       roles.splice(index, 1);
+      const projectRolePolicies = new Map<string, ProjectRolePolicy>();
+      for (const project of workspace.store.state.projects) {
+        const policy = project.rolePolicy;
+        if (!policy) continue;
+        const remaining = policy.roles.filter(role => role.installationId !== installationId || role.roleId !== roleId);
+        if (remaining.length !== policy.roles.length) projectRolePolicies.set(project.id, { revision: policy.revision + 1, roles: remaining });
+      }
+      draft.projectRolePolicies = projectRolePolicies;
       draft.security?.audit.unshift({ id: randomUUID(), actorId: user(request).id, action: 'erp.role.delete',
         targetId: installationId + '/' + roleId, createdAt: new Date().toISOString() });
       draft.security?.audit.splice(1000);
       return { ok: true };
     });
   });
-  app.get<{ Params: { userId: string } }>('/api/users/:userId/projects', async request => access.userProjects(user(request), request.params.userId));
-  app.patch<{ Params: { userId: string }; Body: { projectIds: string[] } }>('/api/users/:userId/projects', {
-    schema: { body: object({ projectIds: { type: 'array', maxItems: 1000, uniqueItems: true, items: string(100) } }, ['projectIds']) },
-  }, async request => access.setUserProjects(() => user(request), request.params.userId, request.body.projectIds));
   app.post<{ Body: { username: string; name: string; password: string; role: User['role']; roleId?: string } }>('/api/users', { schema: { body: object({ username: string(48), name: string(100), password, role: { enum: ['admin', 'employee'] }, roleId: identifier }, ['username', 'name', 'password', 'role']) } }, async (request, reply) => reply.code(201).send(await access.createUser(localAdmin(request), request.body)));
   app.patch<{ Params: { userId: string }; Body: { disabled?: boolean; password?: string; name?: string; roleId?: string; role?: User['role'] } }>('/api/users/:userId', { schema: { body: object({ disabled: { type: 'boolean' }, password, name: string(100), roleId: identifier, role: { enum: ['admin', 'employee'] } }) } }, async request => access.updateUser(() => principal(request), request.params.userId, request.body));
   app.get<{ Querystring: { before?: string } }>('/api/audit', {
@@ -537,21 +546,21 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
     const roleId = workspace.corporate.role(actor)?.id;
     return roleId === 'sso_pending' ? undefined : roleId;
   };
-  function instructionView(actor: User, installationId?: string) {
-    const allowedProjects = new Set(workspace.store.state.projects.filter(project => actor.role === 'admin' || project.memberIds?.includes(actor.id)).map(project => project.id));
+  function instructionView(actor: User, credential: Credential) {
+    const allowedProjects = new Set(workspace.store.state.projects.filter(project => canAccessProject(actor, project, credential)).map(project => project.id));
     const authors = new Map(access.data.users.map(author => [author.id, author.name]));
     const sharedNotes = workspace.store.sharedInstructionNotes(actor.id, instructionRole(actor))
-      .filter(({ note }) => !note.scope || (note.scope.kind === 'erp' ? note.scope.id === installationId : allowedProjects.has(note.scope.id)))
+      .filter(({ note }) => !note.scope || (note.scope.kind === 'erp' ? note.scope.id === credential.installationId : allowedProjects.has(note.scope.id)))
       .map(({ note, authorId }) => ({ ...note, authorName: authors.get(authorId) ?? 'Сотрудник' }));
     return { ...workspace.store.personalInstructions(actor.id), ...(sharedNotes.length ? { sharedNotes } : {}) };
   }
   app.get('/api/me/instructions', async request => {
     const { user: actor, credential } = principal(request);
-    return instructionView(actor, credential.installationId);
+    return instructionView(actor, credential);
   });
   app.put<{ Body: PersonalInstructionsEdit }>('/api/me/instructions', { schema: { body: instructionEditSchema() } }, async request => {
     const { user: actor, credential } = principal(request);
-    const project = request.body.projectId ? access.project(actor, request.body.projectId) : undefined;
+    const project = request.body.projectId ? access.project(actor, request.body.projectId, credential) : undefined;
     const installation = workspace.store.state.sso?.installations?.find(item => item.id === credential.installationId);
     const snapshot = request.body.context === undefined ? undefined : parseFastkoreContext(request.body.context);
     if (snapshot === null) throw new BridgeError('Некорректный контекст Fastkore.');
@@ -560,7 +569,7 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
       erp: installation && { kind: 'erp', id: installation.id, label: installation.name },
       component: installation ? instructionComponent(snapshot) : undefined,
     }, { roleId: instructionRole(actor), tile: installation ? instructionTile(snapshot) : undefined });
-    return instructionView(actor, credential.installationId);
+    return instructionView(actor, credential);
   });
   app.get('/api/admin/instructions', async request => {
     localAdmin(request);
@@ -585,7 +594,10 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
   knowledgeRoutes(app, workspace.knowledge, localAdmin, uploads);
   const library = workspace.library;
   libraryRoutes(app, { registry: library.registry, policy: library.policy, reader: library.reader,
-    actor: request => { const u = user(request); return { id: u.id, admin: u.role === 'admin' && !u.disabled }; } });
+    actor: request => {
+      const { user, credential } = principal(request);
+      return { id: user.id, admin: user.role === 'admin', credentialId: credential.id };
+    } });
   library.start();
   // Former project files move into the library once; failures are retried on the next start.
   void workspace.importProjectFiles().catch(() => {});
@@ -600,12 +612,16 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
     return workspace.corporate.saveProfile(admin(request), { ...profile, id: request.params.id });
   });
   app.put<{ Params: { id: string }; Body: Omit<Dataset, 'id' | 'revision'> & { revision?: number } }>('/api/admin/datasets/:id', { schema: { params: object({ id: identifier }, ['id']), body: object({ name: string(100), directory: string(2000), projectIds: identifiers, classification: { enum: ['shared', 'restricted'] }, revision }, ['name', 'directory', 'projectIds', 'classification']) } }, async request => workspace.corporate.saveDataset(admin(request), { ...request.body, id: request.params.id }));
-  const canCreateProject = (u: User, credential: Credential) => {
-    if (credential.source !== 'fastkore') return u.role === 'admin';
+  const creationRoles = (credential: Credential) => {
     const installationId = credential.installationId;
-    return !!installationId && (credential.externalRoles?.some(role =>
-      erpRolePermissions(workspace.store.state, installationId, role.id).createProjects) ?? false);
+    if (credential.source !== 'fastkore' || !installationId) return [];
+    const state = workspace.store.state;
+    const known = new Set(state.sso?.roles?.filter(role => role.installationId === installationId).map(role => role.id));
+    return (credential.externalRoles ?? []).filter(role => known.has(role.id) && erpRolePermissions(state, installationId, role.id).createProjects)
+      .map(role => ({ installationId, roleId: role.id }));
   };
+  const canCreateProject = (u: User, credential: Credential) => credential.source === 'fastkore'
+    ? creationRoles(credential).length > 0 : u.role === 'admin';
   app.get('/api/status', async request => {
     const cli = await workspace.codexConnection();
     const { user: u, credential } = principal(request);
@@ -623,7 +639,7 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
     };
     const visibleRun = (run: Run) => {
       try {
-        access.run(u, run.id);
+        access.run(u, run.id, credential);
         return !run.projectId || !run.chatId || chatIdentityMatches({ credential, user: u }, workspace.chat(run.projectId, run.chatId));
       } catch { return false; }
     };
@@ -635,7 +651,16 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
       if (job?.authorId !== u.id) return [run];
       return [{ ...run, queuedText: job?.text.slice(0, 240), queuedFiles: job?.attachmentIds.length }];
     });
-    return { version: '0.6.0', activeRun, activeRuns, queuedRuns, busy: workspace.busy, user: publicUser(u), setupRequired: access.setupRequired, canCreateProject: canCreateProject(u, credential),
+    const unreadChatReplies: Record<string, string> = {};
+    for (const project of workspace.store.state.projects) {
+      if (!canAccessProject(u, project, credential)) continue;
+      for (const chat of project.chats) {
+        const replyId = chat.lastCompletedReplyId;
+        if (replyId && !chat.archivedAt && u.readChatReplies?.[chat.id] !== replyId &&
+          access.canChat(u, chat) && chatIdentityMatches({ user: u, credential }, chat)) unreadChatReplies[chat.id] = replyId;
+      }
+    }
+    return { version: '0.6.0', activeRun, activeRuns, queuedRuns, unreadChatReplies, busy: workspace.busy, user: publicUser(u), setupRequired: access.setupRequired, canCreateProject: canCreateProject(u, credential),
       cli: u.role === 'admin' ? cli : cli && { ...cli, path: '', status: '' },
       isolatedCodex: workspace.isolatedCodex, workerFilesAvailable: workspace.workerFilesAvailable, codexLimitsRevision: workspace.codexLimitsRevision,
       settings: { ...settings, cliPath: u.role === 'admin' ? settings.cliPath : '',
@@ -662,13 +687,13 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
   }, async request => {
     const { projectId, chatId, agentProfileId } = request.query;
     const authorize = () => {
-      const actor = user(request);
+      const { user: actor, credential } = principal(request);
       if (chatId && !projectId) throw new BridgeError('Укажите проект диалога.');
-      const project = projectId ? access.project(actor, projectId) : undefined;
+      const project = projectId ? access.project(actor, projectId, credential) : undefined;
       if (!project && actor.role !== 'admin' && !workspace.corporate.role(actor)?.operationIds.includes('chat')) {
         throw new BridgeError('Рабочая роль не разрешает работу с чатом.', 403);
       }
-      const chat = chatId && projectId ? access.editChat(actor, projectId, chatId) : undefined;
+      const chat = chatId && projectId ? access.editChat(actor, projectId, chatId, credential) : undefined;
       workspace.corporate.profile(actor, chat ? chat.agentProfileId : agentProfileId, project);
       return actor.id;
     };
@@ -761,7 +786,13 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
     return result;
   });
   app.get('/api/projects', async request => {
-    const u = user(request); return workspace.store.state.projects.filter(p => u.role === 'admin' || p.memberIds?.includes(u.id)).map(p => ({ id: p.id, name: p.name, directory: p.directory, chatCount: p.chats.filter(c => !c.archivedAt && access.canChat(u, c)).length }));
+    const p = principal(request);
+    const catalog = p.user.role === 'admin' && p.credential.source !== 'fastkore' ? projectRoleOptions(workspace.store.state) : undefined;
+    return workspace.store.state.projects.filter(project => canAccessProject(p.user, project, p.credential)).map(project => ({
+      id: project.id, name: project.name, directory: project.directory,
+      chatCount: project.chats.filter(chat => !chat.archivedAt && access.canChat(p.user, chat) && chatIdentityMatches(p, chat)).length,
+      roles: catalog?.filter(role => project.rolePolicy?.roles.some(selected => selected.installationId === role.installationId && selected.roleId === role.roleId)),
+    }));
   });
   app.post('/api/migrations/desktop', async request => { localAdmin(request); const result = await workspace.importDesktop(); access.migrate(); await workspace.store.save(); return result; });
   app.post<{ Body: { directory?: string; name?: string } }>('/api/projects', { schema: { body: object({ directory: string(2000), name: string(100) }) } }, async (request, reply) => {
@@ -770,7 +801,7 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
     const authorize = () => {
       const { user: u, credential } = principal(request);
       if (!canCreateProject(u, credential)) throw new BridgeError('Роль не позволяет создавать проекты.', 403);
-      return u.id;
+      return creationRoles(credential);
     };
     authorize();
     const project = directory === undefined
@@ -782,10 +813,20 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
   app.patch<{ Params: { projectId: string }; Body: { name: string } }>('/api/projects/:projectId', {
     schema: { body: object({ name: string(100) }, ['name']) },
   }, request => workspace.renameProject(request.params.projectId, request.body.name, () => localAdmin(request).id));
-  app.get<{ Params: { projectId: string } }>('/api/projects/:projectId/members', async request => { admin(request); return { memberIds: workspace.project(request.params.projectId).memberIds ?? [] }; });
+  const projectRolesPath = '/api/projects/:projectId/roles';
+  app.get<{ Params: { projectId: string } }>(projectRolesPath, async (request): Promise<ProjectRoleSettings> => {
+    localAdmin(request);
+    const project = workspace.project(request.params.projectId);
+    return { ...(project.rolePolicy ?? { revision: 0, roles: [] }), available: projectRoleOptions(workspace.store.state) };
+  });
+  app.put<{ Params: { projectId: string }; Body: ProjectRolePolicy }>(projectRolesPath, {
+    schema: { body: object({
+      revision: { ...revision, minimum: 0 },
+      roles: { type: 'array', maxItems: 1000, uniqueItems: true, items: object({ installationId: string(100), roleId: string(100) }, ['installationId', 'roleId']) },
+    }, ['revision', 'roles']) },
+  }, request => access.setProjectRoles(() => localAdmin(request), request.params.projectId, request.body));
   app.get<{ Params: { projectId: string } }>('/api/projects/:projectId/agents', async request => {
-    const actor = user(request);
-    return workspace.corporate.list(actor, access.project(actor, request.params.projectId));
+    return workspace.corporate.list(user(request), requestProject(request, request.params.projectId));
   });
   const projectAgentSettings = '/api/projects/:projectId/agent-settings';
   app.get<{ Params: { projectId: string } }>(projectAgentSettings, async (request): Promise<ProjectAgentSettings> => {
@@ -819,11 +860,10 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
     authorize();
     return workspace.corporate.saveProjectPolicy(workspace.project(request.params.projectId), request.body, authorize);
   });
-  app.patch<{ Params: { projectId: string }; Body: { memberIds: string[] } }>('/api/projects/:projectId/members', { schema: { body: object({ memberIds: { type: 'array', maxItems: 1000, uniqueItems: true, items: string(100) } }, ['memberIds']) } }, async request => access.members(user(request), request.params.projectId, request.body.memberIds));
   app.get<{ Params: { projectId: string } }>('/api/projects/:projectId/chats', async request => {
     const p = principal(request);
     const pinned = new Set(p.user.pinnedChatIds);
-    return access.project(p.user, request.params.projectId).chats
+    return access.project(p.user, request.params.projectId, p.credential).chats
       .filter(chat => !chat.archivedAt && access.canChat(p.user, chat) && chatIdentityMatches(p, chat))
       .map(chat => ({ ...access.chatSummary(chat), pinned: pinned.has(chat.id) || undefined }));
   });
@@ -840,7 +880,7 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
     if (credential.source !== 'fastkore' || !credential.installationId) throw new BridgeError('Личный архив доступен в сеансе Fastkore.', 403);
     return archivedChats((project, chat) => chat.ownerId === actor.id && chat.fastkoreBinding?.installationId === credential.installationId &&
       (!chat.fastkoreBinding?.externalUserId || chat.fastkoreBinding.externalUserId === credential.externalUserId) &&
-      (actor.role === 'admin' || project.memberIds?.includes(actor.id) === true));
+      canAccessProject(actor, project, credential));
   });
   const relatedChatContext = (request: FastifyRequest, raw: unknown) => {
     const p = principal(request);
@@ -848,22 +888,24 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
     const context = parseFastkoreContext(raw);
     const binding = context && chatBinding(p.credential.installationId, context, p.credential.externalUserId);
     if (!binding || !context) throw new BridgeError('Для этого контекста Fastkore нет ключа истории.');
-    return { actor: p.user, binding, context, parents: parentFastkoreChatBindings(p.credential.installationId, p.credential.externalUserId, context) };
+    return { binding, context, parents: parentFastkoreChatBindings(p.credential.installationId, p.credential.externalUserId, context) };
   };
   app.post<{ Body: { context: unknown } }>('/api/fastkore/chats/related', {
     schema: { body: object({ context: { type: 'object' } }, ['context']) },
   }, async request => {
-    const { actor, binding, context, parents } = relatedChatContext(request, request.body.context);
+    const { binding, context, parents } = relatedChatContext(request, request.body.context);
+    await workspace.rememberFastkoreNavigation(binding, () => principal(request));
+    const { user: actor, credential } = principal(request);
     const rows = new Map<string, RelatedChatSummary>();
     for (const parent of parents) {
-      const source = workspace.relatedFastkoreChats(actor, parent)[0];
+      const source = workspace.relatedFastkoreChats(actor, parent, credential)[0];
       if (source) rows.set(source.chat.id, { ...access.chatSummary(source.chat), projectId: source.project.id, projectName: source.project.name,
         parent: true, contextMatches: false });
     }
-    for (const { project, chat } of workspace.relatedFastkoreChats(actor, binding)) {
+    for (const { project, chat } of workspace.relatedFastkoreChats(actor, binding, credential)) {
       rows.set(chat.id, { ...access.chatSummary(chat), projectId: project.id, projectName: project.name, parent: rows.get(chat.id)?.parent });
     }
-    for (const { project, chat } of workspace.relatedFastkoreChats(actor, binding, context)) {
+    for (const { project, chat } of workspace.relatedFastkoreChats(actor, binding, credential, context)) {
       if (!rows.has(chat.id)) rows.set(chat.id, { ...access.chatSummary(chat), projectId: project.id, projectName: project.name, legacyContext: true });
     }
     return [...rows.values()];
@@ -873,26 +915,30 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
   }, async (request, reply) => {
     const { projectId, fresh, context, agentProfileId } = request.body;
     const { binding } = relatedChatContext(request, context);
+    await workspace.rememberFastkoreNavigation(binding, () => principal(request));
     const result = await workspace.createFastkoreChat(projectId, binding, fresh === true, () => {
-      const actor = user(request);
-      access.project(actor, projectId);
-      return actor;
+      const p = principal(request);
+      access.project(p.user, projectId, p.credential);
+      return p;
     }, agentProfileId);
-    return reply.code(result.created ? 201 : 200).send({ projectId: result.projectId, chat: access.viewChat(result.chat) });
+    return reply.code(result.created ? 201 : 200).send({ projectId: result.projectId, chat: viewChat(request, result.chat) });
   });
   app.post<{ Params: { projectId: string }; Body: { title?: string; model?: string; agentProfileId?: string } }>('/api/projects/:projectId/chats', { schema: { body: object({ title: string(120), model: modelSchema, agentProfileId: identifier }) } }, async (request, reply) => {
-    const check = () => access.project(user(request), request.params.projectId); check();
+    const check = () => requestProject(request, request.params.projectId); check();
     const c = await workspace.addChat(request.params.projectId, request.body.title, request.body.model, user(request).id, check, request.body.agentProfileId); return reply.code(201).send(access.viewChat(c));
   });
   type ChatParams = { projectId: string; chatId: string };
   const chatPath = '/api/projects/:projectId/chats/:chatId';
   const requestChat = (request: FastifyRequest<{ Params: ChatParams }>, edit = false) => {
     const p = principal(request), { projectId, chatId } = request.params;
-    const chat = edit ? access.editChat(p.user, projectId, chatId) : access.chat(p.user, projectId, chatId);
+    const chat = edit ? access.editChat(p.user, projectId, chatId, p.credential) : access.chat(p.user, projectId, chatId, p.credential);
     if (!chatIdentityMatches(p, chat)) throw new BridgeError('Диалог не найден.', 404);
     return chat;
   };
-  app.get<{ Params: ChatParams }>(chatPath, async request => access.viewChat(requestChat(request)));
+  app.get<{ Params: ChatParams }>(chatPath, async request => viewChat(request, requestChat(request)));
+  app.patch<{ Params: ChatParams; Body: { replyId: string } }>(chatPath + '/read', {
+    schema: { body: object({ replyId: string(36) }, ['replyId']) },
+  }, request => access.markChatRead(request.body.replyId, () => ({ actor: principal(request).user, chat: requestChat(request) })));
   app.patch<{ Params: ChatParams; Body: { pinned: boolean } }>(chatPath + '/pin', {
     schema: { body: object({ pinned: { type: 'boolean' } }, ['pinned']) },
   }, request => access.setChatPinned(request.body.pinned, () => ({ actor: user(request), chat: requestChat(request) })));
@@ -909,25 +955,25 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
     const destinationId = request.body.projectId;
     const check = () => {
       requestChat(request, true);
-      const actor = user(request);
-      access.project(actor, destinationId);
-      return actor;
+      const p = principal(request);
+      access.project(p.user, destinationId, p.credential);
+      return p;
     };
     check();
-    return access.viewChat(await workspace.moveChat(projectId, chatId, destinationId, request.body.title, check));
+    return viewChat(request, await workspace.moveChat(projectId, chatId, destinationId, request.body.title, check));
   });
   app.patch<{ Params: ChatParams; Body: { archived: boolean } }>(chatPath + '/archive', {
     schema: { body: object({ archived: { type: 'boolean' } }, ['archived']) },
-  }, async request => access.viewChat(await workspace.setChatArchived(request.params.projectId, request.params.chatId, request.body.archived, () => admin(request))));
+  }, async request => viewChat(request, await workspace.setChatArchived(request.params.projectId, request.params.chatId, request.body.archived, () => admin(request))));
   app.post<{ Params: ChatParams; Body: { context: unknown } }>(chatPath + '/reset', {
     schema: { body: object({ context: { type: 'object' } }, ['context']) },
   }, async request => {
     const { projectId, chatId } = request.params;
     const context = parseFastkoreContext(request.body.context);
-    return access.viewChat(await workspace.resetFastkoreChat(projectId, chatId, () => {
+    return viewChat(request, await workspace.resetFastkoreChat(projectId, chatId, () => {
       const { user: actor, credential } = principal(request);
       if (credential.source !== 'fastkore' || !credential.installationId) throw new BridgeError('Очистка связанного чата доступна в сеансе Fastkore.', 403);
-      const chat = access.editChat(actor, projectId, chatId);
+      const chat = access.editChat(actor, projectId, chatId, credential);
       if (chat.ownerId !== actor.id) throw new BridgeError('Очистить связанный чат может только его автор.', 403);
       if (!chat.fastkoreBinding || !context || !matchesFastkoreChat(chat.fastkoreBinding, credential.installationId, context, credential.externalUserId)) {
         throw new BridgeError('Откройте в Fastkore карточку или список, к которым привязан этот чат.', 409);
@@ -962,7 +1008,7 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
   });
   app.patch<{ Params: ChatParams; Body: { model?: string; reasoningEffort?: Settings['reasoningEffort'] } }>(chatPath, { schema: { body: { ...object({ model: modelSchema, reasoningEffort: { enum: ['low', 'medium', 'high', 'xhigh'] } }), minProperties: 1 } } }, async request => {
     const check = () => requestChat(request, true); check();
-    return access.viewChat(await workspace.changeChatModel(request.params.projectId, request.params.chatId, request.body.model, check, request.body.reasoningEffort));
+    return viewChat(request, await workspace.changeChatModel(request.params.projectId, request.params.chatId, request.body.model, check, request.body.reasoningEffort));
   });
   app.patch<{ Params: ChatParams; Body: { title: string } }>(chatPath + '/title', { schema: { body: object({ title: string(120) }, ['title']) } }, request =>
     workspace.renameChat(request.body.title, () => {
@@ -977,7 +1023,7 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
   app.post<{ Params: ChatParams; Body: { text: string; attachmentIds?: string[]; clientRequestId?: string; model?: string; fastkoreContext?: unknown; recommendedSpecialistId?: string } }>(chatPath + '/messages', { schema: { body: object({ text: string(60_000), attachmentIds: { type: 'array', items: string(100), maxItems: 8, uniqueItems: true }, clientRequestId: string(100), model: modelSchema, fastkoreContext: { type: 'object' }, recommendedSpecialistId: identifier }, ['text']) } }, async (request, reply) => {
     const check = () => {
       const u = user(request); requestChat(request, true);
-      const p = access.project(u, request.params.projectId);
+      const p = requestProject(request, request.params.projectId);
       for (const id of request.body.attachmentIds ?? []) if (!p.attachments.some(a => a.id === id && !a.libraryUploadedAt && (u.role === 'admin' || a.ownerId === u.id))) throw new BridgeError('Вложение не найдено.', 404);
     }; check();
     const text = request.body.text.trim(); if (!text) throw new BridgeError('Напишите вопрос.');
@@ -999,6 +1045,7 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
       }
     }
     const snapshot = parsed && (parsed.view !== 'none' || parsed.chat_key === 'home') ? parsed : undefined;
+    if (snapshot && snapshot.view !== 'none') delete snapshot.entity_uri;
     const run = await workspace.send(request.params.projectId, request.params.chatId, text, request.body.attachmentIds ?? [], request.body.clientRequestId ? `${user(request).id}:${request.body.clientRequestId}` : undefined, request.body.model, check, { id: user(request).id, name: user(request).name, credentialId: principal(request).credential.id }, snapshot, request.body.recommendedSpecialistId);
     return reply.code(202).header('Location', `/api/runs/${run.id}`).send(run);
   });
@@ -1006,7 +1053,7 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
     const { projectId } = request.params;
     const authorize = () => {
       const actor = user(request);
-      access.project(actor, projectId);
+      requestProject(request, projectId);
       return actor.id;
     };
     const actorId = authorize();
@@ -1018,17 +1065,17 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
     schema: { body: object({ targetRunId: string(36) }, ['targetRunId']) },
   }, async request => {
     const authorize = () => {
-      const actor = user(request);
+      const { user: actor, credential } = principal(request);
       const run = requestRun(request);
       if (!run.projectId || !run.chatId) throw new BridgeError('Уточнение должно быть сообщением чата.', 409);
-      access.editChat(actor, run.projectId, run.chatId);
+      access.editChat(actor, run.projectId, run.chatId, credential);
     };
     const actor = principal(request);
     return workspace.sendQueuedNow(request.params.runId, request.body.targetRunId, { id: actor.user.id, credentialId: actor.credential.id }, authorize);
   });
   app.post<{ Params: { runId: string } }>('/api/runs/:runId/cancel', async request => {
-    const u = user(request), run = requestRun(request);
-    if (run.projectId && run.chatId) access.editChat(u, run.projectId, run.chatId); return workspace.cancel(run.id);
+    const { user, credential } = principal(request), run = requestRun(request);
+    if (run.projectId && run.chatId) access.editChat(user, run.projectId, run.chatId, credential); return workspace.cancel(run.id);
   });
   if (options.clientRoot) await app.register(fastifyStatic, { root: path.resolve(options.clientRoot), prefix: '/', index: ['index.html'], wildcard: false });
   app.setNotFoundHandler((_request, reply) => reply.code(404).send({ error: 'Адрес не найден.' }));

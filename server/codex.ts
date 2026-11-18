@@ -302,7 +302,7 @@ export class CodexClient implements CodexRunner {
             && !seenCalls.has(callId) && typeof tool === 'string' && ++toolCalls <= 64) {
             seenCalls.add(callId);
             await onEvent({ kind: 'tool', text: tool, toolCallId: callId, toolContext: describeToolContext(tool, args) });
-            await onEvent({ kind: 'progress', text: tool === 'consult_specialist' ? 'Codex обращается к специалисту…' : tool === 'knowledge' ? 'Codex читает базу знаний…' : tool.startsWith('library_') ? 'Codex ищет в библиотеке проекта…' :
+            await onEvent({ kind: 'progress', text: tool === 'consult_specialist' ? 'Codex обращается к агенту…' : tool === 'knowledge' ? 'Codex читает базу знаний…' : tool.startsWith('library_') ? 'Codex ищет в библиотеке проекта…' :
               tool === personalInstructionsTool ? 'Codex работает с личными инструкциями…' : 'Codex обращается к Fastkore…' });
             try { if (tools) result = await tools.call(tool, args, signal); } catch { /* Never forward an upstream exception to the model. */ }
             await onEvent({ kind: 'tool-end', toolCallId: callId });

@@ -1,20 +1,22 @@
 import { lazy, Suspense, useEffect, useId, useState } from 'react';
 import { Bot, Check, Database, Pencil, Plus, Settings2, X } from 'lucide-react';
-import type { ProjectAgentConnection, ProjectAgentPolicy, ProjectAgentSettings, ProjectSummary } from '../shared/types';
+import type { ProjectAgentConnection, ProjectAgentPolicy, ProjectAgentSettings, ProjectRoleLabel, ProjectSummary } from '../shared/types';
 import { WorkspaceDialog } from './WorkspaceDialog';
+import { ProjectRolesPanel } from './ProjectRolesPanel';
 import './specialists.css';
 
 const ProjectLibraryPanel = lazy(() => import('./ProjectLibraryDialog').then(module => ({ default: module.ProjectLibraryPanel })));
-const sections = [['specialists', 'Специалисты'], ['library', 'Библиотека'], ['access', 'Доступ к материалам']] as const;
+const sections = [['specialists', 'Агенты'], ['library', 'Библиотека'], ['access', 'Доступ к материалам'], ['roles', 'Роли']] as const;
 type Section = typeof sections[number][0];
 
-export function ProjectSettingsDialog({ project, request, close, openSpecialist, rename, isAdmin }: {
+export function ProjectSettingsDialog({ project, request, close, openSpecialist, rename, isAdmin, rolesChanged }: {
   project: ProjectSummary;
   request: <T>(url: string, init?: RequestInit) => Promise<T>;
   close: () => void;
   openSpecialist: (id: string) => void;
   rename: (name: string) => Promise<string>;
   isAdmin: boolean;
+  rolesChanged: (roles: ProjectRoleLabel[]) => void;
 }) {
   const route = '/api/projects/' + encodeURIComponent(project.id) + '/agent-settings';
   const [settings, setSettings] = useState<ProjectAgentSettings>();
@@ -22,13 +24,21 @@ export function ProjectSettingsDialog({ project, request, close, openSpecialist,
   const [selected, setSelected] = useState<string[]>([]);
   const [pending, setPending] = useState(false);
   const [libraryPending, setLibraryPending] = useState(false);
+  const [rolesPending, setRolesPending] = useState(false);
+  const [rolesOpened, setRolesOpened] = useState(false);
   const [error, setError] = useState('');
   const [section, setSection] = useState<Section>('specialists');
   const [libraryProfile, setLibraryProfile] = useState<string>();
   const [name, setName] = useState(project.name);
   const [renameDraft, setRenameDraft] = useState<string>();
   const tabs = useId();
-  const busy = pending || libraryPending;
+  const busy = pending || libraryPending || rolesPending;
+
+  function openSection(next: Section) {
+    setLibraryProfile(undefined);
+    setSection(next);
+    if (next === 'roles') setRolesOpened(true);
+  }
 
   useEffect(() => {
     const controller = new AbortController();
@@ -88,21 +98,20 @@ export function ProjectSettingsDialog({ project, request, close, openSpecialist,
         ? (current + 1) % sections.length : event.key === 'ArrowLeft' ? (current + sections.length - 1) % sections.length : -1;
       if (next < 0) return;
       event.preventDefault();
-      setLibraryProfile(undefined);
-      setSection(sections[next][0]);
+      openSection(sections[next][0]);
       event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="tab"]')[next]?.focus();
     }}>
       {sections.map(([id, label]) => <button key={id} id={tabs + id} type="button" role="tab" aria-selected={id === section}
         aria-controls={tabs + '-panel'} tabIndex={id === section ? 0 : -1} disabled={busy}
-        onClick={() => { setLibraryProfile(undefined); setSection(id); }}>{label}</button>)}
+        onClick={() => openSection(id)}>{label}</button>)}
     </div>
     {error && !adding && <p className="inline-error" role="alert">{error}</p>}
     <div id={tabs + '-panel'} role="tabpanel" aria-labelledby={tabs + section} tabIndex={0} className="project-agent-scroll">
     {section === 'specialists' ? <>
     <div className="project-agents-intro">
-      <strong>Подключённые специалисты</strong>
+      <strong>Подключённые агенты</strong>
       {settings?.isolated && <button type="button" className="secondary" disabled={pending} aria-haspopup="dialog"
-        onClick={() => { setSelected([]); setError(''); setAdding(true); }}><Plus size={16} aria-hidden="true" />Добавить специалиста</button>}
+        onClick={() => { setSelected([]); setError(''); setAdding(true); }}><Plus size={16} aria-hidden="true" />Добавить агента</button>}
     </div>
     {!settings && !error && <p role="status">Загрузка…</p>}
     {settings && <div className="project-agent-scroll">
@@ -116,35 +125,38 @@ export function ProjectSettingsDialog({ project, request, close, openSpecialist,
             </div>
             <span className="project-specialist-actions">
               <button type="button" className="workspace-icon" disabled={pending} onClick={() => { setLibraryProfile(profile.id); setSection('access'); }}
-                title="Библиотека специалиста в проекте" aria-label={'Библиотека: ' + profile.name}><Database size={17} aria-hidden="true" /></button>
+                title="Библиотека агента в проекте" aria-label={'Библиотека: ' + profile.name}><Database size={17} aria-hidden="true" /></button>
               <button type="button" className="workspace-icon" disabled={pending} onClick={() => openSpecialist(profile.id)}
-                title="Настройки специалиста" aria-label={'Настройки: ' + profile.name}>
+                title="Настройки агента" aria-label={'Настройки: ' + profile.name}>
                 <Settings2 size={17} aria-hidden="true" />
               </button>
               <button type="button" className="secondary" disabled={pending || !settings.isolated}
-                title="Отключить специалиста в проекте" aria-label={'Отключить: ' + profile.name}
+                title="Отключить агента в проекте" aria-label={'Отключить: ' + profile.name}
                 onClick={() => void save(connections.filter(connection => connection.profileId !== profile.id))}>
                 Отключить
               </button>
             </span>
           </div>
         </li>)}
-      </ul> : <p className="help">В проекте пока нет подключённых специалистов.</p>}
+      </ul> : <p className="help">В проекте пока нет подключённых агентов.</p>}
     </div>}
-    </> : <Suspense fallback={<p role="status">Загрузка…</p>}>
+    </> : section !== 'roles' ? <Suspense fallback={<p role="status">Загрузка…</p>}>
       <ProjectLibraryPanel key={libraryProfile ?? ''} project={project} request={request} section={section === 'library' ? 'folders' : 'access'}
         isAdmin={isAdmin} initialProfileId={libraryProfile} pendingChanged={setLibraryPending} />
-    </Suspense>}
+    </Suspense> : null}
+    {rolesOpened && <div hidden={section !== 'roles'}>
+      <ProjectRolesPanel projectId={project.id} request={request} onSaved={rolesChanged} pendingChanged={setRolesPending} />
+    </div>}
     </div>
   </WorkspaceDialog>
-  {adding && <WorkspaceDialog title="Добавить специалистов" className="project-agents-dialog project-specialist-picker"
+  {adding && <WorkspaceDialog title="Добавить агентов" className="project-agents-dialog project-specialist-picker"
     close={() => { if (!pending) { setAdding(false); setError(''); } }}>
     {error && <p className="inline-error" role="alert">{error}</p>}
     {available.length > 0 ? <form onSubmit={event => {
       event.preventDefault();
       if (newConnections.length) void save([...connections, ...newConnections]).then(saved => { if (saved) setAdding(false); });
     }}>
-      <ul className="settings-records project-specialist-options" aria-label="Доступные специалисты">
+      <ul className="settings-records project-specialist-options" aria-label="Доступные агенты">
         {available.map((profile, index) => <li key={profile.id}>
           <label>
             <input type="checkbox" data-dialog-focus={index === 0 ? '' : undefined} disabled={pending} checked={selected.includes(profile.id)}
@@ -159,7 +171,7 @@ export function ProjectSettingsDialog({ project, request, close, openSpecialist,
       <div className="settings-dialog-actions">
         <button type="submit" className="primary" disabled={pending || !newConnections.length}>Подключить</button>
       </div>
-    </form> : <p className="help">Все доступные специалисты уже подключены.</p>}
+    </form> : <p className="help">Все доступные агенты уже подключены.</p>}
   </WorkspaceDialog>}
   </>;
 }

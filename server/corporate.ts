@@ -149,7 +149,7 @@ export class CorporateAccess {
   instructions(user: User | undefined, profile: AgentProfile) {
     const role = user && this.role(user)?.instructions;
     return [role && 'Инструкции рабочей роли\n' + role,
-      profile.instructions && 'Инструкции специалиста\n' + profile.instructions,
+      profile.instructions && 'Инструкции агента\n' + profile.instructions,
       ...(profile.instructionFiles ?? []).map(file => 'Файл инструкций ' + JSON.stringify(file.name) + '\n' + file.text),
     ].filter(Boolean).join('\n\n');
   }
@@ -182,7 +182,7 @@ export class CorporateAccess {
     const value: AgentProfile = { ...input, name: input.name.trim(), description: input.description.trim(), revision: (old?.revision ?? 0) + 1,
       toolIds: input.toolIds ?? old?.toolIds, icon: input.icon ?? old?.icon, instructionFiles };
     if (!value.name || !value.operationIds.length) throw new BridgeError('Укажите название и хотя бы одну операцию.');
-    if (!value.description && old?.description !== '') throw new BridgeError('Кратко опишите, для каких задач подходит специалист.');
+    if (!value.description && old?.description !== '') throw new BridgeError('Кратко опишите, для каких задач подходит агент.');
     if (old) Object.assign(old, value); else this.data.profiles.push(value);
     this.audit(actor, 'profile.update', value.id); await this.store.save(); return value;
   }

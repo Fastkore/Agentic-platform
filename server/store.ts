@@ -2,7 +2,7 @@ import { readFile, writeFile } from 'node:fs/promises';
 import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 import path from 'node:path';
-import type { Attachment, AuditEvent, Chat, ProjectAgentPolicy, Run, State } from '../shared/types.js';
+import type { Attachment, AuditEvent, Chat, ProjectAgentPolicy, ProjectRolePolicy, Run, State } from '../shared/types.js';
 import { DEFAULT_AGENT_INSTRUCTIONS } from '../shared/agent-instructions.js';
 import type { PersonalInstructions, WorkNote } from '../shared/personal-instructions.js';
 import { migrateFastkoreChatBindings } from './fastkore-chat.js';
@@ -12,7 +12,7 @@ import { AuditJournal, auditPageSize, compareAudit, publishAudit, type AuditCurs
 export class BridgeError extends Error { constructor(message: string, public statusCode = 400) { super(message); } }
 export function redact(text: string) { return text.replace(/\bfkap1\.[a-f0-9-]{36}\.[A-Za-z0-9_-]+\b/gi, '[REDACTED]').replace(/\b(?:fku[ag]1|fkct1)\.[A-Za-z0-9._-]+/gi, '[REDACTED]').replace(/\b(?:sk-|ccb_[ks]_)[A-Za-z0-9_-]{8,}\b/g, '[REDACTED]').replace(/(Bearer\s+)[^\s"']+/gi, '$1[REDACTED]').replace(/((?:access_token|refresh_token|api_key|authorization|password|delegation|grant|login_challenge|ticket|pairing_code|pairingCode|connectionKey|erp_key_verifier|erpKeyVerifier|__Host-bridge_sso_start|__Host-bridge_session)["'\s:=]+)[^\s,"';}&]+/gi, '$1[REDACTED]'); }
 type AccessState = Pick<State, 'security' | 'externalIdentities' | 'sso'>;
-export type AccessDraft = AccessState & { projectMembers?: Map<string, string[]>; projectAgentPolicies?: Map<string, ProjectAgentPolicy> };
+export type AccessDraft = AccessState & { projectRolePolicies?: Map<string, ProjectRolePolicy>; projectAgentPolicies?: Map<string, ProjectAgentPolicy> };
 const empty = (): State => ({ schemaVersion: 1, settings: { cliPath: '', allowWrite: false, includePreviews: true, model: '', agentInstructions: DEFAULT_AGENT_INSTRUCTIONS }, projects: [], runs: [], jobs: [] });
 type Row = { id: string; parent: string; payload: string };
 type ChatFileDeletion = { projectId: string; file: Attachment };
@@ -258,7 +258,7 @@ export class Store {
         const row = rows.get('projects')!.get(project.id);
         if (!row) continue;
         const payload = JSON.parse(row.payload);
-        payload.memberIds = project.memberIds;
+        payload.rolePolicy = project.rolePolicy;
         payload.agentPolicy = project.agentPolicy;
         row.payload = JSON.stringify(payload);
       }
@@ -312,16 +312,16 @@ export class Store {
     const save = this.queue.then(() => {
       const draft: AccessDraft = structuredClone(this.accessState());
       const result = change(draft);
-      const { projectMembers, projectAgentPolicies, ...updatedAccess } = draft;
+      const { projectRolePolicies, projectAgentPolicies, ...updatedAccess } = draft;
       const projects: Rows = new Map();
-      if (projectMembers?.size || projectAgentPolicies?.size) {
+      if (projectRolePolicies?.size || projectAgentPolicies?.size) {
         const changed = new Map<string, { parent: string; position: number; payload: string }>();
         for (const project of this.state.projects) {
-          if (!projectMembers?.has(project.id) && !projectAgentPolicies?.has(project.id)) continue;
+          if (!projectRolePolicies?.has(project.id) && !projectAgentPolicies?.has(project.id)) continue;
           const existing = this.committed.get('projects')!.get(project.id);
           if (!existing) throw new BridgeError('Проект ещё не сохранён.', 409);
           const record = JSON.parse(existing.payload);
-          record.memberIds = projectMembers?.get(project.id) ?? project.memberIds;
+          record.rolePolicy = projectRolePolicies?.get(project.id) ?? project.rolePolicy;
           record.agentPolicy = projectAgentPolicies?.get(project.id) ?? project.agentPolicy;
           changed.set(project.id, { ...existing, payload: JSON.stringify(record) });
         }
@@ -329,7 +329,7 @@ export class Store {
       }
       this.commit({ ...this.state, ...updatedAccess }, [], projects, true);
       for (const project of this.state.projects) {
-        if (projectMembers?.has(project.id)) project.memberIds = projectMembers.get(project.id);
+        if (projectRolePolicies?.has(project.id)) project.rolePolicy = projectRolePolicies.get(project.id);
         if (projectAgentPolicies?.has(project.id)) project.agentPolicy = projectAgentPolicies.get(project.id);
       }
       if (this.state.security && draft.security) Object.assign(this.state.security, draft.security);

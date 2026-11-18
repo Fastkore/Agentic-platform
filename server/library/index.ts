@@ -18,6 +18,7 @@ export class ProjectLibrary {
   constructor(root: string, storage: LibraryStorageConfig, directory: PlatformDirectory, limits: LibraryLimits = libraryLimitsFromEnv()) {
     this.registry = new LibraryRegistry(root, storage, limits);
     this.registry.projectName = id => directory.projectName(id);
+    this.registry.canSeeProject = (actor, projectId) => actor.admin || directory.canAccessProject(actor.id, projectId, actor.credentialId);
     this.policy = new LibraryPolicy(this.registry, directory);
     this.reader = new LibraryReader(this.registry);
     this.indexer = new LibraryIndexer(this.registry);
@@ -35,9 +36,9 @@ export class ProjectLibrary {
     this.registry.close();
   }
   /** Records the library scope at enqueue time; no-op for projects without connected folders. */
-  admitRun(runId: string, userId: string | undefined, projectId: string, profileId: string) {
+  admitRun(runId: string, userId: string | undefined, projectId: string, profileId: string, credentialId?: string) {
     if (!userId || !this.policy.hasConnections(projectId)) return undefined;
-    return this.policy.admitRun(runId, userId, projectId, profileId);
+    return this.policy.admitRun(runId, userId, projectId, profileId, credentialId);
   }
   /**
    * Rechecks the queued rights before giving the executor library tools and fixes the current content of each folder for this answer.

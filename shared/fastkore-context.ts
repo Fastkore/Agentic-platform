@@ -8,6 +8,7 @@ type ContextHeader = { type: 'fastkore.context'; version: 1; entity_ids: string[
 export type FastkoreEntityContext = ContextHeader & {
   view: 'card' | 'list' | 'link_list'; entity_set_id: string; entity_set_name: string | null; filter_xml: string | null;
   entity_name?: string;
+  entity_uri?: string;
   tile_name?: string;
   entity_type_ids?: string[];
   entity_types?: { id: string; name: string }[];
@@ -61,7 +62,8 @@ export function parseFastkoreContext(value: unknown): FastkoreContext | null {
       : ids.owner_entity_set_id && ids.owner_entity_id ? `card:${ids.owner_entity_set_id}:${ids.owner_entity_id}` : null;
     if (header.chat_key !== null && header.chat_key !== expected) return null;
   }
-  const entityName = view === 'card' ? contextName(value.entity_name) : undefined;
+  const entityName = view === 'card' || (view === 'link_list' && ids.owner_entity_set_id && ids.owner_entity_id)
+    ? contextName(value.entity_name) : undefined;
   const tileName = view !== 'card' ? contextName(value.tile_name) : undefined;
   const rawTypeIds = value.entity_type_ids;
   if (rawTypeIds !== undefined && rawTypeIds !== null &&
@@ -76,7 +78,10 @@ export function parseFastkoreContext(value: unknown): FastkoreContext | null {
   const entityTypes = typeIds.flatMap(id => namedTypes.get(id) ? [{ id, name: namedTypes.get(id)! }] : []);
   const folderName = ids.folder_id ? contextName(value.folder_name) : undefined;
   const filterDisplay = filter_status === 'included' ? parseFilterDisplay(value.filter_display) : undefined;
+  const entityUri = view === 'card' ? entityNavigationUri(value.entity_uri, setId, entity_ids[0])
+    : view === 'link_list' ? entityNavigationUri(value.entity_uri, ids.owner_entity_set_id, ids.owner_entity_id) : undefined;
   return { ...header, view, entity_set_id: setId, entity_set_name, ...(entityName ? { entity_name: entityName } : {}), ...(tileName ? { tile_name: tileName } : {}),
+    ...(entityUri ? { entity_uri: entityUri } : {}),
     ...(typeIds.length ? { entity_type_ids: typeIds } : {}),
     ...(entityTypes.length ? { entity_types: entityTypes } : {}),
     ...(folderName ? { folder_name: folderName } : {}),
@@ -86,8 +91,19 @@ export function parseFastkoreContext(value: unknown): FastkoreContext | null {
 
 export function fastkoreExecutionContext(context?: FastkoreContext) {
   if (!context || context.view === 'none') return context;
-  const { entity_types, folder_name, filter_display, ...execution } = context;
+  const { entity_types, folder_name, filter_display, entity_uri, ...execution } = context;
   return execution;
+}
+
+function entityNavigationUri(value: unknown, setId: string | null, entityId: string | null | undefined) {
+  if (!setId || !entityId || typeof value !== 'string' || value.length > 2048 || !/^fastkore:\/\//i.test(value) || /[\u0000-\u0020\u007f]/.test(value)) return;
+  let url: URL;
+  try { url = new URL(value); } catch { return; }
+  if (!url.hostname || url.username || url.password || url.hash || !/^\/(?:[^/]+\/)?ShowEntity$/i.test(url.pathname)) return;
+  const args = [...url.searchParams].map(([name, value]) => [name.toLowerCase(), value.toLowerCase()]);
+  const sets = args.filter(([name]) => name === 'entityset');
+  const entities = args.filter(([name]) => name === 'entity');
+  if (sets.length === 1 && entities.length === 1 && sets[0][1] === setId && entities[0][1] === entityId) return value;
 }
 
 function contextName(value: unknown) {
@@ -97,6 +113,7 @@ function contextName(value: unknown) {
 export function fastkoreChatTitle(context?: FastkoreContext) {
   if (!context || context.view === 'none') return;
   if (context.view === 'card') return context.entity_name;
+  if (context.view === 'link_list' && context.entity_name) return context.entity_name;
   return context.tile_name ?? contextName(context.entity_set_name);
 }
 

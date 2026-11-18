@@ -161,8 +161,8 @@ export function ComposerInput({ input, draft, placeholder, editable, pickerEnabl
   const shell = input.current?.closest('.workspace-shell');
   return <>
     {specialistId && <div className="composer-specialist">
-      <span role="status" title="Рекомендованный специалист"><AtSign size={14} aria-hidden="true" />{specialist?.name ?? 'Специалист недоступен'}</span>
-      <button type="button" className="workspace-icon" aria-label="Убрать специалиста" title="Убрать специалиста"
+      <span role="status" title="Рекомендованный агент"><AtSign size={14} aria-hidden="true" />{specialist?.name ?? 'Агент недоступен'}</span>
+      <button type="button" className="workspace-icon" aria-label="Убрать агента" title="Убрать агента"
         disabled={!editable} onClick={() => { onSpecialist(); input.current?.focus(); }}><X size={14} /></button>
     </div>}
     <textarea ref={input} rows={2} value={draft} placeholder={placeholder} disabled={!editable} aria-label="Сообщение Codex"
@@ -176,11 +176,11 @@ export function ComposerInput({ input, draft, placeholder, editable, pickerEnabl
       }}
       onClick={() => setMention(null)} onBlur={() => setMention(null)} onKeyDown={handleKeys} />
     {controls(agents.length ? <button type="button" className="workspace-icon composer-mention-button"
-      aria-label="Выбрать специалиста" title="Выбрать специалиста · @" aria-expanded={expanded}
+      aria-label="Выбрать агента" title="Выбрать агента · @" aria-expanded={expanded}
       aria-controls={expanded ? listId : undefined} disabled={!pickerEnabled || !agents.length}
       onPointerDown={event => event.preventDefault()} onClick={togglePicker}><AtSign size={17} /></button> : null)}
     {expanded && shell && placement && createPortal(<div ref={menu} className="workspace-select-menu composer-mention-menu"
-      id={listId} role="listbox" aria-label="Специалисты" style={placement} onPointerDown={event => event.preventDefault()}>
+      id={listId} role="listbox" aria-label="Агенты" style={placement} onPointerDown={event => event.preventDefault()}>
       {matches.map((agent, index) => <div key={agent.id} id={listId + '-' + index} role="option"
         aria-selected={agent.id === specialistId} data-active={index === activeIndex}
         onPointerMove={() => setActive(index)} onClick={() => choose(agent)}>
@@ -188,7 +188,7 @@ export function ComposerInput({ input, draft, placeholder, editable, pickerEnabl
         <span><strong>{agent.name}</strong>{agent.description && <small>{agent.description}</small>}</span>
         {agent.id === specialistId && <Check size={15} aria-hidden="true" />}
       </div>)}
-      {!matches.length && <div className="composer-mention-empty" role="status">{agents.length ? 'Специалисты не найдены' : 'Нет доступных специалистов'}</div>}
+      {!matches.length && <div className="composer-mention-empty" role="status">{agents.length ? 'Агенты не найдены' : 'Нет доступных агентов'}</div>}
     </div>, shell)}
   </>;
 }

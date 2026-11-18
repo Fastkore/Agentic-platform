@@ -9,11 +9,14 @@ export function chatBinding(installationId: string, context: FastkoreContext, ex
   if (!key) return;
   if (context.chat_key !== undefined && !externalUserId) return;
   const contextName = fastkoreChatTitle(context);
+  const tile = isFastkoreTileList(context) ? context : undefined;
+  const entityUri = context.view === 'card' || (context.view === 'link_list' && context.chat_key?.startsWith('card:'))
+    ? context.entity_uri : undefined;
   return { installationId, externalUserId: context.chat_key !== undefined ? externalUserId : undefined,
     key: hashKey(key), view: context.view, entitySetId: context.view === 'none' ? undefined : context.entity_set_id,
     entityId: context.view === 'card' ? context.entity_ids[0] : undefined,
     ...(contextName ? { contextName } : {}),
-    tileId: isFastkoreTileList(context) ? context.tile_id : undefined };
+    ...(entityUri ? { entityUri } : {}), ...(tile ? { tileId: tile.tile_id, tileName: tile.tile_name } : {}) };
 }
 
 export function parentFastkoreChatBindings(installationId: string, externalUserId: string | undefined, context: FastkoreContext): FastkoreChatBinding[] {
