@@ -2,14 +2,14 @@ import React, { lazy, Suspense, useCallback, useEffect, useRef, useState } from 
 import { createRoot } from 'react-dom/client';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { Archive, ArrowUp, BarChart3, Bot, Box, Check, ChevronDown, ChevronRight, ClipboardList, Copy, Database, Download, EllipsisVertical, Eraser, FileText, Folder, History, Link2, LoaderCircle, LockKeyhole, LogOut, Menu, Moon, Network, PanelLeftClose, PanelLeftOpen, Pencil, Pin, Plus, RefreshCw, Search, Settings2, ShieldCheck, Square, SquarePen, Sun, Terminal, Trash2, Users, X } from 'lucide-react';
+import { Archive, ArrowUp, BarChart3, Bot, Box, Camera, Check, ChevronDown, ChevronRight, ClipboardList, Copy, Database, Download, EllipsisVertical, Eraser, FileText, Folder, History, Link2, LoaderCircle, LockKeyhole, LogOut, Menu, Moon, Network, PanelLeftClose, PanelLeftOpen, Pencil, Pin, Plus, RefreshCw, Search, Settings2, ShieldCheck, Square, SquarePen, Sun, Terminal, Trash2, Users, X } from 'lucide-react';
 import { interfaceScales, type AgentSummary, type Attachment, type Chat, type ChatView, type ChatSummary, type CodexLimits, type FastkoreAuthentication, type FastkoreNavigationTarget, type FileStorageStatus, type InterfaceScale, type ModelCatalog, type ProjectSummary, type RelatedChatSummary, type Run, type Settings, type Status, type User } from '../shared/types';
 import './style.css';
 import './workspace.css';
 import { ChatArchiveDialog } from './ChatArchiveDialog';
 import { shortUserName } from './user-name';
 import { chatTooltip, dateTooltip, shortDate } from './chat-date';
-import { openFastkoreBrowser, openFastkoreTarget, parseHostTheme, webViewHost, type Theme } from './fastkore';
+import { openFastkoreBrowser, openFastkoreTarget, parseHostScreenshotCapability, parseHostScreenshotResult, parseHostTheme, webViewHost, type Theme } from './fastkore';
 import { Settings as SettingsIcon } from 'lucide-react';
 import { Select, type SelectHandle } from './Select';
 import { ExecutionAccountsPanel } from './ExecutionAccountsPanel';
@@ -128,6 +128,16 @@ async function copy(text: string) {
 }
 const requestId = () => globalThis.crypto?.randomUUID?.() ?? `web-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 const focusControls = 'a, button, input, textarea, select, label, summary, dialog, [contenteditable], [tabindex], [role="button"], [role="option"]';
+type DraftAttachment = Attachment & { screenshot?: { file: File; preview: string; uploaded?: { projectId: string; id: string } } };
+type ScreenshotRequest = { id: string; slot: string; timer: ReturnType<typeof setTimeout> };
+const maxDraftAttachments = 8;
+const draftAttachmentLimit = 'К вопросу можно прикрепить до 8 файлов.';
+
+function uploadChatAttachment(projectId: string, file: File) {
+  const form = new FormData();
+  form.append('file', file);
+  return api<Attachment>(`/api/projects/${projectId}/attachments`, { method: 'POST', body: form });
+}
 
 function App() {
   const [embedded] = useState(() => new URLSearchParams(location.search).get('embedded') === 'fastkore');
@@ -149,7 +159,10 @@ function App() {
   const [relatedChats, setRelatedChats] = useState<{ key: string; list: RelatedChatSummary[] }>();
   const [contextProblem, setContextProblem] = useState<string>();
   const [erpFilter, setErpFilter] = useState<{ display: FastkoreFilterDisplay; folder?: string }>();
-  const readySession = useRef<FastkoreAuthentication | null>(null);
+  const [readySession, setReadySession] = useState<FastkoreAuthentication | null>(null);
+  const [hostSupportsScreenshot, setHostSupportsScreenshot] = useState(false);
+  const [screenshotSlot, setScreenshotSlot] = useState<string>();
+  const screenshotRequest = useRef<ScreenshotRequest | null>(null);
   const [user, setUser] = useState<User | null>(null), [setupRequired, setSetupRequired] = useState(false), [setupName, setSetupName] = useState('Руководитель');
   const [status, setStatus] = useState<Status | null>(null), [projects, setProjects] = useState<ProjectSummary[]>([]), [chat, setChat] = useState<ChatView | null>(null);
   const [chatLists, setChatLists] = useState<Record<string, ChatSummary[]>>({});
@@ -160,11 +173,12 @@ function App() {
   const projectPicker = useRef<SelectHandle>(null);
   const [projectRequested, setProjectRequested] = useState(false);
   useEffect(() => { setProjectRequested(false); }, [projectId, chatId, contextVersion]);
-  const [drafts, setDrafts] = useState<Record<string, string>>({}), [files, setFiles] = useState<Record<string, Attachment[]>>({});
+  const [drafts, setDrafts] = useState<Record<string, string>>({}), [files, setFiles] = useState<Record<string, DraftAttachment[]>>({});
   const [specialists, setSpecialists] = useState<Record<string, string | undefined>>({});
   const [panel, setPanel] = useState<'settings' | 'project' | 'project-settings' | 'search' | 'archive' | 'related' | 'rename-chat' | 'reset-chat' | null>(null);
   const [renameDraft, setRenameDraft] = useState<{ projectId: string; chatId: string; title: string; destinationId?: string }>();
   const [modelPreview, setModelPreview] = useState<{ name: string; url: string; format: PreviewModelFormat }>();
+  const [screenshotPreview, setScreenshotPreview] = useState<DraftAttachment['screenshot']>();
   const projectFromComposer = useRef(false);
   const [projectActionTarget, setProjectActionTarget] = useState<ProjectSummary | null>(null);
   const [settingsProjectSearch, setSettingsProjectSearch] = useState('');
@@ -198,7 +212,7 @@ function App() {
   const sendAttempt = useRef<{ chatId: string; content: string; requestId: string } | null>(null);
   const relatedDraftKey = currentErpContext.current.active && erpChatKey ? 'erp:' + erpChatKey : '';
   const draftSlot = chatId || relatedDraftKey;
-  const selectedProject = projects.find(p => p.id === projectId), draft = drafts[draftSlot] ?? '', attachments = files[chatId] ?? [];
+  const selectedProject = projects.find(p => p.id === projectId), draft = drafts[draftSlot] ?? '', attachments = files[draftSlot] ?? [];
   const specialistKey = draftSlot || 'new:' + projectId;
   const specialistId = specialists[specialistKey];
   const activeRuns = status?.activeRuns ?? (status?.activeRun ? [status.activeRun] : []);
@@ -284,10 +298,12 @@ function App() {
   const availableConsultants = otherSpecialists.filter(agent => !chatConsultants.includes(agent));
   const unavailableConsultant = agents.find(agent => agent.id !== 'universal' && agent.id !== messageAgent?.id && !agent.available && agent.unavailableReason);
   const canAttach = canEdit && messageAgent?.available === true && messageAgent.toolIds.includes('chat-files');
+  const canAttachToDraft = chatId ? canAttach : !projectId || messageAgent?.toolIds.includes('chat-files') === true;
+  const showScreenshot = inFastkore && !!erpAuth && readySession === erpAuth && hostSupportsScreenshot;
   const canReadFastkore = !!projectId && messageAgent?.toolIds.includes('fastkore') === true;
   const canStartChat = !chatId && !!newAgent && !!selectedProject;
   const canPromptForProject = !!status && !chatId && !projectId && !(relatedLoading && currentErpContext.current.active);
-  const canSend = !!status && !(relatedLoading && currentErpContext.current.active) && !status.executionDisabled && !codexUnavailable && (!canReadFastkore || !contextProblem || !!currentErpContext.current.snapshot) && (!attachments.length || canAttach)
+  const canSend = !!status && screenshotSlot !== draftSlot && !(relatedLoading && currentErpContext.current.active) && !status.executionDisabled && !codexUnavailable && (!canReadFastkore || !contextProblem || !!currentErpContext.current.snapshot) && (!attachments.length || canAttachToDraft)
     && !!messageAgent?.available && (!specialistId || otherSpecialists.some(agent => agent.id === specialistId)) && (chatId ? canEdit : canStartChat);
   const canManageSettings = isAdmin && !inFastkore && (authSource === 'local' || !!erpAuth?.browserSettings);
   const canManageProjects = canManageSettings;
@@ -327,7 +343,45 @@ function App() {
   };
   async function action(work: () => Promise<void>) { setPending(true); setError(''); try { await work(); } catch (e) { fail(e); } finally { setPending(false); } }
   function saveToken(token: string) { accessKey = token; sessionStorage.setItem('bridge-key', token); }
-  function clearLogin() { authEpoch++; browserSession = false; csrfToken = ''; sessionUserId = ''; sendAttempt.current = null; setErpAuth(null); currentErpContext.current = {}; autoOpenRelated.current = undefined; setErpChatKey(undefined); setRelatedChats(undefined); setContextProblem(undefined); readySession.current = null; setAgentCatalog(undefined); setPreferredAgent('universal'); setCatalog(null); setModelError(''); accessKey = ''; sessionStorage.removeItem('bridge-key'); localStorage.removeItem('bridge-project'); localStorage.removeItem('bridge-chat'); setLoggedIn(false); setUser(null); setStatus(null); setProjects([]); setChatLists({}); setOpenProjects({}); setShowAll({}); setSidebarOpen(false); setChat(null); setModelPreview(undefined); setDrafts({}); setFiles({}); setSpecialists({}); setSubscription(null); setPanel(null); setProjectId(''); setChatId(''); setDiagnostics(''); setPasswordInput(''); }
+  function finishScreenshotRequest(slot?: string) {
+    const active = screenshotRequest.current;
+    if (!active || (slot !== undefined && slot !== active.slot)) return;
+    clearTimeout(active.timer);
+    screenshotRequest.current = null;
+    setScreenshotSlot(undefined);
+  }
+  function captureScreenshot() {
+    const host = showScreenshot ? webViewHost() : undefined;
+    if (!host || !canAttachToDraft || pending || sending.current || screenshotRequest.current) return;
+    if (attachments.length >= maxDraftAttachments) { setError(draftAttachmentLimit); return; }
+    setError('');
+    try {
+      const id = crypto.randomUUID();
+      const timer = setTimeout(() => {
+        finishScreenshotRequest();
+        setError('Fastkore не ответил на запрос скриншота.');
+      }, 15_000);
+      screenshotRequest.current = { id, slot: draftSlot, timer };
+      setScreenshotSlot(draftSlot);
+      host.postMessage({ type: 'fastkore.screenshot.request', version: 1, request_id: id });
+    } catch {
+      finishScreenshotRequest();
+      setError('Не удалось запросить скриншот в Fastkore.');
+    }
+  }
+  function moveDraftAttachments(from: string, to: string) {
+    if (from === to) return;
+    if (screenshotRequest.current?.slot === from) {
+      screenshotRequest.current.slot = to;
+      setScreenshotSlot(to);
+    }
+    setFiles(old => old[from]?.length ? { ...old, [to]: [...(old[to] ?? []), ...old[from]], [from]: [] } : old);
+  }
+  useEffect(() => () => { if (screenshotRequest.current) clearTimeout(screenshotRequest.current.timer); }, []);
+  function clearLogin() {
+    finishScreenshotRequest(); setReadySession(null); setScreenshotPreview(undefined);
+    authEpoch++; browserSession = false; csrfToken = ''; sessionUserId = ''; sendAttempt.current = null; setErpAuth(null); currentErpContext.current = {}; autoOpenRelated.current = undefined; setErpChatKey(undefined); setRelatedChats(undefined); setContextProblem(undefined); setAgentCatalog(undefined); setPreferredAgent('universal'); setCatalog(null); setModelError(''); accessKey = ''; sessionStorage.removeItem('bridge-key'); localStorage.removeItem('bridge-project'); localStorage.removeItem('bridge-chat'); setLoggedIn(false); setUser(null); setStatus(null); setProjects([]); setChatLists({}); setOpenProjects({}); setShowAll({}); setSidebarOpen(false); setChat(null); setModelPreview(undefined); setDrafts({}); setFiles({}); setSpecialists({}); setSubscription(null); setPanel(null); setProjectId(''); setChatId(''); setDiagnostics(''); setPasswordInput('');
+  }
   function logout() { void action(async () => { await post('/api/auth/logout'); clearLogin(); }); }
   useEffect(() => {
     let alive = true;
@@ -371,6 +425,17 @@ function App() {
     const receive = (event: { data: unknown }) => {
       const nextTheme = parseHostTheme(event.data);
       if (nextTheme) setErpTheme({ theme: nextTheme });
+      const screenshotCapability = parseHostScreenshotCapability(event.data);
+      if (screenshotCapability !== undefined) setHostSupportsScreenshot(screenshotCapability);
+      const active = screenshotRequest.current;
+      const screenshot = active && parseHostScreenshotResult(event.data, active.id);
+      if (active && screenshot) {
+        finishScreenshotRequest();
+        if ('error' in screenshot) { setError(screenshot.error); return; }
+        const { name, size } = screenshot.file;
+        setFiles(old => ({ ...old, [active.slot]: [...(old[active.slot] ?? []), { id: active.id, name, size, screenshot }] }));
+        return;
+      }
       if (erpAuth && isFastkoreContextMessage(event.data)) {
         const snapshot = parseFastkoreContext(event.data) ?? undefined;
         const problem = snapshot ? fastkoreContextProblem(snapshot) : 'Fastkore передал некорректный или неподдерживаемый снимок.';
@@ -388,7 +453,9 @@ function App() {
           setRelatedChats(undefined);
           navigateTo(key ? '' : selected.current.projectId);
           if (!key) {
+            finishScreenshotRequest('');
             setDrafts(old => ({ ...old, '': '' }));
+            setFiles(old => ({ ...old, '': [] }));
             setSpecialists(old => ({ ...old, ['new:' + selected.current.projectId]: undefined }));
           }
           setPanel(panel => panel === 'reset-chat' || (!key && panel === 'related') ? null : panel);
@@ -405,13 +472,14 @@ function App() {
     if (inFastkore && erpTheme) webViewHost()?.postMessage({ type: 'fastkore.ui.applied', version: 1, theme: erpTheme.theme });
   }, [inFastkore, erpTheme]);
   useEffect(() => {
-    if (!erpAuth || !loggedIn || !user || readySession.current === erpAuth) return;
-    readySession.current = erpAuth;
-    webViewHost()?.postMessage({
+    const host = inFastkore ? webViewHost() : undefined;
+    if (!host || !erpAuth || !loggedIn || !user || readySession === erpAuth) return;
+    host.postMessage({
       type: 'fastkore.ready', version: 1, installation_id: erpAuth.installationId,
       fastkore_user_id: erpAuth.externalUserId, theme,
     });
-  }, [erpAuth, loggedIn, user?.id, theme]);
+    setReadySession(erpAuth);
+  }, [inFastkore, erpAuth, loggedIn, user?.id, theme, readySession]);
   useEffect(() => { const restored = (event: PageTransitionEvent) => { if (event.persisted && browserSession) location.reload(); }; window.addEventListener('pageshow', restored); return () => window.removeEventListener('pageshow', restored); }, []);
   function navigateTo(project: string, conversation = '') {
     if (selected.current.projectId !== project || selected.current.chatId !== conversation) {
@@ -420,6 +488,7 @@ function App() {
       setChatId(conversation);
       setChat(null);
       setModelPreview(undefined);
+      setScreenshotPreview(undefined);
     }
     if (project) setOpenProjects(old => ({ ...old, [project]: true }));
     setSidebarOpen(false);
@@ -654,8 +723,9 @@ function App() {
     await action(async () => {
       const { chat: created, projectId: p } = await createChat(project, context, true);
       if (contextNavigation.current !== navigation || key && currentErpContext.current.key !== key) return;
-      if (!selected.current.chatId) {
+      if (!chatId && !selected.current.chatId) {
         setDrafts(old => old[draftSlot] ? { ...old, [created.id]: old[draftSlot], [draftSlot]: '' } : old);
+        moveDraftAttachments(draftSlot, created.id);
         if (project === projectId) setSpecialists(old => ({ ...old, [created.id]: old[specialistKey], [specialistKey]: undefined }));
       }
       currentErpContext.current.active = !!key;
@@ -683,6 +753,7 @@ function App() {
       selected.current.chatId !== previous.chatId ||
       (context && (!currentErpContext.current.active || currentErpContext.current.key !== key))) return;
     setDrafts(old => ({ ...old, [created.id]: old[draftSlot] || old[created.id] || '', [draftSlot]: '' }));
+    moveDraftAttachments(draftSlot, created.id);
     setSpecialists(old => ({ ...old, [created.id]: old[specialistKey] ?? old[created.id], [specialistKey]: undefined }));
     navigateTo(destination, created.id);
     setChat(created);
@@ -776,6 +847,8 @@ function App() {
   async function deleteEmptyChat(p = projectId, c = chatId) {
     await action(async () => {
       await api(`/api/projects/${p}/chats/${c}`, { method: 'DELETE' });
+      finishScreenshotRequest(c);
+      setFiles(old => ({ ...old, [c]: [] }));
       setChatLists(old => ({ ...old, [p]: (old[p] ?? []).filter(item => item.id !== c) }));
       setRelatedChats(old => old && { ...old, list: old.list.filter(item => item.id !== c) });
       if (selected.current.projectId === p && selected.current.chatId === c) navigateTo(p);
@@ -796,6 +869,7 @@ function App() {
       setRelatedChats(old => old?.key === key ? { key, list: [entry, ...old.list.filter(item => item.id !== c && item.id !== id)] } : old);
       setDrafts(old => ({ ...old, [c]: '' }));
       setSpecialists(old => ({ ...old, [c]: undefined }));
+      finishScreenshotRequest(c);
       setFiles(old => ({ ...old, [c]: [] }));
       if (sendAttempt.current?.chatId === c) sendAttempt.current = null;
       if (contextNavigation.current === navigation && currentErpContext.current.key === key && selected.current.projectId === p && (selected.current.chatId === c || !selected.current.chatId)) {
@@ -808,7 +882,7 @@ function App() {
   async function send(override?: string) {
     const navigation = contextNavigation.current;
     const text = (override ?? draft).trim();
-    if (!text || pending || sending.current) return;
+    if (!text || pending || sending.current || screenshotRequest.current?.slot === draftSlot) return;
     if (canPromptForProject) {
       setProjectRequested(true);
       projectPicker.current?.open();
@@ -818,12 +892,12 @@ function App() {
     const { snapshot, problem } = currentErpContext.current.active || matchesErpChat || (!chat?.linkedToFastkore &&
       (canReadFastkore || otherSpecialists.some(agent => agent.toolIds.includes('fastkore')))) ? currentErpContext.current : {};
     if (!canSend || (canReadFastkore && problem && !snapshot)) return;
-    const attachmentIds = attachments.map(a => a.id);
+    if (attachments.length > maxDraftAttachments) { setError(draftAttachmentLimit); return; }
     sending.current = true;
     try {
       await action(async () => {
         const targetProject = projectId;
-        let project = targetProject, conversation = chatId;
+        let project = targetProject, conversation = chatId, attachmentSlot = draftSlot;
         if (!conversation) {
           const { chat: created, projectId: p } = await createChat(project, link?.snapshot);
           project = p;
@@ -838,9 +912,21 @@ function App() {
           }));
           setSpecialists(old => ({ ...old, [conversation]: specialistId, ...(shouldOpen ? { [specialistKey]: undefined } : {}) }));
           if (shouldOpen) {
+            moveDraftAttachments(draftSlot, conversation);
+            attachmentSlot = conversation;
             navigateTo(project, conversation);
             setChat(created);
           }
+        }
+        const attachmentIds: string[] = [];
+        for (const { id, screenshot } of attachments) {
+          if (!screenshot) { attachmentIds.push(id); continue; }
+          if (screenshot.uploaded?.projectId === project) { attachmentIds.push(screenshot.uploaded.id); continue; }
+          const uploaded = await uploadChatAttachment(project, screenshot.file);
+          attachmentIds.push(uploaded.id);
+          const uploadedRef = { projectId: project, id: uploaded.id };
+          setFiles(old => ({ ...old, [attachmentSlot]: (old[attachmentSlot] ?? []).map(item => item.id === id
+            ? { ...item, screenshot: { ...screenshot, uploaded: uploadedRef } } : item) }));
         }
         const message = { text, attachmentIds, fastkoreContext: snapshot, recommendedSpecialistId: specialistId };
         const content = JSON.stringify(message);
@@ -851,7 +937,8 @@ function App() {
         sendAttempt.current = null;
         setDrafts(old => old[conversation]?.trim() === text ? { ...old, [conversation]: '' } : old);
         setSpecialists(old => old[conversation] === specialistId ? { ...old, [conversation]: undefined } : old);
-        setFiles(old => ({ ...old, [conversation]: (old[conversation] ?? []).filter(a => !attachmentIds.includes(a.id)) }));
+        const sentAttachments = new Set(attachments.map(item => item.id));
+        setFiles(old => ({ ...old, [attachmentSlot]: (old[attachmentSlot] ?? []).filter(item => !sentAttachments.has(item.id)) }));
         setStatus(old => old ? { ...old, ...(run.status === 'queued' ? { queuedRuns: [...(old.queuedRuns ?? []).filter(r => r.id !== run.id), { ...run, queuedText: text.slice(0, 240), queuedFiles: attachmentIds.length }] } : run.status === 'running' ? { activeRuns: [...(old.activeRuns ?? []).filter(r => r.id !== run.id), run], activeRun: run } : {}) } : old);
         stick.current = true;
       });
@@ -863,11 +950,11 @@ function App() {
     if (!list || !projectId || !chatId || !canAttach) return;
     const p = projectId, c = chatId;
     await action(async () => {
-      if (attachments.length + list.length > 8) throw new Error('К вопросу можно прикрепить до 8 файлов.');
+      const reserved = screenshotRequest.current?.slot === c ? 1 : 0;
+      if (attachments.length + list.length + reserved > maxDraftAttachments) throw new Error(draftAttachmentLimit);
       for (const file of Array.from(list)) {
         if (file.size > 20 * 1024 * 1024) throw new Error('Максимальный размер вложения — 20 МБ.');
-        const form = new FormData(); form.append('file', file);
-        const uploaded = await api<Attachment>(`/api/projects/${p}/attachments`, { method: 'POST', body: form });
+        const uploaded = await uploadChatAttachment(p, file);
         setFiles(old => ({ ...old, [c]: [...(old[c] ?? []), uploaded] }));
       }
     }); if (fileInput.current) fileInput.current.value = '';
@@ -1080,7 +1167,7 @@ function App() {
         <summary>{erpFilter.display.complete ? 'Фильтр Fastkore' : 'Фильтр Fastkore · частично'}{erpFilter.folder && ' · ' + erpFilter.folder}</summary>
         <div style={{ overflowWrap: 'anywhere', maxHeight: '8em', overflow: 'auto' }}>{formatFilterNode(erpFilter.display.root)}</div>
       </details>}
-    {!!attachments.length && !canAttach && <p className="composer-status" role="status">Удалите вложения из черновика. Агенту сейчас не разрешено их читать.</p>}
+    {!!attachments.length && !canAttachToDraft && <p className="composer-status" role="status">Удалите вложения из черновика. Агенту сейчас не разрешено их читать.</p>}
     {canReadFastkore && inFastkore && status?.fastkoreToolsStatus === 'reauth' && <p className="composer-status" role="status">Для доступа к ERP откройте помощника из Fastkore заново.</p>}
     {canPromptForProject && projectRequested ? <p className="composer-status" role="alert">
       {projects.length || canCreateProject ? 'Выберите проект, чтобы отправить сообщение.' : 'Нет доступных проектов. Попросите администратора дать доступ к проекту.'}
@@ -1145,7 +1232,12 @@ function App() {
     </div>}
     <div className="bridge-editor">
       {attachments.length > 0 && <div className="attachment-chips">{attachments.map(attachment => <span key={attachment.id}>
-        <FileText size={14} />{attachment.name}<button aria-label={'Убрать ' + attachment.name} onClick={() => setFiles(old => ({ ...old, [chatId]: (old[chatId] ?? []).filter(item => item.id !== attachment.id) }))}><X size={13} /></button>
+        {attachment.screenshot ? <button type="button" className="draft-screenshot-thumb" title="Просмотреть скриншот"
+          aria-label="Просмотреть скриншот" onClick={() => setScreenshotPreview(attachment.screenshot)}>
+          <img src={attachment.screenshot.preview} alt="" />
+        </button> : <FileText size={14} />}
+        {attachment.name}<button type="button" aria-label={'Убрать ' + attachment.name} disabled={!!attachment.screenshot && pending}
+          onClick={() => setFiles(old => ({ ...old, [draftSlot]: (old[draftSlot] ?? []).filter(item => item.id !== attachment.id) }))}><X size={13} /></button>
       </span>)}</div>}
       <ComposerInput key={specialistKey} input={input} draft={draft}
         placeholder={hasMessages ? 'Продолжить разговор…' : 'Напишите сообщение…'}
@@ -1156,6 +1248,11 @@ function App() {
         onSend={() => void send()} controls={pickerButton => <div className="bridge-editor-controls">
         <input type="file" multiple ref={fileInput} onChange={e => void upload(e.target.files)} />
         <button className="workspace-icon" title={canAttach ? 'Прикрепить файл' : 'Агенту не разрешено читать вложения'} aria-label="Прикрепить файл" onClick={() => fileInput.current?.click()} disabled={!canAttach || pending}><Plus size={19} /></button>
+        {showScreenshot && <button type="button" className="workspace-icon" aria-label="Приложить скриншот" aria-busy={screenshotSlot === draftSlot}
+          title={screenshotSlot !== undefined ? 'Fastkore делает скриншот…' : canAttachToDraft ? 'Приложить скриншот' : 'Агенту не разрешено читать вложения'}
+          disabled={!canAttachToDraft || pending || screenshotSlot !== undefined} onClick={captureScreenshot}>
+          {screenshotSlot === draftSlot ? <LoaderCircle size={18} className="spin" aria-hidden="true" /> : <Camera size={18} aria-hidden="true" />}
+        </button>}
         {pickerButton}
         <ChatAccessPopover writable={writeMode}>{renderChatAccess()}</ChatAccessPopover>
         <div className="composer-actions">
@@ -1181,7 +1278,7 @@ function App() {
             }} onError={fail} />}
           <button className="bridge-send" aria-label={chatBusy ? 'Добавить в очередь' : 'Отправить вопрос'}
             title={canPromptForProject ? 'Выбрать проект · Enter' : codexNotice || (chatBusy ? 'В очередь · Enter' : 'Отправить · Enter')}
-            onClick={() => void send()} disabled={(!canSend && !canPromptForProject) || !draft.trim() || pending}><ArrowUp size={18} /></button>
+            onClick={() => void send()} disabled={(!canSend && !canPromptForProject) || !draft.trim() || pending || screenshotSlot === draftSlot}><ArrowUp size={18} /></button>
         </div>
       </div>} />
     </div>
@@ -1364,6 +1461,9 @@ function App() {
         {composer}
       </div>}
     </main>
+    {screenshotPreview && <WorkspaceDialog title={screenshotPreview.file.name} className="draft-screenshot-dialog" close={() => setScreenshotPreview(undefined)}>
+      <img src={screenshotPreview.preview} alt="Скриншот Fastkore" />
+    </WorkspaceDialog>}
     {modelPreview && <WorkspaceDialog title={modelPreview.name} className="chat-model-dialog" close={() => setModelPreview(undefined)}>
       <Suspense fallback={<p className="chat-model-status" role="status">Загружаем просмотр…</p>}>
         <ChatModelPreview key={modelPreview.url} url={modelPreview.url} format={modelPreview.format} request={api<Blob>} />

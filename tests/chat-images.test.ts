@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
+import { parseHostScreenshotResult } from '../client/fastkore.js';
 import { createApp } from '../server/app.js';
 import { CodexClient } from '../server/codex.js';
 import { RemoteCodexRunner } from '../server/codex-remote.js';
@@ -19,8 +20,9 @@ const metadata = Buffer.alloc(60_004);
 metadata.writeUInt16BE(0xffef, 0);
 metadata.writeUInt16BE(60_002, 2);
 const jpeg = Buffer.concat([redJpeg.subarray(0, 2), ...Array.from({ length: 52 }, () => metadata), redJpeg.subarray(2)]);
+const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aJr8AAAAASUVORK5CYII=';
 
-test('a read-only chat sends uploaded JPEG bytes and a text attachment through the worker to Codex', async () => {
+test('a read-only chat sends uploaded JPEG, a Fastkore screenshot and a text attachment through the worker to Codex', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'bridge-chat-images-'));
   const projectFolder = path.join(root, 'project');
   await mkdir(projectFolder);
@@ -56,18 +58,26 @@ test('a read-only chat sends uploaded JPEG bytes and a text attachment through t
       return (await result.json() as { id: string }).id;
     };
     const imageId = await upload('photo.JPG', new Blob([new Uint8Array(jpeg)], { type: 'image/jpeg' }));
+    const requestId = randomUUID();
+    const screenshot = parseHostScreenshotResult({ type: 'fastkore.screenshot.result', version: 1, request_id: requestId,
+      ok: true, mime_type: 'image/png', data_base64: png, error: null }, requestId);
+    assert.ok(screenshot && 'file' in screenshot);
+    const screenshotId = await upload(screenshot.file.name, screenshot.file);
     const documentId = await upload('note.txt', new Blob(['Текстовый файл тоже прочитан']));
     const url = `/api/projects/${project.id}/chats/${chat.id}/messages`;
-    const sent = await app.inject({ method: 'POST', url, headers, payload: { text: 'VERIFY_CHAT_IMAGE', attachmentIds: [imageId, documentId] } });
+    const sent = await app.inject({ method: 'POST', url, headers, payload: { text: 'VERIFY_CHAT_IMAGE', attachmentIds: [imageId, screenshotId, documentId] } });
     assert.equal(sent.statusCode, 202, sent.body);
     const deadline = Date.now() + 8000;
     while (workspace.busy && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 10));
     const run = workspace.getRun(sent.json().id);
     assert.equal(run.status, 'complete', run.error);
     assert.deepEqual(JSON.parse(run.response!), {
-      images: [{ mime: 'data:image/jpeg', hash: createHash('sha256').update(jpeg).digest('hex') }], hasDocument: true,
+      images: [
+        { mime: 'data:image/jpeg', hash: createHash('sha256').update(jpeg).digest('hex') },
+        { mime: 'data:image/png', hash: createHash('sha256').update(png, 'base64').digest('hex') },
+      ], hasDocument: true,
     });
-    assert.deepEqual(chat.messages[0].attachments.map(file => file.name), ['photo.JPG', 'note.txt']);
+    assert.deepEqual(chat.messages[0].attachments.map(file => file.name), ['photo.JPG', screenshot.file.name, 'note.txt']);
 
     chat.model = 'gemini/test';
     const unsupported = await app.inject({ method: 'POST', url, headers, payload: { text: 'Фото', attachmentIds: [imageId] } });

@@ -12,7 +12,7 @@ import { audience, csrfFor, FastkoreSso, pairErpHttps, validateTicketHttps, type
 import { BridgeError, Store, redact } from '../server/store.js';
 import { FastkoreCli } from '../server/fastkore-cli.js';
 import { Workspace } from '../server/workspace.js';
-import { parseHostTheme } from '../client/fastkore.js';
+import { parseHostScreenshotCapability, parseHostScreenshotResult, parseHostTheme } from '../client/fastkore.js';
 import type { FastkoreKeyIssue } from '../shared/types.js';
 import { testCertificate } from './test-certificate.js';
 
@@ -717,6 +717,30 @@ test('SSO opt-in requires trusted HTTPS and no agent execution, and theme messag
   const key = 'fkap1.' + randomUUID() + '.' + random(), ticket = random(), challenge = random();
   const text = redact('key=' + key + ' ticket=' + ticket + '&login_challenge=' + challenge);
   for (const secret of [key, ticket, challenge]) assert.ok(!text.includes(secret));
+});
+
+test('only Fastkore UI v1 can advertise or withdraw screenshot support', () => {
+  const ui = { type: 'fastkore.ui', version: 1 };
+  assert.equal(parseHostScreenshotCapability({ ...ui, capabilities: ['other', 'screenshot'] }), true);
+  assert.equal(parseHostScreenshotCapability({ ...ui, capabilities: [] }), false);
+  assert.equal(parseHostScreenshotCapability({ ...ui, theme: 'dark' }), undefined);
+  assert.equal(parseHostScreenshotCapability({ ...ui, capabilities: 'screenshot' }), undefined);
+  assert.equal(parseHostScreenshotCapability({ ...ui, version: 2, capabilities: ['screenshot'] }), undefined);
+});
+
+test('screenshot results match the pending request and report capture errors', () => {
+  const requestId = randomUUID();
+  const result = { type: 'fastkore.screenshot.result', version: 1, request_id: requestId, ok: false,
+    mime_type: null, data_base64: null, error: 'busy' };
+  assert.equal(parseHostScreenshotResult(result, randomUUID()), undefined);
+  assert.equal(parseHostScreenshotResult({ ...result, version: 2 }, requestId), undefined);
+  for (const [error, message] of [
+    ['page_unavailable', 'Страница Fastkore недоступна для снимка.'],
+    ['capture_failed', 'Не удалось сделать скриншот.'],
+    ['busy', 'Fastkore уже делает скриншот. Повторите попытку.'],
+  ]) assert.deepEqual(parseHostScreenshotResult({ ...result, error }, requestId), { error: message });
+  assert.deepEqual(parseHostScreenshotResult({ ...result, ok: true, mime_type: 'image/png',
+    data_base64: 'data:image/png;base64,iVBORw0KGgo=', error: null }, requestId), { error: 'Не удалось сделать скриншот.' });
 });
 
 test('HTTPS validation uses the exact contract and rejects untrusted TLS, redirects and invalid responses', async () => {

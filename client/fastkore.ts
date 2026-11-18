@@ -35,6 +35,44 @@ export function parseHostTheme(value: unknown): Theme | null {
   return type === 'fastkore.ui' && version === 1 && (theme === 'light' || theme === 'dark') ? theme : null;
 }
 
+export function parseHostScreenshotCapability(value: unknown): boolean | undefined {
+  if (!value || typeof value !== 'object') return;
+  const { type, version, capabilities } = value as Record<string, unknown>;
+  if (type === 'fastkore.ui' && version === 1 && Array.isArray(capabilities)) return capabilities.includes('screenshot');
+}
+
+const screenshotErrors = {
+  page_unavailable: 'Страница Fastkore недоступна для снимка.',
+  capture_failed: 'Не удалось сделать скриншот.',
+  busy: 'Fastkore уже делает скриншот. Повторите попытку.',
+};
+const maxScreenshotBytes = 20 * 1024 * 1024;
+
+export function parseHostScreenshotResult(value: unknown, requestId: string): { file: File; preview: string } | { error: string } | undefined {
+  if (!value || typeof value !== 'object') return;
+  const { type, version, request_id, ok, mime_type, data_base64, error } = value as Record<string, unknown>;
+  if (type !== 'fastkore.screenshot.result' || version !== 1 || request_id !== requestId) return;
+  if (ok === false && typeof error === 'string' && Object.hasOwn(screenshotErrors, error)) {
+    return { error: screenshotErrors[error as keyof typeof screenshotErrors] };
+  }
+  if (ok !== true || mime_type !== 'image/png' || typeof data_base64 !== 'string') {
+    return { error: screenshotErrors.capture_failed };
+  }
+  const tooLarge = 'Скриншот превышает 20 МБ.';
+  if (data_base64.length > 4 * Math.ceil(maxScreenshotBytes / 3)) return { error: tooLarge };
+  if (/[^A-Za-z0-9+/=]/.test(data_base64)) return { error: screenshotErrors.capture_failed };
+  try {
+    const binary = atob(data_base64);
+    if (binary.length > maxScreenshotBytes) return { error: tooLarge };
+    if (!binary.startsWith('\x89PNG\r\n\x1a\n')) return { error: screenshotErrors.capture_failed };
+    const bytes = new Uint8Array(binary.length);
+    for (let index = 0; index < binary.length; index++) bytes[index] = binary.charCodeAt(index);
+    return { file: new File([bytes], 'Скриншот.png', { type: mime_type }), preview: `data:image/png;base64,${data_base64}` };
+  } catch {
+    return { error: screenshotErrors.capture_failed };
+  }
+}
+
 const navigationErrors = {
   target_unavailable: 'В Fastkore эта карточка или плитка недоступна.',
   wrong_installation: 'Откройте чат в той установке Fastkore, к которой он привязан.',
