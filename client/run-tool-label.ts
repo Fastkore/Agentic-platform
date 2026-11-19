@@ -17,7 +17,7 @@ export function runToolLabel(tool: string, context?: RunToolContext) {
   }
   if (tool.startsWith('fastkore_cli_')) return `Fastkore CLI · ${context?.operation ?? 'выполнение команды'}`;
   if (tool.startsWith('fastkore_')) return `Fastkore MCP · ${tool.slice('fastkore_'.length)}`;
-  if (tool === 'freecad_linkage') return 'FreeCAD · шарнирная тяга';
+  if (tool.startsWith('freecad_')) return 'FreeCAD · моделирование';
   if (tool === 'knowledge') return 'База знаний';
   if (tool === 'my_instructions') return 'Мои инструкции';
   if (tool === 'internet_search') return 'Поиск в интернете';

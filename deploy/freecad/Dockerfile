@@ -4,6 +4,9 @@ RUN apt-get update && mkdir -p /var/cache/apt/archives && apt-get --print-uris -
     | sed -n "s/^'\([^']*\)' \([^ ]*\) .*/\1 \2/p" \
     | xargs -r -P 24 -n 2 sh -c '/usr/lib/apt/apt-helper download-file "$1" "/var/cache/apt/archives/$2"' sh
 
+FROM debian:bookworm-slim AS sandbox
+RUN apt-get update && cd /tmp && apt-get download bubblewrap && dpkg-deb -x bubblewrap_*.deb /sandbox
+
 FROM debian:bookworm-slim
 RUN --mount=from=packages,source=/var/cache/apt/archives,target=/var/cache/apt/archives,rw \
     --mount=from=packages,source=/var/lib/apt/lists,target=/var/lib/apt/lists,rw \
@@ -11,6 +14,8 @@ RUN --mount=from=packages,source=/var/cache/apt/archives,target=/var/cache/apt/a
     && useradd --uid 1000 --no-create-home --home-dir /tmp --shell /usr/sbin/nologin cad
 ENV PYTHONPATH=/usr/lib/freecad-python3/lib HOME=/tmp LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1
 WORKDIR /opt/freecad-worker
+COPY --from=sandbox /sandbox/usr/bin/bwrap /usr/local/bin/bwrap
+COPY --from=sandbox /sandbox/usr/share/doc/bubblewrap/copyright /usr/share/doc/bubblewrap/copyright
 COPY *.py *.brep.gz ./
 USER 1000:1000
 CMD ["/usr/bin/python3", "service.py"]

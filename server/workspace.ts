@@ -11,7 +11,7 @@ import { DEFAULT_AGENT_INSTRUCTIONS } from '../shared/agent-instructions.js';
 import type { CodexTools } from './codex-tools.js';
 import { Store, BridgeError, redact } from './store.js';
 import { type CodexRunner, type SteerTurn, discoverCli } from './codex.js';
-import { attachmentName, buildContext, projectFilePath, publicProjectFile } from './documents.js';
+import { attachmentName, buildContext, documentPreview, projectFilePath, publicProjectFile } from './documents.js';
 import { FileStorage } from './file-storage.js';
 import { chatImagesUnsupportedProvider, isChatImage, readChatImages, supportsChatImages, validateChatImages } from './chat-images.js';
 import { stageWorkerFiles, workerOutputs } from './worker-files.js';
@@ -1262,13 +1262,15 @@ export class Workspace {
       this.checkJob(job, run);
       signal.throwIfAborted();
       if (!this.store.state.settings.allowWrite) throw new BridgeError('Запись файлов отключена.', 403);
-    }) : undefined;
+    }, attachments.filter(f => /\.(fcstd|stp|step|brep|dxf)$/i.test(f.name)).map(f => ({
+      name:f.name, read:(s: AbortSignal) => this.files.read(project,f,s),
+    }))) : undefined;
     // A resumed Codex thread keeps its original tool catalog. Upgrade writable
     // threads once and keep their previously published files in the same scope.
-    const scope = fileScope + (workerWrites ? ':office-v1' : '') + (cad ? ':cad-v1' : '');
+    const scope = fileScope + (workerWrites ? ':office-v1' : '') + (cad ? ':cad-' + FreecadJob.catalogRevision : '');
     const contextScope = chatScope + toolScope;
     // The account key can contain a colon. It ends at the tools suffix or at the end of the scope.
-    const sameContext = chat.sessionScope?.replace(/:office-v1(?::cad-v1)?$/, '').replace(/:account:.*?(?=:tools:|$)/, '') === contextScope;
+    const sameContext = chat.sessionScope?.replace(/:office-v1(?::cad-(?:v[12]|[a-f0-9]{12}))?$/, '').replace(/:account:.*?(?=:tools:|$)/, '') === contextScope;
     const historyScope = createHash('sha256').update(contextScope + ':visibility:' + (chat.visibility ?? 'private')).digest('hex');
     const previousAnswer = chat.messages.findLast(message => message.role === 'assistant' && message.status === 'complete');
     const previousProvider = chat.sessionProvider ?? providerForModel(previousAnswer?.model);
@@ -1281,7 +1283,7 @@ export class Workspace {
       'Общие инструкции агента\n' + globalInstructions,
       roleInstructions,
       chatVisualInstructions,
-      cad && 'Для сборки шарнирной тяги с двумя вилками используй freecad_linkage. При изменении межосевого расстояния вызови resize. Дождись результата инструмента. Готовые FCStd и GLB платформа прикрепит сама.',
+      cad && 'Для конструирования по описанию, чертежу или скану используй freecad_design. Для доработки вызови inspect, затем edit в том же документе. Простая исходная тяга доступна через freecad_linkage; любые новые узлы, другие детали и изменения делай через freecad_design. Изучи приложенные изображения, размеры, единицы и виды. Не выдавай непрочитанные размеры за факты. Для демонстрации обозначай допущения; для точного изделия уточняй критичные размеры. Для сборки по номенклатуре прочитай действительные карточки и структуру BOM через доступные инструменты Fastkore, сохрани ссылки через bind_item и укажи недостающие модели. Создание файла в чате и запись в ERP — две отдельные операции. При явном запросе записи найди в каталоге ERP реальную операцию и проверь результат в корне выбранной спецификации. Не сообщай о записи без подтверждения ERP.',
       shared && 'Это общий чат проекта. Поле author в истории указывает автора сообщения. Отвечай на вопрос текущего участника и выполняй только его явные запросы в пределах его текущих прав.',
       canUseInstructionTool && (sharedPersonalWrite ? sharedPersonalToolInstructions : personalToolInstructions),
       explicitPersonalEdit && !canUseInstructionTool && 'В текущем запросе платформа не предоставила инструмент записи личных инструкций. Направь сотрудника в «Мои инструкции» и сообщи, что запись не выполнена.',
@@ -1329,6 +1331,27 @@ export class Workspace {
     let cliSaved = false;
     const temp = workerDirectory ?? (!this.isolatedCodex && attachments.some(file => file.storage === 's3')
       ? await mkdtemp(path.join(tmpdir(), 'bridge-files-')) : undefined);
+      const drawingNotes: string[] = [];
+      if (cad && /черт[её]ж|скан|freecad|модел|сборк|drawing|blueprint|\bCAD\b/i.test(job.text)) {
+        for (const file of documents.filter(f => /\.pdf$/i.test(f.name))) {
+          const slots = Math.min(4, 8 - (imageUrls?.length ?? 0));
+          if (!slots || !supportsChatImages(provider)) {
+            drawingNotes.push(file.name + ': визуальный просмотр PDF недоступен. Запроси нужные листы или модель со зрением.');
+            continue;
+          }
+          const rendered = await documentPreview('drawing', await this.files.read(project,file,signal), slots);
+          imageUrls ??= [];
+          let included = 0;
+          let bytes = imageUrls.reduce((sum,u) => sum + Math.ceil((u.length-u.indexOf(',')-1)*.75),0);
+          for (const image of rendered.images) {
+            bytes += Math.ceil(image.length*.75);
+            if (bytes > 20*MiB) break;
+            imageUrls.push(image);
+            included++;
+          }
+          drawingNotes.push(file.name + ': переданы изображения первых ' + included + ' листов из ' + rendered.pages + '.');
+        }
+      }
     const produced: Attachment[] = [];
     let history = '';
     let executorStarted = false;
@@ -1368,7 +1391,7 @@ export class Workspace {
         job.recommendedSpecialistId && 'Рекомендация сотрудника для этого вопроса: ' + JSON.stringify({ id: job.recommendedSpecialistId, name: job.specialistName }),
       ].filter(Boolean).join('\n');
       const personal = personalUserId && personalPrompt(this.store, personalUserId, personalContext, explicitPersonalEdit && canUseInstructionTool, personalRoleId);
-      const beforeQuestion = [identity, erpPrompt(fastkoreContext), knowledgeUpdate, personal,
+      const beforeQuestion = [identity, ...drawingNotes, erpPrompt(fastkoreContext), knowledgeUpdate, personal,
         integration?.problem && 'Статус инструментов ERP: ' + integration.problem, recommendation].filter(Boolean).join('\n\n');
       const afterQuestion = context && '<local_document_context>\n' + context + '\n</local_document_context>';
       if (historyBefore) {

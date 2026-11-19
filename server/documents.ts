@@ -42,7 +42,10 @@ export function supportsDocumentText(name: string) {
   return ['.txt', '.md', '.json', '.xml', '.log', '.xlsx', '.csv', '.tsv', '.pdf'].includes(path.extname(name).toLowerCase());
 }
 let activePreviews = 0;
-async function documentPreview(kind: 'pdf' | 'xlsx', input: Buffer) {
+type DrawingPages = { pages: number; images: string[] };
+export function documentPreview(kind: 'drawing', input: Buffer, pages: number): Promise<DrawingPages>;
+export function documentPreview(kind: 'pdf' | 'xlsx', input: Buffer): Promise<string>;
+export async function documentPreview(kind: 'pdf' | 'xlsx' | 'drawing', input: Buffer, pages = 0) {
   if (activePreviews >= 2) throw new BridgeError('Предпросмотр документов занят.', 429);
   activePreviews++;
   let worker: Worker | undefined;
@@ -50,13 +53,13 @@ async function documentPreview(kind: 'pdf' | 'xlsx', input: Buffer) {
   try {
     const script = new URL(import.meta.url.endsWith('.ts') ? './document-preview.ts' : './document-preview.js', import.meta.url);
     worker = new Worker(script, {
-      workerData: { kind, input },
-      resourceLimits: { maxOldGenerationSizeMb: kind === 'pdf' ? 192 : 96, maxYoungGenerationSizeMb: 24, stackSizeMb: 4 },
+      workerData: { kind, input, pages },
+      resourceLimits: { maxOldGenerationSizeMb: kind === 'xlsx' ? 96 : 192, maxYoungGenerationSizeMb: 24, stackSizeMb: 4 },
     });
     const preview = worker;
-    return await new Promise<string>((resolve, reject) => {
+    return await new Promise<string | DrawingPages>((resolve, reject) => {
       const invalid = () => new BridgeError('Документ повреждён или превышает лимиты предпросмотра.', 422);
-      timer = setTimeout(() => reject(invalid()), 5000);
+      timer = setTimeout(() => reject(invalid()), kind === 'drawing' ? 15000 : 5000);
       preview.once('message', resolve);
       preview.once('error', () => reject(invalid()));
       preview.once('exit', () => reject(invalid()));

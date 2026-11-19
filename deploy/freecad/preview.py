@@ -3,7 +3,7 @@ import json
 import struct
 
 
-def write_glb(path, parts):
+def write_glb(path, parts, metadata=None):
     data = bytearray()
     doc = {"asset":{"version":"2.0"}, "scene":0, "scenes":[{"nodes":[]}],
            "nodes":[], "meshes":[], "materials":[], "accessors":[], "bufferViews":[]}
@@ -25,7 +25,10 @@ def write_glb(path, parts):
         doc["materials"].append({"pbrMetallicRoughness":{"baseColorFactor":[*color,1],
                                  "metallicFactor":.25,"roughnessFactor":.55}})
         doc["meshes"].append({"primitives":[{"attributes":{"POSITION":pos},"indices":pos+1,"material":index}]})
-        doc["nodes"].append({"name":name,"mesh":index})
+        node = {"name":name,"mesh":index}
+        if metadata:
+            node["extras"] = metadata[index]
+        doc["nodes"].append(node)
         doc["scenes"][0]["nodes"].append(index)
     doc["buffers"] = [{"byteLength":len(data)}]
     header = json.dumps(doc,separators=(",",":")).encode()

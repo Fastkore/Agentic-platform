@@ -11,7 +11,9 @@ services:
     user: "1000:1000"
     read_only: true
     cap_drop: [ALL]
-    security_opt: [no-new-privileges:true]
+    security_opt:
+      - no-new-privileges:true
+      - seccomp=./deploy/codex-seccomp.json
     pids_limit: 96
     mem_limit: 1g
     cpus: 2

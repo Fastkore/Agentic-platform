@@ -41,7 +41,7 @@ const runSchema = {
     reasoningEffort: { enum: ['low', 'medium', 'high', 'xhigh'] },
     toolDefinitions: { type: 'array', maxItems: 200, items: {
       type: 'object', additionalProperties: false, required: ['type', 'name', 'description', 'inputSchema'],
-      properties: { type: { const: 'function' }, name: { type: 'string', pattern: '^(?:fastkore_[a-zA-Z0-9_-]{1,55}|library_(?:list|tree|search|read)|internet_(?:search|read|request)|knowledge|freecad_linkage|consult_specialist|my_instructions)$' },
+      properties: { type: { const: 'function' }, name: { type: 'string', pattern: '^(?:fastkore_[a-zA-Z0-9_-]{1,55}|library_(?:list|tree|search|read)|internet_(?:search|read|request)|knowledge|freecad_(?:design|linkage)|consult_specialist|my_instructions)$' },
         description: { type: 'string', maxLength: 4000 }, inputSchema: { type: 'object' } },
     } },
   },
@@ -204,7 +204,7 @@ export function createCodexWorker(codex: CodexRunner = new CodexClient([], 'work
           if (nativeFiles && name === jobFilesTool.name) return { success: true, text: await useJobFiles(job, args, AbortSignal.any([signal, runSignal])) };
           if (!toolDefinitions?.some(tool => tool.name === name)) return { success: false, text: 'Инструмент не разрешён для этого запроса.' };
           const id = randomUUID();
-          const stop = AbortSignal.any([signal, runSignal, AbortSignal.timeout(name === 'consult_specialist' ? 195_000 : name.startsWith('fastkore_cli_') ? 125_000 : 45_000)]);
+          const stop = AbortSignal.any([signal, runSignal, AbortSignal.timeout(name === 'consult_specialist' ? 195_000 : (name.startsWith('fastkore_cli_') || name.startsWith('freecad_')) ? 125_000 : 45_000)]);
           if (name === 'consult_specialist') consultations.set(id, { signal: stop, controller, lane, running: false });
           const requestedLimit = name === 'fastkore_cli_execute' && args && typeof args === 'object'
             ? (args as Record<string, unknown>).maxResponseChars : undefined;

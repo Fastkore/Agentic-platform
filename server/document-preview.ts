@@ -35,15 +35,29 @@ async function xlsxText(archive: Buffer) {
   }).join('\n\n').slice(0, 8000);
 }
 
-async function pdfText(data: Uint8Array) {
+async function readPdf(data: Uint8Array, imagePages: number) {
   const { getDocument } = await import('pdfjs-dist/legacy/build/pdf.mjs');
   const pdfRoot = path.dirname(createRequire(import.meta.url).resolve('pdfjs-dist/package.json')).replaceAll('\\', '/');
   const task = getDocument({
-    data, useSystemFonts: false, maxImageSize: 4_000_000,
+    data, useSystemFonts: false, maxImageSize: imagePages ? 32_000_000 : 4_000_000,
     standardFontDataUrl: pdfRoot + '/standard_fonts/', cMapUrl: pdfRoot + '/cmaps/', wasmUrl: pdfRoot + '/wasm/',
   });
   try {
     const doc = await task.promise;
+    if (imagePages) {
+      const images: string[] = [];
+      const factory = doc.canvasFactory as { create(w:number,h:number): { canvas: NonNullable<Parameters<Awaited<ReturnType<typeof doc.getPage>>['render']>[0]['canvas']> & { toBuffer(type:string): Buffer } } };
+      for (let n = 1; n <= Math.min(imagePages, doc.numPages); n++) {
+        const page = await doc.getPage(n);
+        const size = page.getViewport({scale:1});
+        const viewport = page.getViewport({scale:1800 / Math.max(size.width,size.height)});
+        const {canvas} = factory.create(Math.ceil(viewport.width),Math.ceil(viewport.height));
+        await page.render({canvas,viewport}).promise;
+        images.push('data:image/jpeg;base64,' + canvas.toBuffer('image/jpeg').toString('base64'));
+        page.cleanup();
+      }
+      return {pages:doc.numPages, images};
+    }
     let text = '';
     for (let page = 1; page <= Math.min(5, doc.numPages); page++) {
       const content = await (await doc.getPage(page)).getTextContent();
@@ -53,6 +67,5 @@ async function pdfText(data: Uint8Array) {
     return text.slice(0, 8000);
   } finally { await task.destroy(); }
 }
-const { kind, input } = workerData as { kind: 'pdf' | 'xlsx'; input: Uint8Array };
-const text = kind === 'pdf' ? await pdfText(input) : await xlsxText(Buffer.from(input.buffer, input.byteOffset, input.byteLength));
-parentPort!.postMessage(text);
+const { kind, input, pages } = workerData;
+parentPort!.postMessage(kind === 'xlsx' ? await xlsxText(Buffer.from(input)) : await readPdf(input,kind === 'drawing' ? pages : 0));
