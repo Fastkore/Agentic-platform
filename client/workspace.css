@@ -446,7 +446,7 @@
 .model-list-popover button span { flex: 1; }
 .model-list-popover button small { color: var(--text-muted); }
 @media (max-width: 420px) { .chat-model-popover { width: min(306px, calc(100vw - 104px)); } }
-@media (max-width: 720px) { .composer-access-trigger > span { max-width: 72px; overflow: hidden; text-overflow: ellipsis; } }
+@media (max-width: 720px) { .bridge-editor-controls { flex-wrap: wrap; } }
 .composer-actions .dictation-button { flex: 0 0 auto; }
 .bridge-editor:has(.dictation-strip) > :is(textarea, .attachment-chips, .composer-specialist),
 .bridge-editor-controls:has(.dictation-strip) > :not(.composer-actions),
