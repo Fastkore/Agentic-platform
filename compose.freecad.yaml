@@ -1,0 +1,33 @@
+services:
+  app:
+    environment:
+      BRIDGE_FREECAD_SOCKET: /run/bridge-freecad/service.sock
+    volumes:
+      - freecad_socket:/run/bridge-freecad:ro
+  freecad:
+    build: ./deploy/freecad
+    restart: unless-stopped
+    init: true
+    user: "1000:1000"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 96
+    mem_limit: 1g
+    cpus: 2
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,noexec,size=192m
+    network_mode: none
+    volumes:
+      - freecad_socket:/run/bridge-freecad
+    healthcheck:
+      test: ["CMD", "/usr/bin/python3", "service.py", "--health"]
+      interval: 10s
+      timeout: 4s
+      retries: 5
+volumes:
+  freecad_socket:
+    driver_opts:
+      type: tmpfs
+      device: tmpfs
+      o: size=1m,uid=1000,gid=1000,mode=0700,nosuid,nodev

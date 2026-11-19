@@ -4,6 +4,7 @@ dist
 data
 work
 outputs
+output
 .env
 *.log
 *.sqlite*

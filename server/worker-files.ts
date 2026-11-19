@@ -36,13 +36,15 @@ export async function stageWorkerFiles(directory: string, storage: FileStorage, 
   }
 }
 
-export async function* workerOutputs(directory: string, signal: AbortSignal) {
+export async function* workerOutputs(directory: string, signal: AbortSignal, generated: { name: string; contents: Buffer }[] = []) {
   const output = path.join(directory, 'output');
   if (!(await lstat(output)).isDirectory() || await realpath(output) !== output) throw new BridgeError('Рабочая папка результатов недоступна.', 502);
-  let count = 0, total = 0;
+  let count = generated.length, total = generated.reduce((n, file) => n + file.contents.length, 0);
+  yield* generated;
   for await (const entry of await opendir(output)) {
     signal.throwIfAborted();
     if (!entry.isFile() || entry.name.startsWith('.')) continue;
+    if (generated.some(file => file.name === entry.name)) throw new BridgeError('Повторяющееся имя файла результата.', 422);
     if (++count > 8) throw new BridgeError('В папке output допускается до 8 файлов. Упакуйте проект в архив.', 413);
     const file = await open(path.join(output, entry.name), constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
     try {

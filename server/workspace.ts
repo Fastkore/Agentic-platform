@@ -15,6 +15,7 @@ import { attachmentName, buildContext, projectFilePath, publicProjectFile } from
 import { FileStorage } from './file-storage.js';
 import { chatImagesUnsupportedProvider, isChatImage, readChatImages, supportsChatImages, validateChatImages } from './chat-images.js';
 import { stageWorkerFiles, workerOutputs } from './worker-files.js';
+import { FreecadJob } from './freecad.js';
 import { CorporateAccess } from './corporate.js';
 import type { Principal } from './access.js';
 import { canAccessProject, erpRolesForUser, projectAllowsRoles } from './erp-roles.js';
@@ -1249,12 +1250,25 @@ export class Workspace {
     const instructionsScope = ':rules:' + createHash('sha256').update(globalInstructions).digest('hex');
     const chatScope = (workerWrites ? 'isolated-write:' : this.isolatedCodex ? 'isolated:' : '') + this.corporate.scope(actor, profile, project) + erpScope + instructionsScope + (sourceRun?.hashKey ?? '') + (shared ? ':shared' : '');
     const fileScope = chatScope + ':account:' + (executionAccountId ?? 'default') + toolScope;
+    const cadSocket = process.env.BRIDGE_FREECAD_SOCKET;
+    const cad = workerWrites && cadSocket ? new FreecadJob(cadSocket, async callSignal => {
+      // A published CAD attachment stays readable to members of this chat after re-login.
+      // Only files marked here by the CAD service can be reopened as native documents.
+      const last = chat.messages.findLast(m => m.status === 'complete' && m.role === 'assistant' &&
+        m.freecadSourceId !== undefined);
+      const file = last?.attachments.find(f => f.id === last.freecadSourceId);
+      return file && this.files.read(project, file, callSignal);
+    }, () => {
+      this.checkJob(job, run);
+      signal.throwIfAborted();
+      if (!this.store.state.settings.allowWrite) throw new BridgeError('Запись файлов отключена.', 403);
+    }) : undefined;
     // A resumed Codex thread keeps its original tool catalog. Upgrade writable
     // threads once and keep their previously published files in the same scope.
-    const scope = fileScope + (workerWrites ? ':office-v1' : '');
+    const scope = fileScope + (workerWrites ? ':office-v1' : '') + (cad ? ':cad-v1' : '');
     const contextScope = chatScope + toolScope;
     // The account key can contain a colon. It ends at the tools suffix or at the end of the scope.
-    const sameContext = chat.sessionScope?.replace(/:office-v1$/, '').replace(/:account:.*?(?=:tools:|$)/, '') === contextScope;
+    const sameContext = chat.sessionScope?.replace(/:office-v1(?::cad-v1)?$/, '').replace(/:account:.*?(?=:tools:|$)/, '') === contextScope;
     const historyScope = createHash('sha256').update(contextScope + ':visibility:' + (chat.visibility ?? 'private')).digest('hex');
     const previousAnswer = chat.messages.findLast(message => message.role === 'assistant' && message.status === 'complete');
     const previousProvider = chat.sessionProvider ?? providerForModel(previousAnswer?.model);
@@ -1267,6 +1281,7 @@ export class Workspace {
       'Общие инструкции агента\n' + globalInstructions,
       roleInstructions,
       chatVisualInstructions,
+      cad && 'Для сборки шарнирной тяги с двумя вилками используй freecad_linkage. При изменении межосевого расстояния вызови resize. Дождись результата инструмента. Готовые FCStd и GLB платформа прикрепит сама.',
       shared && 'Это общий чат проекта. Поле author в истории указывает автора сообщения. Отвечай на вопрос текущего участника и выполняй только его явные запросы в пределах его текущих прав.',
       canUseInstructionTool && (sharedPersonalWrite ? sharedPersonalToolInstructions : personalToolInstructions),
       explicitPersonalEdit && !canUseInstructionTool && 'В текущем запросе платформа не предоставила инструмент записи личных инструкций. Направь сотрудника в «Мои инструкции» и сообщи, что запись не выполнена.',
@@ -1370,7 +1385,7 @@ export class Workspace {
       const executorTiming = timeExecutor(timing);
       executorStarted = true;
       const imageQuestion = imageUrls?.length && provider === 'glm' ? job.text : undefined;
-      const result = await this.codex.run({ cliPath, workspace: project.directory, prompt, imageUrls, imageQuestion, developerInstructions, tools, sessionId: chat.sessionId,
+      const result = await this.codex.run({ cliPath, workspace: project.directory, prompt, imageUrls, imageQuestion, developerInstructions, tools: cad?.withTools(tools) ?? tools, sessionId: chat.sessionId,
         workDirectoryId: workerWrites ? run.id : undefined, allowWrite: this.isolatedCodex ? workerWrites : writable,
         model: run.model, reasoningEffort: run.reasoningEffort ?? this.store.state.settings.reasoningEffort ?? 'high' }, async event => {
         executorTiming.event(event);
@@ -1419,13 +1434,14 @@ export class Workspace {
       if (workerDirectory) await this.admit(async () => {
         const { provider } = this.fileStorageStatus;
         let added = 0;
-        for await (const file of workerOutputs(workerDirectory, signal)) {
+        for await (const file of workerOutputs(workerDirectory, signal, cad?.files)) {
           this.checkJob(job, run);
           added += file.contents.length;
           this.checkFileBudget(project, job.authorId, added, produced.length + 1);
           const saved = await this.files.upload(provider, project, file.name, file.contents);
           saved.ownerId = job.authorId;
           produced.push(saved);
+          if (file === cad?.files[0]) answer.freecadSourceId = saved.id;
         }
         this.checkJob(job, run); signal.throwIfAborted();
         answer.attachments = produced;

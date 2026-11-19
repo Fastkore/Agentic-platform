@@ -9,14 +9,14 @@ function Invoke-Docker {
 
 $stack = @('compose', '-p', 'agentic-platformin',
     '-f', 'compose.yaml', '-f', 'compose.codex.yaml', '-f', 'compose.sso.yaml',
-    '-f', 'compose.fastkore-cli-worker.yaml', '-f', 'compose.minio.yaml', '-f', 'compose.library.yaml')
+    '-f', 'compose.fastkore-cli-worker.yaml', '-f', 'compose.minio.yaml', '-f', 'compose.library.yaml', '-f', 'compose.freecad.yaml')
 $cli = @('compose', '-p', 'fastkore-cli', '-f', 'deploy/compose.fastkore-cli-pilot.yaml')
 $buildStack = $stack
 if ($BuildContext) {
     $contextPath = (Resolve-Path -LiteralPath $BuildContext).Path
     if (!(Test-Path -LiteralPath (Join-Path $contextPath 'Dockerfile') -PathType Leaf)) { throw 'Build context has no Dockerfile.' }
     $overridePath = Join-Path (Get-Location) 'work/deploy-build-context.json'
-    @{ services = @{ app = @{ build = @{ context = $contextPath } }; codex = @{ build = @{ context = $contextPath } } } } |
+    @{ services = @{ app = @{ build = @{ context = $contextPath } }; codex = @{ build = @{ context = $contextPath } }; freecad = @{ build = @{ context = (Join-Path $contextPath "deploy/freecad") } } } } |
         ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $overridePath -Encoding utf8
     $buildStack = $stack + @('-f', $overridePath)
 }
@@ -39,7 +39,7 @@ try {
     }
     Invoke-Docker @stack config --quiet
     Invoke-Docker @cli config --quiet
-    Invoke-Docker @buildStack build app codex
+    Invoke-Docker @buildStack build app codex freecad
     Invoke-Docker @cli build cli
 
     $activeJobs = @'
@@ -58,7 +58,7 @@ db.close();
     Invoke-Docker @stack stop --timeout 30 app
     $appStopped = $true
     Invoke-Docker @cli up -d --no-build --wait --wait-timeout 90 cli
-    Invoke-Docker @stack up -d --no-build --wait --wait-timeout 120 app codex
+    Invoke-Docker @stack up -d --no-build --wait --wait-timeout 120 app codex freecad
     $appStopped = $false
 
     $verify = @'

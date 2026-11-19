@@ -41,7 +41,7 @@ const runSchema = {
     reasoningEffort: { enum: ['low', 'medium', 'high', 'xhigh'] },
     toolDefinitions: { type: 'array', maxItems: 200, items: {
       type: 'object', additionalProperties: false, required: ['type', 'name', 'description', 'inputSchema'],
-      properties: { type: { const: 'function' }, name: { type: 'string', pattern: '^(?:fastkore_[a-zA-Z0-9_-]{1,55}|library_(?:list|tree|search|read)|internet_(?:search|read|request)|knowledge|consult_specialist|my_instructions)$' },
+      properties: { type: { const: 'function' }, name: { type: 'string', pattern: '^(?:fastkore_[a-zA-Z0-9_-]{1,55}|library_(?:list|tree|search|read)|internet_(?:search|read|request)|knowledge|freecad_linkage|consult_specialist|my_instructions)$' },
         description: { type: 'string', maxLength: 4000 }, inputSchema: { type: 'object' } },
     } },
   },
