@@ -279,6 +279,63 @@ test('sharing a linked chat preserves one history and locks concurrent submissio
   } finally { release(); await f.app.close(); }
 });
 
+test('explicitly saving an instruction in a shared chat records the model formulation for the sender only', async () => {
+  const instruction = 'Сверять итог перед отправкой документа.';
+  const privateOwner = 'PRIVATE_OWNER_NOTE', privatePeer = 'PRIVATE_PEER_NOTE';
+  let writes = 0;
+  const f = await fixture(async (request, signal) => {
+    assert.doesNotMatch(request.prompt, /PRIVATE_OWNER_NOTE|PRIVATE_PEER_NOTE/);
+    const tool = request.tools?.definitions.find(tool => tool.name === 'my_instructions');
+    if (request.prompt.endsWith('Обычный вопрос') || request.prompt.endsWith('Удали мои инструкции.')) {
+      assert.equal(tool, undefined);
+      return 'Откройте личные инструкции.';
+    }
+    assert.ok(tool);
+    assert.match(request.developerInstructions ?? '', /сформулируй своими словами/);
+    if (request.prompt.endsWith('Сохрани инструкцию.')) return 'Какое правило закрепить?';
+    const call = (args: unknown) => request.tools!.call('my_instructions', args, signal);
+    assert.equal((await call({ action: 'read' })).success, false);
+    assert.equal((await call({ action: 'replace', text: 'wrong', revision: 1 })).success, false);
+    const saved = await call({ action: 'remember', title: 'Контроль итога', text: instruction, scope: 'general' });
+    assert.equal(saved.success, true, saved.text);
+    assert.doesNotMatch(saved.text, /PRIVATE_OWNER_NOTE|PRIVATE_PEER_NOTE/);
+    writes++;
+    return 'Приём готов.';
+  });
+  try {
+    const peer = await f.enter('Борис');
+    assert.equal((await f.req('PATCH', '/api/users/' + peer.user.id, f.admin, { roleId: 'employee' })).statusCode, 200);
+    assert.equal((await f.setProjectRoles(f.project.id, [...f.projectRoles, ...peer.projectRoles])).statusCode, 200);
+    f.store.savePersonalInstructions(f.employee.id, { text: privateOwner, autoInstructions: true, revision: 0, notes: [] });
+    f.store.savePersonalInstructions(peer.user.id, { text: privatePeer, autoInstructions: false, revision: 0, notes: [] });
+    const base = `/api/projects/${f.project.id}/chats`;
+    const created = await f.req('POST', base, f.token, {});
+    assert.equal(created.statusCode, 201, created.body);
+    const url = base + '/' + created.json().id;
+    assert.equal((await f.req('PATCH', url + '/visibility', f.token, { visibility: 'project' })).statusCode, 200);
+    const send = async (text: string) => {
+      const sent = await f.req('POST', url + '/messages', peer.cookie, { text });
+      assert.equal(sent.statusCode, 202, sent.body);
+      await idle(f.workspace);
+      const run = f.workspace.getRun(sent.json().id);
+      assert.equal(run.status, 'complete', run.error);
+      return (await f.req('GET', url, peer.cookie)).json().messages.at(-1);
+    };
+    assert.equal((await send('Обычный вопрос')).instructionSave, undefined);
+    assert.equal((await send('Удали мои инструкции.')).instructionSave, 'not-saved');
+    assert.equal((await send('Сохрани инструкцию.')).instructionSave, 'not-saved');
+    const ask = 'Сохрани инструкции: ну там, как обычно, перед отправкой проверь сумму, чтобы всё сошлось.';
+    assert.equal((await send(ask)).instructionSave, 'saved');
+    assert.equal((await send(ask)).instructionSave, 'already-saved');
+    const personal = (await f.req('GET', '/api/me/instructions', peer.cookie)).json();
+    assert.equal(personal.text, privatePeer);
+    assert.equal(personal.autoInstructions, false);
+    assert.deepEqual(personal.notes.map((note: { text: string }) => note.text), [instruction]);
+    assert.equal(writes, 2);
+    assert.deepEqual(f.store.personalInstructions(f.employee.id).notes, []);
+  } finally { await f.app.close(); }
+});
+
 test('Fastkore v1 history follows the desktop key and keeps queued snapshots on their original question', async () => {
   let resume!: () => void;
   const waiting = new Promise<void>(resolve => { resume = resolve; });

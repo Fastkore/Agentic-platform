@@ -1178,6 +1178,10 @@ function App() {
         })}</div>}
         {['error', 'cancelled', 'interrupted'].includes(message.status) && <div className="message-note">{message.status === 'error' ? 'Ошибка задания' : message.status === 'cancelled' ? 'Задание остановлено' : message.role === 'user' ? 'Доставка уточнения не подтверждена' : 'Задание прервано'}</div>}
         {message.consultedSpecialists?.length ? <div className="message-specialists">Агенты · {message.consultedSpecialists.join(', ')}</div> : null}
+        {message.instructionSave && <p className="instruction-save-status" data-saved={message.instructionSave !== 'not-saved'}>
+          {message.instructionSave === 'saved' ? 'Сохранено в «Мои инструкции»' : message.instructionSave === 'already-saved'
+            ? 'Уже есть в «Моих инструкциях»' : 'Инструкция не сохранена'}
+        </p>}
         <div className="message-actions">
           {message.role === 'user' && conversation.visibility === 'project' && <span className="message-author">{message.authorName ?? (message.authorId === user.id ? user.name : conversation.ownerName) ?? 'Участник чата'}</span>}
           {message.text && <button className="workspace-icon" aria-label="Копировать сообщение" title="Копировать сообщение" onClick={() => void copyItem(message.text, message.id)}>{copied === message.id ? <Check size={14} /> : <Copy size={14} />}</button>}

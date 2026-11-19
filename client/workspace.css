@@ -349,6 +349,8 @@
 .message-actions { display: flex; align-items: center; gap: 4px; color: var(--text-muted); margin-top: 7px; font-size: 9.9px; }
 .message-actions .workspace-icon { width: 26px; height: 26px; }
 .message-author { color: var(--text-secondary); font-size: var(--chat-caption-font-size); overflow-wrap: anywhere; }
+.instruction-save-status { margin-top: 8px; color: var(--text-muted); font-size: var(--chat-caption-font-size); }
+.instruction-save-status[data-saved="true"] { color: var(--success); }
 .conversation-files { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 8px; }
 .conversation-files :is(span, button) {
   display: flex; align-items: center; gap: 8px; max-width: 100%; padding: 8px 10px;
@@ -738,10 +740,14 @@
 .personal-tree .workspace-row > span { flex: 1; }
 .personal-tree .workspace-row svg, .personal-tree summary svg { flex: none; }
 .personal-shared-icon { color: var(--text-muted); }
-.personal-sidebar label.personal-toggle, .personal-editor label.personal-publish { display: flex; align-items: flex-start; gap: 9px; margin: 0; }
-.personal-sidebar label.personal-toggle { border-top: 1px solid var(--border); padding: 14px 7px 0; cursor: pointer; }
+.personal-editor label.personal-publish { display: flex; align-items: flex-start; gap: 9px; margin: 0; }
+.personal-sidebar label.personal-toggle {
+  display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 4px 9px;
+  margin: 0; border-top: 1px solid var(--border); padding: 14px 7px 0; cursor: pointer;
+}
 .personal-toggle strong { color: var(--text); font-weight: 650; }
 .personal-toggle small { display: block; margin-top: 3px; color: var(--text-muted); font-size: 13px; line-height: 1.45; }
+.personal-sidebar .personal-toggle small { grid-column: 1 / -1; margin: 0; font-size: 11px; font-weight: 400; }
 .personal-editor {
   display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: auto; gap: 12px;
   padding: 17px 24px 20px; background: var(--canvas);
@@ -793,7 +799,6 @@
   .personal-tree summary { min-height: 42px; font-size: 16px; }
   .personal-tree .workspace-row { min-height: 44px; font-size: 16px; margin-inline-start: 33px; width: calc(100% - 33px); }
   .personal-sidebar label.personal-toggle { padding: 15px 9px 4px; font-size: 16px; }
-  .personal-toggle small { max-width: 310px; font-size: 15px; }
   .personal-editor { padding: 16px 29px 28px; gap: 17px; }
   .personal-editor-header { gap: 17px; margin-bottom: 10px; }
   .personal-editor-header .personal-file-icon { width: 70px; height: 70px; }
@@ -820,11 +825,8 @@
 .personal-instructions-compact .personal-tree .workspace-row {
   min-height: 31px; width: calc(100% - 20px); margin-inline-start: 20px; padding-block: 4px; font-size: 12px;
 }
-.personal-instructions-compact .personal-sidebar label.personal-toggle {
-  display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center;
-  gap: 3px 8px; padding: 8px 2px 0; font-size: 11px;
-}
-.personal-instructions-compact .personal-toggle small { display: block; grid-column: 2; margin: 0; font-size: 10px; line-height: 1.35; }
+.personal-instructions-compact .personal-sidebar label.personal-toggle { gap: 3px 8px; padding: 8px 2px 0; font-size: 11px; }
+.personal-instructions-compact .personal-sidebar .personal-toggle small { font-size: 10px; line-height: 1.35; }
 .personal-instructions-compact .personal-editor { padding: 12px 15px 14px; gap: 8px; }
 .personal-instructions-compact .personal-editor-header { gap: 8px; margin-bottom: 3px; }
 .personal-instructions-compact .personal-editor-header .personal-file-icon { width: 42px; height: 42px; border-radius: 9px; }
@@ -844,7 +846,6 @@
   .personal-instructions-dialog .personal-sidebar-top { gap: 6px; }
   .personal-sidebar-title .personal-file-icon { display: none; }
   .personal-sidebar label.personal-toggle { padding-top: 6px; }
-  .personal-instructions-dialog .personal-toggle small { display: none; }
   .personal-instructions-dialog .personal-editor { gap: 8px; padding: 10px 12px; }
   .personal-instructions-dialog .personal-editor-header { flex-wrap: wrap; gap: 7px; margin-bottom: 0; }
   .personal-editor-header .personal-file-icon { display: none; }

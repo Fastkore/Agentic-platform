@@ -242,7 +242,7 @@ export function PersonalInstructionsPanel({ request, project, erp, context, admi
         <PermissionSwitch name="Автоинструкции" checked={draft.autoInstructions} disabled={busy}
           onChange={autoInstructions => change({ ...draft, autoInstructions })} />
         <strong>Автоинструкции</strong>
-        <small>Агент сохраняет проверенный<br />способ работы из ваших чатов.</small>
+        <small>Агент сохраняет проверенный способ работы из ваших чатов.</small>
       </label>}
     </aside>
     <section className="personal-editor" aria-label={note ? 'Рабочий приём' : 'Указания сотрудника'}>
