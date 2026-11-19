@@ -146,7 +146,16 @@ test('a linked Fastkore administrator can open browser settings with a one-time 
     assert.equal((await f.req('GET', projectRoles, cookie)).statusCode, 200);
     assert.equal((await f.req('GET', '/api/admin/instructions', cookie)).statusCode, 200);
     assert.equal((await f.req('GET', '/api/admin/fastkore/installations', cookie)).statusCode, 403);
-    assert.equal((await f.req('POST', '/api/auth/logout', parent.cookie, {})).statusCode, 200);
+    const mcpSettings = '/api/admin/fastkore/mcp';
+    assert.equal((await f.req('GET', mcpSettings, parent.cookie)).statusCode, 403);
+    assert.deepEqual((await f.req('GET', mcpSettings, cookie)).json(), { name: 'ERP' });
+    assert.equal((await f.req('PATCH', mcpSettings, cookie, { mcpUrl: 'https://unapproved.example.test/webapi/mcp' })).statusCode, 403);
+    const saved = await f.req('PATCH', mcpSettings, cookie, { mcpUrl: 'https://erp.example.test/webapi/mcp' });
+    assert.equal(saved.statusCode, 200, saved.body);
+    assert.deepEqual(saved.json(), { name: 'ERP', mcpUrl: 'https://erp.example.test/webapi/mcp' });
+    assert.equal((await f.req('GET', projectRoles, cookie)).statusCode, 401);
+    const next = await enter('Администратор ERP', externalUserId);
+    assert.equal((await f.req('POST', '/api/auth/logout', next.cookie, {})).statusCode, 200);
     assert.equal((await f.req('GET', projectRoles, cookie)).statusCode, 401);
   } finally { await f.app.close(); }
 });
@@ -475,6 +484,32 @@ test('ERP employees cannot administer the platform or set passwords; disabling a
     assert.equal((await f.req('GET','/api/projects',a.token)).statusCode,401);
     assert.equal((await f.req('PATCH','/api/users/'+f.adminId,f.admin,{disabled:true})).statusCode,400);
     const audit = (await f.req('GET','/api/audit',f.admin)).json(); assert.ok(audit.some((a: any) => a.action === 'user.update')); assert.ok(!JSON.stringify(audit).includes(password));
+  } finally { await f.app.close(); }
+});
+test('deleting an employee hides the account, revokes access and preserves chat attribution', async () => {
+  const f = await fixture();
+  try {
+    const externalId = randomUUID();
+    const employee = await f.enter('Удаляемый сотрудник', externalId, [{ id: randomUUID(), name: 'Отдел' }]);
+    const route = '/api/users/' + employee.user.id;
+    f.legacy.ownerId = employee.user.id;
+    await f.store.save();
+    assert.equal((await f.req('DELETE', route, employee.cookie)).statusCode, 403);
+    assert.equal((await f.req('DELETE', '/api/users/' + f.adminId, f.admin)).statusCode, 403);
+    assert.equal((await f.req('DELETE', route, f.admin)).statusCode, 200);
+    assert.equal((await f.req('DELETE', route, f.admin)).statusCode, 200);
+    assert.equal((await f.req('GET', '/api/auth/me', employee.cookie)).statusCode, 401);
+    assert.equal((await f.req('PATCH', route, f.admin, { disabled: false })).statusCode, 404);
+    await assert.rejects(f.enter('Удаляемый сотрудник', externalId), /403/);
+    const team = (await f.req('GET', '/api/users', f.admin)).json<TeamUser[]>();
+    assert.ok(!team.some(user => user.id === employee.user.id));
+    const auditList = await f.req('GET', '/api/users?includeDeleted=true', f.admin);
+    assert.equal(auditList.statusCode, 200, auditList.body);
+    const auditUsers = auditList.json<TeamUser[]>();
+    assert.ok(auditUsers.some(user => user.id === employee.user.id && user.disabled));
+    assert.equal(f.store.auditEvents().filter(event => event.action === 'user.delete' && event.targetId === employee.user.id).length, 1);
+    const chat = await f.req('GET', `/api/projects/${f.project.id}/chats/${f.legacy.id}`, f.admin);
+    assert.equal(chat.json().ownerName, employee.user.name);
   } finally { await f.app.close(); }
 });
 test('bootstrap only works on loopback before setup, setup gates data and login attempts are bounded', async () => {

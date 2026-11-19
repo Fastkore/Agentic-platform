@@ -85,7 +85,7 @@ export interface AgentProfile { id: string; name: string; description: string; i
 export interface Dataset { id: string; name: string; directory: string; projectIds: string[]; classification: 'shared' | 'restricted'; revision: number }
 export interface Corporate { roles: WorkRole[]; profiles: AgentProfile[]; datasets: Dataset[] }
 export interface AgentSummary { id: string; name: string; description: string; available: boolean; unavailableReason?: string; model: string; allowWrite?: boolean; toolIds: AgentToolId[] }
-export interface UserRecord extends User { passwordHash: string; createdAt: string; interfaceScale?: InterfaceScale; pinnedChatIds?: string[]; readChatReplies?: Record<string, string> }
+export interface UserRecord extends User { passwordHash: string; createdAt: string; deletedAt?: string; interfaceScale?: InterfaceScale; pinnedChatIds?: string[]; readChatReplies?: Record<string, string> }
 export interface StoredErpDelegation { sealedGrant: string; expiresAt: number; revision: string }
 export interface FastkoreRole { id: string; name: string }
 export interface FastkoreRoleRecord extends FastkoreRole { installationId: string; lastSeenAt: string }
@@ -136,5 +136,5 @@ export const sharedChatWaitMessage = 'Другой участник ждёт о�
 export interface UnassignedChatSummary extends ChatSummary { projectId: string }
 export interface ArchivedChatSummary extends ChatSummary { projectId: string; projectName: string; archivedAt: string }
 export interface RelatedChatSummary extends ChatSummary { projectId: string; projectName: string; parent?: true; contextMatches?: false; legacyContext?: true }
-export interface ToolPermissions { cli: boolean; mcp: boolean; webSearch: boolean; webRead?: boolean }
+export interface ToolPermissions { cli: boolean; mcp: boolean; cliUnavailableReason?: string; mcpUnavailableReason?: string; webSearch: boolean; webRead?: boolean }
 export interface Status { version: string; activeRun: Run | null; activeRuns?: Run[]; queuedRuns: QueuedRun[]; unreadChatReplies?: Record<string, string>; busy: boolean; executionDisabled?: boolean; isolatedCodex?: boolean; workerFilesAvailable?: boolean; codexLimitsRevision?: number; user: User; setupRequired: boolean; canCreateProject?: boolean; dictationAvailable?: boolean; dictationEnabled?: boolean; fastkoreToolsStatus?: 'unavailable' | 'ready' | 'reauth'; toolPermissions?: ToolPermissions; cli: CliInfo | null; settings: Settings; addresses: string[]; port: number; lan: boolean; storageWarning?: string; fileStorage?: FileStorageStatus }

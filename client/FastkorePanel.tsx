@@ -29,7 +29,56 @@ function TlsFingerprint({ certificate, previous }: { certificate: FastkoreTlsInf
   </div>;
 }
 
-export function FastkorePanel({ request }: { request: Request }) {
+export function FastkorePanel({ request, currentInstallationOnly }: { request: Request; currentInstallationOnly: boolean }) {
+  return currentInstallationOnly ? <FastkoreMcpSettings request={request} /> : <FastkoreInstallations request={request} />;
+}
+
+function FastkoreMcpSettings({ request }: { request: Request }) {
+  type Installation = Pick<FastkoreInstallation, 'name' | 'mcpUrl'>;
+  const endpoint = '/api/admin/fastkore/mcp';
+  const [installation, setInstallation] = useState<Installation>();
+  const [url, setUrl] = useState('');
+  const [saved, setSaved] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  useEffect(() => {
+    const controller = new AbortController();
+    void request<Installation>(endpoint, { signal: controller.signal }).then(item => {
+      if (controller.signal.aborted) return;
+      setInstallation(item);
+      setUrl(item.mcpUrl ?? '');
+    }).catch(cause => { if (!controller.signal.aborted) setError((cause as Error).message); });
+    return () => controller.abort();
+  }, [request]);
+  async function save() {
+    if (busy || saved || !installation || url.trim() === (installation.mcpUrl ?? '')) return;
+    setBusy(true);
+    setError('');
+    try {
+      const item = await request<Installation>(endpoint, json('PATCH', { mcpUrl: url.trim() }));
+      setInstallation(item);
+      setUrl(item.mcpUrl ?? '');
+      setSaved(true);
+    } catch (cause) { setError((cause as Error).message); }
+    finally { setBusy(false); }
+  }
+  return <section className="setting-section">
+    {installation ? <form onSubmit={event => { event.preventDefault(); void save(); }}>
+      <h3>{installation.name}</h3>
+      <label htmlFor="current-installation-mcp">HTTPS-адрес MCP</label>
+      <input id="current-installation-mcp" type="url" value={url} placeholder="https://erp.example.ru/webapi/mcp"
+        maxLength={2048} required disabled={busy || saved} onChange={event => setUrl(event.target.value)} />
+      {saved ? <p role="status">Адрес сохранён. Откройте помощника заново из Fastkore.</p> : <>
+        <p className="help">Смена адреса завершит текущие сеансы этой установки.</p>
+        <p className="help">Новый домен MCP указывается при локальном входе администратора.</p>
+        <div className="settings-dialog-actions"><button className="primary" disabled={busy || url.trim() === (installation.mcpUrl ?? '')}>Сохранить</button></div>
+      </>}
+    </form> : !error && <p role="status">Загрузка…</p>}
+    {error && <p role="alert" className="inline-error">{error}</p>}
+  </section>;
+}
+
+function FastkoreInstallations({ request }: { request: Request }) {
   const [available, setAvailable] = useState<boolean | null>(null);
   const [installations, setInstallations] = useState<FastkoreInstallation[]>([]);
   const [users, setUsers] = useState<User[]>([]), [identities, setIdentities] = useState<ExternalIdentity[]>([]);

@@ -321,7 +321,7 @@ function App() {
   const canManageProjects = canManageSettings;
   const canAttachProjectDirectory = canManageProjects && authSource === 'local';
   const visibleSettingsSections = (Object.keys(settingsSections) as SettingsSection[]).filter(section =>
-    section === 'fastkore' ? canManageSettings && authSource === 'local' : canManageSettings || section === 'personal');
+    canManageSettings || section === 'personal');
   const instructionSettings = settingsSection === 'personal' || settingsSection === 'employeeInstructions';
   const standaloneInstructions = instructionSettings && !canManageSettings;
   const relatedPanelOpen = panel === 'related';
@@ -1091,12 +1091,15 @@ function App() {
     (!status.isolatedCodex || status.workerFilesAvailable && messageAgent.toolIds.includes('chat-files')));
   function renderChatAccess() {
     if (!status) return <p role="status" className="help">Загрузка…</p>;
+    if (!projectId) return <p className="help">Выберите проект, чтобы увидеть доступные инструменты чата.</p>;
     const permissions = [
       { name: 'Запись файлов', enabled: writeMode, description: status.isolatedCodex
         ? 'Файлы сохраняются в папке задания.'
         : 'Файлы сохраняются в папке проекта.' },
-      { name: 'Fastkore CLI', enabled: canUseChatTools && canReadFastkore && status.toolPermissions?.cli },
-      { name: 'Fastkore MCP', enabled: canUseChatTools && canReadFastkore && status.toolPermissions?.mcp },
+      { name: 'Fastkore CLI', enabled: canUseChatTools && canReadFastkore && status.toolPermissions?.cli,
+        description: status.toolPermissions?.cliUnavailableReason },
+      { name: 'Fastkore MCP', enabled: canUseChatTools && canReadFastkore && status.toolPermissions?.mcp,
+        description: status.toolPermissions?.mcpUnavailableReason },
       { name: 'Веб-поиск', enabled: canUseChatTools && status.toolPermissions?.webSearch,
         description: 'Поиск в интернете.' },
       { name: 'Чтение страниц', enabled: canUseChatTools && status.toolPermissions?.webRead,
@@ -1667,7 +1670,7 @@ function App() {
           {settingsSection === 'profiles' && <SpecialistsPanel request={api} globalInstructions={savedInstructions} initialProfileId={initialSpecialistId} />}
           {settingsSection === 'audit' && <AuditPanel request={api} />}
           {settingsSection === 'usage' && <UsagePanel request={api} />}
-          {settingsSection === 'fastkore' && <FastkorePanel request={api} />}
+          {settingsSection === 'fastkore' && <FastkorePanel request={api} currentInstallationOnly={authSource === 'fastkore'} />}
           {(settingsSection === 'knowledgeFastkore' || settingsSection === 'knowledgeCompany') && <KnowledgePanel
             section={settingsSection === 'knowledgeFastkore' ? 'fastkore' : 'company'} request={api}
             download={url => api<Blob>(url, {}, 'blob')} dirtyChanged={setKnowledgeDirty} />}

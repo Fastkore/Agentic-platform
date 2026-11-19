@@ -433,7 +433,9 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
   app.post<{ Body: { username: string; name: string; password: string } }>('/api/auth/setup', { schema: { body: object({ username: string(48), name: string(100), password }, ['username', 'name', 'password']) } }, async request => access.setup(() => principal(request), request.body.username, request.body.name, request.body.password));
   app.post('/api/auth/logout', async (request, reply) => { const p = principal(request); const result = await access.logout(p); if (p.credential.source === 'fastkore') reply.header('Set-Cookie', setSessionCookie('', 0)); return result; });
   app.post<{ Body: { currentPassword: string; password: string } }>('/api/auth/password', { schema: { body: object({ currentPassword: string(200), password }, ['currentPassword', 'password']) } }, async request => access.changePassword(principal(request), request.body.currentPassword, request.body.password));
-  app.get('/api/users', async request => access.users(user(request)));
+  app.get<{ Querystring: { includeDeleted?: 'true' } }>('/api/users',
+    { schema: { querystring: object({ includeDeleted: { const: 'true' } }) } },
+    request => access.users(user(request), request.query.includeDeleted === 'true'));
   app.get('/api/admin/erp-roles', async request => {
     admin(request);
     return erpRoleCatalog(workspace.store.state);
@@ -487,6 +489,8 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
   });
   app.post<{ Body: { username: string; name: string; password: string; role: User['role']; roleId?: string } }>('/api/users', { schema: { body: object({ username: string(48), name: string(100), password, role: { enum: ['admin', 'employee'] }, roleId: identifier }, ['username', 'name', 'password', 'role']) } }, async (request, reply) => reply.code(201).send(await access.createUser(localAdmin(request), request.body)));
   app.patch<{ Params: { userId: string }; Body: { disabled?: boolean; password?: string; name?: string; roleId?: string; role?: User['role'] } }>('/api/users/:userId', { schema: { body: object({ disabled: { type: 'boolean' }, password, name: string(100), roleId: identifier, role: { enum: ['admin', 'employee'] } }) } }, async request => access.updateUser(() => principal(request), request.params.userId, request.body));
+  app.delete<{ Params: { userId: string } }>('/api/users/:userId', request =>
+    access.deleteEmployee(() => user(request), request.params.userId));
   app.get<{ Querystring: { before?: string } }>('/api/audit', {
     schema: { querystring: object({ before: string(80) }) },
   }, async request => {
@@ -500,6 +504,36 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
     return workspace.store.auditEvents(cursor, workspace.knowledge.auditEvents(cursor));
   });
   app.get('/api/admin/fastkore/installations', async request => { localAdmin(request); return sso?.list() ?? []; });
+  const browserMcpInstallation = (request: FastifyRequest) => {
+    const { user: actor, credential: { installationId, browserParentId } } = principal(request);
+    access.admin(actor);
+    if (!browserParentId || !installationId) throw new BridgeError('Откройте настройки в браузере из Fastkore.', 403);
+    return { actor, installationId };
+  };
+  app.get('/api/admin/fastkore/mcp', request => {
+    const { installationId } = browserMcpInstallation(request);
+    const installation = configuredSso().list().find(item => item.id === installationId);
+    if (!installation) throw new BridgeError('Установка Fastkore не найдена.', 404);
+    const { name, mcpUrl } = installation;
+    return { name, mcpUrl };
+  });
+  app.patch<{ Body: { mcpUrl: string } }>('/api/admin/fastkore/mcp', {
+    schema: { body: object({ mcpUrl: string(2048) }, ['mcpUrl']) },
+  }, request => {
+    const { installationId } = browserMcpInstallation(request);
+    return access.changeInstallation(() => browserMcpInstallation(request).actor, 'sso.installation.update', items => {
+      const installation = items.find(item => item.id === installationId);
+      if (!installation) throw new BridgeError('Установка Fastkore не найдена.', 404);
+      const address = URL.parse(request.body.mcpUrl.trim());
+      const approvedOrigins = [new URL(installation.validateTicketUrl).origin, installation.mcpUrl && new URL(installation.mcpUrl).origin];
+      if (!address || !approvedOrigins.includes(address.origin)) {
+        throw new BridgeError('Новый домен MCP настраивается при локальном входе администратора.', 403);
+      }
+      const updated = configuredSso().update(items, installationId, { mcpUrl: request.body.mcpUrl });
+      const { name, mcpUrl } = updated.result;
+      return { ...updated, result: { name, mcpUrl } };
+    });
+  });
   app.get('/api/admin/fastkore/cli-pilot', async request => {
     localAdmin(request); secureRequest(request);
     if (!fastkoreCli) throw new BridgeError('Исполнитель Fastkore CLI не настроен.', 503);
@@ -658,9 +692,17 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
     const erpPermissions = erpCredentialPermissions(workspace.store.state, credential);
     const cliBinding = isolatedToolsEnabled && erpPermissions.cli && cliTicketsEnabled && fastkoreCli && sso?.delegationBinding(credential);
     const internetPermissions = internetCredentialPermissions(workspace.store.state, credential);
+    const cliAllowed = !!(cliBinding && cliBinding.cliEnabled !== false && cliBinding.ca && sso?.openDelegation(credential, cliBinding.revision));
+    const mcpAllowed = isolatedToolsEnabled && erpPermissions.mcp && fastkoreToolsStatus === 'ready';
+    const delegationProblem = fastkoreToolsStatus === 'reauth' ? 'Делегирование ERP завершилось. Откройте помощника заново из Fastkore.'
+      : !credential.erpDelegation ? 'Fastkore Server не передал делегирование для этого входа.' : undefined;
     const toolPermissions = {
-      cli: !!(cliBinding && cliBinding.cliEnabled !== false && cliBinding.ca && sso?.openDelegation(credential, cliBinding.revision)),
-      mcp: isolatedToolsEnabled && erpPermissions.mcp && fastkoreToolsStatus === 'ready',
+      cli: cliAllowed,
+      mcp: mcpAllowed,
+      cliUnavailableReason: !cliAllowed && credential.source === 'fastkore' ? !erpPermissions.cli
+        ? 'CLI отключён разрешениями роли.' : delegationProblem ?? 'Проверьте настройки исполнителя CLI и установки Fastkore.' : undefined,
+      mcpUnavailableReason: !mcpAllowed && credential.source === 'fastkore' ? !erpPermissions.mcp
+        ? 'MCP отключён разрешениями роли.' : delegationProblem ?? 'Проверьте HTTPS-адрес MCP и настройки установки Fastkore.' : undefined,
       webSearch: !!(isolatedToolsEnabled && accountWorker && internetPermissions.search),
       webRead: isolatedToolsEnabled && internetPermissions.read,
     };

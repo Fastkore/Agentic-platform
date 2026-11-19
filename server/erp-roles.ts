@@ -111,11 +111,12 @@ export function erpRolesForUser(state: RoleState, userId: string): TeamUser['erp
 }
 
 export function erpRoleCatalog(state: RoleState): FastkoreRoleSummary[] {
+  const deletedUsers = new Set(state.security?.users.filter(user => user.deletedAt).map(user => user.id));
   const identities = new Map(state.externalIdentities?.map(identity => [identity.installationId + '/' + identity.externalUserId, identity.userId]));
   const members = new Map<string, Set<string>>();
   for (const snapshot of state.sso?.roleSnapshots ?? []) {
     const userId = identities.get(snapshot.installationId + '/' + snapshot.externalUserId);
-    if (!userId) continue;
+    if (!userId || deletedUsers.has(userId)) continue;
     for (const role of snapshot.roles ?? []) {
       const key = snapshot.installationId + '/' + role.id;
       const users = members.get(key) ?? new Set<string>();

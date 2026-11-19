@@ -355,10 +355,10 @@ export class Access {
   chatSummary({ id, title, updatedAt, messages, ownerId, visibility, fastkoreBinding }: Chat): ChatSummary {
     return { id, title, updatedAt, messageCount: messages.length, ownerId, ownerName: this.data.users.find(user => user.id === ownerId)?.name ?? 'Пользователь', visibility, linkedToFastkore: fastkoreBinding ? true : undefined };
   }
-  users(user: User): TeamUser[] {
+  users(user: User, includeDeleted = false): TeamUser[] {
     this.admin(user);
     const state = this.workspace.store.state;
-    return this.data.users.map(item => {
+    return this.data.users.filter(item => includeDeleted || !item.deletedAt).map(item => {
       const erpRoles = erpRolesForUser(state, item.id);
       const projects = item.disabled ? [] : state.projects
         .filter(project => !project.deletedAt && (item.role === 'admin' || erpRoles.some(({ installationId, roles }) => projectAllowsRoles(project, installationId, roles))))
@@ -380,7 +380,7 @@ export class Access {
     const authorize = () => {
       const { user, credential } = current();
       this.admin(user);
-      const target = this.data.users.find(item => item.id === id);
+      const target = this.data.users.find(item => item.id === id && !item.deletedAt);
       if (!target) throw new BridgeError('Пользователь не найден.', 404);
       if (credential.source === 'fastkore' && (input.password !== undefined ||
         input.role !== undefined && input.role !== target.role || target.role === 'admin')) {
@@ -409,6 +409,24 @@ export class Access {
       }
       this.audit(actor.id, 'user.update', id, data); return publicUser(user);
     }, 'account_change');
+  }
+  async deleteEmployee(authorize: () => User, id: string) {
+    const event = await this.changeAccess(draft => {
+      const actor = authorize(), data = draft.security!;
+      this.admin(actor);
+      const employee = data.users.find(user => user.id === id);
+      if (!employee) throw new BridgeError('Сотрудник не найден.', 404);
+      if (employee.role !== 'employee') throw new BridgeError('Удалять можно только сотрудников.', 403);
+      if (employee.deletedAt) return;
+      // Keep the identity linked so the next Fastkore login cannot recreate the account.
+      employee.deletedAt = new Date().toISOString();
+      employee.disabled = true;
+      employee.passwordHash = '';
+      data.credentials = data.credentials.filter(credential => credential.userId !== id);
+      return this.audit(actor.id, 'user.delete', id, data);
+    }, 'account_change');
+    publishAudit(event);
+    return { ok: true };
   }
   changePassword(principal: Principal, current: string, password: string) {
     return this.change(async () => {

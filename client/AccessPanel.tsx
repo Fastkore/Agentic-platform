@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Folder } from 'lucide-react';
+import { Folder, Trash2 } from 'lucide-react';
 import { SettingsAction } from './SettingsAction';
 import { shortUserName, userInitials } from './user-name';
 import type { TeamUser, User } from '../shared/types';
@@ -58,6 +58,7 @@ export function AccountPanel({ request, renewed, fastkore }: { request: Request;
 
 export function TeamPanel({ request, self, manageAdministrators }: { request: Request; self: User; manageAdministrators: boolean }) {
   const [users, setUsers] = useState<TeamUser[]>([]);
+  const [removing, setRemoving] = useState<TeamUser>();
   const [error, setError] = useState(''), [busy, setBusy] = useState(false);
 
   async function load() {
@@ -82,7 +83,17 @@ export function TeamPanel({ request, self, manageAdministrators }: { request: Re
   useEffect(() => { void load().catch(e => setError(e.message)); }, []);
 
   return <>
-    <section className="setting-section">
+    {removing ? <SettingsAction title="Удалить сотрудника">
+      <p>Удалить учётную запись «{removing.name}» из команды? Сеансы завершатся. История чатов сохранится.</p>
+      <div className="settings-dialog-actions">
+        <button type="button" className="secondary" disabled={busy} onClick={() => { setRemoving(undefined); setError(''); }}>Отмена</button>
+        <button type="button" className="danger" disabled={busy} onClick={() => void run(async () => {
+          await request(`/api/users/${removing.id}`, { method: 'DELETE' });
+          setUsers(items => items.filter(item => item.id !== removing.id));
+          setRemoving(undefined);
+        })}>Удалить</button>
+      </div>
+    </SettingsAction> : <section className="setting-section">
       <div className="settings-section-heading">
         <h3>Учётные записи</h3>
       </div>
@@ -108,6 +119,9 @@ export function TeamPanel({ request, self, manageAdministrators }: { request: Re
                 }} />
               {user.disabled ? 'Неактивен' : 'Активен'}
             </label>
+            {user.role === 'employee' && user.id !== self.id && <button type="button" className="workspace-icon"
+              aria-label={'Удалить сотрудника · ' + user.name} title="Удалить сотрудника" disabled={busy}
+              onClick={() => { setError(''); setRemoving(user); }}><Trash2 size={16} aria-hidden="true" /></button>}
           </div></td>
           <td className="team-projects-cell">
             {user.projects.length ? <ul className="project-summary-chips" aria-label="Проекты">
@@ -116,7 +130,7 @@ export function TeamPanel({ request, self, manageAdministrators }: { request: Re
           </td>
         </tr>)}</tbody>
       </table>
-    </section>
+    </section>}
     {error && <div className="inline-error" role="alert">{error}</div>}
   </>;
 }

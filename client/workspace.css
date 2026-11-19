@@ -1081,7 +1081,7 @@
 .erp-role-heading p { margin: 2px 0 0; color: var(--text-muted); line-height: 1.25; overflow-wrap: anywhere; }
 .erp-role-switches { display: grid; grid-template-columns: max-content max-content minmax(0, 1fr); align-items: start; gap: 12px 20px; }
 .erp-role-switch-column { display: grid; gap: 10px; min-width: 0; }
-.erp-role-switches label.erp-role-permission { display: grid; grid-template-columns: 16px minmax(0, 1fr) auto; align-items: center; gap: 7px; margin: 0; font-size: 12px; cursor: pointer; }
+.erp-role-switches label.erp-role-permission { display: grid; grid-template-columns: auto 16px minmax(0, 1fr); align-items: center; gap: 7px; margin: 0; font-size: 12px; cursor: pointer; }
 .erp-role-permission > svg { color: var(--accent-strong); flex: none; }
 .erp-role-permission > span { margin: 0; color: var(--text-secondary); overflow-wrap: anywhere; }
 .erp-role-meta { display: flex; flex-wrap: wrap; gap: 12px 24px; margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--border); color: var(--text-muted); font-size: 12px; }

@@ -11,7 +11,7 @@ const labels: Record<string, string> = {
   'sso.browser.login': 'Вход в настройки из Fastkore',
   'erp.delegation.invalidated': 'Сеанс потерял доступ к ERP',
   'erp.delegation.session_ended': 'Завершён сеанс с доступом к ERP',
-  'user.update': 'Изменён пользователь', 'user.projects': 'Изменён доступ к проектам',
+  'user.update': 'Изменён пользователь', 'user.delete': 'Удалён сотрудник', 'user.projects': 'Изменён доступ к проектам',
   'project.members': 'Изменены участники проекта', 'project.roles': 'Изменены роли проекта',
   'project.agents': 'Изменены агенты проекта', 'project.rename': 'Проект переименован', 'project.delete': 'Проект удалён',
   'role.update': 'Изменена рабочая роль', 'profile.update': 'Изменён агент', 'dataset.update': 'Изменён источник',
@@ -49,7 +49,7 @@ export function AuditPanel({ request }: { request: Request }) {
   useEffect(() => {
     const controller = new AbortController();
     const options = { signal: controller.signal };
-    Promise.all([request<AuditEvent[]>('/api/audit', options), request<User[]>('/api/users', options), request<ProjectSummary[]>('/api/projects', options)])
+    Promise.all([request<AuditEvent[]>('/api/audit', options), request<User[]>('/api/users?includeDeleted=true', options), request<ProjectSummary[]>('/api/projects', options)])
       .then(([events, users, projects]) => {
         if (controller.signal.aborted) return;
         setData({ events, users, projects });

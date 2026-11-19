@@ -71,9 +71,11 @@ export function ErpRolesPanel({ request }: { request: Request }) {
           <div><h3>{role.name}</h3><p>{role.installationName}</p></div>
           <div className="erp-role-switches" aria-label={'Разрешения · ' + role.name}>
             {permissionColumns.map(column => <div className="erp-role-switch-column" key={column[0].key}>{column.map(({ key, name, icon: Icon }) =>
-              <label className="erp-role-permission" key={key}><Icon size={16} aria-hidden="true" /><span>{name}</span>
+              <label className="erp-role-permission" key={key}>
                 <PermissionSwitch name={name + ' · ' + role.name} checked={role.permissions?.[key] ?? (key === 'mcp' || key === 'cli')}
-                  disabled={busy} onChange={enabled => void savePermission(role, key, enabled)} /></label>)}</div>)}
+                  disabled={busy} onChange={enabled => void savePermission(role, key, enabled)} />
+                <Icon size={16} aria-hidden="true" /><span>{name}</span>
+              </label>)}</div>)}
           </div>
           <button className="secondary" onClick={() => { setRemoving(role); setError(''); }} aria-label={'Удалить роль ' + role.name}><Trash2 size={16} />Удалить</button>
         </div>
