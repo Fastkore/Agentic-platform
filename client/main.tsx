@@ -7,6 +7,7 @@ import { interfaceScales, unassignedChatsLabel, type AgentSummary, type Attachme
 import './style.css';
 import './workspace.css';
 import { ChatArchiveDialog } from './ChatArchiveDialog';
+import { ChatVisuals } from './ChatVisuals';
 import { shortUserName } from './user-name';
 import { chatTooltip, dateTooltip, shortDate } from './chat-date';
 import { hideAttachedOutputLinks } from './chat-markdown';
@@ -653,7 +654,8 @@ function App() {
     });
     return () => { disposed = true; };
   }, [chatId, projectId, loggedIn, !!selectedProject, withoutProject]);
-  useEffect(() => { if (stick.current) end.current?.scrollIntoView({ behavior: 'smooth' }); }, [chat?.messages.length, chat?.messages.at(-1)?.text, chatId]);
+  useEffect(() => { if (stick.current) end.current?.scrollIntoView({ behavior: 'smooth' }); },
+    [chat?.messages.length, chat?.messages.at(-1)?.text, chat?.messages.at(-1)?.visuals?.length, chatId]);
   useEffect(() => {
     if (!subscription || subscription.status !== 'running') return;
     const timer = setInterval(() => { api<Run>(`/api/runs/${subscription.id}`).then(setSubscription).catch(fail); }, 1200);
@@ -1148,6 +1150,7 @@ function App() {
             {message.specialistName && <small title="Рекомендованный агент">@{message.specialistName}</small>}
             {message.text}
           </div>}
+        {message.status === 'complete' && !!message.visuals?.length && <ChatVisuals visuals={message.visuals} />}
         {message.attachments.length > 0 && <div className="conversation-files">{message.attachments.map(file => {
           if (!canReadChatAttachment(file, message, conversation.ownerId, user)) {
             return <span key={file.id}><FileText size={16} />{file.name}</span>;

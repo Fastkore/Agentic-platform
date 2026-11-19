@@ -115,14 +115,18 @@ test('the first text fragment is persisted while the job is still running and th
   const store = new Store(path.join(root, 'data'));
   let published = false, release!: () => void;
   const gate = new Promise<void>(resolve => { release = resolve; });
+  const visuals = [{ type: 'metrics', items: [{ label: 'Документы', value: 5 }] }];
+  const payload = '\n\n```fastkore-visual\n' + JSON.stringify({ version: 1, blocks: visuals });
   const runner: CodexRunner = {
     inspect: async () => ({ path: process.execPath, version: 'fake', status: '', authentication: 'chatgpt' }),
-    run: async (_request, event, signal) => {
+    run: async (request, event, signal) => {
+      assert.match(request.developerInstructions ?? '', /fastkore-visual/);
       await event({ kind: 'session', text: '87db344a-98f3-42c8-bba8-c7d9f3dcff11' });
-      await event({ kind: 'message-delta', text: 'Проверяю документацию…' }); published = true;
+      await event({ kind: 'message-delta', text: 'Проверяю документацию…' + payload }); published = true;
       await gate; signal.throwIfAborted();
-      await event({ kind: 'message-replace', text: 'Ответ готов.' });
-      return { response: 'Ответ готов.' };
+      const response = 'Ответ готов.' + payload + '\n```';
+      await event({ kind: 'message-replace', text: response });
+      return { response };
     },
   };
   const workspace = new Workspace(store, runner);
@@ -139,6 +143,13 @@ test('the first text fragment is persisted while the job is still running and th
     } finally { reader.close(); }
     release(); await until(() => !workspace.busy);
     assert.equal(chat.messages.at(-1)?.text, 'Ответ готов.');
+    assert.equal(run.response, 'Ответ готов.');
+    assert.deepEqual(chat.messages.at(-1)?.visuals, visuals);
+    const reopened = new DatabaseSync(store.file, { readOnly: true });
+    try {
+      const rows = reopened.prepare('SELECT payload FROM messages').all().map(row => JSON.parse(String(row.payload)));
+      assert.deepEqual(rows.find(row => row.role === 'assistant').visuals, visuals);
+    } finally { reopened.close(); }
   } finally { release(); await workspace.shutdown(); await rm(root, { recursive: true, force: true }); }
 });
 

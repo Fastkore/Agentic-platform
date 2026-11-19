@@ -1,0 +1,29 @@
+.chat-visuals { display: grid; gap: 10px; margin-block: 12px 4px; min-width: 0; }
+.chat-visual-panel { min-width: 0; border: 1px solid var(--border); border-radius: 9px; background: var(--surface); }
+.chat-visual-metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 126px), 1fr)); gap: 8px; margin: 0; }
+.chat-visual-metrics > div { padding: 10px 12px; }
+.chat-visual-metrics dt { color: var(--text-muted); font-size: var(--chat-caption-font-size); overflow-wrap: anywhere; }
+.chat-visual-metrics dd { margin: 2px 0 0; font-size: 1.28em; font-weight: 650; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.chat-visual-chart { margin: 0; padding: 12px; }
+.chat-visual-chart figcaption, .chat-visual-table caption { font-weight: 650; text-align: left; overflow-wrap: anywhere; }
+.chat-visual-chart figcaption small { margin-inline-start: 8px; color: var(--text-muted); font-weight: 400; }
+.chat-visual-scroll { overflow-x: auto; }
+.chat-visual-bars {
+  display: grid; grid-template-columns: repeat(var(--bar-count), minmax(58px, 1fr));
+  min-width: calc(var(--bar-count) * 58px); margin-top: 8px; padding: 3px;
+}
+.chat-visual-point { display: grid; grid-template-rows: 134px 1fr; gap: 4px; min-width: 0; text-align: center; border-radius: 5px; }
+.chat-visual-track { display: block; position: relative; }
+.chat-visual-track::before { content: ''; position: absolute; inset-inline: 0; top: min(var(--zero), 100% - 1px); border-top: 1px solid var(--control-border); }
+.chat-visual-bar { position: absolute; inset-inline: 17%; min-height: 2px; border-radius: 3px; background: var(--accent); }
+.chat-visual-point:hover, .chat-visual-point[aria-pressed="true"] { background: var(--accent-soft); }
+.chat-visual-point[aria-pressed="true"] .chat-visual-bar { background: var(--accent-strong); }
+.chat-visual-tick { padding: 0 3px 3px; color: var(--text-muted); font-size: var(--chat-caption-font-size); overflow-wrap: anywhere; }
+.chat-visual-selected { display: block; margin-top: 4px; color: var(--text-secondary); overflow-wrap: anywhere; }
+.chat-visual-selected strong { margin-inline-start: 4px; font-variant-numeric: tabular-nums; }
+.chat-visual-table table { width: 100%; border-collapse: collapse; font-size: var(--chat-font-size); }
+.chat-visual-table :is(caption, th, td) { padding: 8px 10px; }
+.chat-visual-table caption { caption-side: top; }
+.chat-visual-table th { background: var(--control); text-align: left; font-weight: 600; }
+.chat-visual-table :is(th, td) { border-top: 1px solid var(--border); vertical-align: top; min-width: 80px; max-width: 240px; overflow-wrap: anywhere; }
+.chat-visual-table td[data-numeric] { text-align: right; font-variant-numeric: tabular-nums; }

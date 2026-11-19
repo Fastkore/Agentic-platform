@@ -1,5 +1,6 @@
 import type { FastkoreContext } from './fastkore-context.js';
 import type { AgentToolId } from './agent-tools.js';
+import type { ChatVisual } from './chat-visuals.js';
 
 export type FileStorageProvider = 'local' | 's3';
 export interface FileStorageStatus { provider: FileStorageProvider; s3Configured: boolean }
@@ -27,7 +28,7 @@ export interface TokenActivityReport {
 export type RunStatus = 'queued' | 'running' | 'complete' | 'cancelled' | 'error' | 'interrupted';
 export interface ProjectFile { id: string; name: string; size: number; uploadedAt: string }
 export interface Attachment { id: string; name: string; path?: string; storage?: 's3'; size: number; ownerId?: string; libraryUploadedAt?: string; uploadedAt?: string }
-export interface Message { id: string; role: 'user' | 'assistant'; text: string; status: RunStatus; createdAt: string; attachments: Attachment[]; usage?: Usage; runId?: string; model?: string; authorId?: string; authorName?: string; fileScope?: string; historyScope?: string; specialistName?: string; consultedSpecialists?: string[] }
+export interface Message { id: string; role: 'user' | 'assistant'; text: string; status: RunStatus; createdAt: string; attachments: Attachment[]; visuals?: ChatVisual[]; usage?: Usage; runId?: string; model?: string; authorId?: string; authorName?: string; fileScope?: string; historyScope?: string; specialistName?: string; consultedSpecialists?: string[] }
 export interface ErpContext { installationId: string; entityType: string; entityId: string }
 export interface FastkoreChatBinding { installationId: string; externalUserId?: string; key: string; view: FastkoreContext['view']; entitySetId?: string; entityId?: string; entityName?: string; contextName?: string; entityUri?: string; tileId?: string; tileName?: string }
 export type FastkoreNavigationTarget = { installationId: string } & ({ entityUri: string } | { tileId: string; tileName?: string });

@@ -63,24 +63,24 @@ export class ProjectLibrary {
   instructions(scope: RunLibraryScope) { return libraryInstructions(scope); }
   /**
    * Server-side check before a library-backed answer is published: current rights and verbatim reproduction. Content changes during the
-   * answer are not checked (owner decision). Returns the text to publish.
+   * answer are not checked (owner decision). Include any text shown by structured visual blocks in the check.
    */
-  publish(answer: string, scope: RunLibraryScope, log: RunReadLog) {
+  publish(answer: string, scope: RunLibraryScope, log: RunReadLog, visualText = '') {
     const userId = scope.actorId;
     try {
       if (scope.entries.some(entry => !this.policy.stillAllowed(scope, entry))) {
         this.registry.recordAudit({ actorId: userId, action: 'library.publish.blocked', targetId: log.runId, details: { runId: log.runId, objectIds: { reason: 'revoked' } } });
-        return 'Ответ не опубликован: доступ к библиотеке изменился во время выполнения. Повторите вопрос.';
+        return { allowed: false, text: 'Ответ не опубликован: доступ к библиотеке изменился во время выполнения. Повторите вопрос.' };
       }
-      if (!log.calls) return answer;
+      if (!log.calls) return { allowed: true, text: answer };
       const policy = scope.entries.some(e => e.outputPolicy === 'explanation_only') ? 'explanation_only' : 'excerpts_allowed';
-      const problems = publicationProblems(answer, log.texts(), policy);
+      const problems = publicationProblems([answer, visualText].filter(Boolean).join('\n'), log.texts(), policy);
       if (problems.length) {
         this.registry.recordAudit({ actorId: userId, action: 'library.publish.blocked', targetId: log.runId, details: { runId: log.runId, objectIds: { reason: problems.join(',') } } });
-        return 'Ответ не опубликован: он содержал ' + problems.join(', ') + ', а режим выдачи библиотеки этого не разрешает. Попросите объяснение своими словами со ссылками на файлы.';
+        return { allowed: false, text: 'Ответ не опубликован: он содержал ' + problems.join(', ') + ', а режим выдачи библиотеки этого не разрешает. Попросите объяснение своими словами со ссылками на файлы.' };
       }
       this.registry.recordAudit({ actorId: userId, action: 'library.publish', targetId: log.runId, details: { runId: log.runId, objectIds: { reads: String(log.calls) } } });
-      return answer;
+      return { allowed: true, text: answer };
     } finally { log.purge(); }
   }
   /** The answer ended: content states it read may be removed once replaced. */

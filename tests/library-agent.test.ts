@@ -94,6 +94,9 @@ test('explanation only: code blocks, encoded copies and listings are not publish
     if (request.prompt.includes('BLOCK')) return 'Вот код:\n```csharp\n' + source + '\n```';
     if (request.prompt.includes('BASE64')) return 'Содержимое: ' + Buffer.from(source).toString('base64');
     if (request.prompt.includes('LINES')) return source;
+    if (request.prompt.includes('VISUAL')) return 'Результат.\n\n```fastkore-visual\n' + JSON.stringify({ version: 1, blocks: [
+      { type: 'table', title: 'Выдержка', columns: ['Строка'], rows: source.split('\n').map(line => [line]) },
+    ] }) + '\n```';
     if (request.prompt.includes('QUOTE')) return 'Наценка задаётся строкой `return cost * 1.35m;` (Pricing.cs:4).';
     return 'Наценка равна 35% от себестоимости (Pricing.cs, строка 4).';
   }, { workerFiles: true });
@@ -105,15 +108,17 @@ test('explanation only: code blocks, encoded copies and listings are not publish
       const chat = (await f.req('POST', `/api/projects/${f.project.id}/chats`, f.token, {})).json();
       const route = `/api/projects/${f.project.id}/chats/${chat.id}/messages`;
       await f.req('POST', route, f.token, { text }); await idle(f.workspace);
-      return { text: (await f.req('GET', `/api/projects/${f.project.id}/chats/${chat.id}`, f.token)).json().messages.at(-1).text as string, call: f.calls.at(-1)! };
+      const message = (await f.req('GET', `/api/projects/${f.project.id}/chats/${chat.id}`, f.token)).json().messages.at(-1);
+      return { text: message.text as string, visuals: message.visuals, call: f.calls.at(-1)! };
     };
     const explained = await ask('Как считается наценка?');
     assert.equal(explained.call.workDirectoryId, undefined, 'no output files for explanation-only analysis');
     assert.match(explained.text, /35%/);
-    for (const attempt of ['BLOCK', 'BASE64', 'LINES', 'QUOTE']) {
+    for (const attempt of ['BLOCK', 'BASE64', 'LINES', 'QUOTE', 'VISUAL']) {
       const blocked = await ask(attempt);
       assert.match(blocked.text, /Ответ не опубликован/, attempt);
       assert.ok(!blocked.text.includes('1.35m'), attempt);
+      assert.equal(blocked.visuals, undefined, attempt);
     }
     const c = await connection();
     assert.equal((await f.req('PATCH', `/api/projects/${f.project.id}/library/${folder.id}`, f.admin, { revision: c.revision, outputPolicy: 'excerpts_allowed' })).statusCode, 200);

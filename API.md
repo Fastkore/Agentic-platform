@@ -64,7 +64,7 @@ HTTP-маршруты обслуживают веб-интерфейс. Для �
 | PATCH | /api/projects/{projectId}/chats/{chatId} | Выбрать модель чата: {model} |
 | PATCH | /api/projects/{projectId}/chats/{chatId}/pin | Закрепить или открепить доступный чат в личном списке, `{pinned: boolean}`. |
 | GET | /api/projects/{projectId}/chats/{chatId} | Чат, messages, sessionId |
-| GET | /api/projects/{projectId}/chats/{chatId}/messages | Сообщения чата |
+| GET | /api/projects/{projectId}/chats/{chatId}/messages | Сообщения чата. Готовый ответ может содержать `visuals` с блоками `metrics`, `chart` или `table`. |
 | POST | /api/projects/{projectId}/chats/{chatId}/messages | Отправить вопрос; 202 с заданием |
 | POST | /api/projects/{projectId}/attachments | multipart/form-data, один файл в поле file до 20 МиБ. При исчерпании квоты возвращает 413, при занятом слоте возвращает 429. Неиспользованные вложения удаляются после 24 часов. |
 | GET, POST | /api/projects/{projectId}/files | Список и загрузка файлов проекта для локального администратора |
