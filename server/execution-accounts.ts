@@ -3,11 +3,12 @@ import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
-import { providerForModel, type ExecutionAccount, type ExecutionAccounts, type ExecutionProvider } from '../shared/execution-accounts.js';
+import { providerForModel, type ExecutionAccount, type ExecutionAccounts, type ExecutionProvider, type GigaChatScope } from '../shared/execution-accounts.js';
 import { CodexClient, type CodexRunner } from './codex.js';
 import { BridgeError } from './store.js';
 import { GeminiClient, AntigravityClient } from './gemini.js';
 import { GlmClient, readGlmKey, writeGlmConfig } from './glm.js';
+import { GigaChatClient, readGigaChatCredentials } from './gigachat.js';
 import type { ModelCatalog } from '../shared/types.js';
 
 type RecordAccount = Pick<ExecutionAccount, 'id' | 'name' | 'provider'>;
@@ -25,6 +26,7 @@ export class ExecutionAccountStore {
   private modelRevision = randomUUID();
   get catalogRevision() { return this.modelRevision; }
   private readonly file: string;
+  private readonly gigaChatClients = new Map<string, GigaChatClient>();
   private readonly logins = new Map<string, { child: ChildProcess; status: NonNullable<ExecutionAccount['login']> }>();
   private stopLogin(child: ChildProcess) {
     if (child.exitCode !== null || child.signalCode !== null) return;
@@ -50,8 +52,14 @@ export class ExecutionAccountStore {
   // The most recently activated account is the primary: it serves auto-resolved runs.
   get active() { return this.state.active.at(-1) ?? ''; }
   private get activeSet() { return new Set(this.state.active); }
+  private gigaChat(id: string) {
+    let client = this.gigaChatClients.get(id);
+    if (!client) { client = new GigaChatClient(this.home(id)); this.gigaChatClients.set(id, client); }
+    return client;
+  }
   runner(id = this.active): CodexRunner {
     const provider = this.find(id).provider;
+    if (provider === 'gigachat') return this.gigaChat(id);
     return provider === 'antigravity' ? new AntigravityClient(this.home(id)) : provider === 'gemini' ? new GeminiClient(this.home(id))
       : provider === 'glm' ? new GlmClient(this.home(id)) : new CodexClient([], 'worker', this.home(id));
   }
@@ -68,7 +76,7 @@ export class ExecutionAccountStore {
     if (!active.length) throw new BridgeError('Включите хотя бы один активный аккаунт исполнителя в настройках сервера.', 503);
     const account = provider ? active.find(item => item.provider === provider) : active[0];
     if (!account) throw new BridgeError('Этот исполнитель не активен. Включите его аккаунт в настройках сервера.', 503);
-    return { account, model: model?.replace(/^(codex|gemini|antigravity|glm)\//, '') };
+    return { account, model: model?.replace(/^(codex|gemini|antigravity|glm|gigachat)\//, '') };
   }
   async models(cli: string): Promise<ModelCatalog> {
     const active = await this.activeAccounts();
@@ -90,6 +98,7 @@ export class ExecutionAccountStore {
   async executionKey(id = this.active) {
     const account = this.find(id);
     const home = this.home(account.id);
+    if (account.provider === 'gigachat') return account.id + ':' + ((await readGigaChatCredentials(home))?.revision ?? 'signed-out');
     let identity = account.id;
     try {
       if (account.provider === 'glm') identity = readGlmKey(home) ?? identity;
@@ -118,13 +127,16 @@ export class ExecutionAccountStore {
   }
   async list(): Promise<ExecutionAccounts> {
     return { accounts: await Promise.all(this.state.accounts.map(async account => {
-      let email: string | undefined, signedIn = false;
+      let email: string | undefined, scope: GigaChatScope | undefined, signedIn = false;
       try {
         if (account.provider === 'antigravity') {
           const marker = JSON.parse(await readFile(path.join(this.home(account.id), '.antigravity-connected.json'), 'utf8'));
           signedIn = typeof marker.session === 'string';
         } else if (account.provider === 'glm') {
           signedIn = readGlmKey(this.home(account.id)) !== null;
+        } else if (account.provider === 'gigachat') {
+          scope = (await readGigaChatCredentials(this.home(account.id)))?.scope;
+          signedIn = !!scope;
         } else {
         const file = account.provider === 'gemini' ? path.join('.gemini', 'oauth_creds.json') : 'auth.json';
         const auth = JSON.parse(await readFile(path.join(this.home(account.id), file), 'utf8'));
@@ -142,7 +154,7 @@ export class ExecutionAccountStore {
         this.modelRevision = randomUUID();
         this.stopLogin(login.child);
       }
-      return { ...account, email, signedIn, active: this.activeSet.has(account.id), login: this.logins.get(account.id)?.status };
+      return { ...account, email, scope, signedIn, active: this.activeSet.has(account.id), login: this.logins.get(account.id)?.status };
     })) };
   }
   async create(name: string, provider: ExecutionProvider = 'codex') {
@@ -177,6 +189,7 @@ export class ExecutionAccountStore {
     try { await this.save({ active: [...activeSet], accounts: remaining.map(({ id, name, provider }) => ({ id, name, provider })) }); }
     catch (error) { if (moved) await rename(staged, target); throw error; }
     this.logins.delete(id);
+    this.gigaChatClients.delete(id);
     if (moved) await rm(staged, { recursive: id !== 'default', force: true });
     return this.list();
   }
@@ -196,6 +209,7 @@ export class ExecutionAccountStore {
   async login(id: string) {
     const account = this.find(id);
     if (account.provider === 'glm') throw new BridgeError('Для аккаунта GLM сохраните API-ключ вместо входа.', 409);
+    if (account.provider === 'gigachat') throw new BridgeError('Для аккаунта GigaChat сохраните ключ проекта API.', 409);
     const existing = this.logins.get(id);
     if (existing?.status.state === 'waiting') return existing.status;
     const home = this.home(id);
@@ -264,8 +278,14 @@ export class ExecutionAccountStore {
     if (this.find(id).provider === 'antigravity') void this.completeAntigravityLogin(id, login);
     return { ok: true };
   }
-  async setKey(id: string, key: string) {
+  async setKey(id: string, key: string, scope?: GigaChatScope) {
     const account = this.find(id);
+    if (account.provider === 'gigachat') {
+      if (!scope) throw new BridgeError('Выберите scope проекта GigaChat API.');
+      await this.gigaChat(id).setKey(key, scope);
+      this.modelRevision = randomUUID();
+      return this.list();
+    }
     if (account.provider !== 'glm') throw new BridgeError('Ключ применяется только к аккаунту GLM.', 409);
     if (/[\r\n]/.test(key)) throw new BridgeError('Некорректный ключ GLM.');
     await writeGlmConfig(this.home(id), key);

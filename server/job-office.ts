@@ -5,7 +5,7 @@ import type { CodexToolDefinition, CodexToolResult } from './codex-tools.js';
 
 const programs = { python: '/opt/bridge-office/bin/python', 'fk-office': '/usr/local/bin/fk-office' } as const;
 
-function converterSandbox(job: string) {
+function officeSandbox(job: string, python: boolean) {
   // LibreOffice needs a Unix socket for its own startup. The private mount and
   // network namespaces leave it with only its own /tmp and the current job.
   return ['--unshare-all', '--unshare-user', '--die-with-parent', '--new-session', '--cap-drop', 'ALL', '--clearenv',
@@ -14,7 +14,8 @@ function converterSandbox(job: string) {
     '--ro-bind', '/var/cache/fontconfig', '/var/cache/fontconfig',
     '--symlink', 'usr/bin', '/bin', '--symlink', 'usr/lib', '/lib', '--symlink', 'usr/lib64', '/lib64',
     '--dev', '/dev', '--proc', '/proc', '--tmpfs', '/tmp', '--bind', job, job, '--chdir', job,
-    '--setenv', 'PATH', '/usr/bin:/bin', '--setenv', 'LANG', 'C.UTF-8', '--'];
+    '--setenv', 'PATH', '/usr/bin:/bin', '--setenv', 'LANG', 'C.UTF-8',
+    ...(python ? ['--setenv', 'HOME', job, '--setenv', 'TMPDIR', job, '--setenv', 'MPLBACKEND', 'Agg', '--setenv', 'PYTHONNOUSERSITE', '1'] : []), '--'];
 }
 
 export const jobOfficeTool: CodexToolDefinition = {
@@ -26,7 +27,7 @@ export const jobOfficeTool: CodexToolDefinition = {
   } },
 };
 
-export async function runJobOffice(request: CodexRequest, input: unknown, signal: AbortSignal): Promise<CodexToolResult> {
+export async function runJobOffice(request: CodexRequest, input: unknown, signal: AbortSignal, directSandbox = false): Promise<CodexToolResult> {
   if (!request.workDirectoryId || !request.allowWrite || !input || typeof input !== 'object') {
     return { success: false, text: 'Инструменты документов доступны в задании с разрешённой записью.' };
   }
@@ -38,10 +39,10 @@ export async function runJobOffice(request: CodexRequest, input: unknown, signal
   const stopSignal = AbortSignal.any([signal, AbortSignal.timeout(135_000)]);
   stopSignal.throwIfAborted();
   const job = request.workspace;
-  const converter = program === 'fk-office';
-  const sandbox = converter ? converterSandbox(job) : [...workerJobConfig(job), 'sandbox', '--', '/usr/bin/env',
+  const useBubblewrap = directSandbox || program === 'fk-office';
+  const sandbox = useBubblewrap ? officeSandbox(job, program === 'python') : [...workerJobConfig(job), 'sandbox', '--', '/usr/bin/env',
     `HOME=${job}`, `TMPDIR=${job}`, `XDG_CACHE_HOME=${path.join(job, '.cache')}`, 'MPLBACKEND=Agg', 'PYTHONNOUSERSITE=1'];
-  const child = spawn(converter ? '/opt/bridge-office/bwrap' : request.cliPath, [...sandbox, programs[program], ...args], {
+  const child = spawn(useBubblewrap ? '/opt/bridge-office/bwrap' : request.cliPath, [...sandbox, programs[program], ...args], {
     cwd: job, env: { PATH: process.env.PATH, HOME: '/home/node', CODEX_HOME: '/etc/codex', LANG: 'C.UTF-8' },
     detached: true, stdio: ['ignore', 'pipe', 'pipe'], shell: false, windowsHide: true,
   });

@@ -1,22 +1,28 @@
 import { useEffect, useState } from 'react';
 import { KeyRound, LogIn, Plus, RefreshCw, Trash2 } from 'lucide-react';
-import type { ExecutionAccount, ExecutionAccounts, ExecutionProvider } from '../shared/execution-accounts';
+import { type ExecutionAccount, type ExecutionAccounts, type ExecutionProvider, type GigaChatScope } from '../shared/execution-accounts';
 import { Select } from './Select';
 import { WorkspaceDialog } from './WorkspaceDialog';
 
 type Request = <T>(url: string, init?: RequestInit) => Promise<T>;
 const endpoint = '/api/admin/execution/accounts';
-const providerLabel = (provider: ExecutionProvider) => provider === 'antigravity' ? 'Antigravity CLI' : provider === 'gemini' ? 'Gemini CLI' : provider === 'glm' ? 'GLM · Z.ai' : 'ChatGPT';
+const providerLabel = (provider: ExecutionProvider) => provider === 'antigravity' ? 'Antigravity CLI' : provider === 'gemini' ? 'Gemini CLI' : provider === 'glm' ? 'GLM · Z.ai' : provider === 'gigachat' ? 'GigaChat · Сбер' : 'ChatGPT';
+const usesKey = (provider: ExecutionProvider) => provider === 'glm' || provider === 'gigachat';
 const accountName = (account: ExecutionAccount) => account.provider === 'codex' && account.id === 'default' && account.name === 'Основной Codex' ? 'ChatGPT' : account.name;
 // The Gemini CLI type is omitted on purpose: Google has retired it and new logins cannot work.
-const createOptions = [{ value: 'codex', label: 'ChatGPT' }, { value: 'antigravity', label: 'Antigravity CLI · Google' }, { value: 'glm', label: 'GLM · Z.ai (ключ)' }];
+const createOptions = [{ value: 'codex', label: 'ChatGPT' }, { value: 'antigravity', label: 'Antigravity CLI · Google' }, { value: 'glm', label: 'GLM · Z.ai (ключ)' }, { value: 'gigachat', label: 'GigaChat · Сбер (ключ)' }];
+const gigaChatScopeOptions = [
+  { value: 'GIGACHAT_API_PERS', label: 'Физлицо · PERS' },
+  { value: 'GIGACHAT_API_B2B', label: 'Предоплата · B2B' },
+  { value: 'GIGACHAT_API_CORP', label: 'Постоплата · CORP' },
+];
 
-type Wizard = { id?: string; provider: ExecutionProvider; name: string; submitted?: boolean };
+type Wizard = { id?: string; provider: ExecutionProvider; name: string; submitted?: boolean; scope?: GigaChatScope };
 
 export function ExecutionAccountsPanel({ request, busy, changed }: { request: Request; busy: boolean; changed: () => Promise<void> }) {
   const [data, setData] = useState<ExecutionAccounts>();
   const [authorizationCodes, setAuthorizationCodes] = useState<Record<string, string>>({});
-  const [glmKeys, setGlmKeys] = useState<Record<string, string>>({});
+  const [accountKey, setAccountKey] = useState('');
   const [wizard, setWizard] = useState<Wizard | null>(null);
   const [working, setWorking] = useState(false), [error, setError] = useState('');
   const waiting = data?.accounts.some(account => account.login?.state === 'waiting') ?? false;
@@ -36,7 +42,7 @@ export function ExecutionAccountsPanel({ request, busy, changed }: { request: Re
   useEffect(() => {
     if (!wizard?.id || !wizard.submitted || working) return;
     const account = data?.accounts.find(item => item.id === wizard.id);
-    if (account?.signedIn && (account.provider === 'glm' || account.login?.state === 'complete')) {
+    if (account?.signedIn && (usesKey(account.provider) || account.login?.state === 'complete')) {
       setWorking(true);
       void (async () => {
         try {
@@ -56,6 +62,7 @@ export function ExecutionAccountsPanel({ request, busy, changed }: { request: Re
     try { await work(); await load(); } catch (e) { setError((e as Error).message); } finally { setWorking(false); }
   }
   const wizardAccount = wizard?.id ? data?.accounts.find(item => item.id === wizard.id) : undefined;
+  const scope = wizard?.scope ?? wizardAccount?.scope ?? 'GIGACHAT_API_PERS';
   return <section className="setting-section execution-accounts">
     <div className="settings-section-heading"><h3>Аккаунты исполнителей</h3>
       <button type="button" className="workspace-icon" aria-label="Обновить аккаунты" disabled={working}
@@ -78,9 +85,9 @@ export function ExecutionAccountsPanel({ request, busy, changed }: { request: Re
           Активен
         </label>
         <button type="button" className="secondary" disabled={busy || working || account.login?.state === 'waiting'}
-          onClick={() => { setAuthorizationCodes(old => ({ ...old, [account.id]: '' })); setGlmKeys(old => ({ ...old, [account.id]: '' }));
+          onClick={() => { setAuthorizationCodes(old => ({ ...old, [account.id]: '' })); setAccountKey('');
             setWizard({ id: account.id, provider: account.provider, name: accountName(account) }); }}>
-          {account.provider === 'glm' ? <KeyRound size={15} aria-hidden="true" /> : <LogIn size={15} aria-hidden="true" />}<span>{account.provider === 'glm' ? 'Ключ' : 'Вход'}</span></button>
+          {usesKey(account.provider) ? <KeyRound size={15} aria-hidden="true" /> : <LogIn size={15} aria-hidden="true" />}<span>{usesKey(account.provider) ? 'Ключ' : 'Вход'}</span></button>
         <button type="button" className="workspace-icon" aria-label={'Удалить подключение «' + accountName(account) + '»'} title="Удалить подключение"
           disabled={busy || working} onClick={() => {
             if (!window.confirm('Удалить подключение «' + accountName(account) + '» и сохранённый вход? Чаты и файлы проектов сохранятся.')) return;
@@ -90,10 +97,10 @@ export function ExecutionAccountsPanel({ request, busy, changed }: { request: Re
     </li>)}</ul>
     <div className="settings-actions">
       <button type="button" className="secondary" disabled={busy || working || (data?.accounts.length ?? 0) >= 20}
-        onClick={() => { setAuthorizationCodes({}); setGlmKeys({}); setWizard({ provider: 'codex', name: '' }); }}><Plus size={15} />Добавить аккаунт</button>
+        onClick={() => { setAuthorizationCodes({}); setAccountKey(''); setWizard({ provider: 'codex', name: '' }); }}><Plus size={15} />Добавить аккаунт</button>
     </div>
     {error && <p className="inline-error" role="alert">{error}</p>}
-    {wizard && <WorkspaceDialog title={wizard.id ? 'Подключение: ' + wizard.name : 'Новый аккаунт исполнителя'} className="account-wizard" close={() => setWizard(null)}>
+    {wizard && <WorkspaceDialog title={wizard.id ? 'Подключение: ' + wizard.name : 'Новый аккаунт исполнителя'} className="account-wizard" close={() => { setAccountKey(''); setWizard(null); }}>
       {!wizard.id && <div className="setting-section">
         <label htmlFor="account-wizard-type">Тип исполнителя</label>
         <Select id="account-wizard-type" className="settings-select" value={wizard.provider} onChange={value => setWizard({ ...wizard, provider: value as ExecutionProvider })} options={createOptions} />
@@ -108,18 +115,23 @@ export function ExecutionAccountsPanel({ request, busy, changed }: { request: Re
         </div>
       </div>}
       {wizard.id && wizardAccount && <div className="setting-section">
-        {wizardAccount.provider === 'glm'
+        {usesKey(wizardAccount.provider)
           ? <div className="execution-device-code">
-              <label htmlFor={'glm-key-' + wizardAccount.id}>API-ключ GLM Coding Plan{wizardAccount.signedIn ? ' · замените сохранённый ключ' : ''}</label>
-              <input type="password" autoComplete="off" id={'glm-key-' + wizardAccount.id} value={glmKeys[wizardAccount.id] ?? ''}
-                onChange={e => setGlmKeys(old => ({ ...old, [wizardAccount.id]: e.target.value }))} placeholder="Ключ из личного кабинета Z.ai" />
+              <label htmlFor={'account-key-' + wizardAccount.id}>{wizardAccount.provider === 'gigachat' ? 'Authorization Key проекта GigaChat API' : 'API-ключ GLM Coding Plan'}{wizardAccount.signedIn ? ' · замените сохранённый ключ' : ''}</label>
+              <input type="password" autoComplete="off" id={'account-key-' + wizardAccount.id} value={accountKey}
+                onChange={e => setAccountKey(e.target.value)} />
+              {wizardAccount.provider === 'gigachat' && <>
+                <label htmlFor="gigachat-scope">Тип доступа (Scope)</label>
+                <Select id="gigachat-scope" value={scope} options={gigaChatScopeOptions} onChange={value => setWizard({ ...wizard, scope: value as GigaChatScope })} />
+              </>}
               <div className="settings-actions">
-                <button type="button" className="primary" disabled={working || !glmKeys[wizardAccount.id]?.trim()} onClick={() => void action(async () => {
-                  await request(endpoint + '/' + wizardAccount.id + '/key', { method: 'POST', body: JSON.stringify({ key: glmKeys[wizardAccount.id].trim() }) });
-                  setGlmKeys(old => ({ ...old, [wizardAccount.id]: '' }));
+                <button type="button" className="primary" disabled={working || !accountKey.trim()} onClick={() => void action(async () => {
+                  await request(endpoint + '/' + wizardAccount.id + '/key', { method: 'POST', body: JSON.stringify({ key: accountKey.trim(),
+                    scope: wizardAccount.provider === 'gigachat' ? scope : undefined }) });
+                  setAccountKey('');
                   setWizard(current => current?.id === wizardAccount.id ? { ...current, submitted: true } : current);
                 })}>Сохранить и подключить</button>
-                <button type="button" className="secondary" onClick={() => setWizard(null)} disabled={working}>Закрыть</button>
+                <button type="button" className="secondary" onClick={() => { setAccountKey(''); setWizard(null); }} disabled={working}>Закрыть</button>
               </div>
             </div>
           : <>

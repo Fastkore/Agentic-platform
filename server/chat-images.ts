@@ -14,10 +14,10 @@ export const maxChatImageBytes = maxUploadBytes;
 export const maxChatImageUrlLength = 4 * Math.ceil(maxChatImageBytes / 3) + 32;
 export const maxChatImagePayload = maxChatImageUrlLength + maxChatImages * 64;
 export const chatImageUrlPattern = '^data:image/(jpeg|png|webp|gif);base64,[A-Za-z0-9+/]+={0,2}$';
-export const chatImagesUnsupportedProvider = 'Для просмотра изображений выберите модель ChatGPT или GLM в этом чате.';
+export const chatImagesUnsupportedProvider = 'Для просмотра изображений выберите модель ChatGPT или GLM либо GigaChat с поддержкой изображений.';
 
 export function supportsChatImages(provider?: ExecutionProvider) {
-  return !provider || provider === 'codex' || provider === 'glm';
+  return !provider || provider === 'codex' || provider === 'glm' || provider === 'gigachat';
 }
 
 function extension(name: string) { return path.extname(name).toLowerCase(); }
@@ -27,12 +27,15 @@ export function isChatImage(file: Attachment) {
   return imageTypes.has(ext) || otherImageTypes.has(ext);
 }
 
-export function validateChatImages(files: Attachment[]) {
+export function validateChatImages(files: Attachment[], provider?: ExecutionProvider) {
   if (files.some(file => !imageTypes.has(extension(file.name)))) {
     throw new BridgeError('Для просмотра прикрепите изображение в формате JPG, PNG, WebP или GIF.', 415);
   }
   if (files.length > maxChatImages || files.reduce((total, file) => total + file.size, 0) > maxChatImageBytes) {
     throw new BridgeError('К сообщению можно прикрепить до 8 изображений общим размером до 20 МБ.', 413);
+  }
+  if (provider === 'gigachat' && files.some(file => !['jpeg', 'png'].includes(imageTypes.get(extension(file.name)) ?? '') || file.size > 15 * 1024 * 1024)) {
+    throw new BridgeError('GigaChat принимает изображения JPG или PNG размером до 15 МБ каждое.', 415);
   }
 }
 

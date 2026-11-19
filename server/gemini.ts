@@ -1,7 +1,7 @@
 import { spawn, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { existsSync } from 'node:fs';
-import { mkdir, mkdtemp, readFile, readdir, lstat, realpath, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { once } from 'node:events';
 import { randomBytes, randomUUID } from 'node:crypto';
@@ -14,6 +14,7 @@ import { BridgeError, redact } from './store.js';
 import { readGoogleLimits } from './google-limits.js';
 import { describeToolContext } from './tool-context.js';
 import { jobOfficeTool, runJobOffice } from './job-office.js';
+import { jobFilesTool, useJobFiles as jobFiles } from './job-files.js';
 
 export function geminiFailure(text: string) {
   if (/UNSUPPORTED_CLIENT|This client is no longer supported/.test(text)) return 'Google отклонил Gemini CLI (UNSUPPORTED_CLIENT). Для этого аккаунта требуется переход на Antigravity CLI; повторный вход в Gemini CLI не устранит отказ.';
@@ -78,38 +79,8 @@ export class GeminiClient implements CodexRunner {
       return result;
     }
     const definitions = [...(request.tools?.definitions ?? [])];
-    const fileTool = 'workspace_files';
-    if (request.workDirectoryId) definitions.push({
-      type: 'function', name: fileTool, description: 'Файлы текущего задания. action list/read/write/remove. Пути относительны рабочей папке. Результаты сохраняй в output. Источники CLI находятся в cli.',
-      inputSchema: { type: 'object', additionalProperties: false, required: ['action', 'path'],
-        properties: { action: { enum: ['list', 'read', 'write', 'remove'] }, path: { type: 'string' }, text: { type: 'string', maxLength: 200000 } } },
-    });
+    if (request.workDirectoryId) definitions.push(jobFilesTool);
     if (request.workDirectoryId && request.allowWrite) definitions.push(jobOfficeTool);
-    const files = async (args: Record<string, unknown>) => {
-      if (typeof args.path !== 'string' || !request.workDirectoryId) throw Error('Invalid file path');
-      const root = await realpath(request.workspace), target = path.resolve(root, args.path);
-      if (target !== root && !target.startsWith(root + path.sep)) throw Error('File outside job');
-      let current = root;
-      for (const part of path.relative(root, target).split(path.sep).filter(Boolean)) {
-        current = path.join(current, part);
-        const info = await lstat(current).catch(error => { if (error.code !== 'ENOENT') throw error; });
-        if (info?.isSymbolicLink() || info?.isFile() && info.nlink !== 1) throw Error('File link unavailable');
-      }
-      if (args.action === 'list') return JSON.stringify((await readdir(target, { withFileTypes: true })).map(entry => ({ name: entry.name, directory: entry.isDirectory() })));
-      if (args.action === 'read') {
-        const info = await lstat(target);
-        if (!info.isFile() || info.size > 200000) throw Error('File too large for text reading');
-        return (await readFile(target, 'utf8')).slice(0, 80000);
-      }
-      if (!request.allowWrite || target === root) throw Error('Writing unavailable');
-      if (args.action === 'write' && typeof args.text === 'string' && args.text.length <= 200000) {
-        await mkdir(path.dirname(target), { recursive: true });
-        await writeFile(target, args.text, { mode: 0o600, signal: jobToolSignal });
-        return 'Сохранено';
-      }
-      if (args.action === 'remove' && (await lstat(target)).isFile()) { await rm(target); return 'Удалено'; }
-      throw Error('Unknown file operation');
-    };
     const server = createServer(async (req, res) => {
       const send = (status: number, value?: unknown) => res.writeHead(status, { 'content-type': 'application/json' }).end(value === undefined ? '' : JSON.stringify(value));
       if (req.headers.authorization !== 'Bearer ' + token || req.method !== 'POST') { send(403); return; }
@@ -130,7 +101,7 @@ export class GeminiClient implements CodexRunner {
           const toolCallId = randomUUID();
           await onEvent({ kind: 'tool', text: name, toolCallId, toolContext: describeToolContext(name, args) });
           try {
-            if (name === fileTool) result = { success: true, text: await useJobFiles(() => files(args)) };
+            if (name === jobFilesTool.name) result = { success: true, text: await useJobFiles(() => jobFiles(request, args, jobToolSignal)) };
             else if (name === jobOfficeTool.name) result = await useJobFiles(() => runJobOffice(request, args, jobToolSignal));
             else if (request.tools) result = await request.tools.call(name, args, signal);
           } finally {

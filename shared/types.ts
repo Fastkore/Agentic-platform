@@ -1,6 +1,7 @@
 import type { FastkoreContext } from './fastkore-context.js';
 import type { AgentToolId } from './agent-tools.js';
 import type { ChatVisual } from './chat-visuals.js';
+import type { ExecutionProvider } from './execution-accounts.js';
 
 export type FileStorageProvider = 'local' | 's3';
 export interface FileStorageStatus { provider: FileStorageProvider; s3Configured: boolean }
@@ -15,9 +16,9 @@ export interface DictationModels {
   models: { id: DictationModelId; name: string; installed: boolean }[];
 }
 export interface ModelOption { id: string; name: string; description: string; isDefault: boolean }
-export interface ModelCatalog { models: ModelOption[]; fetchedAt: string; source: 'codex' | 'gemini' | 'antigravity' | 'glm' | 'combined' }
+export interface ModelCatalog { models: ModelOption[]; fetchedAt: string; source: ExecutionProvider | 'combined' }
 export interface LimitWindow { usedPercent: number; windowDurationMins: number | null; resetsAt: number | null; label?: string }
-export interface CodexLimits { buckets: { name: string; windows: LimitWindow[]; modelIds?: string[] }[]; resetsAvailable: number | null; provider?: 'codex' | 'gemini' | 'antigravity' | 'glm'; unavailableReason?: string }
+export interface CodexLimits { buckets: { name: string; windows: LimitWindow[]; modelIds?: string[] }[]; resetsAvailable: number | null; provider?: ExecutionProvider; unavailableReason?: string }
 export interface Usage { inputTokens: number; cachedInputTokens: number; outputTokens: number }
 export interface TokenActivityDay { date: string; tokens: number }
 export interface TokenActivityReport {
@@ -123,7 +124,7 @@ export interface StoredFastkoreInstallation extends Omit<FastkoreInstallation, '
   tls?: { trust?: FastkoreTlsTrust };
 }
 export interface State { schemaVersion: 1; settings: Settings; projects: Project[]; runs: Run[]; jobs?: Job[]; externalIdentities?: ExternalIdentity[]; sso?: { installations?: StoredFastkoreInstallation[]; roles?: FastkoreRoleRecord[]; roleSnapshots?: FastkoreRoleSnapshot[]; rolePermissions?: (FastkoreRolePermissions & { installationId: string; roleId: string })[] }; security?: Security; corporate?: Corporate }
-export interface CliInfo { provider?: 'codex' | 'gemini' | 'antigravity' | 'glm'; accountId?: string; catalogRevision?: string; path: string; version: string; authentication: 'chatgpt' | 'google' | 'glm' | 'api-key' | 'signed-out' | 'unknown'; status: string }
+export interface CliInfo { provider?: ExecutionProvider; accountId?: string; catalogRevision?: string; path: string; version: string; authentication: 'chatgpt' | 'google' | 'glm' | 'gigachat' | 'api-key' | 'signed-out' | 'unknown'; status: string }
 export interface ProjectSummary { id: string; name: string; directory: string; chatCount: number; roles?: ProjectRoleLabel[]; canRename?: boolean }
 export interface ChatSummary { id: string; title: string; updatedAt: string; messageCount: number; ownerId?: string; ownerName?: string; visibility?: 'private' | 'project'; linkedToFastkore?: true; pinned?: boolean }
 export const unassignedChatsLabel = 'Без проекта';

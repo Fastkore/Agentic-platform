@@ -6,7 +6,7 @@ import type { CodexEvent, CodexRequest, CodexResult, CodexRunner, RegisterSteeri
 import { randomUUID } from 'node:crypto';
 import type { CodexToolDefinition, CodexToolResult } from './codex-tools.js';
 import { BridgeError } from './store.js';
-import type { ExecutionAccounts, ExecutionProvider } from '../shared/execution-accounts.js';
+import type { ExecutionAccounts, ExecutionProvider, GigaChatScope } from '../shared/execution-accounts.js';
 
 export type WorkerRun = Pick<CodexRequest, 'prompt' | 'imageUrls' | 'imageQuestion' | 'developerInstructions' | 'sessionId' | 'ephemeral' | 'consultation' | 'consultationKey' | 'model' | 'reasoningEffort' | 'workDirectoryId'> & { toolDefinitions?: CodexToolDefinition[]; steeringKey?: string };
 export type WorkerSteer = { key: string; text: string };
@@ -19,7 +19,7 @@ export class RemoteCodexRunner implements CodexRunner {
   private readonly consultationContext = new AsyncLocalStorage<string>();
   constructor(private readonly socketPath: string) {}
 
-  private request(path: string, body?: WorkerRun | WorkerToolResult | WorkerSteer | { name: string; provider?: ExecutionProvider } | { code: string } | { key: string } | { query: string } | Record<string, never>, signal?: AbortSignal): Promise<IncomingMessage> {
+  private request(path: string, body?: WorkerRun | WorkerToolResult | WorkerSteer | { name: string; provider?: ExecutionProvider } | { code: string } | { key: string; scope?: GigaChatScope } | { query: string } | Record<string, never>, signal?: AbortSignal): Promise<IncomingMessage> {
     const timeout = AbortSignal.timeout(body ? 16 * 60_000 : 35_000);
     return new Promise((resolve, reject) => {
       const payload = body && JSON.stringify(body);
@@ -29,7 +29,16 @@ export class RemoteCodexRunner implements CodexRunner {
         signal: signal ? AbortSignal.any([timeout, signal]) : timeout,
       }, res => {
         if (res.statusCode === 200) resolve(res);
-        else {
+        else if (/^\/accounts\/[a-f0-9-]+\/key$/.test(path)) {
+          let text = '';
+          res.setEncoding('utf8').on('data', chunk => { text = (text + chunk).slice(0, 4000); });
+          res.on('error', () => reject(new BridgeError('Не удалось связаться с исполнителем модели.', 503)));
+          res.on('end', () => {
+            let message = 'Исполнитель отклонил ключ.';
+            try { const body = JSON.parse(text); if (typeof body.error === 'string') message = body.error; } catch { /* Use the default message. */ }
+            reject(new BridgeError(message, res.statusCode ?? 502));
+          });
+        } else {
           res.resume();
           reject(new BridgeError('Исполнитель Codex отклонил запрос.', res.statusCode === 409 ? 409 : 502));
         }
@@ -58,9 +67,9 @@ export class RemoteCodexRunner implements CodexRunner {
     for await (const chunk of response) { body += chunk; if (body.length > 1_000_000) throw new BridgeError('Ответ поиска слишком большой.', 502); }
     return JSON.parse(body);
   }
-  async accountAction(action: 'create' | 'login' | 'activate' | 'deactivate' | 'code' | 'key' | 'remove', id?: string, name?: string, provider?: ExecutionProvider) {
+  async accountAction(action: 'create' | 'login' | 'activate' | 'deactivate' | 'code' | 'key' | 'remove', id?: string, name?: string, provider?: ExecutionProvider, scope?: GigaChatScope) {
     const response = await this.request(action === 'create' ? '/accounts' : '/accounts/' + encodeURIComponent(id!) + '/' + action,
-      action === 'create' ? { name: name!, provider } : action === 'code' ? { code: name! } : action === 'key' ? { key: name! } : {});
+      action === 'create' ? { name: name!, provider } : action === 'code' ? { code: name! } : action === 'key' ? { key: name!, scope } : {});
     let body = '';
     for await (const chunk of response) body += chunk;
     return JSON.parse(body);

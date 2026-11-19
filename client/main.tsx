@@ -15,7 +15,7 @@ import { openFastkoreBrowser, openFastkoreTarget, parseHostScreenshotCapability,
 import { Settings as SettingsIcon } from 'lucide-react';
 import { Select, type SelectHandle } from './Select';
 import { ExecutionAccountsPanel } from './ExecutionAccountsPanel';
-import { executionConnected } from '../shared/execution-accounts';
+import { executionConnected, providerForModel } from '../shared/execution-accounts';
 import { SidebarResizeHandle } from './SidebarResizeHandle';
 import { ComposerInput } from './ComposerInput';
 import { ChatAccessPopover } from './ChatAccessPopover';
@@ -1690,7 +1690,7 @@ function App() {
               {status?.addresses.map(url => <button key={url} className="copy-row" onClick={() => void copyItem(url, url)}><code>{url}</code>{copied === url ? <Check size={14} /> : <Copy size={14} />}</button>)}
             </section>
             {status && !status.isolatedCodex && <section className="setting-section"><h3>Исполнитель модели</h3>
-              <p className="settings-status">{status?.cli?.authentication === 'google' ? 'Подключён Gemini CLI через Google' : status?.cli?.authentication === 'chatgpt' ? 'Подключён через ChatGPT' : status?.cli?.authentication === 'glm' ? 'Подключён GLM (Z.ai) по ключу Coding Plan' : status?.cli?.authentication === 'api-key' ? 'API-ключ · выполнение отключено' : 'Исполнитель не подключён'}</p>
+              <p className="settings-status">{status?.cli?.authentication === 'google' ? 'Подключён Gemini CLI через Google' : status?.cli?.authentication === 'chatgpt' ? 'Подключён через ChatGPT' : status?.cli?.authentication === 'glm' ? 'Подключён GLM (Z.ai) по ключу Coding Plan' : status?.cli?.authentication === 'gigachat' ? 'Подключён GigaChat API' : status?.cli?.authentication === 'api-key' ? 'API-ключ · выполнение отключено' : 'Исполнитель не подключён'}</p>
               <label htmlFor="cli-path">Путь к Codex CLI</label>
               <input id="cli-path" value={cliPath} onChange={e => setCliPath(e.target.value)} placeholder="Автоопределение" disabled={busy} />
               <div className="settings-actions">
@@ -1944,8 +1944,8 @@ function LimitsButton({ limits, loading, refresh, unavailableReason, model }: {
   const windows = unavailableReason ? [] : limits?.buckets.flatMap(bucket => bucket.windows) ?? [];
   const remaining = windows.length ? Math.min(...windows.map(window => remainingPercent(window.usedPercent))) : null;
   const remainingLabel = remaining === null ? '' : `Осталось ${limitPercentFormat.format(remaining)}%`;
-  const provider = limits?.provider || (model.startsWith('antigravity') ? 'antigravity' : model.startsWith('glm') ? 'glm' : model.startsWith('gemini') ? 'gemini' : 'codex');
-  const heading = provider === 'codex' ? 'Лимиты Codex' : provider === 'glm' ? 'Лимиты Z.ai' : 'Лимиты Google';
+  const provider = limits?.provider ?? providerForModel(model) ?? 'codex';
+  const heading = provider === 'codex' ? 'Лимиты Codex' : provider === 'glm' ? 'Лимиты Z.ai' : provider === 'gigachat' ? 'Лимиты GigaChat' : 'Лимиты Google';
   const title = remainingLabel ? `${heading} · ${remainingLabel.toLowerCase()}` : heading;
   return <details className="limits-control"
     onToggle={e => { if (e.currentTarget.open) void refresh(); }}

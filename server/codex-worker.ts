@@ -9,7 +9,7 @@ import type { WorkerMessage, WorkerRun, WorkerSteer, WorkerToolResult } from './
 import type { CodexToolResult } from './codex-tools.js';
 import { BridgeError } from './store.js';
 import { ExecutionAccountStore } from './execution-accounts.js';
-import { executionConnected } from '../shared/execution-accounts.js';
+import { executionConnected, executionProviders, gigaChatScopes, type ExecutionProvider, type GigaChatScope } from '../shared/execution-accounts.js';
 import type { CodexLimits } from '../shared/types.js';
 import { limitsForModel } from './google-limits.js';
 import { readGlmKey } from './glm.js';
@@ -17,6 +17,7 @@ import { searchZai } from './internet-search.js';
 import { executorCapacity, providerCapacity } from './execution-concurrency.js';
 import { chatImagesUnsupportedProvider, chatImageUrlPattern, maxChatImages, maxChatImagePayload, maxChatImageUrlLength, supportsChatImages } from './chat-images.js';
 import { jobOfficeTool, runJobOffice } from './job-office.js';
+import { jobFilesTool, useJobFiles } from './job-files.js';
 import { defaultToolResponseChars, isFastkoreCliResponseLimit, maxFastkoreCliResponseChars } from '../shared/fastkore-cli-response-limit.js';
 
 const cli = '/usr/local/bin/codex';
@@ -75,7 +76,8 @@ export function createCodexWorker(codex: CodexRunner = new CodexClient([], 'work
   };
   app.setErrorHandler((error, _req, reply) => {
     const status = error instanceof BridgeError ? error.statusCode : (error as { validation?: unknown }).validation ? 400 : 502;
-    return reply.code(status).send({ error: 'Исполнитель Codex не выполнил запрос.' });
+    return reply.code(status).send({ error: error instanceof BridgeError && /^\/accounts\/[a-f0-9-]+\/key$/.test(_req.url)
+      ? error.message : 'Исполнитель модели не выполнил запрос.' });
   });
   app.get('/health', async () => ({ ok: true, active: activeCount(), concurrency: { total: executorCapacity(), glm: providerCapacity('glm') } }));
   app.post<{ Body: { query: string } }>('/internet/search', { schema: { body: {
@@ -115,8 +117,8 @@ export function createCodexWorker(codex: CodexRunner = new CodexClient([], 'work
     changingAccount = true;
     try { return await work(); } finally { changingAccount = false; }
   }
-  app.post<{ Body: { name: string; provider?: 'codex' | 'gemini' | 'antigravity' | 'glm' } }>('/accounts', { schema: { body: {
-    type: 'object', additionalProperties: false, required: ['name'], properties: { name: { type: 'string', minLength: 1, maxLength: 100 }, provider: { enum: ['codex', 'gemini', 'antigravity', 'glm'] } },
+  app.post<{ Body: { name: string; provider?: ExecutionProvider } }>('/accounts', { schema: { body: {
+    type: 'object', additionalProperties: false, required: ['name'], properties: { name: { type: 'string', minLength: 1, maxLength: 100 }, provider: { enum: executionProviders } },
   } } }, request => changeAccount(() => accounts!.create(request.body.name, request.body.provider)));
   app.post<{ Params: { id: string } }>('/accounts/:id/login', request => changeAccount(() => accounts!.login(request.params.id)));
   app.post<{ Params: { id: string } }>('/accounts/:id/activate', request => changeAccount(() => accounts!.activate(request.params.id)));
@@ -125,9 +127,9 @@ export function createCodexWorker(codex: CodexRunner = new CodexClient([], 'work
   app.post<{ Params: { id: string }; Body: { code: string } }>('/accounts/:id/code', { schema: { body: {
     type: 'object', additionalProperties: false, required: ['code'], properties: { code: { type: 'string', minLength: 1, maxLength: 2048 } },
   } } }, request => changeAccount(async () => accounts!.authorizationCode(request.params.id, request.body.code)));
-  app.post<{ Params: { id: string }; Body: { key: string } }>('/accounts/:id/key', { schema: { body: {
-    type: 'object', additionalProperties: false, required: ['key'], properties: { key: { type: 'string', minLength: 1, maxLength: 2048 } },
-  } } }, request => changeAccount(() => accounts!.setKey(request.params.id, request.body.key)));
+  app.post<{ Params: { id: string }; Body: { key: string; scope?: GigaChatScope } }>('/accounts/:id/key', { schema: { body: {
+    type: 'object', additionalProperties: false, required: ['key'], properties: { key: { type: 'string', minLength: 1, maxLength: 2048 }, scope: { enum: gigaChatScopes } },
+  } } }, request => changeAccount(() => accounts!.setKey(request.params.id, request.body.key, request.body.scope)));
   app.post<{ Body: WorkerToolResult }>('/tool-result', { bodyLimit: 6 * maxFastkoreCliResponseChars + 1024, schema: { body: {
     type: 'object', additionalProperties: false, required: ['id', 'success', 'text'],
     properties: { id: { type: 'string', maxLength: 36 }, success: { type: 'boolean' }, text: { type: 'string', maxLength: maxFastkoreCliResponseChars } },
@@ -182,7 +184,7 @@ export function createCodexWorker(codex: CodexRunner = new CodexClient([], 'work
       const selected = selection && !('error' in selection) ? selection : undefined;
       if (selected) body.model = selected.model;
       if (body.imageUrls?.length && !supportsChatImages(lane)) throw new BridgeError(chatImagesUnsupportedProvider, 503);
-      provider = selected?.account.provider === 'antigravity' ? 'Antigravity CLI' : selected?.account.provider === 'gemini' ? 'Gemini CLI' : selected?.account.provider === 'glm' ? 'GLM (Z.ai)' : 'Codex';
+      provider = lane === 'antigravity' ? 'Antigravity CLI' : lane === 'gemini' ? 'Gemini CLI' : lane === 'glm' ? 'GLM (Z.ai)' : lane === 'gigachat' ? 'GigaChat' : 'Codex';
       let directory = workspace;
       if (workDirectoryId) {
         if (!jobsRoot || !path.isAbsolute(jobsRoot)) throw new BridgeError('Рабочая папка Codex не настроена.', 503);
@@ -193,11 +195,13 @@ export function createCodexWorker(codex: CodexRunner = new CodexClient([], 'work
       }
       const executor = selected ? accounts!.runner(selected.account.id) : codex;
       const job = { ...body, workDirectoryId, cliPath: cli, workspace: directory, allowWrite: !!workDirectoryId };
-      const nativeOffice = job.allowWrite && (lane === 'codex' || lane === 'glm');
-      const definitions = [...(toolDefinitions ?? []), ...(nativeOffice ? [jobOfficeTool] : [])];
+      const nativeOffice = job.allowWrite && (lane === 'codex' || lane === 'glm' || lane === 'gigachat');
+      const nativeFiles = job.allowWrite && lane === 'gigachat';
+      const definitions = [...(toolDefinitions ?? []), ...(nativeOffice ? [jobOfficeTool] : []), ...(nativeFiles ? [jobFilesTool] : [])];
       const result = await executor.run({ ...job,
         ...(definitions.length ? { tools: { definitions, async call(name: string, args: unknown, signal: AbortSignal) {
-          if (nativeOffice && name === jobOfficeTool.name) return runJobOffice(job, args, AbortSignal.any([signal, runSignal]));
+          if (nativeOffice && name === jobOfficeTool.name) return runJobOffice(job, args, AbortSignal.any([signal, runSignal]), lane === 'gigachat');
+          if (nativeFiles && name === jobFilesTool.name) return { success: true, text: await useJobFiles(job, args, AbortSignal.any([signal, runSignal])) };
           if (!toolDefinitions?.some(tool => tool.name === name)) return { success: false, text: 'Инструмент не разрешён для этого запроса.' };
           const id = randomUUID();
           const stop = AbortSignal.any([signal, runSignal, AbortSignal.timeout(name === 'consult_specialist' ? 195_000 : name.startsWith('fastkore_cli_') ? 125_000 : 45_000)]);

@@ -59,6 +59,7 @@ RUN install -d -m 0755 /opt/bridge-office/slots \
     && fc-cache -f
 ENV PATH=/opt/bridge-office/bin:$PATH
 WORKDIR /app
+COPY deploy/gigachat-ca.crt ./deploy/gigachat-ca.crt
 COPY --from=build /app/package.json ./
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist

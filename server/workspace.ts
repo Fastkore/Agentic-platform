@@ -958,7 +958,7 @@ export class Workspace {
       const provider = providerForModel(resolvedModel) ?? executionProvider;
       const images = attachments.filter(isChatImage);
       if (images.length && !supportsChatImages(provider)) throw new BridgeError(chatImagesUnsupportedProvider, 422);
-      validateChatImages(images);
+      validateChatImages(images, provider);
       const oldModel = chat.model; if (model !== undefined) chat.model = model;
       const run: Run = { id: randomUUID(), projectId, chatId, ownerId: author?.id ?? chat.ownerId, agentProfileId: profile.id, profileRevision: profile.revision, status: 'queued', progress: 'Ожидает выполнения', createdAt: new Date().toISOString(), clientRequestId, requestHash: hash, model: resolvedModel || undefined,
         reasoningEffort: chat.reasoningEffort ?? this.store.state.settings.reasoningEffort ?? 'high' };
@@ -1260,7 +1260,7 @@ export class Workspace {
     const previousProvider = chat.sessionProvider ?? providerForModel(previousAnswer?.model);
     const providerChanged = !!previousProvider && previousProvider !== provider;
     const modelChangedWithoutSession = !chat.sessionId && !!previousAnswer && previousAnswer.model !== run.model;
-    const replayHistory = shared || sameContext && (sourcesUsable || scope !== chat.sessionScope || providerChanged || modelChangedWithoutSession || chat.historyReplayPending);
+    const replayHistory = shared || sameContext && (sourcesUsable || provider === 'gigachat' || scope !== chat.sessionScope || providerChanged || modelChangedWithoutSession || chat.historyReplayPending);
     const roleInstructions = this.corporate.instructions(actor, profile);
     const developerInstructions = [
       instructionPriority,
@@ -1276,7 +1276,7 @@ export class Workspace {
       attachments.length > 0 && attachmentInstructions,
       workerWrites && 'Доступные исходники, вложения и недавние результаты находятся в input, если они есть. Для выдачи результата сохрани готовые файлы прямо в output. До 8 файлов, 20 МБ каждый и 60 МБ суммарно. Для проекта с вложенными папками собери архив. Остальные файлы рабочей папки временные.',
       workerWrites && 'Для документов используй Python с python-docx и openpyxl. ' +
-        (provider === 'gemini' || provider === 'antigravity' ? 'Сохрани скрипт через workspace_files и запусти через workspace_office (program=python). ' :
+        (provider === 'gemini' || provider === 'antigravity' || provider === 'gigachat' ? 'Сохрани скрипт через workspace_files и запусти через workspace_office (program=python). ' :
           'Запускай python из рабочей папки задания. ') +
         'Для пересчёта, экспорта PDF и рендера страниц используй workspace_office (program=fk-office): аргументы recalc <xlsx>, to-pdf <файл> --outdir output или pages <pdf>. PNG и скрипты оставляй вне output.',
       workerWrites && allowedTools.includes('fastkore') && 'Каталог cli сохраняется локально для этого сотрудника и чата между заданиями. В cli/source храни исходники, в cli/backups резервные копии, в cli/tmp промежуточные файлы. Для fastkore_cli_execute пути относительны к cli. До 128 МиБ и 10 000 файлов на чат, всё локальное хранилище CLI до 2 ГиБ. Удаляй ненужные промежуточные файлы, сохраняй проверенные бэкапы. Каталоги других чатов не доступны. Неактивные рабочие папки удаляются через 30 дней. Для выдачи и долгого хранения результата копируй нужные файлы в output.',
@@ -1337,7 +1337,7 @@ export class Workspace {
       }
       const localAttachments = temp && !workerDirectory ? await this.stageAttachments(project, documents, temp, signal) : documents;
       const context = this.isolatedCodex
-        ? workerDirectory ? '' : await this.attachmentExcerpts(project, documents, signal)
+        ? workerDirectory && (provider !== 'gigachat' || workerWrites) ? '' : await this.attachmentExcerpts(project, documents, signal)
         : settings.includePreviews
           ? await buildContext(project.directory, localAttachments, true, signal)
           : localAttachments.map(a => a.path).join('\n');

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile, readFile, copyFile, realpath, symlink } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, copyFile, realpath, rm, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
@@ -172,6 +172,40 @@ test('a new executor receives the recent conversation once and stops at changes 
     assert.doesNotMatch(currentScope.prompt, /Первый вопрос|Дальше в этой сессии/);
   } finally { await workspace.shutdown(); }
 });
+test('GigaChat restores published turns after restart and skips history from a changed scope', async () => {
+  const root = await temp();
+  const model = 'gigachat/GigaChat-2-Max';
+  const prompts: string[] = [];
+  const runner: CodexRunner = {
+    isolated: true,
+    inspect: async () => ({ path: '', version: 'fixture', authentication: 'gigachat', status: '', provider: 'gigachat', accountId: 'giga:fixture' }),
+    listModels: async () => ({ source: 'gigachat', fetchedAt: '', models: [{ id: model, name: model, description: '', isDefault: true }] }),
+    async run(request) {
+      assert.equal(request.sessionId, undefined);
+      prompts.push(request.prompt);
+      return { response: 'Опубликованный ответ ' + prompts.length };
+    },
+  };
+  let workspace = new Workspace(new Store(root), runner);
+  try {
+    const project = await workspace.createProject('Проект GigaChat', () => []);
+    const chat = await workspace.addChat(project.id, undefined, undefined, 'admin');
+    const send = async (text: string) => {
+      const run = await workspace.send(project.id, chat.id, text, [], undefined, model, undefined, { id: 'admin', name: 'Тест' });
+      const finished = await done(workspace, run.id);
+      assert.equal(finished.status, 'complete', finished.error);
+    };
+    await send('Первый вопрос GigaChat');
+    await workspace.shutdown();
+    workspace = new Workspace(new Store(root), runner);
+    await send('Продолжи GigaChat');
+    assert.match(prompts[1], /Первый вопрос GigaChat.*Опубликованный ответ 1/s);
+    await workspace.settings({ agentInstructions: 'Изменились правила задачи' });
+    await send('Новый контекст GigaChat');
+    assert.doesNotMatch(prompts[2], /Опубликованный ответ|chat_history/);
+  } finally { await workspace.shutdown(); await rm(root, { recursive: true, force: true }); }
+});
+
 test('HTTP model selection validates catalog, changes chat and handles per-request model override', async () => {
   const { workspace, project, chat } = await fixture(), { app, headers } = await authorizedApp(workspace);
   try {
