@@ -1,11 +1,50 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { cp, lstat, mkdir, readdir, rename, rm } from 'node:fs/promises';
+import { cp, lstat, mkdir, readdir, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { BridgeError } from './store.js';
 
 const chatLimit = 128 * 1024 * 1024;
 const totalLimit = 2 * 1024 * 1024 * 1024;
 const retention = 30 * 86400_000;
+const workspaceName = /^([a-f0-9]{64})(?:\.revisions|\.previous)?$/;
+const revisionName = /^\d{13}-[a-f0-9-]{36}$/;
+const storageOperations = new Map<string, Promise<unknown>>();
+
+async function withStorage<T>(root: string, operation: () => Promise<T>): Promise<T> {
+  // Serialize quota checks and publication across the chats using this store.
+  const previous = storageOperations.get(root) ?? Promise.resolve();
+  const pending = previous.catch(() => {}).then(operation);
+  storageOperations.set(root, pending);
+  try { return await pending; }
+  finally { if (storageOperations.get(root) === pending) storageOperations.delete(root); }
+}
+
+const statIfPresent = (file: string) => lstat(file).catch(error => { if (error.code !== 'ENOENT') throw error; });
+
+async function revisions(saved: string) {
+  const directory = saved + '.revisions';
+  const info = await statIfPresent(directory);
+  if (!info) return [];
+  if (!info.isDirectory()) throw new BridgeError('Локальное хранилище CLI повреждено.', 500);
+  return (await readdir(directory, { withFileTypes: true }))
+    .filter(entry => entry.isDirectory() && revisionName.test(entry.name))
+    .map(entry => entry.name).sort().reverse();
+}
+
+async function savedWorkspace(saved: string, versions: string[]) {
+  for (const name of versions) {
+    const revision = path.join(saved + '.revisions', name);
+    const marker = await statIfPresent(path.join(revision, 'ready'));
+    if (marker?.isFile() && marker.size === 0) return { directory: path.join(revision, 'files'), updatedAt: marker.mtimeMs };
+  }
+  // Read the legacy layout, including backups left by an interrupted legacy save.
+  for (const directory of [saved, saved + '.previous']) {
+    const info = await statIfPresent(directory);
+    if (!info) continue;
+    if (!info.isDirectory()) throw new BridgeError('Локальное хранилище CLI повреждено.', 500);
+    return { directory, updatedAt: info.mtimeMs };
+  }
+}
 
 async function treeSize(directory: string, limit: number): Promise<number> {
   const root = await lstat(directory);
@@ -30,52 +69,60 @@ async function treeSize(directory: string, limit: number): Promise<number> {
 export class CliWorkspace {
   private readonly root: string;
   private readonly saved: string;
-  private readonly previous: string;
   constructor(dataRoot: string, identity: string[]) {
     this.root = path.join(dataRoot, 'cli-workspaces');
     this.saved = path.join(this.root, createHash('sha256').update(JSON.stringify(identity)).digest('hex'));
-    this.previous = this.saved + '.previous';
   }
   async restore(jobDirectory: string) {
+    await withStorage(this.root, () => this.restoreSnapshot(jobDirectory));
+  }
+  private async restoreSnapshot(jobDirectory: string) {
     await mkdir(this.root, { recursive: true, mode: 0o700 });
-    for (const entry of await readdir(this.root)) {
-      if (!entry.startsWith(path.basename(this.saved) + '.next-')) continue;
-      await rm(path.join(this.root, entry), { recursive: true, force: true });
-    }
-    const old = await lstat(this.previous).catch(error => { if (error.code !== 'ENOENT') throw error; });
-    const current = await lstat(this.saved).catch(error => { if (error.code !== 'ENOENT') throw error; });
-    if (old && !current) await rename(this.previous, this.saved);
-    else if (old) await rm(this.previous, { recursive: true, force: true });
+    const current = await savedWorkspace(this.saved, await revisions(this.saved));
     const target = path.join(jobDirectory, 'cli');
     await mkdir(target, { mode: 0o700 });
-    if (current || old) {
-      await treeSize(this.saved, chatLimit);
-      await cp(this.saved, target, { recursive: true, force: false, errorOnExist: false });
+    if (current) {
+      await treeSize(current.directory, chatLimit);
+      await cp(current.directory, target, { recursive: true, force: false, errorOnExist: false });
     }
     for (const folder of ['source', 'backups', 'tmp']) await mkdir(path.join(target, folder), { recursive: true, mode: 0o700 });
   }
   async save(jobDirectory: string) {
+    await withStorage(this.root, () => this.saveSnapshot(jobDirectory));
+  }
+  private async saveSnapshot(jobDirectory: string) {
     const source = path.join(jobDirectory, 'cli');
     const bytes = await treeSize(source, chatLimit);
+    const names = await readdir(this.root);
     let used = 0;
-    for (const entry of await readdir(this.root, { withFileTypes: true })) {
-      if (!/^[a-f0-9]{64}$/.test(entry.name)) continue;
-      const folder = path.join(this.root, entry.name);
+    const keys = new Set(names.flatMap(name => workspaceName.exec(name)?.[1] ?? []));
+    for (const key of keys) {
+      const folder = path.join(this.root, key);
       if (folder === this.saved) continue;
-      const info = await lstat(folder);
-      if (!info.isDirectory() || info.isSymbolicLink()) throw new BridgeError('Локальное хранилище CLI повреждено.', 500);
-      if (info.mtimeMs < Date.now() - retention) await rm(folder, { recursive: true, force: true });
-      else used += await treeSize(folder, totalLimit);
+      const snapshot = await savedWorkspace(folder, await revisions(folder));
+      if (!snapshot) continue;
+      if (snapshot.updatedAt < Date.now() - retention) {
+        await Promise.all([folder, folder + '.previous', folder + '.revisions'].map(directory => rm(directory, { recursive: true, force: true })));
+      } else used += await treeSize(snapshot.directory, totalLimit);
     }
     if (used + bytes > totalLimit) throw new BridgeError('Локальное хранилище CLI заполнено (2 ГиБ).', 413);
-    const staging = this.saved + '.next-' + randomUUID();
+    const oldRevisions = await revisions(this.saved);
+    const revisionRoot = this.saved + '.revisions';
+    const timestamp = Math.max(Date.now(), Number(oldRevisions[0]?.slice(0, 13) ?? 0) + 1);
+    const staging = path.join(revisionRoot, `${timestamp}-${randomUUID()}`);
     try {
-      await cp(source, staging, { recursive: true, preserveTimestamps: false });
-      const exists = await lstat(this.saved).catch(error => { if (error.code !== 'ENOENT') throw error; });
-      if (exists) await rename(this.saved, this.previous);
-      try { await rename(staging, this.saved); }
-      catch (error) { if (exists) await rename(this.previous, this.saved); throw error; }
-      await rm(this.previous, { recursive: true, force: true });
-    } finally { await rm(staging, { recursive: true, force: true }); }
+      await mkdir(staging, { recursive: true, mode: 0o700 });
+      await cp(source, path.join(staging, 'files'), { recursive: true });
+      // Publish a complete copy without renaming any directory on a bind mount.
+      await writeFile(path.join(staging, 'ready'), '', { flag: 'wx', mode: 0o600 });
+    } catch (error) {
+      await rm(staging, { recursive: true, force: true }).catch(() => {});
+      throw error;
+    }
+    const legacyStaging = names.filter(name => name.startsWith(path.basename(this.saved) + '.next-'));
+    await Promise.allSettled([
+      this.saved, this.saved + '.previous', ...oldRevisions.map(name => path.join(revisionRoot, name)),
+      ...legacyStaging.map(name => path.join(this.root, name)),
+    ].map(directory => rm(directory, { recursive: true, force: true })));
   }
 }

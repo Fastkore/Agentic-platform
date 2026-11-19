@@ -1,11 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readFile, writeFile, rm, symlink } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, readdir, writeFile, rm, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { CliWorkspace } from '../server/cli-workspace.js';
 import { commandArguments, commandCatalog, jobDirectory } from '../deploy/fastkore-cli-commands.mjs';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 
 test('CLI chat folders survive turns and isolate employees, projects and chats', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'cli-workspaces-'));
@@ -25,6 +25,36 @@ test('CLI chat folders survive turns and isolate employees, projects and chats',
     await symlink(root, path.join(second, 'cli', 'escape'), process.platform === 'win32' ? 'junction' : 'dir');
     await assert.rejects(workspace.save(second), /тип файла/);
     await rm(path.join(second, 'cli', 'escape'));
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('CLI storage migrates a legacy backup and ignores unpublished snapshots after an interruption', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'cli-revision-'));
+  try {
+    const identity = ['installation', 'alice', 'project', 'chat'];
+    const saved = path.join(root, 'cli-workspaces', createHash('sha256').update(JSON.stringify(identity)).digest('hex'));
+    const legacy = path.join(saved + '.previous', 'source');
+    const versions = saved + '.revisions';
+    const incomplete = path.join(versions, `${Date.now() + 1000}-${randomUUID()}`, 'files', 'source');
+    await Promise.all([legacy, incomplete].map(directory => mkdir(directory, { recursive: true })));
+    await writeFile(path.join(legacy, 'record.txt'), 'last good copy');
+    await writeFile(path.join(incomplete, 'record.txt'), 'interrupted copy');
+    const first = path.join(root, 'first'), next = path.join(root, 'next');
+    await Promise.all([first, next].map(directory => mkdir(directory)));
+
+    const workspace = new CliWorkspace(root, identity);
+    await workspace.restore(first);
+    const file = path.join(first, 'cli', 'source', 'record.txt');
+    assert.equal(await readFile(file, 'utf8'), 'last good copy');
+    await writeFile(file, 'updated copy');
+    await workspace.save(first);
+
+    const [published, ...old] = await readdir(versions);
+    assert.deepEqual(old, []);
+    assert.equal(await readFile(path.join(versions, published, 'ready'), 'utf8'), '');
+    assert.notEqual(path.join(versions, published, 'files', 'source'), incomplete);
+    await new CliWorkspace(root, identity).restore(next);
+    assert.equal(await readFile(path.join(next, 'cli', 'source', 'record.txt'), 'utf8'), 'updated copy');
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
