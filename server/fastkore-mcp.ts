@@ -1,5 +1,5 @@
 import { request } from 'node:https';
-import type { AuditEvent, Credential } from '../shared/types.js';
+import type { AuditEvent, Credential, ErpDelegationLoss } from '../shared/types.js';
 import { erpReadOnlyMessage } from './erp-roles.js';
 import type { CodexTools, CodexToolDefinition } from './codex-tools.js';
 import { postErpJson, type ErpDelegation, type FastkoreSso } from './fastkore.js';
@@ -86,7 +86,7 @@ export class FastkoreMcp {
   private readonly expired = new Set<string>();
 
   constructor(private readonly sso: Pick<FastkoreSso, 'delegationBinding' | 'openDelegation'>,
-    private readonly forgetDelegation: (credentialId: string) => Promise<void>) {}
+    private readonly forgetDelegation: (credentialId: string, reason: ErpDelegationLoss) => Promise<void>) {}
 
   status(credential: Credential): 'unavailable' | 'ready' | 'reauth' {
     if (credential.erpDelegationRevoked || this.expired.has(credential.id)) return 'reauth';
@@ -94,38 +94,40 @@ export class FastkoreMcp {
     if (!stored) return 'unavailable';
     const binding = this.sso.delegationBinding(credential);
     if (stored.expiresAt <= Date.now() || (binding && stored.revision !== binding.revision)) {
-      void this.invalidate(credential.id);
+      void this.invalidate(credential.id, stored.expiresAt <= Date.now() ? 'expired' : 'binding_changed');
       return 'reauth';
     }
     if (!binding?.mcpUrl) return 'unavailable';
     if (!this.sessions.has(credential.id)) {
       if (this.sessions.size >= 4096) return 'unavailable';
       const delegation = this.sso.openDelegation(credential, binding.revision);
-      if (!delegation) { void this.invalidate(credential.id); return 'reauth'; }
+      if (!delegation) { void this.invalidate(credential.id, 'grant_unreadable'); return 'reauth'; }
       this.sessions.set(credential.id, { credential, delegation, revision: binding.revision });
     }
     return 'ready';
   }
 
-  invalidate(id: string) {
+  invalidate(id: string, reason: ErpDelegationLoss) {
     this.sessions.delete(id);
     this.expired.add(id);
-    return this.forgetDelegation(id).catch(() => {
+    return this.forgetDelegation(id, reason).catch(() => {
       // Still fail closed in this process if SQLite is temporarily unavailable.
+      console.error(JSON.stringify({ event: 'erp.delegation.persist_failed', sessionId: id, delegationReason: reason }));
     });
   }
 
   async revoke(credential: Credential) {
     const invalidated = this.expired.delete(credential.id);
     this.sessions.delete(credential.id);
-    if (invalidated || !credential.erpDelegation) return;
+    if (invalidated || !credential.erpDelegation) return { revokeDelivery: 'not_sent' as const };
     try {
       const binding = this.sso.delegationBinding(credential);
       const delegation = binding && this.sso.openDelegation(credential, binding.revision);
-      if (!binding || !delegation) return;
-      await postErpJson(binding.origin + '/api/ai/revoke-delegation', JSON.stringify({ version: 1, delegation: delegation.grant }),
+      if (!binding || !delegation) return { revokeDelivery: 'not_sent' as const };
+      const { status } = await postErpJson(binding.origin + '/api/ai/revoke-delegation', JSON.stringify({ version: 1, delegation: delegation.grant }),
         binding, () => new BridgeError(unavailable, 502));
-    } catch { /* The local session is already revoked. ERP also enforces its own expiry. */ }
+      return { revokeDelivery: 'http_response' as const, status };
+    } catch { return { revokeDelivery: 'no_response' as const }; }
   }
 
   private async token(state: Session, binding: Binding): Promise<Token> {
@@ -137,7 +139,7 @@ export class FastkoreMcp {
         const { status, value } = await postErpJson(binding.origin + '/api/ai/user-token',
           JSON.stringify({ version: 1, delegation: delegation.grant, audience }), binding, fail);
         if (status === 403) {
-          if (this.sessions.get(credential.id) === state) await this.invalidate(credential.id);
+          if (this.sessions.get(credential.id) === state) await this.invalidate(credential.id, 'mcp_token_denied');
           throw new BridgeError(reauth, 403);
         }
         if (status === 401) throw new BridgeError('ERP отклонила ключ привязки Fastkore. Проверьте подключение.', 424);

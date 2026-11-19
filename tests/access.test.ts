@@ -9,6 +9,7 @@ import { Store } from '../server/store.js';
 import { Workspace } from '../server/workspace.js';
 import { CodexClient, type CodexRunner } from '../server/codex.js';
 import { createApp } from '../server/app.js';
+import { Access } from '../server/access.js';
 import { csrfFor } from '../server/fastkore.js';
 import type { TranscribeDictation } from '../server/dictation.js';
 import type { FastkoreRole, TeamUser } from '../shared/types.js';
@@ -42,6 +43,22 @@ async function fixture(transcribeDictation?: TranscribeDictation, run?: CodexRun
   return { root, store, workspace, project, legacy, app, req, admin, adminId, enter, employee, setProjectRoles, pair: () => erp.pair(app, admin) };
 }
 async function done(workspace: Workspace) { const end = Date.now() + 10_000; while (workspace.activeRun) { assert.ok(Date.now() < end); await new Promise(r => setTimeout(r, 20)); } }
+
+test('losing ERP delegation records the first cause atomically without logging the grant', async () => {
+  const f = await fixture();
+  try {
+    const employee = await f.employee('Проверка журнала');
+    const access = new Access(f.workspace);
+    const session = access.data.credentials.find(c => c.userId === employee.id && c.source === 'fastkore')!;
+    session.erpDelegation = { sealedGrant: 'test-secret-never-in-audit', revision: '1', expiresAt: Date.now() + 60_000 };
+    await Promise.all([access.forgetErpDelegation(session.id, 'cli_ticket_denied'), access.forgetErpDelegation(session.id, 'expired')]);
+    const events = f.store.auditEvents().filter(e => e.action === 'erp.delegation.invalidated' && e.targetId === session.id);
+    assert.equal(events.length, 1);
+    assert.deepEqual(events[0].details, { sessionId: session.id, installationId: session.installationId, delegationReason: 'cli_ticket_denied', status: 403 });
+    assert.ok(!JSON.stringify(events).includes('test-secret'));
+    assert.equal(access.data.credentials.find(c => c.id === session.id)?.erpDelegationRevoked, true);
+  } finally { await f.app.close(); }
+});
 
 test('migration keeps session IDs, assigns private legacy chats to boss and retires shared key/local bypass', async () => {
   const f = await fixture(); try {

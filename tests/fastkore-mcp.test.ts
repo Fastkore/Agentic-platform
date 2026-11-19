@@ -70,10 +70,12 @@ test('Fastkore MCP forwards native tool schemas and arguments, isolates SSO sess
   const address = server.address(); assert.ok(address && typeof address !== 'string');
   const origin = `https://127.0.0.1:${address.port}`;
   const binding = { origin, key, ca: tls.cert, mcpCa: tls.cert, revision: 'rev', mcpUrl: origin + '/webapi/mcp' };
+  const invalidations: string[] = [];
   const manager = () => new FastkoreMcp({
     delegationBinding: () => binding,
     openDelegation: c => c.erpDelegation && { grant: 'fkug1.' + c.userId, expiresAt: c.erpDelegation.expiresAt },
-  }, async id => {
+  }, async (id, reason) => {
+    invalidations.push(reason);
     const credential = credentials.find(c => c.id === id)!;
     delete credential.erpDelegation;
     credential.erpDelegationRevoked = true;
@@ -115,7 +117,7 @@ test('Fastkore MCP forwards native tool schemas and arguments, isolates SSO sess
     assert.equal(calls.length, beforeBlockedCall);
     assert.equal((await a.tools.call('fastkore_GetOrder', args, signal)).success, true);
     assert.deepEqual(calls.at(-1), { user: 'alice', name: 'GetOrder', args });
-    await mcp.revoke(alice);
+    assert.deepEqual(await mcp.revoke(alice), { revokeDelivery: 'http_response', status: 200 });
     assert.ok(revoked.has('alice'));
     assert.equal((await a.tools.call('fastkore_GetOrders', {}, signal)).success, false);
     assert.equal(calls.length, 5);
@@ -141,6 +143,7 @@ test('Fastkore MCP forwards native tool schemas and arguments, isolates SSO sess
     assert.equal(issued.get('boris'), 2, 'restart obtains a fresh token for the same ERP user');
     revoked.add('boris');
     const denied = await manager().prepare(boris, () => {}, signal);
+    assert.deepEqual(invalidations, ['mcp_token_denied']);
     assert.match(denied.problem!, /доступ к ERP завершён или отозван/i);
     assert.equal(boris.erpDelegation, undefined);
     assert.equal(manager().status(boris), 'reauth');
@@ -148,5 +151,6 @@ test('Fastkore MCP forwards native tool schemas and arguments, isolates SSO sess
     credentials.push(expired);
     attach(expired, Date.now() - 1);
     assert.equal(mcp.status(expired), 'reauth');
+    assert.deepEqual(invalidations, ['mcp_token_denied', 'expired']);
   } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); }
 });

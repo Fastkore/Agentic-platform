@@ -9,6 +9,8 @@ const labels: Record<string, string> = {
   setup: 'Настройка руководителя', 'user.create': 'Создан пользователь', 'sso.user.create': 'Создан пользователь',
   'sso.login': 'Вход через Fastkore', 'sso.identity.link': 'Связана учётная запись Fastkore',
   'sso.browser.login': 'Вход в настройки из Fastkore',
+  'erp.delegation.invalidated': 'Сеанс потерял доступ к ERP',
+  'erp.delegation.session_ended': 'Завершён сеанс с доступом к ERP',
   'user.update': 'Изменён пользователь', 'user.projects': 'Изменён доступ к проектам',
   'project.members': 'Изменены участники проекта', 'project.roles': 'Изменены роли проекта',
   'project.agents': 'Изменены агенты проекта', 'project.rename': 'Проект переименован', 'project.delete': 'Проект удалён',
@@ -74,6 +76,16 @@ export function AuditPanel({ request }: { request: Request }) {
   const users = new Map(data.users.map(user => [user.id, user]));
   const projects = new Map(data.projects.map(project => [project.id, project.name]));
   const details = (event: AuditEvent) => {
+    if (event.details?.delegationReason) return {
+      expired: 'Истёк срок делегирования', binding_changed: 'Изменилась привязка установки',
+      grant_unreadable: 'Не удалось открыть сохранённое разрешение',
+      mcp_token_denied: 'ERP вернула HTTP 403 при выдаче токена MCP',
+      cli_ticket_denied: 'ERP вернула HTTP 403 при выдаче билета CLI',
+      session_removed: 'Сеанс удалён платформой', session_expired: 'Истёк срок сеанса',
+      logout: 'Выход из платформы', login_rotation: 'Прежний сеанс закрыт при входе',
+      identity_link: 'Изменена связь с учётной записью ERP', installation_change: 'Изменено подключение установки',
+      account_change: 'Изменена учётная запись сотрудника',
+    }[event.details.delegationReason];
     if (event.action === 'sso.login') return 'Вход по учётной записи Fastkore';
     if (users.has(event.targetId)) return 'Пользователь · ' + shortUserName(users.get(event.targetId)!.name);
     if (projects.has(event.targetId)) return 'Проект · ' + projects.get(event.targetId);
@@ -118,6 +130,9 @@ export function AuditPanel({ request }: { request: Request }) {
             <dt>Код события</dt><dd>{event.action}</dd><dt>Объект</dt><dd>{event.targetId}</dd><dt>ID события</dt><dd>{event.id}</dd>
             {event.details?.installationId && <><dt>Установка ERP</dt><dd>{event.details.installationId}</dd></>}
             {event.details?.sessionId && <><dt>Сеанс</dt><dd>{event.details.sessionId}</dd></>}
+            {event.details?.revokeDelivery && <><dt>Запрос отзыва в ERP</dt><dd>{{
+              not_sent: 'Не отправлен', no_response: 'Ответ не подтверждён', http_response: 'HTTP ' + event.details.status,
+            }[event.details.revokeDelivery]}</dd></>}
             {event.details?.runId && <><dt>Задание</dt><dd>{event.details.runId}</dd></>}
             {event.details?.chatId && <><dt>Чат</dt><dd>{event.details.chatId}</dd></>}
             {event.details?.scope && <><dt>Область запроса</dt><dd>{event.details.scope}</dd></>}

@@ -97,10 +97,14 @@ export interface TeamUser extends User {
   projects: { id: string; name: string }[];
 }
 export interface Credential { id: string; userId: string; kind: 'session' | 'api'; hash: string; name: string; createdAt: string; expiresAt?: string; source?: 'local' | 'fastkore'; installationId?: string; externalUserId?: string; externalDisplayName?: string; externalRoles?: FastkoreRole[]; erpDelegation?: StoredErpDelegation; erpDelegationRevoked?: true; browserParentId?: string }
+export type ErpDelegationLoss = 'expired' | 'binding_changed' | 'grant_unreadable' | 'mcp_token_denied' | 'cli_ticket_denied';
+export type ErpSessionEnd = 'session_removed' | 'session_expired' | 'logout' | 'login_rotation' | 'identity_link' | 'installation_change' | 'account_change';
 export interface AuditEvent {
   id: string; actorId: string; action: string; targetId: string; createdAt: string;
   details?: {
     sessionId?: string; installationId?: string; runId?: string; chatId?: string;
+    delegationReason?: ErpDelegationLoss | ErpSessionEnd;
+    revokeDelivery?: 'not_sent' | 'http_response' | 'no_response';
     scope?: 'current' | 'erp'; objectIds?: Record<string, string>; success?: boolean; status?: number; elapsedMs?: number;
     trustMs?: number; ticketMs?: number; ticketStatus?: number; cliRpcMs?: number; cliProcessMs?: number; exitCode?: number; responseChars?: number;
     mcpTokenMs?: number; mcpHttpMs?: number;

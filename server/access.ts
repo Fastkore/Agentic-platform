@@ -1,6 +1,7 @@
 import { randomBytes, randomUUID, createHash, scrypt, timingSafeEqual } from 'node:crypto';
 import { promisify } from 'node:util';
-import type { Chat, ChatSummary, ChatView, Credential, InterfaceScale, Project, ProjectRolePolicy, Security, StoredFastkoreInstallation, TeamUser, User, UserRecord } from '../shared/types.js';
+import type { AuditEvent, Chat, ChatSummary, ChatView, Credential, ErpDelegationLoss, ErpSessionEnd, InterfaceScale, Project, ProjectRolePolicy, Security, StoredFastkoreInstallation, TeamUser, User, UserRecord } from '../shared/types.js';
+import { publishAudit } from './audit-journal.js';
 import { BridgeError, type AccessDraft } from './store.js';
 import type { Workspace } from './workspace.js';
 import type { ErpDelegation, TicketIdentity } from './fastkore.js';
@@ -20,7 +21,7 @@ export class Access {
   private queue: Promise<unknown> = Promise.resolve();
   private readonly browserCodes = new Map<string, { sessionId: string; expiresAt: number }>();
   externalCredentialValid?: (credential: Credential) => boolean;
-  onSessionsRemoved?: (sessions: Credential[]) => void;
+  onSessionsRemoved?: (sessions: Credential[], reason: ErpSessionEnd) => void;
   constructor(readonly workspace: Workspace) {
     const state = workspace.store.state;
     if (!state.security) state.security = { users: [{ id: randomUUID(), username: 'admin', name: 'Руководитель', role: 'admin', disabled: false, passwordHash: '', createdAt: new Date().toISOString() }], credentials: [], audit: [] };
@@ -57,22 +58,24 @@ export class Access {
     });
     this.queue = result.catch(() => {}); return result;
   }
-  private changeAccess<T>(work: (draft: AccessDraft) => T) {
+  private changeAccess<T>(work: (draft: AccessDraft) => T, sessionEnd: ErpSessionEnd = 'session_removed') {
     const result = this.queue.then(async () => {
       const before = [...this.data.credentials];
       const value = await this.workspace.store.changeAccess(work);
-      this.notifyRemoved(before);
+      this.notifyRemoved(before, sessionEnd);
       return value;
     });
     this.queue = result.catch(() => {}); return result;
   }
-  private notifyRemoved(before: Credential[]) {
+  private notifyRemoved(before: Credential[], reason: ErpSessionEnd = 'session_removed') {
     if (!this.onSessionsRemoved) return;
     const current = new Set(this.data.credentials.map(c => c.id));
-    this.onSessionsRemoved(before.filter(c => c.source === 'fastkore' && !current.has(c.id)));
+    this.onSessionsRemoved(before.filter(c => c.source === 'fastkore' && !current.has(c.id)), reason);
   }
-  private audit(actorId: string, action: string, targetId: string, data = this.data) {
-    data.audit.unshift({ id: randomUUID(), actorId, action, targetId, createdAt: new Date().toISOString() }); data.audit.splice(1000);
+  private audit(actorId: string, action: string, targetId: string, data = this.data, details?: AuditEvent['details']) {
+    const event = { id: randomUUID(), actorId, action, targetId, createdAt: new Date().toISOString(), details };
+    data.audit.unshift(event); data.audit.splice(1000);
+    return event;
   }
   private username(value: string) { const name = value.trim().toLowerCase(); if (!/^[a-z0-9][a-z0-9._-]{2,47}$/.test(name)) throw new BridgeError('Логин: 3–48 латинских букв, цифр, точек, дефисов или подчёркиваний.'); return name; }
   private async password(value: string) {
@@ -227,7 +230,7 @@ export class Access {
       const data = draft.security!;
       data.credentials = data.credentials.filter(c => c.id !== principal.credential.id);
       return { ok: true };
-    });
+    }, 'logout');
   }
   fastkoreLogin(identity: TicketIdentity, previousToken = '', recheck: () => void = () => {},
     seal?: (credential: Credential, delegation: ErpDelegation) => Credential['erpDelegation']) {
@@ -262,16 +265,21 @@ export class Access {
       return this.issueSession(user, 'Fastkore', { source: 'fastkore', installationId: identity.installationId, externalUserId: identity.externalUserId,
         externalDisplayName: identity.displayName, externalRoles: identity.roles },
         data, delegation && seal ? credential => seal(credential, delegation) : undefined);
-    });
+    }, 'login_rotation');
   }
-  async forgetErpDelegation(id: string) {
-    await this.changeAccess(draft => {
+  async forgetErpDelegation(id: string, reason: ErpDelegationLoss) {
+    const event = await this.changeAccess(draft => {
       const credential = draft.security?.credentials.find(c => c.id === id);
       if (credential?.erpDelegation) {
         delete credential.erpDelegation;
         credential.erpDelegationRevoked = true;
+        return this.audit(credential.userId, 'erp.delegation.invalidated', id, draft.security, {
+          sessionId: id, installationId: credential.installationId, delegationReason: reason,
+          status: reason === 'mcp_token_denied' || reason === 'cli_ticket_denied' ? 403 : undefined,
+        });
       }
     });
+    publishAudit(event);
   }
   linkExternal(authorize: () => User, installationId: string, externalUserId: string, userId: string) {
     return this.changeAccess(draft => {
@@ -283,7 +291,7 @@ export class Access {
       if (link) link.userId = userId; else identities.push({ installationId, externalUserId, userId });
       if (userId === data.pendingFastkoreAdminId) delete data.pendingFastkoreAdminId;
       this.audit(actor.id, 'sso.identity.link', userId, data); return { ok: true };
-    });
+    }, 'identity_link');
   }
   changeInstallation<T>(authorize: () => User, action: string, work: (items: StoredFastkoreInstallation[]) => { id: string; result: T; revoke?: boolean }) {
     return this.changeAccess(draft => {
@@ -293,7 +301,7 @@ export class Access {
       if (revoke) data.credentials = data.credentials.filter(c => c.source !== 'fastkore' || c.installationId !== id);
       this.audit(actor.id, action, id, data);
       return result;
-    });
+    }, 'installation_change');
   }
   admin(user: User) { if (user.role !== 'admin') throw new BridgeError('Доступно только руководителю.', 403); }
   project(user: User, id: string, credential?: Credential) {
@@ -400,7 +408,7 @@ export class Access {
         data.credentials = data.credentials.filter(c => c.userId !== id || c.source === 'fastkore');
       }
       this.audit(actor.id, 'user.update', id, data); return publicUser(user);
-    });
+    }, 'account_change');
   }
   changePassword(principal: Principal, current: string, password: string) {
     return this.change(async () => {

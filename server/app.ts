@@ -92,13 +92,18 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
   if (!ssoKey && process.env.BRIDGE_SSO_CONFIG) throw new Error('Обновите конфигурацию Fastkore до ТЗ 1.1 и задайте BRIDGE_SSO_KEY_FILE.');
   if (ssoKey && (!publicOrigin || !trustedProxies.length || (!workspace.isolatedCodex && process.env.BRIDGE_EXECUTION !== 'disabled'))) throw new Error('Fastkore SSO требует HTTPS origin, доверенный proxy и изолированный исполнитель либо отключённое выполнение.');
   const access = new Access(workspace), sso = ssoKey && new FastkoreSso(workspace.store, ssoKey, publicOrigin!, options.ticketValidator, options.pairingClient);
-  const fastkoreMcp = sso ? new FastkoreMcp(sso, id => access.forgetErpDelegation(id)) : undefined;
+  const fastkoreMcp = sso ? new FastkoreMcp(sso, (id, reason) => access.forgetErpDelegation(id, reason)) : undefined;
   const cliSocket = process.env.BRIDGE_FASTKORE_CLI_SOCKET;
   const fastkoreCli = cliSocket ? new FastkoreCli(cliSocket) : undefined;
   const cliTicketsEnabled = process.env.BRIDGE_FASTKORE_CLI_TICKETS === '1';
   const accountWorker = process.env.BRIDGE_CODEX_SOCKET && new RemoteCodexRunner(process.env.BRIDGE_CODEX_SOCKET);
-  access.onSessionsRemoved = sessions => {
-    for (const session of sessions) void fastkoreMcp?.revoke(session).catch(() => {});
+  access.onSessionsRemoved = (sessions, reason) => {
+    for (const session of sessions) void fastkoreMcp?.revoke(session).then(result => {
+      if (!session.erpDelegation) return;
+      workspace.store.recordAudit({ actorId: session.userId, targetId: session.id, action: 'erp.delegation.session_ended',
+        details: { sessionId: session.id, installationId: session.installationId, ...result,
+          delegationReason: session.expiresAt && Date.parse(session.expiresAt) <= Date.now() ? 'session_expired' : reason } });
+    }).catch(() => console.error(JSON.stringify({ event: 'erp.delegation.audit_failed', sessionId: session.id })));
   };
   workspace.prepareFastkoreTools = async (credentialId, context, authorize, signal, run) => {
     if (!fastkoreMcp) return {};
@@ -161,7 +166,7 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
                 throw new BridgeError(erpReadOnlyMessage, 403);
               }
               return active;
-            }, id => fastkoreMcp.invalidate(id), callSignal, timing);
+            }, id => fastkoreMcp.invalidate(id, 'cli_ticket_denied'), callSignal, timing);
           const formatted = formatFastkoreCliResult(result, command, fields, maxResponseChars);
           success = formatted.success;
           responseChars = formatted.responseChars;

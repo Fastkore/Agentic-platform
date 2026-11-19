@@ -9,6 +9,7 @@ projects/
 CodexChatBridgeWeb/
 work/
 outputs/
+/output/
 *.sqlite*
 state.json*
 server.lock
