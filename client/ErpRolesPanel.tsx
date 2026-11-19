@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Clock3, FolderPlus, Globe, LockKeyhole, Network, Pencil, Search, Send, ShieldCheck, Terminal, Trash2, Users } from 'lucide-react';
+import { Clock3, FolderPlus, Globe, LockKeyhole, Network, Search, Send, ShieldCheck, Terminal, Trash2, Users } from 'lucide-react';
 import type { FastkoreRoleSummary, FastkoreRolePermissions } from '../shared/types';
 import { Select } from './Select';
 import { SettingsAction } from './SettingsAction';
@@ -10,8 +10,7 @@ const permissionColumns = [
   [{ key: 'mcp', name: 'MCP', icon: Network }, { key: 'cli', name: 'CLI', icon: Terminal }],
   [{ key: 'webSearch', name: 'Веб-поиск', icon: Search }, { key: 'webRead', name: 'Чтение страниц', icon: Globe }],
   [{ key: 'webRequests', name: 'Внешние запросы', icon: Send }],
-  [{ key: 'createProjects', name: 'Создание проектов', icon: FolderPlus },
-    { key: 'renameProjects', name: 'Переименование проектов', icon: Pencil },
+  [{ key: 'createProjects', name: 'Создание и переименование проектов', icon: FolderPlus },
     { key: 'readOnly', name: 'Только чтение в Fastkore', icon: LockKeyhole }],
 ] as const;
 

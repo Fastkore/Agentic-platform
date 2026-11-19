@@ -90,7 +90,7 @@ export interface StoredErpDelegation { sealedGrant: string; expiresAt: number; r
 export interface FastkoreRole { id: string; name: string }
 export interface FastkoreRoleRecord extends FastkoreRole { installationId: string; lastSeenAt: string }
 export interface FastkoreRoleSnapshot { installationId: string; externalUserId: string; roles?: FastkoreRole[]; updatedAt: string }
-export interface FastkoreRolePermissions { mcp: boolean; cli: boolean; readOnly?: boolean; createProjects?: boolean; renameProjects?: boolean; webSearch?: boolean; webRead?: boolean; webRequests?: boolean; revision: number }
+export interface FastkoreRolePermissions { mcp: boolean; cli: boolean; readOnly?: boolean; createProjects?: boolean; webSearch?: boolean; webRead?: boolean; webRequests?: boolean; revision: number }
 export interface FastkoreRoleSummary extends FastkoreRoleRecord { installationName: string; userCount: number; permissions: FastkoreRolePermissions }
 export interface TeamUser extends User {
   erpRoles: { installationId: string; roles?: FastkoreRole[] }[];

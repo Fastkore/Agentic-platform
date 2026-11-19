@@ -26,7 +26,7 @@ import { FastkoreCli, type FastkoreCliTiming } from './fastkore-cli.js';
 import { elapsedMs } from './run-timing.js';
 import { RemoteCodexRunner } from './codex-remote.js';
 import { executionProviders, gigaChatScopes, type ExecutionProvider, type GigaChatScope } from '../shared/execution-accounts.js';
-import { canAccessProject, canRenameProject, projectRoleOptions, erpRoleCatalog, restoreErpRoles, erpRolePermissions, erpCredentialPermissions, internetCredentialPermissions, isErpReadOnly, erpReadOnlyMessage, fastkoreReadCommands } from './erp-roles.js';
+import { canAccessProject, canRenameProject, creationRoles, projectRoleOptions, erpRoleCatalog, restoreErpRoles, erpRolePermissions, erpCredentialPermissions, internetCredentialPermissions, isErpReadOnly, erpReadOnlyMessage, fastkoreReadCommands } from './erp-roles.js';
 import { withInternetTools } from './internet-tools.js';
 import { withFastkoreCliDescription } from './codex-tools.js';
 import { formatFastkoreCliResult, withFastkoreCliCommands } from './fastkore-cli-tools.js';
@@ -452,14 +452,13 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
         const records = draft.sso.rolePermissions ??= [];
         const value = { installationId, roleId, mcp: request.body.mcp, cli: request.body.cli,
           readOnly: request.body.readOnly ?? previous.readOnly, createProjects: request.body.createProjects ?? previous.createProjects,
-          renameProjects: request.body.renameProjects ?? previous.renameProjects,
           webSearch: request.body.webSearch ?? previous.webSearch,
           webRead: request.body.webRead ?? previous.webRead, webRequests: request.body.webRequests ?? previous.webRequests, revision: previous.revision + 1 };
         const index = records.findIndex(item => item.installationId === installationId && item.roleId === roleId);
         if (index < 0) records.push(value); else records[index] = value;
         draft.security?.audit.unshift({ id: randomUUID(), actorId: actor.id, action: 'erp.role.permissions', targetId: installationId + '/' + roleId, createdAt: new Date().toISOString() });
         draft.security?.audit.splice(1000);
-        return { mcp: value.mcp, cli: value.cli, readOnly: value.readOnly, createProjects: value.createProjects, renameProjects: value.renameProjects,
+        return { mcp: value.mcp, cli: value.cli, readOnly: value.readOnly, createProjects: value.createProjects,
           webSearch: value.webSearch, webRead: value.webRead, webRequests: value.webRequests, revision: value.revision };
       });
     });
@@ -647,16 +646,8 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
     return workspace.corporate.saveProfile(admin(request), { ...profile, id: request.params.id });
   });
   app.put<{ Params: { id: string }; Body: Omit<Dataset, 'id' | 'revision'> & { revision?: number } }>('/api/admin/datasets/:id', { schema: { params: object({ id: identifier }, ['id']), body: object({ name: string(100), directory: string(2000), projectIds: identifiers, classification: { enum: ['shared', 'restricted'] }, revision }, ['name', 'directory', 'projectIds', 'classification']) } }, async request => workspace.corporate.saveDataset(admin(request), { ...request.body, id: request.params.id }));
-  const creationRoles = (credential: Credential) => {
-    const installationId = credential.installationId;
-    if (credential.source !== 'fastkore' || !installationId) return [];
-    const state = workspace.store.state;
-    const known = new Set(state.sso?.roles?.filter(role => role.installationId === installationId).map(role => role.id));
-    return (credential.externalRoles ?? []).filter(role => known.has(role.id) && erpRolePermissions(state, installationId, role.id).createProjects)
-      .map(role => ({ installationId, roleId: role.id }));
-  };
   const canCreateProject = (u: UserRecord, credential: Credential) => isSettingsAdmin({ user: u, credential }) ||
-    (credential.source === 'fastkore' && creationRoles(credential).length > 0);
+    (credential.source === 'fastkore' && creationRoles(workspace.store.state, credential).length > 0);
   app.get('/api/status', async request => {
     const cli = await workspace.codexConnection();
     const { user: u, credential } = principal(request);
@@ -837,7 +828,7 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
     const authorize = () => {
       const { user: u, credential } = principal(request);
       if (!canCreateProject(u, credential)) throw new BridgeError('Роль не позволяет создавать проекты.', 403);
-      return creationRoles(credential);
+      return creationRoles(workspace.store.state, credential);
     };
     authorize();
     const project = directory === undefined

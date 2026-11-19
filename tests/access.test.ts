@@ -184,7 +184,7 @@ test('ERP role grants control creating an isolated project and can be changed by
   } finally { await f.app.close(); }
 });
 
-test('renaming a project from Fastkore requires a permitted role assigned to that project', async () => {
+test('project creation permits renaming accessible projects within the same installation', async () => {
   const f = await fixture();
   try {
     const assigned = { id: randomUUID(), name: 'Участник' };
@@ -194,15 +194,18 @@ test('renaming a project from Fastkore requires a permitted role assigned to tha
     const { directory } = f.project;
     const rename = (token: string, name: string) => f.req('PATCH', route, token, { name });
     const canRename = async () => (await f.req('GET', '/api/projects', employee.token)).json()[0]?.canRename;
-    const grant = (roleId: string, renameProjects: boolean, revision = 0) => f.req('PATCH',
+    const grant = (roleId: string, createProjects: boolean, revision = 0) => f.req('PATCH',
       `/api/admin/erp-roles/${employee.projectRoles[0].installationId}/${roleId}/permissions`, f.admin,
-      { mcp: true, cli: true, renameProjects, revision });
+      { mcp: true, cli: true, createProjects, revision });
     assert.equal((await rename(employee.token, 'Другое имя')).statusCode, 404);
     assert.equal((await f.setProjectRoles(employee.projectRoles.filter(role => role.roleId === assigned.id))).statusCode, 200);
     assert.equal(await canRename(), false);
     assert.equal((await grant(unrelated.id, true)).statusCode, 200);
-    assert.equal(await canRename(), false);
-    assert.equal((await rename(employee.token, 'Другое имя')).statusCode, 403);
+    assert.equal(await canRename(), true);
+    assert.equal((await rename(employee.token, 'Другое имя')).statusCode, 200);
+    const hidden = await f.workspace.createProject('Другой проект', () => []);
+    assert.equal((await f.req('PATCH', '/api/projects/' + hidden.id, employee.token, { name: 'Недоступно' })).statusCode, 404);
+    assert.equal((await grant(unrelated.id, false, 1)).statusCode, 200);
     assert.equal((await f.req('PATCH', route, f.admin, { name: '   ' })).statusCode, 400);
     assert.equal((await rename(f.admin, 'Имя от администратора')).statusCode, 200);
     assert.equal((await grant(assigned.id, true)).statusCode, 200);
