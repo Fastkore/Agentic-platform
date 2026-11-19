@@ -70,13 +70,13 @@ export class CorporateAccess {
     if (existing) Object.assign(existing, pending); else this.data.roles.push(pending);
   }
   role(user: User) { return this.data.roles.find(r => r.id === (user.roleId ?? 'employee') && r.enabled); }
-  canUse(user: User, profile: AgentProfile) {
+  private canUseOutsideProject(user: User, profile: AgentProfile) {
     const role = this.role(user);
     return profile.enabled && (user.role === 'admin' || !!role && role.profileIds.includes(profile.id) && profile.operationIds.some(id => role.operationIds.includes(id)));
   }
   profile(user: User | undefined, id = 'universal', project?: Project): AgentProfile {
     const profile = this.data.profiles.find(p => p.id === id);
-    if (!profile || user && !this.canUse(user, profile)) throw new BridgeError('Профиль недоступен.', 403);
+    if (!profile || user?.disabled || !project && user && !this.canUseOutsideProject(user, profile)) throw new BridgeError('Профиль недоступен.', 403);
     if (!profile.enabled) throw new BridgeError('Профиль выключен.', 403);
     if (project?.agentPolicy && !this.connection(profile, project)) throw new BridgeError('Агент не подключён к этому проекту.', 403);
     const reason = this.unavailable(profile, project);
@@ -95,6 +95,10 @@ export class CorporateAccess {
   connection(profile: AgentProfile, project?: Project) {
     return project?.agentPolicy?.connections.find(connection => connection.profileId === profile.id);
   }
+  // Project membership is checked at the entry point and again for running jobs.
+  connectedProfiles(project: Project) {
+    return this.data.profiles.filter(profile => profile.enabled && (!project.agentPolicy || this.connection(profile, project)));
+  }
   tools(profile: AgentProfile, project?: Project) {
     const tools = profile.toolIds ?? agentToolIds;
     const policy = project?.agentPolicy;
@@ -102,7 +106,9 @@ export class CorporateAccess {
     return agentToolIds.filter(id => id === 'fastkore' || tools.includes(id) && (!policy || connection?.toolIds.includes(id)));
   }
   list(user: User, project?: Project): AgentSummary[] {
-    return this.data.profiles.filter(profile => this.canUse(user, profile) && (!project?.agentPolicy || this.connection(profile, project)))
+    if (user.disabled) return [];
+    const profiles = project ? this.connectedProfiles(project) : this.data.profiles.filter(profile => this.canUseOutsideProject(user, profile));
+    return profiles
       .map(profile => {
         const unavailableReason = this.unavailable(profile, project);
         return { id: profile.id, name: profile.name, description: profile.description, model: profile.model, allowWrite: profile.allowWrite,
@@ -110,8 +116,8 @@ export class CorporateAccess {
       });
   }
   specialists(user: User | undefined, project: Project, mainProfileId: string) {
-    return this.data.profiles.filter(profile => user && profile.id !== 'universal' && profile.id !== mainProfileId && this.canUse(user, profile)
-      && (!project.agentPolicy || this.connection(profile, project)) && !this.unavailable(profile, project));
+    if (!user || user.disabled) return [];
+    return this.connectedProfiles(project).filter(profile => profile.id !== 'universal' && profile.id !== mainProfileId && !this.unavailable(profile, project));
   }
   defaultProjectPolicy(includeFastkore: boolean): ProjectAgentPolicy {
     return {

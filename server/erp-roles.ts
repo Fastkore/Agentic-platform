@@ -44,7 +44,7 @@ export function erpRolePermissions(state: RoleState, installationId: string, rol
 
 export const erpReadOnlyMessage = 'Роль Fastkore разрешает только чтение. Эта операция заблокирована.';
 export const fastkoreReadCommands = new Set([
-  'auth info', 'data get', 'data query', 'schema entity-set list', 'schema entity-set show', 'schema property show',
+  'auth info', 'data get', 'data query', 'data aggregate', 'schema entity-set list', 'schema entity-set show', 'schema property show',
   'report definition show',
 ]);
 

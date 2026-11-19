@@ -415,8 +415,15 @@
 .composer-access-popover .settings-records > li { padding: 8px; }
 @media (max-width: 460px) { :where(.workspace-shell:not([data-fastkore])) .composer-access-trigger { font-size: 11px; } }
 .editor-model { display: flex; align-items: center; min-width: 0; color: var(--text-secondary); }
-.chat-model-control { position: relative; flex: 0 1 auto; min-width: 0; }
-.chat-model-trigger { max-width: min(172px, 32vw); padding: 3px 12px; font-size: var(--chat-control-font-size); border-radius: 999px; background: var(--control); }
+.chat-model-control { position: relative; flex: 0 1 auto; min-width: 0; max-width: min(320px, 48vw); }
+.chat-model-trigger { max-width: 100%; padding: 3px 7px; font-size: var(--chat-control-font-size); border-radius: 8px; }
+.chat-model-selection { display: flex; gap: .4em; align-items: baseline; }
+.chat-model-name { color: var(--text); font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.chat-model-effort { color: var(--text-muted); flex: none; }
+@media (max-width: 600px) {
+  .chat-model-selection { display: grid; gap: 1px; line-height: 1.2; }
+  .chat-model-effort { font-size: .87em; }
+}
 .chat-model-popover { position: absolute; z-index: 9; right: 0; bottom: calc(100% + 7px); width: min(306px, calc(100vw - 42px)); border: 1px solid var(--border); border-radius: 20px; background: var(--elevated); box-shadow: 0 8px 28px #0003; }
 .effort-popover { padding: 10px 14px 14px; }
 .effort-heading { position: relative; display: flex; justify-content: center; margin-bottom: 13px; }

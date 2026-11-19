@@ -21,6 +21,12 @@ test('the isolated worker reads uploaded bytes, returns downloadable files, and 
   const worker = createCodexWorker({
     inspect: async () => ({ path: '', version: 'test', status: '', authentication: 'chatgpt' }),
     async run(request, onEvent) {
+      if (!request.allowWrite) {
+        assert.match(request.prompt, /<local_document_context>[\s\S]*source[\s\S]*<\/local_document_context>/);
+        assert.match(request.prompt, /"результат":"ответ в чате"/);
+        assert.equal(request.workDirectoryId, undefined);
+        return { response: 'Текст прочитан' };
+      }
       assert.equal(request.allowWrite, true);
       assert.equal(path.dirname(request.workspace), await realpath(jobs));
       assert.equal(request.workDirectoryId, path.basename(request.workspace));
@@ -70,6 +76,12 @@ test('the isolated worker reads uploaded bytes, returns downloadable files, and 
       assert.equal(downloaded.body, 'source' + '!'.repeat(index + 1));
       assert.deepEqual(await readdir(jobs), []);
     }
+    await workspace.settings({ allowWrite: false });
+    const readonly = await app.inject({ method: 'POST', url: url + '/messages', headers, payload: { text: 'Прочитай вложение', attachmentIds: [attachment.id] } });
+    assert.equal(readonly.statusCode, 202, readonly.body);
+    const deadline = Date.now() + 5000;
+    while (workspace.busy && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 10));
+    assert.equal(chat.messages.at(-1)?.text, 'Текст прочитан');
   } finally {
     await app.close();
     await worker.close();

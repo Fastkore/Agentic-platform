@@ -69,6 +69,8 @@ test('CLI catalog accepts command parameters and keeps file paths inside its job
       { name: 'subject list/show', required: ['--server', '--user-ticket-stdin'], optional: ['--kind'] },
     ]);
     assert.ok(catalog.has('subject list') && catalog.has('subject show'));
+    assert.deepEqual(await commandArguments(catalog, 'data aggregate', ['--context', 'context.json', '--metrics', 'count'], directory),
+      ['data', 'aggregate', '--context', path.join(directory, 'context.json'), '--metrics', 'count', '--user-ticket-stdin', '--json']);
     assert.deepEqual(await commandArguments(catalog, 'subject list', ['--kind', 'user', '--json'], directory),
       ['subject', 'list', '--kind', 'user', '--user-ticket-stdin', '--json']);
     assert.deepEqual(await commandArguments(catalog, 'macro apply', ['--file', 'source/macro.cs', '--element', 'id', '--warnings-as-errors'], directory),

@@ -18,8 +18,8 @@ const maxKnowledgeBytes = 256 * 1024 * 1024;
 const defaultSummary = 'Fastkore — платформа корпоративных приложений. Business — конфигурация заказов, смет, склада, производства, документов и платежей. Вводная 00-Fastkore-for-Agent-Platform.md описывает сеанс сотрудника и контекст окна. Руководство Platform описывает схему, связи и разработку. Руководство CLI описывает команды. Руководство Business описывает предметные процессы. Доступные операции определяются инструментами текущего сеанса, схема и состояния объектов — целевой установкой.';
 // Replace the prior shipped copies while preserving documents edited or removed by administrators.
 const previousFastkoreDocs = {
-  '00-Fastkore-for-Agent-Platform.md': ['d18b8a51bd2b49d5394632a0db19652eed74257db2129a061d0e524669084d00', 'b8e7f02df61149c41c571052c9102bec8309f0644715cbe01cf237dab0aee89b'],
-  'FastkoreCLI-Agent-Guide.md': ['1142353e5d87f87da348785d900141cd8d86917f7455287f312ca4c858f3f86b'],
+  '00-Fastkore-for-Agent-Platform.md': ['d18b8a51bd2b49d5394632a0db19652eed74257db2129a061d0e524669084d00', 'b8e7f02df61149c41c571052c9102bec8309f0644715cbe01cf237dab0aee89b', '003991e9b9cb6002bea4c2cbb7161811b9ed47109b7f00a13aca7b0c6348504c', 'ff5bd3c7517aa94147ecab974858363093dfd8774ef0ddbb92844209dfcbeeaa'],
+  'FastkoreCLI-Agent-Guide.md': ['1142353e5d87f87da348785d900141cd8d86917f7455287f312ca4c858f3f86b', 'c20d2eb3064227e7efbe940efdad20159e45814c3d1a513e612a77d280a12908'],
 };
 const canonicalText = (bytes: Uint8Array) => Buffer.from(bytes).toString('utf8').replace(/\r\n/g, '\n');
 

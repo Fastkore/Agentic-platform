@@ -10,7 +10,6 @@ export interface PlatformDirectory {
   canAccessProject(userId: string, projectId: string, credentialId?: string): boolean;
   /** Profiles connected to the project through ProjectAgentPolicy (all enabled profiles when the project has no policy). */
   connectedProfiles(projectId: string): { id: string; name: string }[];
-  canUseProfile(userId: string, profileId: string): boolean;
   /** Analysis of closed folders stays off until the real executor, its sessions and logs were verified. */
   closedAnalysisVerified(): boolean;
 }
@@ -22,7 +21,7 @@ const parsePaths = (value: string | null) => { try { return value ? JSON.parse(v
 export const accessReasons: Record<string, string> = {
   folder_inactive: 'Папка неактивна',
   project_access: 'Нет доступа к проекту', connection_disabled: 'Папка отключена в проекте', not_assigned: 'Папка не назначена агенту',
-  profile_not_connected: 'Агент не подключён к проекту', profile_forbidden: 'Агент недоступен сотруднику',
+  profile_not_connected: 'Агент не подключён к проекту',
   closed_analysis_off: 'Закрытая папка: анализ закрытых материалов в этой поставке выключен', no_content: 'В папке ещё нет готовых материалов',
 };
 export interface ScopeEntry {
@@ -134,7 +133,6 @@ export class LibraryPolicy {
     const grant = this.db.prepare('SELECT * FROM grants WHERE project_id=? AND profile_id=? AND folder_id=?').get(projectId, profileId, folderId) as GrantRow | undefined;
     if (!grant) reasons.push('not_assigned');
     if (!this.directory.connectedProfiles(projectId).some(p => p.id === profileId)) reasons.push('profile_not_connected');
-    if (userId !== undefined && !this.directory.canUseProfile(userId, profileId)) reasons.push('profile_forbidden');
     if (folder.classification === 'restricted' && !this.directory.closedAnalysisVerified()) reasons.push('closed_analysis_off');
     if (!folder.current_state) reasons.push('no_content');
     const outputPolicy = strictest(folder.output_policy, connection.output_policy, grant?.output_policy);

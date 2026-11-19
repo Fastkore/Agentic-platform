@@ -1101,7 +1101,7 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
         throw new BridgeError('Откройте в Fastkore карточку или список, к которым привязан этот чат.', 409);
       }
     }
-    const snapshot = parsed && (parsed.view !== 'none' || parsed.chat_key === 'home') ? parsed : undefined;
+    const snapshot = parsed ?? undefined;
     if (snapshot && snapshot.view !== 'none') delete snapshot.entity_uri;
     const run = await workspace.send(request.params.projectId, request.params.chatId, text, request.body.attachmentIds ?? [], request.body.clientRequestId ? `${user(request).id}:${request.body.clientRequestId}` : undefined, request.body.model, check, { id: user(request).id, name: user(request).name, credentialId: principal(request).credential.id }, snapshot, request.body.recommendedSpecialistId);
     return reply.code(202).header('Location', `/api/runs/${run.id}`).send(run);

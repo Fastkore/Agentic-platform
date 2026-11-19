@@ -21,12 +21,15 @@ export function ChatModelControls({ effort, levels, model, models, disabled, onE
   const modelMenu = useRef<HTMLDivElement>(null);
   const dragging = useRef(false);
   const id = useId();
-  const adjustsEffort = providerForModel(model) !== 'gigachat';
+  const provider = providerForModel(model);
+  const adjustsEffort = provider !== 'gigachat' && provider !== 'gemini';
   const actual = Math.max(0, levels.findIndex(item => item.value === effort));
   const index = preview ?? actual;
   const level = levels[index] ?? levels[actual];
   const fixedEffortLabel = 'Не задаётся';
   const modelName = models.find(item => item.value === model)?.label ?? (model || 'Выбрать модель');
+  const effortLabel = adjustsEffort ? levels[actual].label : fixedEffortLabel;
+  const selectionLabel = model ? modelName + ' · Глубина рассуждения: ' + effortLabel : modelName;
   const open = !!step;
 
   useEffect(() => {
@@ -57,10 +60,12 @@ export function ChatModelControls({ effort, levels, model, models, disabled, onE
     else { setStep(null); setPreview(undefined); trigger.current?.focus(); }
   }}>
     <button ref={trigger} type="button" className="workspace-select chat-model-trigger" aria-expanded={open}
-      aria-controls={open ? id : undefined} aria-label={adjustsEffort ? 'Глубина рассуждения: ' + levels[actual].label : 'Настройки модели. Глубина рассуждения не задаётся'}
-      title={adjustsEffort ? undefined : 'Глубина рассуждения не задаётся для этой модели'} disabled={disabled}
+      aria-controls={open ? id : undefined} aria-label={selectionLabel}
+      title={model ? selectionLabel + ' (' + model + ')' : modelName} disabled={disabled}
       onClick={() => setStep(step ? null : 'effort')}>
-      {adjustsEffort ? levels[actual].label : <span className="effort-unavailable">{fixedEffortLabel}</span>}<ChevronDown size={13} aria-hidden="true" />
+      <span className="chat-model-selection"><span className="chat-model-name">{modelName}</span>
+        {model && <span className="chat-model-effort">{effortLabel}</span>}</span>
+      <ChevronDown size={13} aria-hidden="true" />
     </button>
     {step === 'effort' && <div id={id} className="chat-model-popover effort-popover" aria-label="Настройки ответа">
       <div className="effort-heading" data-adjustable={adjustsEffort}>

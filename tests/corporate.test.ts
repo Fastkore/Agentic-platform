@@ -42,6 +42,31 @@ async function fixture(respond?: (request: CodexRequest, signal: AbortSignal) =>
 }
 async function idle(workspace: Workspace) { const deadline = Date.now() + 6000; while (workspace.busy) { if (Date.now() > deadline) throw Error('timeout'); await new Promise(r => setTimeout(r, 10)); } }
 
+test('a Fastkore project member can start and run a linked chat without an internal role assignment', async () => {
+  const f = await fixture();
+  try {
+    const member = await f.enter('Проверка доступа');
+    assert.equal(member.user.roleId, 'sso_pending');
+    const project = '/api/projects/' + f.project.id;
+    const policy = { revision: 0, connections: [{ profileId: 'universal', toolIds: [], fileIds: null }] };
+    assert.equal((await f.req('PUT', project + '/agent-settings', f.admin, policy)).statusCode, 200);
+    assert.equal((await f.req('GET', project + '/agents', member.cookie)).statusCode, 404);
+    assert.equal((await f.setProjectRoles(f.project.id, member.projectRoles)).statusCode, 200);
+    assert.deepEqual((await f.req('GET', project + '/agents', member.cookie)).json().map((p: AgentProfile) => p.id), ['universal']);
+    const context = { type: 'fastkore.context', version: 1, view: 'list', entity_set_id: randomUUID(),
+      entity_ids: [], scope_reproducible: true, filter_status: 'none' };
+    const opened = await f.req('POST', '/api/fastkore/chats', member.cookie, { projectId: f.project.id, context, agentProfileId: 'universal' });
+    assert.equal(opened.statusCode, 201, opened.body);
+    const messages = project + '/chats/' + opened.json().chat.id + '/messages';
+    const sent = await f.req('POST', messages, member.cookie, { text: 'Проверь заказы', fastkoreContext: context });
+    assert.equal(sent.statusCode, 202, sent.body);
+    await idle(f.workspace);
+    assert.equal(f.workspace.getRun(sent.json().id).status, 'complete');
+    assert.equal((await f.req('PUT', project + '/agent-settings', f.admin, { revision: 1, connections: [] })).statusCode, 200);
+    assert.equal((await f.req('POST', messages, member.cookie, { text: 'Ещё раз', fastkoreContext: context })).statusCode, 403);
+  } finally { await f.app.close(); }
+});
+
 test('moving a chat requires access to the destination and preserves its history and files', async () => {
   const f = await fixture();
   try {
@@ -712,7 +737,7 @@ test('legacy estimate profiles become instructed chat specialists without expand
   } finally { await f.app.close(); }
 });
 
-test('profile grants apply to ERP sessions, configuration is private, and closed execution fails before Codex', async () => {
+test('project chat access follows project agents independently of the global role catalog', async () => {
   const f = await fixture(); try {
     assert.equal((await f.req('GET', '/api/admin/profiles', f.token)).statusCode, 403);
     assert.deepEqual((await f.req('GET', '/api/agents', f.token)).json().map((a: any) => a.id), ['universal']);
@@ -728,7 +753,7 @@ test('profile grants apply to ERP sessions, configuration is private, and closed
     assert.deepEqual(agents.map((agent: { id: string; available: boolean }) => [agent.id, agent.available]), [['estimator', true], ['technologist', false]]);
     assert.ok(!JSON.stringify(agents).includes('instructions'));
     const route = `/api/projects/${f.project.id}/chats`;
-    assert.equal((await f.req('POST', route, f.token, { agentProfileId: 'universal' })).statusCode, 403);
+    assert.equal((await f.req('POST', route, f.token, { agentProfileId: 'universal' })).statusCode, 201);
     assert.equal((await f.req('POST', route, f.token, { agentProfileId: 'estimator' })).statusCode, 201);
     assert.equal((await f.req('POST', route, f.token, { agentProfileId: technologistId })).statusCode, 409); assert.equal(f.calls.length, 0);
     assert.equal((await f.req('PUT', '/api/admin/roles/manager', f.token, role)).statusCode, 403);
@@ -792,9 +817,6 @@ test('Codex can consult a different specialist from the user recommendation', as
     const chat = (await f.req('POST', project + '/chats', f.token, {})).json();
     const route = project + '/chats/' + chat.id + '/messages';
     const question = { text: 'Проверь текст', recommendedSpecialistId: 'editor', clientRequestId: 'specialist-1' };
-    assert.equal((await f.req('POST', route, f.token, question)).statusCode, 403);
-    const { id: roleId, ...role } = f.workspace.corporate.data.roles.find(item => item.id === 'employee')!;
-    assert.equal((await f.req('PUT', '/api/admin/roles/' + roleId, f.admin, { ...role, profileIds: [id, 'editor', 'reviewer'] })).statusCode, 200);
     const attachment = await f.workspace.addAttachment(f.project.id, 'draft.txt', Buffer.from('private attachment'), () => f.employee.id);
     const sent = await f.req('POST', route, f.token, { ...question, attachmentIds: [attachment.id] });
     assert.equal(sent.statusCode, 202, sent.body);
@@ -805,7 +827,9 @@ test('Codex can consult a different specialist from the user recommendation', as
     assert.match(f.calls[0].prompt, /Рекомендация сотрудника.*editor/);
     assert.doesNotMatch(f.calls[0].developerInstructions!, /Исправляй опечатки|Сверяй даты/);
     assert.match(f.calls[1].developerInstructions!, /Проверяй факты[\s\S]*review.md[\s\S]*Сверяй даты/);
-    assert.equal(f.calls[1].prompt, 'Проверь факты');
+    assert.ok(f.calls[1].prompt.endsWith('Подзадача от основного агента\nПроверь факты'));
+    assert.match(f.calls[1].prompt, /"агент":"Рецензент"/);
+    assert.doesNotMatch(f.calls[1].prompt, /private attachment|draft\.txt|my_instructions|library_list|knowledge/);
     assert.equal(f.calls[1].allowWrite, false);
     assert.equal(f.calls[1].ephemeral, true);
     assert.equal(f.calls[1].sessionId, undefined);
@@ -863,7 +887,8 @@ test('Fastkore requests preserve selection context while allowing questions abou
     for (const context of [{ ...filtered, scope_reproducible: false }, { ...base, filter_status: 'unavailable', filter_xml: null }]) {
       assert.equal((await f.req('POST', route, f.token, { text: 'Покажи заказы из другого раздела', fastkoreContext: context })).statusCode, 202);
       await idle(f.workspace);
-      assert.match(f.calls.at(-1)!.prompt, /context.json/);
+      assert.match(f.calls.at(-1)!.prompt, /Точную область окна воспроизвести нельзя/);
+      assert.doesNotMatch(f.calls.at(-1)!.prompt, /context\.json/);
       assert.doesNotMatch(f.calls.at(-1)!.prompt, /scope=erp|scope=current/);
     }
   } finally { await f.app.close(); }
@@ -896,8 +921,11 @@ test('former project files move into the library once, keep per-file access and 
     assert.equal(cell.files, 1, 'the per-file limit of the specialist is kept');
     assert.equal((await f.req('GET', projectPath + '/library', f.token)).statusCode, 404, 'employees do not manage the library');
 
-    const chat = (await f.req('POST', projectPath + '/chats', f.token, {})).json();
-    assert.equal((await f.req('POST', projectPath + '/chats/' + chat.id + '/messages', f.token, { text: 'Прочитай материалы проекта' })).statusCode, 202);
+    const member = await f.enter('Участник проекта без внутренней роли');
+    assert.equal(member.user.roleId, 'sso_pending');
+    assert.equal((await f.setProjectRoles(f.project.id, [...f.projectRoles, ...member.projectRoles])).statusCode, 200);
+    const chat = (await f.req('POST', projectPath + '/chats', member.cookie, {})).json();
+    assert.equal((await f.req('POST', projectPath + '/chats/' + chat.id + '/messages', member.cookie, { text: 'Прочитай материалы проекта' })).statusCode, 202);
     await idle(f.workspace);
     const tools = f.calls.at(-1)!.tools!;
     const signal = new AbortController().signal;

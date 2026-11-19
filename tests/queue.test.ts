@@ -12,10 +12,11 @@ const pause = (ms: number) => new Promise(r => setTimeout(r, ms));
 async function until(check: () => boolean) { const deadline = Date.now() + 7000; while (!check()) { if (Date.now() > deadline) throw Error('timeout'); await pause(10); } }
 function runner(calls: string[] = []): CodexRunner {
   return { inspect: async () => ({ path: process.execPath, version: 'fake', authentication: 'chatgpt', status: '' }), run: async (r, onEvent, signal) => {
-    calls.push(r.prompt); if (calls.length > 1) assert.equal(r.sessionId, session);
+    const question = r.prompt.split('Текущий запрос сотрудника\n').at(-1)!;
+    calls.push(question); if (calls.length > 1) assert.equal(r.sessionId, session);
     await onEvent({ kind: 'session', text: session });
-    if (r.prompt === 'BLOCK') await new Promise<void>((resolve, reject) => { if (signal.aborted) reject(Error('aborted')); signal.addEventListener('abort', () => reject(Error('aborted')), { once: true }); });
-    await pause(80); return { sessionId: session, response: r.prompt };
+    if (question === 'BLOCK') await new Promise<void>((resolve, reject) => { if (signal.aborted) reject(Error('aborted')); signal.addEventListener('abort', () => reject(Error('aborted')), { once: true }); });
+    await pause(80); return { sessionId: session, response: question };
   } };
 }
 async function fixture(storageBudget?: { user: number; project: number; platform: number }) {
@@ -86,7 +87,7 @@ test('provider lanes run different chats concurrently but preserve FIFO across m
     inspect: async (_path, _signal, model) => ({ path: process.execPath, version: 'fake', authentication: 'chatgpt', status: '',
       accountId: model?.startsWith('glm') ? 'glm-account' : 'google-account' }),
     run: async (request, _event, signal) => {
-      const question = request.prompt.split('\n\n').at(-1)!;
+      const question = request.prompt.split('Текущий запрос сотрудника\n').at(-1)!;
       started.push(question);
       await new Promise<void>((resolve, reject) => {
         releases.set(question, resolve);
@@ -127,11 +128,12 @@ test('two GLM chats overlap and cancelling one releases only its slot', async ()
   const workspace = new Workspace(store, {
     inspect: async () => ({ path: process.execPath, version: 'fake', authentication: 'glm', provider: 'glm', status: '' }),
     run: async (request, _event, signal) => {
+      const question = request.prompt.split('Текущий запрос сотрудника\n').at(-1)!;
       await new Promise<void>((resolve, reject) => {
-        started.set(request.prompt, resolve);
+        started.set(question, resolve);
         signal.addEventListener('abort', () => reject(Error('cancelled')), { once: true });
       });
-      return { response: request.prompt };
+      return { response: question };
     },
   });
   try {

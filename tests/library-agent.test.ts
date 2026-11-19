@@ -24,7 +24,8 @@ test('the agent explores the project library like a directory: list, tree, searc
     const { folder } = await grantedFolder(f, { 'Pricing.cs': code, 'Docs/readme.md': '# Наценка\n' }, { name: 'Fastkore Business' });
     assert.match(await ask('Как считается цена?'), /Папок 1; в корне Docs,Pricing\.cs; найдено в Pricing\.cs:3; прочитано/);
     const instructions = f.calls.at(-1)!.developerInstructions!;
-    assert.match(instructions, /Fastkore Business/);
+    assert.match(f.calls.at(-1)!.prompt, /"название":"Fastkore Business"/);
+    assert.doesNotMatch(instructions, /Fastkore Business/);
     assert.match(instructions, /library_search/);
     // An employee does not manage the library; the second project does not see the folder.
     assert.equal((await f.req('GET', `/api/projects/${f.project.id}/library`, f.token)).statusCode, 404);

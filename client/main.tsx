@@ -46,6 +46,7 @@ const LibraryPanel = lazy(() => import('./LibraryPanel').then(module => ({ defau
 
 let accessKey = sessionStorage.getItem('bridge-key') ?? '';
 const agentsUrl = (projectId: string) => projectId ? '/api/projects/' + encodeURIComponent(projectId) + '/agents' : '/api/agents';
+const defaultChatAgent = (agents: AgentSummary[]) => agents.find(agent => agent.available && agent.id === 'universal') ?? agents.find(agent => agent.available);
 const unassignedChatsUrl = '/api/chats/without-project';
 const unassignedGroupId = 'without-project';
 const settingsSections = {
@@ -203,10 +204,9 @@ function App() {
   const [error, setError] = useState(''), [pending, setPending] = useState(false), [copied, setCopied] = useState(''), [folderPath, setFolderPath] = useState(''), [projectName, setProjectName] = useState('');
   const [reconnecting, setReconnecting] = useState(false);
   const [agentCatalog, setAgentCatalog] = useState<{ projectId: string; list: AgentSummary[] }>();
-  const [preferredAgent, setPreferredAgent] = useState('universal');
   const agents = agentCatalog?.projectId === projectId ? agentCatalog.list : [];
   const availableAgents = agents.filter(agent => agent.available);
-  const newAgent = availableAgents.find(agent => agent.id === preferredAgent)?.id ?? '';
+  const newAgent = defaultChatAgent(agents)?.id ?? '';
   const [catalog, setCatalog] = useState<ModelCatalog | null>(null), [modelsLoading, setModelsLoading] = useState(false), [modelError, setModelError] = useState('');
   const modelLoads = useRef(0);
   const [cliPath, setCliPath] = useState(''), [diagnostics, setDiagnostics] = useState(''), [subscription, setSubscription] = useState<Run | null>(null);
@@ -393,7 +393,7 @@ function App() {
   useEffect(() => () => { if (screenshotRequest.current) clearTimeout(screenshotRequest.current.timer); }, []);
   function clearLogin() {
     finishScreenshotRequest(); setReadySession(null); setScreenshotPreview(undefined); setUnassignedChats([]);
-    authEpoch++; browserSession = false; csrfToken = ''; sessionUserId = ''; sendAttempt.current = null; setErpAuth(null); currentErpContext.current = {}; autoOpenRelated.current = undefined; setErpChatKey(undefined); setRelatedChats(undefined); setContextProblem(undefined); setAgentCatalog(undefined); setPreferredAgent('universal'); setCatalog(null); setModelError(''); accessKey = ''; sessionStorage.removeItem('bridge-key'); localStorage.removeItem('bridge-project'); localStorage.removeItem('bridge-chat'); setLoggedIn(false); setUser(null); setStatus(null); setProjects([]); setChatLists({}); setOpenProjects({}); setShowAll({}); setSidebarOpen(false); setChat(null); setModelPreview(undefined); setDrafts({}); setFiles({}); setSpecialists({}); setSubscription(null); setPanel(null); setProjectId(''); setChatId(''); setDiagnostics(''); setPasswordInput('');
+    authEpoch++; browserSession = false; csrfToken = ''; sessionUserId = ''; sendAttempt.current = null; setErpAuth(null); currentErpContext.current = {}; autoOpenRelated.current = undefined; setErpChatKey(undefined); setRelatedChats(undefined); setContextProblem(undefined); setAgentCatalog(undefined); setCatalog(null); setModelError(''); accessKey = ''; sessionStorage.removeItem('bridge-key'); localStorage.removeItem('bridge-project'); localStorage.removeItem('bridge-chat'); setLoggedIn(false); setUser(null); setStatus(null); setProjects([]); setChatLists({}); setOpenProjects({}); setShowAll({}); setSidebarOpen(false); setChat(null); setModelPreview(undefined); setDrafts({}); setFiles({}); setSpecialists({}); setSubscription(null); setPanel(null); setProjectId(''); setChatId(''); setDiagnostics(''); setPasswordInput('');
   }
   function logout() { void action(async () => { await post('/api/auth/logout'); clearLogin(); }); }
   useEffect(() => {
@@ -720,8 +720,8 @@ function App() {
     return () => { alive = false; };
   }, [loggedIn, !!user, setupRequired, user?.roleId, panel, projectId, !!selectedProject]);
   async function createChat(project: string, context?: FastkoreContext, fresh = false) {
-    const choices = project === projectId ? availableAgents : (await api<AgentSummary[]>(agentsUrl(project))).filter(agent => agent.available);
-    const agent = choices.find(item => item.id === preferredAgent);
+    const choices = agentCatalog?.projectId === project ? agentCatalog.list : await api<AgentSummary[]>(agentsUrl(project));
+    const agent = defaultChatAgent(choices);
     if (!agent) throw new Error('В этом проекте вам пока не доступен ни один агент.');
     const result = context ? await post<{ projectId: string; chat: Chat }>('/api/fastkore/chats', { projectId: project, context, fresh, agentProfileId: agent.id })
       : { projectId: project, chat: await post<Chat>(`/api/projects/${project}/chats`, { agentProfileId: agent.id }) };
@@ -1237,7 +1237,7 @@ function App() {
       {projects.length || canCreateProject ? 'Выберите проект, чтобы отправить сообщение.' : 'Нет доступных проектов. Попросите администратора дать доступ к проекту.'}
     </p> : !projectId && status && !canCreateProject && !projects.length && <p className="composer-status">Для отправки администратор должен дать вам доступ к проекту.</p>}
     {agentCatalog?.projectId === projectId && chat && canEdit && !currentAgent?.available && <p className="composer-status">{currentAgent?.unavailableReason ?? 'Агент этого чата вам сейчас недоступен.'}</p>}
-    {agentCatalog?.projectId === projectId && !chatId && status && (projectId || canCreateProject) && !availableAgents.length && <p className="composer-status">Для нового чата нужен доступ к агенту проекта.</p>}
+    {projectId && agentCatalog?.projectId === projectId && !chatId && status && !availableAgents.length && <p className="composer-status">В выбранном проекте нет доступного агента для чата.</p>}
     {chatQueuedRuns.map(run => <div className="bridge-progress queued-message" key={run.id}>
       <span>{run.steeringTo ? 'Отправляется…' : 'В очереди'}</span>
       {run.queuedText && <span className="queued-message-text" title={run.queuedText}>{run.queuedText}</span>}
@@ -1942,29 +1942,27 @@ function LimitsButton({ limits, loading, refresh, unavailableReason, model }: {
 }) {
 
   const windows = unavailableReason ? [] : limits?.buckets.flatMap(bucket => bucket.windows) ?? [];
-  const remaining = windows.length ? Math.min(...windows.map(window => remainingPercent(window.usedPercent))) : null;
-  const remainingLabel = remaining === null ? '' : `Осталось ${limitPercentFormat.format(remaining)}%`;
+  if (!limits || !windows.length) return null;
+  const remaining = Math.min(...windows.map(window => remainingPercent(window.usedPercent)));
+  const remainingLabel = `Осталось ${limitPercentFormat.format(remaining)}%`;
   const provider = limits?.provider ?? providerForModel(model) ?? 'codex';
   const heading = provider === 'codex' ? 'Лимиты Codex' : provider === 'glm' ? 'Лимиты Z.ai' : provider === 'gigachat' ? 'Лимиты GigaChat' : 'Лимиты Google';
-  const title = remainingLabel ? `${heading} · ${remainingLabel.toLowerCase()}` : heading;
+  const title = `${heading} · ${remainingLabel.toLowerCase()}`;
   return <details className="limits-control"
     onToggle={e => { if (e.currentTarget.open) void refresh(); }}
     onBlur={e => { if (!e.currentTarget.contains(e.relatedTarget)) e.currentTarget.open = false; }}
     onKeyDown={e => { if (e.key === 'Escape') { e.currentTarget.open = false; e.currentTarget.querySelector('summary')?.focus(); } }}>
-    <summary className="workspace-icon" aria-label={heading} aria-description={remainingLabel || unavailableReason || limits?.unavailableReason || undefined} title={title}>
+    <summary className="workspace-icon" aria-label={heading} aria-description={remainingLabel} title={title}>
       <svg className="limit-ring" viewBox="0 0 20 20" width="20" height="20" aria-hidden="true">
         <circle className="limit-ring-track" cx="10" cy="10" r="8" />
-        {remaining !== null && remaining > 0 && <circle className="limit-ring-value" cx="10" cy="10" r="8" pathLength="100"
+        {remaining > 0 && <circle className="limit-ring-value" cx="10" cy="10" r="8" pathLength="100"
           strokeDasharray={`${remaining} 100`} transform="rotate(-90 10 10)" />}
       </svg>
     </summary>
     <div className="limits-popover">
       <header><h3>{heading}</h3><button className="workspace-icon" title="Обновить лимиты" aria-label="Обновить лимиты" disabled={loading || !!unavailableReason} onClick={() => void refresh()}><RefreshCw size={14} /></button></header>
-      {loading && !limits && <p role="status">Загрузка…</p>}
-      {unavailableReason && <p role="status">{unavailableReason}</p>}
-      {!unavailableReason && limits?.unavailableReason && <p role="status">{limits.unavailableReason}</p>}
-      {!unavailableReason && !loading && !limits && <p role="status">Лимиты выбранной модели пока недоступны.</p>}
-      {!unavailableReason && limits?.buckets.map((bucket, index) => <section key={index}>
+      {limits.unavailableReason && <p role="status">{limits.unavailableReason}</p>}
+      {limits.buckets.map((bucket, index) => <section key={index}>
         {limits.buckets.length > 1 && <b>{bucket.name}</b>}
         {bucket.windows.map((window, row) => {
           const left = remainingPercent(window.usedPercent);

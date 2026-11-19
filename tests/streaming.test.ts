@@ -43,7 +43,7 @@ test('queued text is visible to the sender and sending it now consumes the job o
   const workspace = new Workspace(store, {
     inspect: async () => ({ path: process.execPath, version: 'fake', status: '', authentication: 'chatgpt' }),
     run: async (request, emit, _signal, register) => {
-      started.push(request.prompt);
+      started.push(request.prompt.split('Текущий запрос сотрудника\n').at(-1)!);
       await emit({ kind: 'message-delta', text: 'Работаю…' });
       register?.(async text => {
         if (text === 'Reject') return 'rejected';

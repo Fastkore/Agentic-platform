@@ -1,6 +1,7 @@
 import { readFile, writeFile } from 'node:fs/promises';
 import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
+import { createHash } from 'node:crypto';
 import path from 'node:path';
 import type { Attachment, AuditEvent, Chat, ProjectAgentPolicy, ProjectRolePolicy, Run, State } from '../shared/types.js';
 import { DEFAULT_AGENT_INSTRUCTIONS } from '../shared/agent-instructions.js';
@@ -84,6 +85,10 @@ export class Store {
       this.state.settings.model ??= '';
       this.state.settings.reasoningEffort ??= 'high';
       this.state.settings.agentInstructions ??= DEFAULT_AGENT_INSTRUCTIONS;
+      // Update only the unedited default that prescribed a universal scope=erp parameter.
+      if (createHash('sha256').update(this.state.settings.agentInstructions).digest('hex') === 'dc115a1083c129e67fae674739f05bffbb343be3b158b6d538366cf3e6993b86') {
+        this.state.settings.agentInstructions = DEFAULT_AGENT_INSTRUCTIONS;
+      }
       this.state.jobs ??= [];
       for (const run of this.state.runs) if (run.status === 'running' || run.status === 'queued' && run.steeringTo) {
         run.status = 'interrupted'; run.progress = 'Выполнение прервано остановкой сервера'; run.completedAt = new Date().toISOString();
