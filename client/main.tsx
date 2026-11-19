@@ -1700,22 +1700,22 @@ function App() {
               </div>
               {subscription && <p role="status">{subscription.error ?? subscription.response ?? subscription.progress}</p>}
             </section>}
-            <section className="setting-section">
+            <section className="setting-section settings-models">
               <div className="settings-model-row">
                 <label htmlFor="server-model">Модель по умолчанию</label>
-                <Select id="server-model" className="settings-select" value={serverModel} options={serverModels}
-                  disabled={busy || pending || modelsLoading} onChange={model => void saveSettings({ model })} />
                 <button type="button" className="workspace-icon" aria-label="Обновить список моделей" title="Обновить список моделей"
                   disabled={modelsLoading} onClick={() => void loadModels(true)}>
                   {modelsLoading ? <LoaderCircle className="spin" size={16} /> : <RefreshCw size={16} />}
                 </button>
+                <Select id="server-model" className="settings-select" value={serverModel} options={serverModels}
+                  disabled={busy || pending || modelsLoading} onChange={model => void saveSettings({ model })} />
               </div>
-              {modelError && <p role="status">{modelError}</p>}
               <div className="settings-model-row">
                 <label htmlFor="server-reasoning">Рассуждение по умолчанию</label>
                 <Select id="server-reasoning" className="settings-select" value={status?.settings.reasoningEffort ?? 'high'} options={reasoningOptions}
                   disabled={busy || pending} onChange={value => void saveSettings({ reasoningEffort: value as Settings['reasoningEffort'] })} />
               </div>
+              {modelError && <p role="status">{modelError}</p>}
             </section>
             {!status?.isolatedCodex && <section className="setting-section"><h3>Работа с файлами</h3>
               <Toggle checked={status?.settings.allowWrite ?? false} disabled={busy || pending} title="Разрешить запись в проект" onChange={allowWrite => void saveSettings({ allowWrite })} />

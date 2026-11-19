@@ -28,6 +28,12 @@ test('execution accounts preserve legacy auth, isolate tokens and retain the act
     store = new ExecutionAccountStore(root);
     assert.equal(store.active, second.id);
     assert.equal(await readFile(path.join(root, 'auth.json'), 'utf8'), auth);
+    await writeFile(path.join(store.home(second.id), 'auth.json'), JSON.stringify({ tokens: { access_token: '' } }));
+    const disconnected = (await store.list()).accounts.find(account => account.id === second.id)!;
+    assert.equal(disconnected.signedIn, false);
+    assert.equal(disconnected.active, false);
+    assert.equal((await store.select()).account.id, 'default');
+    await writeFile(path.join(store.home(second.id), 'auth.json'), auth);
     const gemini = await store.create('Gemini', 'gemini');
     await mkdir(path.join(store.home(gemini.id), '.gemini'));
     await writeFile(path.join(store.home(gemini.id), '.gemini', 'oauth_creds.json'), JSON.stringify({ refresh_token: 'private-google-token' }));

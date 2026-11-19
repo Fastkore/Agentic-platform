@@ -82,7 +82,7 @@ export function ExecutionAccountsPanel({ request, busy, changed }: { request: Re
               await request(endpoint + '/' + account.id + '/' + (event.target.checked ? 'activate' : 'deactivate'), { method: 'POST', body: '{}' });
               await changed();
             })} />
-          Активен
+          {account.active ? 'Активен' : 'Неактивен'}
         </label>
         <button type="button" className="secondary" disabled={busy || working || account.login?.state === 'waiting'}
           onClick={() => { setAuthorizationCodes(old => ({ ...old, [account.id]: '' })); setAccountKey('');

@@ -66,8 +66,8 @@ export class ExecutionAccountStore {
   get provider() { return [...this.state.active].reverse().map(id => this.state.accounts.find(item => item.id === id)).find(Boolean)?.provider ?? 'codex'; }
   private async activeAccounts() {
     const { accounts } = await this.list();
-    const signedIn = new Map(accounts.filter(account => account.signedIn).map(account => [account.id, account]));
-    return [...this.state.active].reverse().map(id => signedIn.get(id)).filter((account): account is NonNullable<typeof account> => !!account);
+    const active = new Map(accounts.filter(account => account.active).map(account => [account.id, account]));
+    return [...this.state.active].reverse().map(id => active.get(id)).filter((account): account is NonNullable<typeof account> => !!account);
   }
   async select(model?: string) {
     const provider = providerForModel(model);
@@ -126,12 +126,13 @@ export class ExecutionAccountStore {
     this.modelRevision = randomUUID();
   }
   async list(): Promise<ExecutionAccounts> {
+    const selected = this.activeSet;
     return { accounts: await Promise.all(this.state.accounts.map(async account => {
       let email: string | undefined, scope: GigaChatScope | undefined, signedIn = false;
       try {
         if (account.provider === 'antigravity') {
           const marker = JSON.parse(await readFile(path.join(this.home(account.id), '.antigravity-connected.json'), 'utf8'));
-          signedIn = typeof marker.session === 'string';
+          signedIn = typeof marker.session === 'string' && !!marker.session.trim();
         } else if (account.provider === 'glm') {
           signedIn = readGlmKey(this.home(account.id)) !== null;
         } else if (account.provider === 'gigachat') {
@@ -140,7 +141,8 @@ export class ExecutionAccountStore {
         } else {
         const file = account.provider === 'gemini' ? path.join('.gemini', 'oauth_creds.json') : 'auth.json';
         const auth = JSON.parse(await readFile(path.join(this.home(account.id), file), 'utf8'));
-        signedIn = account.provider === 'gemini' ? typeof auth.refresh_token === 'string' : typeof auth.tokens?.access_token === 'string';
+        const accessToken = account.provider === 'gemini' ? auth.refresh_token : auth.tokens?.access_token;
+        signedIn = typeof accessToken === 'string' && !!accessToken.trim();
         if (account.provider === 'codex' && typeof auth.tokens?.id_token === 'string') {
           const claims = JSON.parse(Buffer.from(auth.tokens.id_token.split('.')[1], 'base64url').toString('utf8'));
           if (typeof claims.email === 'string') email = claims.email;
@@ -154,7 +156,7 @@ export class ExecutionAccountStore {
         this.modelRevision = randomUUID();
         this.stopLogin(login.child);
       }
-      return { ...account, email, scope, signedIn, active: this.activeSet.has(account.id), login: this.logins.get(account.id)?.status };
+      return { ...account, email, scope, signedIn, active: signedIn && selected.has(account.id), login: login?.status };
     })) };
   }
   async create(name: string, provider: ExecutionProvider = 'codex') {

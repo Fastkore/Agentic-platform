@@ -7,9 +7,9 @@ import { PermissionSwitch } from './PermissionSwitch';
 
 type Request = <T>(url: string, init?: RequestInit) => Promise<T>;
 const permissionColumns = [
-  [{ key: 'mcp', name: 'MCP', icon: Network }, { key: 'cli', name: 'CLI', icon: Terminal }],
+  [{ key: 'mcp', name: 'MCP', icon: Network }, { key: 'cli', name: 'CLI', icon: Terminal },
+    { key: 'webRequests', name: 'Внешние запросы', icon: Send }],
   [{ key: 'webSearch', name: 'Веб-поиск', icon: Search }, { key: 'webRead', name: 'Чтение страниц', icon: Globe }],
-  [{ key: 'webRequests', name: 'Внешние запросы', icon: Send }],
   [{ key: 'createProjects', name: 'Создание и переименование проектов', icon: FolderPlus },
     { key: 'readOnly', name: 'Только чтение в Fastkore', icon: LockKeyhole }],
 ] as const;
