@@ -348,6 +348,7 @@
 .conversation-message .markdown table { border-collapse: collapse; display: block; overflow-x: auto; max-width: 100%; }
 .message-actions { display: flex; align-items: center; gap: 4px; color: var(--text-muted); margin-top: 7px; font-size: 9.9px; }
 .message-actions .workspace-icon { width: 26px; height: 26px; }
+.message-author { color: var(--text-secondary); font-size: var(--chat-caption-font-size); overflow-wrap: anywhere; }
 .conversation-files { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 8px; }
 .conversation-files :is(span, button) {
   display: flex; align-items: center; gap: 8px; max-width: 100%; padding: 8px 10px;

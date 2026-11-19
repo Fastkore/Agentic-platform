@@ -5,6 +5,7 @@ import { BridgeError, type AccessDraft } from './store.js';
 import type { Workspace } from './workspace.js';
 import type { ErpDelegation, TicketIdentity } from './fastkore.js';
 import { canAccessProject, erpRolesForUser, observeErpRoles, projectAllowsRoles } from './erp-roles.js';
+import { fastkoreChatSessionMatches } from './fastkore-chat.js';
 
 const derive = promisify(scrypt);
 const digest = (value: string) => createHash('sha256').update(value).digest('hex');
@@ -291,12 +292,19 @@ export class Access {
   }
   chat(user: User, projectId: string, chatId: string, credential?: Credential) {
     const project = this.workspace.project(projectId), chat = this.workspace.chat(projectId, chatId);
-    if (!this.canAccessChat(user, project, chat, credential)) throw new BridgeError('Диалог не найден.', 404); return chat;
+    if (!this.canAccessChat(user, project, chat, credential) || !fastkoreChatSessionMatches(chat, credential)) throw new BridgeError('Диалог не найден.', 404); return chat;
   }
   editChat(user: User, projectId: string, chatId: string, credential?: Credential) {
     const chat = this.chat(user, projectId, chatId, credential);
     if (chat.archivedAt) throw new BridgeError('Восстановите чат из архива, чтобы продолжить диалог.', 409);
-    if (user.role !== 'admin' && chat.ownerId !== user.id) throw new BridgeError('Общий диалог доступен для чтения. Создайте свой диалог.', 403); return chat;
+    if (user.role !== 'admin' && chat.ownerId !== user.id) throw new BridgeError('Менять настройки этого чата может его владелец или администратор.', 403);
+    return chat;
+  }
+  postChat(user: User, projectId: string, chatId: string, credential?: Credential) {
+    const chat = this.chat(user, projectId, chatId, credential);
+    if (chat.archivedAt) throw new BridgeError('Восстановите чат из архива, чтобы продолжить диалог.', 409);
+    if (user.role !== 'admin' && chat.ownerId !== user.id && chat.visibility !== 'project') throw new BridgeError('Нет доступа к отправке сообщения в этот чат.', 403);
+    return chat;
   }
   run(user: User, id: string, credential?: Credential) {
     const run = this.workspace.getRun(id); if (run.projectId && run.chatId) this.chat(user, run.projectId, run.chatId, credential); else this.admin(user); return run;
@@ -309,8 +317,8 @@ export class Access {
       return { ...message, authorId, authorName: this.data.users.find(user => user.id === authorId)?.name ?? 'Пользователь' };
     });
     let fastkoreNavigation: ChatView['fastkoreNavigation'];
-    if (fastkoreBinding && session?.source === 'fastkore' && session.userId === chat.ownerId &&
-      session.installationId === fastkoreBinding.installationId && (!fastkoreBinding.externalUserId || session.externalUserId === fastkoreBinding.externalUserId)) {
+    if (fastkoreBinding && session?.source === 'fastkore' && (session.userId === chat.ownerId || chat.visibility === 'project') &&
+      session.installationId === fastkoreBinding.installationId && fastkoreChatSessionMatches(chat, session)) {
       const { installationId, entityUri, tileId, tileName } = fastkoreBinding;
       if (entityUri) fastkoreNavigation = { installationId, entityUri };
       else if (tileId) fastkoreNavigation = { installationId, tileId, tileName: tileName ?? fastkoreBinding.contextName };
@@ -395,17 +403,6 @@ export class Access {
       draft.projectRolePolicies = new Map([[projectId, policy]]);
       this.audit(actor.id, 'project.roles', projectId, draft.security);
       return policy;
-    });
-  }
-  visibility(actor: User, projectId: string, chatId: string, visibility: 'private' | 'project') {
-    this.admin(actor); return this.change(() => {
-      const chat = this.editChat(actor, projectId, chatId);
-      if (this.workspace.project(projectId).deletedAt) throw new BridgeError('Сначала выберите проект для чата.', 409);
-      if (chat.fastkoreBinding && visibility === 'project') throw new BridgeError('Связанный чат Fastkore доступен его автору и руководителям.', 409);
-      if (chat.visibility !== 'project' && visibility === 'project' && this.workspace.activeRuns.some(run => run.projectId === projectId && run.chatId === chatId)) {
-        throw new BridgeError('Дождитесь ответа, чтобы поделиться чатом.', 409);
-      }
-      chat.visibility = visibility; this.audit(actor.id, `chat.${visibility}`, chatId); return this.viewChat(chat);
     });
   }
 }

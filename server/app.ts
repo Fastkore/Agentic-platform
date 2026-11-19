@@ -20,7 +20,7 @@ import { interfaceScales, specialistFileLimits, specialistIcons, unassignedChats
 import type { DictationModelId, InterfaceScale } from '../shared/types.js';
 import { fastkoreChatTitle, fastkoreExecutionContext, parseFastkoreContext } from '../shared/fastkore-context.js';
 import { canReadChatAttachment } from '../shared/chat-attachments.js';
-import { chatBinding, matchesFastkoreChat, migrateFastkoreChatBindings, parentFastkoreChatBindings } from './fastkore-chat.js';
+import { chatBinding, fastkoreChatSessionMatches, matchesFastkoreChat, migrateFastkoreChatBindings, parentFastkoreChatBindings } from './fastkore-chat.js';
 import { FastkoreMcp } from './fastkore-mcp.js';
 import { FastkoreCli, type FastkoreCliTiming } from './fastkore-cli.js';
 import { elapsedMs } from './run-timing.js';
@@ -192,11 +192,7 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
     return access.project(user, projectId, credential);
   };
   const viewChat = (request: FastifyRequest, chat: ReturnType<Workspace['chat']>) => access.viewChat(chat, principal(request).credential);
-  const chatIdentityMatches = (p: Principal, chat: ReturnType<Workspace['chat']>) => {
-    const binding = chat.fastkoreBinding;
-    return p.credential.source !== 'fastkore' || !binding?.externalUserId ||
-      (binding.installationId === p.credential.installationId && binding.externalUserId === p.credential.externalUserId);
-  };
+  const chatIdentityMatches = (p: Principal, chat: ReturnType<Workspace['chat']>) => fastkoreChatSessionMatches(chat, p.credential);
   const requestRun = (request: FastifyRequest<{ Params: { runId: string } }>) => {
     const p = principal(request);
     const run = access.run(p.user, request.params.runId, p.credential);
@@ -726,7 +722,8 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
       if (!project && actor.role !== 'admin' && !workspace.corporate.role(actor)?.operationIds.includes('chat')) {
         throw new BridgeError('Рабочая роль не разрешает работу с чатом.', 403);
       }
-      const chat = chatId && projectId ? access.editChat(actor, projectId, chatId, credential) : undefined;
+      const chat = chatId && projectId ? access.postChat(actor, projectId, chatId, credential) : undefined;
+      if (chat && projectId) workspace.assertSharedChatAvailable(projectId, chat, actor.id);
       workspace.corporate.profile(actor, chat ? chat.agentProfileId : agentProfileId, project);
       return actor.id;
     };
@@ -957,10 +954,10 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
       if (source) rows.set(source.chat.id, { ...access.chatSummary(source.chat), projectId: source.project.id, projectName: source.project.deletedAt ? unassignedChatsLabel : source.project.name,
         parent: true, contextMatches: false });
     }
-    for (const { project, chat } of workspace.relatedFastkoreChats(actor, binding, credential)) {
+    for (const { project, chat } of workspace.relatedFastkoreChats(actor, binding, credential, undefined, true)) {
       rows.set(chat.id, { ...access.chatSummary(chat), projectId: project.id, projectName: project.deletedAt ? unassignedChatsLabel : project.name, parent: rows.get(chat.id)?.parent });
     }
-    for (const { project, chat } of workspace.relatedFastkoreChats(actor, binding, credential, context)) {
+    for (const { project, chat } of workspace.relatedFastkoreChats(actor, binding, credential, context, true)) {
       if (!rows.has(chat.id)) rows.set(chat.id, { ...access.chatSummary(chat), projectId: project.id, projectName: project.deletedAt ? unassignedChatsLabel : project.name, legacyContext: true });
     }
     return [...rows.values()];
@@ -984,8 +981,9 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
   });
   type ChatParams = { projectId: string; chatId: string };
   const chatPath = '/api/projects/:projectId/chats/:chatId';
-  const requestChat = (request: FastifyRequest<{ Params: ChatParams }>, edit = false) => {
+  const requestChat = (request: FastifyRequest<{ Params: ChatParams }>, edit: boolean | 'post' = false) => {
     const p = principal(request), { projectId, chatId } = request.params;
+    if (edit === 'post') return access.postChat(p.user, projectId, chatId, p.credential);
     const chat = edit ? access.editChat(p.user, projectId, chatId, p.credential) : access.chat(p.user, projectId, chatId, p.credential);
     if (!chatIdentityMatches(p, chat)) throw new BridgeError('Диалог не найден.', 404);
     return chat;
@@ -1070,14 +1068,15 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
       const actor = user(request);
       return { actor, chat: requestChat(request, true) };
     }));
-  app.patch<{ Params: ChatParams; Body: { visibility: 'private' | 'project' } }>(chatPath + '/visibility', { schema: { body: object({ visibility: { enum: ['private', 'project'] } }, ['visibility']) } }, async request => {
-    requestChat(request, true);
-    return access.visibility(user(request), request.params.projectId, request.params.chatId, request.body.visibility);
-  });
+  app.patch<{ Params: ChatParams; Body: { visibility: 'private' | 'project' } }>(chatPath + '/visibility', { schema: { body: object({ visibility: { enum: ['private', 'project'] } }, ['visibility']) } }, async request =>
+    viewChat(request, await workspace.setChatVisibility(request.params.projectId, request.params.chatId, request.body.visibility, () => {
+      requestChat(request, true);
+      return user(request);
+    })));
   app.get<{ Params: ChatParams }>(chatPath + '/messages', async request => requestChat(request).messages);
   app.post<{ Params: ChatParams; Body: { text: string; attachmentIds?: string[]; clientRequestId?: string; model?: string; fastkoreContext?: unknown; recommendedSpecialistId?: string } }>(chatPath + '/messages', { schema: { body: object({ text: string(60_000), attachmentIds: { type: 'array', items: string(100), maxItems: 8, uniqueItems: true }, clientRequestId: string(100), model: modelSchema, fastkoreContext: { type: 'object' }, recommendedSpecialistId: identifier }, ['text']) } }, async (request, reply) => {
     const check = () => {
-      const u = user(request); requestChat(request, true);
+      const u = user(request); requestChat(request, request.body.model === undefined ? 'post' : true);
       if (workspace.project(request.params.projectId).deletedAt) throw new BridgeError('Сначала выберите проект для чата.', 409);
       const p = requestProject(request, request.params.projectId);
       for (const id of request.body.attachmentIds ?? []) if (!p.attachments.some(a => a.id === id && !a.libraryUploadedAt && (u.role === 'admin' || a.ownerId === u.id))) throw new BridgeError('Вложение не найдено.', 404);
@@ -1091,12 +1090,13 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
     if (rawContext !== undefined && !parsed) throw new BridgeError('Fastkore передал некорректный или неподдерживаемый снимок.');
     if (chat.fastkoreBinding) {
       const installationId = p.credential.installationId;
-      const matches = parsed && installationId && matchesFastkoreChat(chat.fastkoreBinding, installationId, parsed, p.credential.externalUserId);
+      const shared = chat.visibility === 'project';
+      const matches = parsed && installationId && matchesFastkoreChat(chat.fastkoreBinding, installationId, parsed, p.credential.externalUserId, shared);
       // Outside Fastkore the chat owner may continue a bound chat; a mismatching ERP context
       // still refuses the write so answers never land on the wrong card.
       const sameIdentity = !chat.fastkoreBinding.externalUserId || (installationId === chat.fastkoreBinding.installationId && p.credential.externalUserId === chat.fastkoreBinding.externalUserId);
       const continuesWithoutContext = !parsed && (p.credential.source !== 'fastkore' || sameIdentity) && (p.user.role === 'admin' || p.user.id === chat.ownerId);
-      if (!continuesWithoutContext && (p.credential.source !== 'fastkore' || p.user.id !== chat.ownerId || !matches)) {
+      if (!continuesWithoutContext && (p.credential.source !== 'fastkore' || (!shared && p.user.id !== chat.ownerId) || !matches)) {
         throw new BridgeError('Откройте в Fastkore карточку или список, к которым привязан этот чат.', 409);
       }
     }
@@ -1124,14 +1124,18 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
       const { user: actor, credential } = principal(request);
       const run = requestRun(request);
       if (!run.projectId || !run.chatId) throw new BridgeError('Уточнение должно быть сообщением чата.', 409);
-      access.editChat(actor, run.projectId, run.chatId, credential);
+      access.postChat(actor, run.projectId, run.chatId, credential);
     };
     const actor = principal(request);
     return workspace.sendQueuedNow(request.params.runId, request.body.targetRunId, { id: actor.user.id, credentialId: actor.credential.id }, authorize);
   });
   app.post<{ Params: { runId: string } }>('/api/runs/:runId/cancel', async request => {
     const { user, credential } = principal(request), run = requestRun(request);
-    if (run.projectId && run.chatId) access.editChat(user, run.projectId, run.chatId, credential); return workspace.cancel(run.id);
+    if (run.projectId && run.chatId) {
+      const chat = access.postChat(user, run.projectId, run.chatId, credential);
+      if (chat.visibility === 'project' && user.role !== 'admin' && run.ownerId !== user.id) throw new BridgeError('Отменить запрос может его автор или администратор.', 403);
+    }
+    return workspace.cancel(run.id);
   });
   if (options.clientRoot) await app.register(fastifyStatic, { root: path.resolve(options.clientRoot), prefix: '/', index: ['index.html'], wildcard: false });
   app.setNotFoundHandler((_request, reply) => reply.code(404).send({ error: 'Адрес не найден.' }));

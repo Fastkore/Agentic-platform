@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { fastkoreChatContextKey, fastkoreChatTitle, fastkoreSelectionChatKey, isFastkoreTileList, parseFastkoreContext, type FastkoreContext } from '../shared/fastkore-context.js';
-import type { Chat, FastkoreChatBinding, Job, State } from '../shared/types.js';
+import type { Chat, Credential, FastkoreChatBinding, Job, State } from '../shared/types.js';
 
 const hashKey = (key: string) => createHash('sha256').update(key).digest('hex');
 
@@ -37,12 +37,22 @@ export function parentFastkoreChatBindings(installationId: string, externalUserI
   return [];
 }
 
-export function matchesFastkoreChat(binding: FastkoreChatBinding, installationId: string, context: FastkoreContext, externalUserId?: string) {
+export function fastkoreChatSessionMatches(chat: Chat, credential?: Credential) {
+  const binding = chat.fastkoreBinding;
+  if (!binding || credential?.source !== 'fastkore') return true;
+  if (chat.visibility === 'project') return binding.installationId === credential.installationId;
+  return !binding.externalUserId || (binding.installationId === credential.installationId && binding.externalUserId === credential.externalUserId);
+}
+
+export function matchesFastkoreChat(binding: FastkoreChatBinding, installationId: string, context: FastkoreContext, externalUserId?: string, shared = false) {
   if (binding.installationId !== installationId) return false;
   if (matchesLegacyFastkoreList(binding, installationId, context)) return true;
   if (binding.externalUserId || context.chat_key !== undefined) {
     const current = chatBinding(installationId, context, externalUserId);
-    return !!current && binding.externalUserId === current.externalUserId && binding.key === current.key;
+    if (shared && !binding.externalUserId && binding.view === 'card' && context.view === 'card' && binding.entityId) {
+      return binding.entitySetId === context.entity_set_id && binding.entityId === context.entity_ids[0];
+    }
+    return !!current && (shared || binding.externalUserId === current.externalUserId) && binding.key === current.key;
   }
   // Old list chats stored only a hash of the exact selection. Keep them usable
   // from that selection without assuming which tile to migrate their history to.

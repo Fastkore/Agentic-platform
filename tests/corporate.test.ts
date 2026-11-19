@@ -223,6 +223,62 @@ test('chat consultants persist and exclude the base assistant', async () => {
   } finally { await f.app.close(); }
 });
 
+test('sharing a linked chat preserves one history and locks concurrent submissions by other authors', async () => {
+  let release!: () => void;
+  const hold = new Promise<void>(resolve => { release = resolve; });
+  const f = await fixture(async request => {
+    if (request.prompt.endsWith('Конкурентный вопрос Алисы') || request.prompt.endsWith('Конкурентный вопрос Бориса')) await hold;
+    return 'Ответ участнику';
+  });
+  try {
+    const peer = await f.enter('Борис');
+    assert.equal((await f.req('PATCH', '/api/users/' + peer.user.id, f.admin, { roleId: 'employee' })).statusCode, 200);
+    assert.equal((await f.setProjectRoles(f.project.id, [...f.projectRoles, ...peer.projectRoles])).statusCode, 200);
+    const set = randomUUID(), entity = randomUUID(), other = randomUUID();
+    const context = {
+      type: 'fastkore.context', version: 1, view: 'card', entity_set_id: set, entity_ids: [entity],
+      chat_key: `card:${set}:${entity}`, filter_status: 'none', scope_reproducible: true,
+      entity_uri: `fastkore://ERP/Instance/ShowEntity?entitySet=${set}&entity=${entity}`,
+    };
+    const created = await f.req('POST', '/api/fastkore/chats', f.token, { projectId: f.project.id, context });
+    assert.equal(created.statusCode, 201, created.body);
+    const id = created.json().chat.id;
+    const url = `/api/projects/${f.project.id}/chats/${id}`;
+    assert.equal((await f.req('GET', url, peer.cookie)).statusCode, 404);
+    const share = (visibility: string, token = f.token) => f.req('PATCH', url + '/visibility', token, { visibility });
+    assert.equal((await share('project')).json().id, id);
+    const related = await f.req('POST', '/api/fastkore/chats/related', peer.cookie, { context });
+    assert.equal(related.json()[0].id, id);
+    assert.equal((await f.req('GET', url, peer.cookie)).json().fastkoreNavigation.entityUri, context.entity_uri);
+    const post = (token: string, text: string, fastkoreContext = context) => f.req('POST', url + '/messages', token, { text, fastkoreContext });
+    assert.equal((await post(peer.cookie, 'Wrong card', { ...context, entity_ids: [other], chat_key: `card:${set}:${other}`, entity_uri: '' })).statusCode, 409);
+    const owners = [{ token: f.token, name: 'Алиса' }, { token: peer.cookie, name: 'Борис' }];
+    const results = await Promise.all(owners.map((actor, index) => post(actor.token, index === 0 ? 'Конкурентный вопрос Алисы' : 'Конкурентный вопрос Бориса')));
+    assert.deepEqual(results.map(result => result.statusCode).sort(), [202, 409]);
+    const winner = results.findIndex(result => result.statusCode === 202), first = owners[winner], second = owners[1 - winner];
+    const runId = results[winner].json().id;
+    assert.match(results[1 - winner].body, /Другой участник ждёт ответа/);
+    const status = (await f.req('GET', '/api/status', second.token)).json();
+    assert.ok([...status.activeRuns, ...status.queuedRuns].some(run => run.id === runId));
+    assert.equal((await post(first.token, 'Своё уточнение в очереди')).statusCode, 202);
+    assert.equal((await post(second.token, 'Заблокированный вопрос')).statusCode, 409);
+    assert.equal((await f.req('POST', `/api/runs/${runId}/cancel`, second.token, {})).statusCode, 403);
+    assert.equal((await share('private')).statusCode, 409);
+    release(); await idle(f.workspace);
+    const followUp = await post(second.token, 'Теперь вопрос коллеги');
+    assert.equal(followUp.statusCode, 202, followUp.body);
+    await idle(f.workspace);
+    const result = (await f.req('GET', url, second.token)).json();
+    assert.equal(result.ownerId, f.employee.id);
+    assert.deepEqual(result.messages.filter(message => message.role === 'user').map(message => message.authorName), [first.name, first.name, second.name]);
+    const prompt = f.calls.at(-1)!;
+    assert.equal(prompt.sessionId, undefined);
+    assert.ok(prompt.prompt.includes(`"author":"${first.name}"`) && prompt.prompt.includes('Своё уточнение в очереди'));
+    assert.equal((await share('private')).statusCode, 200);
+    assert.equal((await f.req('GET', url, peer.cookie)).statusCode, 404);
+  } finally { release(); await f.app.close(); }
+});
+
 test('Fastkore v1 history follows the desktop key and keeps queued snapshots on their original question', async () => {
   let resume!: () => void;
   const waiting = new Promise<void>(resolve => { resume = resolve; });

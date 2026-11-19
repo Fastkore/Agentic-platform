@@ -3,7 +3,7 @@ import { createRoot } from 'react-dom/client';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Archive, ArrowUp, BarChart3, Bot, Box, Camera, Check, ChevronDown, ChevronRight, ClipboardList, Copy, Database, Download, EllipsisVertical, Eraser, FileText, Folder, History, Link2, LoaderCircle, LockKeyhole, LogOut, Menu, Moon, Network, PanelLeftClose, PanelLeftOpen, Pencil, Pin, Plus, RefreshCw, Search, Settings2, ShieldCheck, Square, SquarePen, Sun, Terminal, Trash2, Users, X } from 'lucide-react';
-import { interfaceScales, unassignedChatsLabel, type AgentSummary, type Attachment, type Chat, type ChatView, type ChatSummary, type CodexLimits, type FastkoreAuthentication, type FastkoreNavigationTarget, type FileStorageStatus, type InterfaceScale, type ModelCatalog, type ProjectSummary, type RelatedChatSummary, type Run, type Settings, type Status, type UnassignedChatSummary, type User } from '../shared/types';
+import { interfaceScales, sharedChatWaitMessage, unassignedChatsLabel, type AgentSummary, type Attachment, type Chat, type ChatView, type ChatSummary, type CodexLimits, type FastkoreAuthentication, type FastkoreNavigationTarget, type FileStorageStatus, type InterfaceScale, type ModelCatalog, type ProjectSummary, type RelatedChatSummary, type Run, type Settings, type Status, type UnassignedChatSummary, type User } from '../shared/types';
 import './style.css';
 import './workspace.css';
 import { ChatArchiveDialog } from './ChatArchiveDialog';
@@ -290,7 +290,13 @@ function App() {
   const sharedContextHistory = tileList || typeof currentErpContext.current.snapshot?.chat_key === 'string';
   const canReset = !withoutProject && matchesErpChat && chat?.ownerId === user?.id && !chat?.archivedAt && (chat?.messages.length ?? 0) > 0;
   const canEditChatDetails = !!chat && !chat.archivedAt && (isAdmin || chat.ownerId === user?.id);
-  const canEdit = !withoutProject && canEditChatDetails && (!chat.linkedToFastkore || matchesErpChat || !inFastkore && !erpChatKey);
+  const canPostToChat = !!chat && !chat.archivedAt && (canEditChatDetails || chat.visibility === 'project');
+  const sharedLocked = chat?.visibility === 'project' && [...chatActiveRuns, ...chatQueuedRuns].some(run => (run.ownerId ?? chat.ownerId) !== user?.id);
+  const waitingForParticipant = chat?.visibility === 'project' && (sharedLocked || error === sharedChatWaitMessage);
+  const canEdit = !withoutProject && !waitingForParticipant && canPostToChat && (!chat.linkedToFastkore || matchesErpChat || !inFastkore && !erpChatKey);
+  useEffect(() => {
+    if (!sharedLocked) setError(current => current === sharedChatWaitMessage ? '' : current);
+  }, [status, sharedLocked]);
   const codexUnavailable = status?.isolatedCodex && !executionConnected(status.cli);
   const codexNotice = status?.executionDisabled ? 'Выполнение Codex отключено на сервере.' : codexUnavailable
     ? /активный аккаунт|Модель недоступна/.test(status.cli?.status ?? '') ? status.cli!.status
@@ -496,6 +502,7 @@ function App() {
       setChat(null);
       setModelPreview(undefined);
       setScreenshotPreview(undefined);
+      setError(current => current === sharedChatWaitMessage ? '' : current);
     }
     if (project) setOpenProjects(old => ({ ...old, [project]: true }));
     setSidebarOpen(false);
@@ -526,8 +533,8 @@ function App() {
         if (!stillCurrent()) return;
         if (autoOpenRelated.current !== erpChatKey) { setRelatedChats({ key: erpChatKey!, list }); return; }
         const matching = list.find(item => item.id === preferredRelatedChat.current && item.contextMatches !== false)
-          ?? list.find(item => item.contextMatches !== false && !item.legacyContext)
-          ?? (context?.view === 'list' && !context.tile_id ? list.find(item => item.legacyContext) : undefined);
+          ?? list.find(item => item.ownerId === user?.id && item.contextMatches !== false && !item.legacyContext)
+          ?? (context?.view === 'list' && !context.tile_id ? list.find(item => item.ownerId === user?.id && item.legacyContext) : undefined);
         if (matching) {
           setRelatedChats({ key: erpChatKey!, list });
           navigateToRelated(matching);
@@ -551,7 +558,7 @@ function App() {
     });
     void refreshRelated();
     return () => { controller.abort(); clearTimeout(retry); };
-  }, [erpChatKey, relatedPanelOpen, contextVersion]);
+  }, [erpChatKey, relatedPanelOpen, contextVersion, chatId, user?.id]);
   async function loadChats(project: string) {
     const credential = accessKey;
     const list = await api<ChatSummary[]>(`/api/projects/${project}/chats`);
@@ -772,10 +779,13 @@ function App() {
     setChat(created);
   }
   async function changeVisibility(visibility: 'private' | 'project') {
+    if (!canEditChatDetails || chatBusy || pending) return;
+    if (visibility === 'project' && !window.confirm('Открыть весь чат, включая его историю, участникам проекта? Они смогут читать переписку и писать в этот чат.')) return;
     const p = projectId, c = chatId;
     await action(async () => {
       const updated = await api<Chat>(`/api/projects/${p}/chats/${c}/visibility`, { method: 'PATCH', body: JSON.stringify({ visibility }) });
       if (selected.current.projectId === p && selected.current.chatId === c) setChat(updated);
+      setChatLists(old => ({ ...old, [p]: (old[p] ?? []).map(item => item.id === c ? { ...item, visibility } : item) }));
       await loadChats(p);
     });
   }
@@ -1146,7 +1156,7 @@ function App() {
           a: ({ href, children }) => <a href={href} target="_blank" rel="noreferrer">{children}</a>,
         }}>{message.text}</ReactMarkdown></div> :
           <div className="question-bubble">
-            {message.authorId && message.authorId !== user.id && <small title={dateTooltip(message.createdAt, message.authorName ?? conversation.ownerName)}>{shortUserName(message.authorName ?? conversation.ownerName)}</small>}
+            {conversation.visibility !== 'project' && message.authorId && message.authorId !== user.id && <small title={dateTooltip(message.createdAt, message.authorName ?? conversation.ownerName)}>{shortUserName(message.authorName ?? conversation.ownerName)}</small>}
             {message.specialistName && <small title="Рекомендованный агент">@{message.specialistName}</small>}
             {message.text}
           </div>}
@@ -1169,6 +1179,7 @@ function App() {
         {['error', 'cancelled', 'interrupted'].includes(message.status) && <div className="message-note">{message.status === 'error' ? 'Ошибка задания' : message.status === 'cancelled' ? 'Задание остановлено' : message.role === 'user' ? 'Доставка уточнения не подтверждена' : 'Задание прервано'}</div>}
         {message.consultedSpecialists?.length ? <div className="message-specialists">Агенты · {message.consultedSpecialists.join(', ')}</div> : null}
         <div className="message-actions">
+          {message.role === 'user' && conversation.visibility === 'project' && <span className="message-author">{message.authorName ?? (message.authorId === user.id ? user.name : conversation.ownerName) ?? 'Участник чата'}</span>}
           {message.text && <button className="workspace-icon" aria-label="Копировать сообщение" title="Копировать сообщение" onClick={() => void copyItem(message.text, message.id)}>{copied === message.id ? <Check size={14} /> : <Copy size={14} />}</button>}
           <time dateTime={message.createdAt} title={[
             dateTooltip(message.createdAt, message.role === 'user' ? message.authorName ?? (message.authorId === user.id ? user.name : conversation.ownerName) : 'Codex'),
@@ -1178,7 +1189,7 @@ function App() {
       </article>)}
   </>;
   const createProjectOption = '+project';
-  const showChatConsultants = !!chat && (canEdit || chatConsultants.length > 0);
+  const showChatConsultants = !!chat && (canEdit && canEditChatDetails || chatConsultants.length > 0);
   function rememberComposerFocus(event: React.MouseEvent) {
     const field = input.current;
     focusedComposer.current = event.button === 0 && field === document.activeElement &&
@@ -1194,9 +1205,9 @@ function App() {
   }
   const composer = <div className="bridge-composer">
     {withoutProject && <p className="composer-status">Выберите проект, чтобы продолжить чат.</p>}
-    {chat && !canEdit && (relatedLoading
+    {chat && !canEdit && !waitingForParticipant && (relatedLoading
       ? <p className="composer-status" role="status">Проверяем связь чата с открытым окном Fastkore…</p>
-      : chat.linkedToFastkore && chat.ownerId === user.id && !chat.archivedAt
+      : chat.linkedToFastkore && canPostToChat
         ? <LinkedFastkoreNotice key={chat.id} target={inFastkore && erpAuth && chat.fastkoreNavigation?.installationId === erpAuth.installationId
           ? chat.fastkoreNavigation : undefined} />
         : <p className="composer-status" role="alert">Чат доступен для чтения</p>)}
@@ -1223,7 +1234,7 @@ function App() {
           if (result.result === 'rejected') throw new Error('Текущий ход не принял уточнение. Сообщение осталось в очереди.');
           setStatus(old => old && { ...old, queuedRuns: old.queuedRuns.filter(item => item.id !== run.id) });
         })}><ArrowUp size={16} aria-hidden="true" /></button>}
-      {canEdit && <button type="button" className="workspace-icon" aria-label="Отменить отправку" title="Отменить отправку" disabled={pending || !!run.steeringTo} onClick={() => void action(async () => {
+      {(isAdmin || canPostToChat && (chat?.visibility !== 'project' || run.ownerId === user.id)) && <button type="button" className="workspace-icon" aria-label="Отменить отправку" title="Отменить отправку" disabled={pending || !!run.steeringTo} onClick={() => void action(async () => {
         const cancelled = await post<Run>('/api/runs/' + run.id + '/cancel');
         if (cancelled.status === 'cancelled') setStatus(old => old && { ...old, queuedRuns: old.queuedRuns.filter(item => item.id !== run.id) });
       })}><X size={16} aria-hidden="true" /></button>}
@@ -1232,7 +1243,7 @@ function App() {
       <span role="status"><LoaderCircle size={14} className="spin" aria-hidden="true" />{run.tool
         ? <span title={run.tool}>{runToolLabel(run.tool, run.toolContext)}</span>
         : <span className="sr-only">Ответ готовится</span>}</span>
-      {(isAdmin || (run.chatId === chatId && canEdit)) && <button onClick={() => void action(async () => { await post('/api/runs/' + run.id + '/cancel'); })}><Square size={12} />Остановить</button>}
+      {(isAdmin || canPostToChat && (chat?.visibility !== 'project' || run.ownerId === user.id)) && <button onClick={() => void action(async () => { await post('/api/runs/' + run.id + '/cancel'); })}><Square size={12} />Остановить</button>}
     </div>)}
     {(!hasMessages || withoutProject || showChatConsultants) && <div className="composer-project">
       {(!hasMessages || withoutProject) && <div className="composer-project-picker">
@@ -1254,13 +1265,13 @@ function App() {
         {chatConsultants.map(agent => <span key={agent.id} className="chat-consultant">
           <Bot size={14} aria-hidden="true" />
           {agent.name}
-          {canEdit && <button type="button" className="workspace-icon" disabled={pending}
+          {canEdit && canEditChatDetails && <button type="button" className="workspace-icon" disabled={pending}
             aria-label={'Отключить агента ' + agent.name} title="Отключить агента"
             onClick={() => void changeChatConsultants(chatConsultants.filter(item => item.id !== agent.id).map(item => item.id))}>
             <X size={13} />
           </button>}
         </span>)}
-        {canEdit && (availableConsultants.length > 0
+        {canEdit && canEditChatDetails && (availableConsultants.length > 0
           ? <Select className="chat-consultants-select" label="Подключить агента" placeholder="Подключить агента"
             value="" disabled={pending} onChange={id => void changeChatConsultants([...chatConsultants.map(item => item.id), id])}
             options={availableConsultants.map(agent => ({ value: agent.id, label: agent.name }))} />
@@ -1270,6 +1281,7 @@ function App() {
           </span>)}
       </div>}
     </div>}
+    {waitingForParticipant && <p className="composer-status" role="status">{sharedChatWaitMessage}</p>}
     <div className="bridge-editor">
       {attachments.length > 0 && <div className="attachment-chips">{attachments.map(attachment => <span key={attachment.id}>
         {attachment.screenshot ? <button type="button" className="draft-screenshot-thumb" title="Просмотреть скриншот"
@@ -1298,7 +1310,7 @@ function App() {
         <div className="composer-actions">
           <ModelPicker key={status?.cli?.accountId} request={api} unavailableReason={codexNotice} revision={status?.codexLimitsRevision}
             model={chatModel} options={chatModels} effort={chatModel.startsWith('glm') && chatReasoning === 'medium' ? 'high' : chatReasoning}
-            levels={chatReasoningOptions} disabled={!canEdit || chatBusy || pending || modelsLoading}
+            levels={chatReasoningOptions} disabled={!canEdit || !canEditChatDetails || chatBusy || pending || modelsLoading}
             onModel={model => void changeModel(model)} onEffort={value => void changeReasoning(value)} />
           {canDictate && <VoiceDictation key={JSON.stringify([user.id, projectId, chatId, messageAgent?.id])} canSend={canSend && !pending}
             transcribe={async (wav, signal) => {
@@ -1460,7 +1472,7 @@ function App() {
               }}><Pencil size={15} /></button>}
           </div>
           <div className="chat-access" title={dateTooltip(chat.updatedAt, chat.ownerName)}>
-            {isAdmin && !withoutProject && !chat.linkedToFastkore ? <Select label="Видимость чата" value={chat.visibility ?? 'private'} disabled={pending}
+            {canEditChatDetails && !withoutProject ? <Select label="Видимость чата" value={chat.visibility ?? 'private'} disabled={pending || chatBusy}
               onChange={visibility => void changeVisibility(visibility as 'private' | 'project')}
               options={[{ value: 'private', label: 'Личный' }, { value: 'project', label: 'Общий' }]} />
               : <span><LockKeyhole size={13} />{chat.visibility === 'project' ? 'Общий' : 'Личный'}</span>}
@@ -1486,7 +1498,7 @@ function App() {
         {themeButton}
       </header>
       {!embedded && chat?.erpContext && <div className="workspace-context">{chat.erpContext.entityType} / {chat.erpContext.entityId}</div>}
-      {error && !panel && <div className="workspace-error" role="alert"><span>{error}</span><button className="workspace-icon" onClick={() => setError('')} aria-label="Закрыть ошибку"><X size={17} /></button></div>}
+      {error && error !== sharedChatWaitMessage && !panel && <div className="workspace-error" role="alert"><span>{error}</span><button className="workspace-icon" onClick={() => setError('')} aria-label="Закрыть ошибку"><X size={17} /></button></div>}
       {reconnecting && !error && !panel && <p className="workspace-connection-status" role="status">Восстанавливаем связь с сервером…</p>}
       {hasMessages && chat ? <>
         <div ref={scroll} className="conversation-scroll" onScroll={() => { const el = scroll.current; if (el) stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 120; }}>

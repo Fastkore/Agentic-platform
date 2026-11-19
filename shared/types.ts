@@ -127,6 +127,7 @@ export interface CliInfo { provider?: 'codex' | 'gemini' | 'antigravity' | 'glm'
 export interface ProjectSummary { id: string; name: string; directory: string; chatCount: number; roles?: ProjectRoleLabel[]; canRename?: boolean }
 export interface ChatSummary { id: string; title: string; updatedAt: string; messageCount: number; ownerId?: string; ownerName?: string; visibility?: 'private' | 'project'; linkedToFastkore?: true; pinned?: boolean }
 export const unassignedChatsLabel = 'Без проекта';
+export const sharedChatWaitMessage = 'Другой участник ждёт ответа в этом чате. Вы сможете написать, когда его запросы завершатся.';
 export interface UnassignedChatSummary extends ChatSummary { projectId: string }
 export interface ArchivedChatSummary extends ChatSummary { projectId: string; projectName: string; archivedAt: string }
 export interface RelatedChatSummary extends ChatSummary { projectId: string; projectName: string; parent?: true; contextMatches?: false; legacyContext?: true }
