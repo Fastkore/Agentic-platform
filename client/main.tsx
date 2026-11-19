@@ -180,7 +180,7 @@ function App() {
   useEffect(() => { setProjectRequested(false); }, [projectId, chatId, contextVersion]);
   const [drafts, setDrafts] = useState<Record<string, string>>({}), [files, setFiles] = useState<Record<string, DraftAttachment[]>>({});
   const [specialists, setSpecialists] = useState<Record<string, string | undefined>>({});
-  const [panel, setPanel] = useState<'settings' | 'project' | 'project-settings' | 'search' | 'archive' | 'related' | 'rename-chat' | 'reset-chat' | null>(null);
+  const [panel, setPanel] = useState<'settings' | 'project' | 'project-settings' | 'search' | 'archive' | 'related' | 'rename-chat' | 'reset-chat' | 'share-chat' | null>(null);
   const [renameDraft, setRenameDraft] = useState<{ projectId: string; chatId: string; title: string; destinationId?: string }>();
   const [modelPreview, setModelPreview] = useState<{ name: string; url: string; format: PreviewModelFormat }>();
   const [screenshotPreview, setScreenshotPreview] = useState<DraftAttachment['screenshot']>();
@@ -502,6 +502,7 @@ function App() {
       setChat(null);
       setModelPreview(undefined);
       setScreenshotPreview(undefined);
+      setPanel(current => current === 'share-chat' ? null : current);
       setError(current => current === sharedChatWaitMessage ? '' : current);
     }
     if (project) setOpenProjects(old => ({ ...old, [project]: true }));
@@ -779,15 +780,23 @@ function App() {
     setChat(created);
   }
   async function changeVisibility(visibility: 'private' | 'project') {
-    if (!canEditChatDetails || chatBusy || pending) return;
-    if (visibility === 'project' && !window.confirm('Открыть весь чат, включая его историю, участникам проекта? Они смогут читать переписку и писать в этот чат.')) return;
+    if (!canEditChatDetails || withoutProject || chatBusy || pending) return;
+    if ((chat.visibility ?? 'private') === visibility) { setPanel(current => current === 'share-chat' ? null : current); return; }
     const p = projectId, c = chatId;
     await action(async () => {
       const updated = await api<Chat>(`/api/projects/${p}/chats/${c}/visibility`, { method: 'PATCH', body: JSON.stringify({ visibility }) });
       if (selected.current.projectId === p && selected.current.chatId === c) setChat(updated);
       setChatLists(old => ({ ...old, [p]: (old[p] ?? []).map(item => item.id === c ? { ...item, visibility } : item) }));
+      if (visibility === 'project' && selected.current.projectId === p && selected.current.chatId === c) {
+        setPanel(current => current === 'share-chat' ? null : current);
+      }
       await loadChats(p);
     });
+  }
+  function dismissChatShare() {
+    if (pending) return;
+    setError('');
+    setPanel(current => current === 'share-chat' ? null : current);
   }
   function changeSidebarCollapsed(collapsed: boolean) {
     setSidebarCollapsed(collapsed);
@@ -1477,7 +1486,10 @@ function App() {
           </div>
           <div className="chat-access" title={dateTooltip(chat.updatedAt, chat.ownerName)}>
             {canEditChatDetails && !withoutProject ? <Select label="Видимость чата" value={chat.visibility ?? 'private'} disabled={pending || chatBusy}
-              onChange={visibility => void changeVisibility(visibility as 'private' | 'project')}
+              onChange={visibility => {
+                if (visibility === 'project' && chat.visibility !== 'project') { setError(''); setPanel('share-chat'); }
+                else if (visibility === 'private') void changeVisibility('private');
+              }}
               options={[{ value: 'private', label: 'Личный' }, { value: 'project', label: 'Общий' }]} />
               : <span><LockKeyhole size={13} />{chat.visibility === 'project' ? 'Общий' : 'Личный'}</span>}
           </div>
@@ -1525,6 +1537,16 @@ function App() {
       <Suspense fallback={<p className="chat-model-status" role="status">Загружаем просмотр…</p>}>
         <ChatModelPreview key={modelPreview.url} url={modelPreview.url} format={modelPreview.format} request={api<Blob>} />
       </Suspense>
+    </WorkspaceDialog>}
+    {panel === 'share-chat' && chat && <WorkspaceDialog title="Сделать чат общим?" className="workspace-chat-rename chat-share-dialog"
+      close={dismissChatShare}>
+      <p>Участники проекта смогут читать всю историю чата «{chat.title}» и отправлять в него сообщения.</p>
+      {error && <p className="inline-error" role="alert">{error}</p>}
+      <div className="settings-dialog-actions">
+        <button type="button" className="secondary" data-dialog-focus disabled={pending} onClick={dismissChatShare}>Отмена</button>
+        <button type="button" className="primary" disabled={pending || chatBusy || !canEditChatDetails || withoutProject}
+          onClick={() => void changeVisibility('project')}>Сделать общим</button>
+      </div>
     </WorkspaceDialog>}
     {panel === 'rename-chat' && renameDraft && <WorkspaceDialog title="Редактировать чат" className="workspace-chat-rename" close={closePanel}>
       <form onSubmit={e => { e.preventDefault(); void renameChat(); }}>

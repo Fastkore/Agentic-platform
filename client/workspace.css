@@ -967,6 +967,7 @@
 .workspace-dialog .secondary:hover:not(:disabled) { background: var(--nav-raised); border-color: var(--focus-border); }
 .workspace-dialog .primary { border-radius: 9px; min-height: 38px; }
 .workspace-chat-rename { padding-bottom: 14px; }
+.chat-share-dialog > p { overflow-wrap: anywhere; }
 .workspace-chat-rename > header { padding-block: 7px; }
 .workspace-chat-rename > header > .workspace-icon { width: 30px; height: 30px; }
 .workspace-chat-rename > form { padding-top: 6px; }
