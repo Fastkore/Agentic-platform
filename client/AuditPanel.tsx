@@ -11,7 +11,7 @@ const labels: Record<string, string> = {
   'sso.browser.login': 'Вход в настройки из Fastkore',
   'erp.delegation.invalidated': 'Сеанс потерял доступ к ERP',
   'erp.delegation.session_ended': 'Завершён сеанс с доступом к ERP',
-  'user.update': 'Изменён пользователь', 'user.delete': 'Удалён сотрудник', 'user.projects': 'Изменён доступ к проектам',
+  'user.update': 'Изменён пользователь', 'user.delete': 'Удалена учётная запись', 'user.projects': 'Изменён доступ к проектам',
   'project.members': 'Изменены участники проекта', 'project.roles': 'Изменены роли проекта',
   'project.agents': 'Изменены агенты проекта', 'project.rename': 'Проект переименован', 'project.delete': 'Проект удалён',
   'role.update': 'Изменена рабочая роль', 'profile.update': 'Изменён агент', 'dataset.update': 'Изменён источник',

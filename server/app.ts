@@ -490,7 +490,7 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
   app.post<{ Body: { username: string; name: string; password: string; role: User['role']; roleId?: string } }>('/api/users', { schema: { body: object({ username: string(48), name: string(100), password, role: { enum: ['admin', 'employee'] }, roleId: identifier }, ['username', 'name', 'password', 'role']) } }, async (request, reply) => reply.code(201).send(await access.createUser(localAdmin(request), request.body)));
   app.patch<{ Params: { userId: string }; Body: { disabled?: boolean; password?: string; name?: string; roleId?: string; role?: User['role'] } }>('/api/users/:userId', { schema: { body: object({ disabled: { type: 'boolean' }, password, name: string(100), roleId: identifier, role: { enum: ['admin', 'employee'] } }) } }, async request => access.updateUser(() => principal(request), request.params.userId, request.body));
   app.delete<{ Params: { userId: string } }>('/api/users/:userId', request =>
-    access.deleteEmployee(() => user(request), request.params.userId));
+    access.deleteUser(() => user(request), request.params.userId));
   app.get<{ Querystring: { before?: string } }>('/api/audit', {
     schema: { querystring: object({ before: string(80) }) },
   }, async request => {

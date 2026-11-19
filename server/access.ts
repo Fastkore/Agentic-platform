@@ -29,11 +29,17 @@ export class Access {
     if (!Array.isArray(this.data.users) || !Array.isArray(this.data.credentials) || !Array.isArray(this.data.audit) || !this.data.users.some(u => u.role === 'admin' && !u.disabled)) throw new BridgeError('Повреждены настройки доступа. Восстановите резервную копию.', 500);
     if (!this.data.pendingFastkoreAdminId && !state.externalIdentities?.length) {
       const setup = this.data.audit.find(event => event.action === 'setup');
-      if (setup) this.data.pendingFastkoreAdminId = setup.targetId;
+      if (setup && this.data.users.some(user => user.id === setup.targetId && user.role === 'admin' && !user.disabled && user.passwordHash)) {
+        this.data.pendingFastkoreAdminId = setup.targetId;
+      }
     }
     this.migrate();
   }
-  get setupRequired() { return !this.data.users.some(u => u.role === 'admin' && u.passwordHash); }
+  get setupRequired() {
+    const admins = this.data.users.filter(user => user.role === 'admin' && !user.disabled);
+    return !admins.some(user => user.passwordHash) &&
+      !this.workspace.store.state.externalIdentities?.some(link => admins.some(admin => admin.id === link.userId));
+  }
   migrate() {
     const admins = new Set(this.data.users.filter(user => user.role === 'admin' && !user.disabled).map(user => user.id));
     this.data.credentials = this.data.credentials.filter(credential => credential.kind === 'session' &&
@@ -42,7 +48,7 @@ export class Access {
       user.roleId ??= 'employee';
       if (user.role !== 'admin') user.passwordHash = '';
     }
-    const admin = this.data.users.find(u => u.role === 'admin')!;
+    const admin = this.data.users.find(u => u.role === 'admin' && !u.disabled)!;
     for (const project of this.workspace.store.state.projects) {
       for (const chat of project.chats) { chat.ownerId ??= admin.id; chat.visibility ??= 'private'; }
       for (const attachment of project.attachments) attachment.ownerId ??= admin.id;
@@ -238,9 +244,14 @@ export class Access {
       recheck();
       if (this.setupRequired) throw new BridgeError('Сначала администратор должен настроить платформу.', 403);
       const data = draft.security!, identities = draft.externalIdentities ??= [];
-      const link = identities.find(i => i.installationId === identity.installationId && i.externalUserId === identity.externalUserId);
+      const linkIndex = identities.findIndex(i => i.installationId === identity.installationId && i.externalUserId === identity.externalUserId);
+      const link = identities[linkIndex];
       let user = link && data.users.find(u => u.id === link.userId);
-      if (link && (!user || user.disabled)) throw new BridgeError('Учётная запись отключена администратором платформы.', 403);
+      if (user?.deletedAt) {
+        // Earlier releases kept links to deleted accounts.
+        identities.splice(linkIndex, 1);
+        user = undefined;
+      } else if (link && (!user || user.disabled)) throw new BridgeError('Учётная запись отключена администратором платформы.', 403);
       if (!link && data.pendingFastkoreAdminId && identity.roles?.some(role => role.id === fastkoreAdministratorRoleId)) {
         const installation = draft.sso?.installations?.find(item => item.id === identity.installationId);
         const bootstrapAdmin = data.users.find(u => u.id === data.pendingFastkoreAdminId && u.role === 'admin' && !u.disabled && u.passwordHash);
@@ -370,7 +381,7 @@ export class Access {
     this.admin(actor);
     if (input.role !== 'admin') throw new BridgeError('Профили сотрудников создаются при входе из Fastkore.', 403);
     return this.change(async () => {
-      const username = this.username(input.username); if (this.data.users.some(u => u.username === username)) throw new BridgeError('Этот логин уже занят.', 409);
+      const username = this.username(input.username); if (this.data.users.some(u => u.username === username && !u.deletedAt)) throw new BridgeError('Этот логин уже занят.', 409);
       const roleId = input.roleId ?? 'employee'; if (!this.workspace.corporate.data.roles.some(r => r.id === roleId && r.enabled)) throw new BridgeError('Роль недоступна.');
       const user: UserRecord = { id: randomUUID(), username, name: input.name.trim() || username, role: input.role, roleId, disabled: false, passwordHash: await this.password(input.password), createdAt: new Date().toISOString() };
       this.data.users.push(user); this.audit(actor.id, 'user.create', user.id); return publicUser(user);
@@ -410,19 +421,27 @@ export class Access {
       this.audit(actor.id, 'user.update', id, data); return publicUser(user);
     }, 'account_change');
   }
-  async deleteEmployee(authorize: () => User, id: string) {
+  async deleteUser(authorize: () => User, id: string) {
     const event = await this.changeAccess(draft => {
       const actor = authorize(), data = draft.security!;
       this.admin(actor);
-      const employee = data.users.find(user => user.id === id);
-      if (!employee) throw new BridgeError('Сотрудник не найден.', 404);
-      if (employee.role !== 'employee') throw new BridgeError('Удалять можно только сотрудников.', 403);
-      if (employee.deletedAt) return;
-      // Keep the identity linked so the next Fastkore login cannot recreate the account.
-      employee.deletedAt = new Date().toISOString();
-      employee.disabled = true;
-      employee.passwordHash = '';
+      const target = data.users.find(user => user.id === id);
+      if (!target) throw new BridgeError('Пользователь не найден.', 404);
+      if (target.id === actor.id) throw new BridgeError('Нельзя удалить свою учётную запись.', 403);
+      if (target.deletedAt) return;
+      if (target.role === 'admin') {
+        const enabledInstallations = new Set(draft.sso?.installations?.filter(item => item.enabled).map(item => item.id));
+        const linkedUsers = new Set(draft.externalIdentities?.filter(link => enabledInstallations.has(link.installationId)).map(link => link.userId));
+        if (!data.users.some(user => user.id !== id && user.role === 'admin' && !user.disabled && (user.passwordHash || linkedUsers.has(user.id)))) {
+          throw new BridgeError('Должен остаться активный администратор с возможностью входа.', 409);
+        }
+      }
+      target.deletedAt = new Date().toISOString();
+      target.disabled = true;
+      target.passwordHash = '';
       data.credentials = data.credentials.filter(credential => credential.userId !== id);
+      draft.externalIdentities = draft.externalIdentities?.filter(link => link.userId !== id);
+      if (data.pendingFastkoreAdminId === id) delete data.pendingFastkoreAdminId;
       return this.audit(actor.id, 'user.delete', id, data);
     }, 'account_change');
     publishAudit(event);

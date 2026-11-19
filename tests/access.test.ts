@@ -486,7 +486,7 @@ test('ERP employees cannot administer the platform or set passwords; disabling a
     const audit = (await f.req('GET','/api/audit',f.admin)).json(); assert.ok(audit.some((a: any) => a.action === 'user.update')); assert.ok(!JSON.stringify(audit).includes(password));
   } finally { await f.app.close(); }
 });
-test('deleting an employee hides the account, revokes access and preserves chat attribution', async () => {
+test('deleting an employee revokes the old account and allows a new Fastkore login', async () => {
   const f = await fixture();
   try {
     const externalId = randomUUID();
@@ -500,7 +500,10 @@ test('deleting an employee hides the account, revokes access and preserves chat 
     assert.equal((await f.req('DELETE', route, f.admin)).statusCode, 200);
     assert.equal((await f.req('GET', '/api/auth/me', employee.cookie)).statusCode, 401);
     assert.equal((await f.req('PATCH', route, f.admin, { disabled: false })).statusCode, 404);
-    await assert.rejects(f.enter('Удаляемый сотрудник', externalId), /403/);
+    assert.ok(!f.store.state.externalIdentities!.some(link => link.userId === employee.user.id));
+    const returned = await f.enter(employee.user.name, externalId);
+    assert.notEqual(returned.user.id, employee.user.id);
+    assert.equal(returned.user.role, 'employee');
     const team = (await f.req('GET', '/api/users', f.admin)).json<TeamUser[]>();
     assert.ok(!team.some(user => user.id === employee.user.id));
     const auditList = await f.req('GET', '/api/users?includeDeleted=true', f.admin);
@@ -510,6 +513,37 @@ test('deleting an employee hides the account, revokes access and preserves chat 
     assert.equal(f.store.auditEvents().filter(event => event.action === 'user.delete' && event.targetId === employee.user.id).length, 1);
     const chat = await f.req('GET', `/api/projects/${f.project.id}/chats/${f.legacy.id}`, f.admin);
     assert.equal(chat.json().ownerName, employee.user.name);
+    assert.equal((await f.req('GET', `/api/projects/${f.project.id}/chats/${f.legacy.id}`, returned.cookie)).statusCode, 404);
+  } finally { await f.app.close(); }
+});
+test('a Fastkore administrator can delete the local administrator and still sign in after restart', async () => {
+  const f = await fixture();
+  try {
+    const externalId = randomUUID();
+    const linked = await f.enter('Администратор Fastkore', externalId);
+    const adminRoute = '/api/users/' + linked.user.id;
+    assert.equal((await f.req('PATCH', adminRoute, f.admin, { role: 'admin' })).statusCode, 200);
+    const issue = await f.req('POST', '/api/auth/fastkore/browser-code', linked.cookie, {});
+    assert.equal(issue.statusCode, 200, issue.body);
+    const code = new URLSearchParams(new URL(issue.json().url).hash.slice(1)).get('code');
+    const exchange = await f.req('POST', '/auth/fastkore/browser/exchange', '', { code });
+    assert.equal(exchange.statusCode, 200, exchange.body);
+    const browser = String(exchange.headers['set-cookie']).split(';')[0];
+    assert.equal((await f.req('DELETE', adminRoute, browser)).statusCode, 403);
+    assert.equal((await f.req('DELETE', '/api/users/' + f.adminId, browser)).statusCode, 200);
+    assert.equal((await f.req('GET', '/api/users', f.admin)).statusCode, 401);
+    assert.deepEqual((await f.req('GET', '/api/users', browser)).json().map((u: TeamUser) => u.id), [linked.user.id]);
+    const returned = await f.enter(linked.user.name, externalId);
+    assert.equal(returned.user.id, linked.user.id);
+    assert.equal(returned.user.role, 'admin');
+    assert.equal((await f.req('GET', '/api/auth/me', returned.cookie)).json().setupRequired, false);
+    await f.app.close();
+    const stored = new Store(f.store.root);
+    const access = new Access(new Workspace(stored, new CodexClient()));
+    try {
+      assert.equal(access.setupRequired, false);
+      await assert.rejects(access.bootstrap(), /Первичная настройка завершена/);
+    } finally { await stored.close(); }
   } finally { await f.app.close(); }
 });
 test('bootstrap only works on loopback before setup, setup gates data and login attempts are bounded', async () => {

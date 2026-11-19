@@ -83,8 +83,9 @@ export function TeamPanel({ request, self, manageAdministrators }: { request: Re
   useEffect(() => { void load().catch(e => setError(e.message)); }, []);
 
   return <>
-    {removing ? <SettingsAction title="Удалить сотрудника">
+    {removing ? <SettingsAction title="Удалить учётную запись">
       <p>Удалить учётную запись «{removing.name}» из команды? Сеансы завершатся. История чатов сохранится.</p>
+      {!!removing.erpRoles?.length && <p>При следующем входе из Fastkore будет создана новая учётная запись.</p>}
       <div className="settings-dialog-actions">
         <button type="button" className="secondary" disabled={busy} onClick={() => { setRemoving(undefined); setError(''); }}>Отмена</button>
         <button type="button" className="danger" disabled={busy} onClick={() => void run(async () => {
@@ -119,8 +120,8 @@ export function TeamPanel({ request, self, manageAdministrators }: { request: Re
                 }} />
               {user.disabled ? 'Неактивен' : 'Активен'}
             </label>
-            {user.role === 'employee' && user.id !== self.id && <button type="button" className="workspace-icon"
-              aria-label={'Удалить сотрудника · ' + user.name} title="Удалить сотрудника" disabled={busy}
+            {user.id !== self.id && <button type="button" className="workspace-icon"
+              aria-label={'Удалить учётную запись · ' + user.name} title="Удалить учётную запись" disabled={busy}
               onClick={() => { setError(''); setRemoving(user); }}><Trash2 size={16} aria-hidden="true" /></button>}
           </div></td>
           <td className="team-projects-cell">
