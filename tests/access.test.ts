@@ -39,7 +39,7 @@ async function fixture(transcribeDictation?: TranscribeDictation, run?: CodexRun
     return { id: user.id, token: cookie, projectRoles };
   }
   const setProjectRoles = (roles: Awaited<ReturnType<typeof employee>>['projectRoles']) => erp.setProjectRoles(app, admin, project.id, roles);
-  return { root, store, workspace, project, legacy, app, req, admin, adminId, employee, setProjectRoles, pair: () => erp.pair(app, admin) };
+  return { root, store, workspace, project, legacy, app, req, admin, adminId, enter, employee, setProjectRoles, pair: () => erp.pair(app, admin) };
 }
 async function done(workspace: Workspace) { const end = Date.now() + 10_000; while (workspace.activeRun) { assert.ok(Date.now() < end); await new Promise(r => setTimeout(r, 20)); } }
 
@@ -51,6 +51,30 @@ test('migration keeps session IDs, assigns private legacy chats to boss and reti
     assert.equal((await f.req('POST', '/api/auth/setup', f.admin, { username: 'evil', name: 'evil', password })).statusCode, 403);
     const me = (await f.req('GET', '/api/auth/me', f.admin)).json(); assert.equal(me.user.role, 'admin'); assert.ok(!JSON.stringify(me).includes('passwordHash'));
     const stored = await readFile(f.store.file, 'utf8'); assert.ok(!stored.includes(password)); assert.ok(!stored.includes(f.admin));
+  } finally { await f.app.close(); }
+});
+
+test('the first Fastkore system administrator takes the existing local setup account once', async () => {
+  const f = await fixture();
+  try {
+    const impostor = await f.enter('Руководитель', undefined, [{ id: randomUUID(), name: 'Системный администратор' }]);
+    assert.equal(impostor.user.role, 'employee');
+    assert.equal(impostor.user.roleId, 'sso_pending');
+
+    const role = { id: '1c3262c9-1105-4340-a9b5-1e0fbeaefe2d', name: 'ERP administrator' };
+    const ids = [randomUUID(), randomUUID()];
+    const sessions = await Promise.all(ids.map(id => f.enter('Администратор ERP', id, [role])));
+    const adminIndex = sessions.findIndex(s => s.user.id === f.adminId);
+    assert.notEqual(adminIndex, -1);
+    assert.equal(sessions[adminIndex].user.role, 'admin');
+    assert.equal(sessions[1 - adminIndex].user.role, 'employee');
+    assert.equal((await f.enter('Администратор ERP', ids[adminIndex], [role])).user.id, f.adminId);
+    assert.equal(f.store.state.security!.users.length, 3);
+    assert.equal(f.store.state.externalIdentities!.filter(link => link.userId === f.adminId).length, 1);
+    assert.equal((await f.req('GET', '/api/auth/me', sessions[adminIndex].cookie)).json().authentication.canOpenBrowserSettings, true);
+    const local = await f.req('POST', '/api/auth/login', '', { username: 'boss', password });
+    assert.equal(local.statusCode, 200);
+    assert.equal(local.json().user.id, f.adminId);
   } finally { await f.app.close(); }
 });
 

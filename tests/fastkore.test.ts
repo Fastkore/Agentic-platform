@@ -152,6 +152,16 @@ test('1.1 provisions a cookie-only identity with no automatic platform rights', 
   } finally { await f.app.close(); }
 });
 
+test('a manually registered Fastkore installation cannot claim the local setup account', async () => {
+  const f = await fixture();
+  try {
+    f.setValidator(async () => ({ ...identity(f.id, f.userId), user: { id: f.userId, display_name: 'Системный администратор',
+      roles: [{ id: '1c3262c9-1105-4340-a9b5-1e0fbeaefe2d', name: 'Системный администратор' }] } }));
+    assert.equal((await f.login()).user.roleId, 'sso_pending');
+    assert.equal(f.store.state.security!.pendingFastkoreAdminId, f.adminId);
+  } finally { await f.app.close(); }
+});
+
 test('Fastkore restores the interface scale for the same profile after signing in again and restarting', async () => {
   const f = await fixture();
   let reopened: App | undefined;

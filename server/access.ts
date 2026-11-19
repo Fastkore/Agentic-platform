@@ -9,6 +9,8 @@ import { fastkoreChatSessionMatches } from './fastkore-chat.js';
 
 const derive = promisify(scrypt);
 const digest = (value: string) => createHash('sha256').update(value).digest('hex');
+// UserSet.AdministratorRole in Fastkore. Role names can be renamed or reused.
+const fastkoreAdministratorRoleId = '1c3262c9-1105-4340-a9b5-1e0fbeaefe2d';
 export const publicUser = ({ id, username, name, role, roleId, disabled }: User): User => ({ id, username, name, role, roleId, disabled });
 export interface Principal { user: UserRecord; credential: Credential }
 
@@ -24,6 +26,10 @@ export class Access {
     if (!state.security) state.security = { users: [{ id: randomUUID(), username: 'admin', name: 'Руководитель', role: 'admin', disabled: false, passwordHash: '', createdAt: new Date().toISOString() }], credentials: [], audit: [] };
     this.data = state.security;
     if (!Array.isArray(this.data.users) || !Array.isArray(this.data.credentials) || !Array.isArray(this.data.audit) || !this.data.users.some(u => u.role === 'admin' && !u.disabled)) throw new BridgeError('Повреждены настройки доступа. Восстановите резервную копию.', 500);
+    if (!this.data.pendingFastkoreAdminId && !state.externalIdentities?.length) {
+      const setup = this.data.audit.find(event => event.action === 'setup');
+      if (setup) this.data.pendingFastkoreAdminId = setup.targetId;
+    }
     this.migrate();
   }
   get setupRequired() { return !this.data.users.some(u => u.role === 'admin' && u.passwordHash); }
@@ -197,6 +203,7 @@ export class Access {
       actor.username = login;
       actor.name = name.trim() || 'Руководитель';
       actor.passwordHash = hash;
+      data.pendingFastkoreAdminId = actor.id;
       data.credentials = [];
       this.audit(actor.id, 'setup', actor.id, data);
       return this.issueSession(actor, 'Браузер', undefined, data);
@@ -231,6 +238,17 @@ export class Access {
       const link = identities.find(i => i.installationId === identity.installationId && i.externalUserId === identity.externalUserId);
       let user = link && data.users.find(u => u.id === link.userId);
       if (link && (!user || user.disabled)) throw new BridgeError('Учётная запись отключена администратором платформы.', 403);
+      if (!link && data.pendingFastkoreAdminId && identity.roles?.some(role => role.id === fastkoreAdministratorRoleId)) {
+        const installation = draft.sso?.installations?.find(item => item.id === identity.installationId);
+        const bootstrapAdmin = data.users.find(u => u.id === data.pendingFastkoreAdminId && u.role === 'admin' && !u.disabled && u.passwordHash);
+        if (installation?.enabled && installation.pairing?.required && installation.pairing.binding && bootstrapAdmin &&
+          !identities.some(item => item.userId === bootstrapAdmin.id)) {
+          user = bootstrapAdmin;
+          identities.push({ installationId: identity.installationId, externalUserId: identity.externalUserId, userId: user.id });
+          delete data.pendingFastkoreAdminId;
+          this.audit(user.id, 'sso.identity.link', user.id, data);
+        }
+      }
       if (!user) {
         const id = randomUUID();
         user = { id, username: `sso-${id}`, name: identity.displayName, role: 'employee', roleId: 'sso_pending', disabled: false, passwordHash: '', createdAt: new Date().toISOString() };
@@ -263,6 +281,7 @@ export class Access {
       const link = identities.find(i => i.installationId === installationId && i.externalUserId === externalUserId);
       data.credentials = data.credentials.filter(c => c.installationId !== installationId || c.externalUserId !== externalUserId);
       if (link) link.userId = userId; else identities.push({ installationId, externalUserId, userId });
+      if (userId === data.pendingFastkoreAdminId) delete data.pendingFastkoreAdminId;
       this.audit(actor.id, 'sso.identity.link', userId, data); return { ok: true };
     });
   }

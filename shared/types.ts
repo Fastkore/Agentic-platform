@@ -107,7 +107,7 @@ export interface AuditEvent {
     section?: 'fastkore' | 'company'; previousRevision?: string; revision?: string;
   };
 }
-export interface Security { users: UserRecord[]; credentials: Credential[]; audit: AuditEvent[] }
+export interface Security { users: UserRecord[]; credentials: Credential[]; audit: AuditEvent[]; pendingFastkoreAdminId?: string }
 export interface FastkoreTlsInfo { origin: string; fingerprint: string; subject: string; expiresAt: string }
 export interface FastkoreTlsTrust extends FastkoreTlsInfo { pem: string }
 export interface FastkoreInstallation { id: string; name: string; validateTicketUrl: string; mcpUrl?: string; mcpEnabled?: boolean; cliEnabled?: boolean; enabled: boolean; autoProvision: true; defaultRoleId: 'sso_pending'; sessionTtlSeconds: 1800; pairingStatus: 'manual' | 'unpaired' | 'pending' | 'paired'; pairedAt?: string; pairingRotationPending?: boolean; tlsFingerprint?: string; tlsConfirmationRequired?: boolean }
