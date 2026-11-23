@@ -42,6 +42,47 @@ async function fixture(respond?: (request: CodexRequest, signal: AbortSignal) =>
 }
 async function idle(workspace: Workspace) { const deadline = Date.now() + 6000; while (workspace.busy) { if (Date.now() > deadline) throw Error('timeout'); await new Promise(r => setTimeout(r, 10)); } }
 
+test('new projects connect only enabled agents that opt in, and existing projects keep their connections', async () => {
+  const f = await fixture();
+  try {
+    const { id: _id, revision: _revision, autoConnect: _autoConnect, ...base } = f.workspace.corporate.data.profiles[0];
+    const save = async (id: string, values: object) => {
+      const result = await f.req('PUT', '/api/admin/profiles/' + id, f.admin, { ...base, name: id, ...values });
+      assert.equal(result.statusCode, 200, result.body);
+      return result.json();
+    };
+    assert.equal((await save('manual_agent', {})).autoConnect, false);
+    let automatic = await save('automatic_agent', { autoConnect: true });
+    await save('disabled_agent', { enabled: false, autoConnect: true });
+    const create = async (input: { name: string; directory?: string }) => {
+      const result = await f.req('POST', '/api/projects', f.admin, input);
+      assert.equal(result.statusCode, 201, result.body);
+      return result.json().id as string;
+    };
+    const connections = async (id: string) => {
+      const result = await f.req('GET', '/api/projects/' + id + '/agent-settings', f.admin);
+      assert.equal(result.statusCode, 200, result.body);
+      return result.json().policy.connections.map((connection: { profileId: string }) => connection.profileId);
+    };
+    const project = await create({ name: 'Новый проект' });
+    assert.deepEqual(await connections(project), ['universal', 'automatic_agent']);
+    const initialAgents = await f.req('GET', '/api/projects/' + project + '/agents', f.admin);
+    assert.deepEqual(initialAgents.json().map((agent: AgentProfile) => agent.id), ['universal', 'automatic_agent']);
+    automatic = await save('automatic_agent', { revision: automatic.revision, description: 'Уточнённое описание' });
+    assert.equal(automatic.autoConnect, true);
+    await save('automatic_agent', { revision: automatic.revision, autoConnect: false });
+    const directory = path.join(f.root, 'new-directory');
+    await mkdir(directory);
+    const attached = await create({ name: 'Проект из папки', directory });
+    assert.deepEqual(await connections(attached), ['universal']);
+    assert.deepEqual(await connections(project), ['universal', 'automatic_agent']);
+    assert.deepEqual(await connections(f.project.id), ['universal', 'manual_agent', 'automatic_agent']);
+    const universal = f.workspace.corporate.data.profiles[0];
+    await save('universal', { revision: universal.revision, autoConnect: false });
+    assert.deepEqual(await connections(await create({ name: 'Без агентов' })), []);
+  } finally { await f.app.close(); }
+});
+
 test('a Fastkore project member can start and run a linked chat without an internal role assignment', async () => {
   const f = await fixture();
   try {

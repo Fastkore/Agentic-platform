@@ -35,6 +35,12 @@ test('the isolated worker reads uploaded bytes, returns downloadable files, and 
         ? path.join('input', 'attachments', '1', 'input.txt')
         : path.join('input', 'previous', '1', 'result.txt');
       const source = await readFile(path.join(request.workspace, input), 'utf8');
+      if (calls === 2) {
+        assert.match(request.prompt, /input\/earlier/);
+        assert.equal(await readFile(path.join(request.workspace, 'input', 'earlier', '2', 'input.txt'), 'utf8'), 'source');
+        assert.deepEqual(await readdir(path.join(request.workspace, 'input', 'earlier')), ['2']);
+        assert.doesNotMatch(request.prompt, /foreign\.txt/);
+      }
       await writeFile(path.join(request.workspace, 'output', 'result.txt'), source + '!');
       await onEvent({ kind: 'session', text: sessionId });
       return { sessionId, response: 'OK' };
@@ -75,9 +81,13 @@ test('the isolated worker reads uploaded bytes, returns downloadable files, and 
       assert.equal(downloaded.statusCode, 200, downloaded.body);
       assert.equal(downloaded.body, 'source' + '!'.repeat(index + 1));
       assert.deepEqual(await readdir(jobs), []);
+      if (index === 0) {
+        const foreign = await workspace.addAttachment(project.id, 'foreign.txt', Buffer.from('other user'), () => 'another-user');
+        chat.messages[0].attachments.push(foreign);
+      }
     }
     await workspace.settings({ allowWrite: false });
-    const readonly = await app.inject({ method: 'POST', url: url + '/messages', headers, payload: { text: 'Прочитай вложение', attachmentIds: [attachment.id] } });
+    const readonly = await app.inject({ method: 'POST', url: url + '/messages', headers, payload: { text: 'Прочитай вложение из первого вопроса' } });
     assert.equal(readonly.statusCode, 202, readonly.body);
     const deadline = Date.now() + 5000;
     while (workspace.busy && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 10));

@@ -1,4 +1,4 @@
-import { useEffect, useId, useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type ReactNode, type RefObject } from 'react';
+import { useEffect, useId, useLayoutEffect, useRef, useState, type ClipboardEventHandler, type CSSProperties, type KeyboardEvent, type ReactNode, type RefObject } from 'react';
 import { createPortal } from 'react-dom';
 import { AtSign, Bot, Check, X } from 'lucide-react';
 import type { AgentSummary } from '../shared/types';
@@ -23,7 +23,7 @@ function mentionAt(text: string, caret: number): Mention | null {
 }
 
 export function ComposerInput({ input, draft, placeholder, editable, pickerEnabled, agents, specialistId,
-  onDraft, onSpecialist, onSend, controls }: {
+  onDraft, onSpecialist, onSend, onPaste, controls }: {
   input: RefObject<HTMLTextAreaElement | null>;
   draft: string;
   placeholder: string;
@@ -34,6 +34,7 @@ export function ComposerInput({ input, draft, placeholder, editable, pickerEnabl
   onDraft: (text: string) => void;
   onSpecialist: (id?: string) => void;
   onSend: () => void;
+  onPaste: ClipboardEventHandler<HTMLTextAreaElement>;
   controls: (pickerButton: ReactNode) => ReactNode;
 }) {
   const listId = useId();
@@ -174,7 +175,7 @@ export function ComposerInput({ input, draft, placeholder, editable, pickerEnabl
         setMention(pickerEnabled ? mentionAt(value, selectionStart) : null);
         setActive(0);
       }}
-      onClick={() => setMention(null)} onBlur={() => setMention(null)} onKeyDown={handleKeys} />
+      onClick={() => setMention(null)} onBlur={() => setMention(null)} onKeyDown={handleKeys} onPaste={onPaste} />
     {controls(agents.length ? <button type="button" className="workspace-icon composer-mention-button"
       aria-label="Выбрать агента" title="Выбрать агента · @" aria-expanded={expanded}
       aria-controls={expanded ? listId : undefined} disabled={!pickerEnabled || !agents.length}

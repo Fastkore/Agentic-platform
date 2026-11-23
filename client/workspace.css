@@ -249,10 +249,20 @@
 }
 
 .workspace-main {
-  display: flex; flex: 1; min-width: 0; min-height: 0; flex-direction: column; overflow: hidden;
+  position: relative; display: flex; flex: 1; min-width: 0; min-height: 0; flex-direction: column; overflow: hidden;
   background: var(--canvas); border-radius: 7px 7px 0 0; margin: 7px 2px 0 0;
   --lane-width: 1036px; --lane-gutter: 20px;
 }
+.chat-file-drop {
+  position: absolute; inset: 8px; z-index: 10; display: grid; place-items: center;
+  border: 2px dashed var(--accent-strong); border-radius: 12px;
+  background: color-mix(in srgb, var(--canvas) 86%, transparent); pointer-events: none;
+}
+.chat-file-drop span {
+  display: inline-flex; align-items: center; gap: 8px; padding: 10px 14px;
+  border: 1px solid var(--border); border-radius: 10px; color: var(--text); background: var(--surface);
+}
+.chat-file-drop svg { flex: none; }
 .workspace-top {
   flex: 0 0 58px; display: flex; align-items: center; gap: 14px; min-width: 0; padding: 0 17px;
   color: var(--text-muted);

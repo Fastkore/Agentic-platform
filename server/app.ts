@@ -675,7 +675,7 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
   app.get('/api/admin/operations', async request => { admin(request); return operationIds; });
   const revision = { type: 'integer', minimum: 1, maximum: 2147483647 };
   app.put<{ Params: { id: string }; Body: Omit<WorkRole, 'id' | 'revision'> & { revision?: number } }>('/api/admin/roles/:id', { schema: { params: object({ id: identifier }, ['id']), body: object({ name: string(100), enabled: { type: 'boolean' }, profileIds: identifiers, operationIds: identifiers, readDatasetIds: identifiers, instructions: { type: 'string', maxLength: 20000 }, revision }, ['name', 'enabled', 'profileIds', 'operationIds', 'readDatasetIds', 'instructions']) } }, async request => workspace.corporate.saveRole(admin(request), { ...request.body, id: request.params.id }));
-  app.put<{ Params: { id: string }; Body: Omit<AgentProfile, 'id' | 'revision'> & { revision?: number; outputMode?: 'chat' | 'restricted' } }>('/api/admin/profiles/:id', { schema: { params: object({ id: identifier }, ['id']), body: object({ name: string(100), description: { type: 'string', maxLength: 1000 }, instructions: { type: 'string', maxLength: 20000 }, enabled: { type: 'boolean' }, model: modelSchema, reasoningEffort: { enum: ['low', 'medium', 'high', 'xhigh'] }, operationIds: identifiers, datasetIds: identifiers, skillIds: identifiers, allowWrite: { type: 'boolean' }, outputMode: { enum: ['chat', 'restricted'] }, revision, toolIds: agentToolList, icon: { enum: [...specialistIcons] }, instructionFiles: { type: 'array', maxItems: specialistFileLimits.count, items: object({ name: string(120), text: { type: 'string', minLength: 1, maxLength: specialistFileLimits.characters } }, ['name', 'text']) } }, ['name', 'description', 'instructions', 'enabled', 'model', 'reasoningEffort', 'operationIds', 'datasetIds', 'skillIds', 'allowWrite']) } }, async request => {
+  app.put<{ Params: { id: string }; Body: Omit<AgentProfile, 'id' | 'revision'> & { revision?: number; outputMode?: 'chat' | 'restricted' } }>('/api/admin/profiles/:id', { schema: { params: object({ id: identifier }, ['id']), body: object({ name: string(100), description: { type: 'string', maxLength: 1000 }, instructions: { type: 'string', maxLength: 20000 }, enabled: { type: 'boolean' }, autoConnect: { type: 'boolean' }, model: modelSchema, reasoningEffort: { enum: ['low', 'medium', 'high', 'xhigh'] }, operationIds: identifiers, datasetIds: identifiers, skillIds: identifiers, allowWrite: { type: 'boolean' }, outputMode: { enum: ['chat', 'restricted'] }, revision, toolIds: agentToolList, icon: { enum: [...specialistIcons] }, instructionFiles: { type: 'array', maxItems: specialistFileLimits.count, items: object({ name: string(120), text: { type: 'string', minLength: 1, maxLength: specialistFileLimits.characters } }, ['name', 'text']) } }, ['name', 'description', 'instructions', 'enabled', 'model', 'reasoningEffort', 'operationIds', 'datasetIds', 'skillIds', 'allowWrite']) } }, async request => {
     const { outputMode: _legacyOutputMode, ...profile } = request.body;
     return workspace.corporate.saveProfile(admin(request), { ...profile, id: request.params.id });
   });
@@ -875,7 +875,7 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
     authorize();
     const project = directory === undefined
       ? await workspace.createProject(name ?? '', authorize)
-      : await workspace.addProject(directory, name);
+      : await workspace.addProject(directory, name, workspace.isolatedCodex ? workspace.corporate.defaultProjectPolicy('new') : undefined);
     if (directory !== undefined) { access.migrate(); await workspace.store.save(); }
     return reply.code(201).send({ id: project.id, name: project.name, directory: project.directory, chatCount: project.chats.length });
   });
@@ -912,7 +912,7 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
     const project = workspace.activeProject(request.params.projectId);
     const files = workspace.projectFiles(project);
     const fileIds = new Set(files.map(file => file.id));
-    const policy = project.agentPolicy ?? workspace.corporate.defaultProjectPolicy(true);
+    const policy = project.agentPolicy ?? workspace.corporate.defaultProjectPolicy('legacy');
     return {
       policy: { ...policy, connections: policy.connections.map(connection => ({
         ...connection, fileIds: connection.fileIds?.filter(id => fileIds.has(id)) ?? null,

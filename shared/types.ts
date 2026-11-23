@@ -81,7 +81,7 @@ export const specialistIcons = ['bot', 'message', 'calculator', 'settings', 'dat
 export type SpecialistIcon = typeof specialistIcons[number];
 export interface SpecialistInstructionFile { name: string; text: string }
 export const specialistFileLimits = { count: 5, characters: 6_000 };
-export interface AgentProfile { id: string; name: string; description: string; instructions: string; enabled: boolean; model: string; reasoningEffort: 'low' | 'medium' | 'high' | 'xhigh'; operationIds: string[]; datasetIds: string[]; skillIds: string[]; allowWrite: boolean; revision: number; toolIds?: AgentToolId[]; icon?: SpecialistIcon; instructionFiles?: SpecialistInstructionFile[] }
+export interface AgentProfile { id: string; name: string; description: string; instructions: string; enabled: boolean; autoConnect?: boolean; model: string; reasoningEffort: 'low' | 'medium' | 'high' | 'xhigh'; operationIds: string[]; datasetIds: string[]; skillIds: string[]; allowWrite: boolean; revision: number; toolIds?: AgentToolId[]; icon?: SpecialistIcon; instructionFiles?: SpecialistInstructionFile[] }
 export interface Dataset { id: string; name: string; directory: string; projectIds: string[]; classification: 'shared' | 'restricted'; revision: number }
 export interface Corporate { roles: WorkRole[]; profiles: AgentProfile[]; datasets: Dataset[] }
 export interface AgentSummary { id: string; name: string; description: string; available: boolean; unavailableReason?: string; model: string; allowWrite?: boolean; toolIds: AgentToolId[] }

@@ -73,6 +73,7 @@ export async function documentText(file: string, contents?: Buffer): Promise<str
   if ((contents?.length ?? (await stat(file)).size) > 25 * 1024 * 1024) return '[Файл слишком большой для выдержки]';
   const ext = path.extname(file).toLowerCase();
   if (ext === '.xlsx' || ext === '.pdf') return documentPreview(ext === '.xlsx' ? 'xlsx' : 'pdf', contents ?? await readFile(file));
+  if (ext === '.xls') return '[Вложение сохранено. Автоматическая выдержка из старого XLS недоступна. Для выдержки нужна копия в формате XLSX.]';
   if (ext === '.csv' || ext === '.tsv') {
     const raw = (contents?.toString('utf8') ?? await readFile(file, 'utf8')).slice(0, 256_000);
     const delimiter = ext === '.tsv' ? '\t' : (raw.split('\n')[0]?.split(';').length ?? 0) > (raw.split('\n')[0]?.split(',').length ?? 0) ? ';' : ',';

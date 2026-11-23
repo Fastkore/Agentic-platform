@@ -14,7 +14,7 @@ const icons = { bot: Bot, message: MessageCircle, calculator: Calculator, settin
 const iconLabels: Record<SpecialistIcon, string> = { bot: 'Помощник', message: 'Диалог', calculator: 'Расчёты', settings: 'Настройки', database: 'Данные', chart: 'Аналитика', file: 'Документы', search: 'Поиск' };
 const builtInIcons: Partial<Record<string, SpecialistIcon>> = { universal: 'message', estimator: 'calculator', technologist: 'settings', accountant: 'database' };
 const toolIcons = { 'chat-files': Paperclip };
-const newProfile: AgentProfile = { id: '', name: '', description: '', instructions: '', enabled: false, model: '', reasoningEffort: 'high', operationIds: ['chat'], datasetIds: [], skillIds: [], allowWrite: false, revision: 0, toolIds: [] };
+const newProfile: AgentProfile = { id: '', name: '', description: '', instructions: '', enabled: false, autoConnect: false, model: '', reasoningEffort: 'high', operationIds: ['chat'], datasetIds: [], skillIds: [], allowWrite: false, revision: 0, toolIds: [] };
 const editorTabs = [
   { id: 'general', label: 'Основное', icon: Bot },
   { id: 'instructions', label: 'Инструкции', icon: FileText },
@@ -239,6 +239,9 @@ export function SpecialistsPanel({ request, globalInstructions, initialProfileId
             <Select id="specialist-icon" className="settings-select" value={profileIcon(profile)} onChange={icon => update({ icon: icon as SpecialistIcon })}
               options={specialistIcons.map(value => ({ value, label: iconLabels[value] }))} />
           </div>
+          <label className="specialist-enabled"><Toggle name="Автоматически подключать к новым проектам" checked={profile.autoConnect === true}
+            disabled={busy} onChange={autoConnect => update({ autoConnect })} />
+            Автоматически подключать к новым проектам</label>
         </div>
       </section>
       </div>

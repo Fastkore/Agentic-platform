@@ -6,6 +6,7 @@ import { Archive, ArrowUp, BarChart3, Bot, Box, Camera, Check, ChevronDown, Chev
 import { interfaceScales, sharedChatWaitMessage, unassignedChatsLabel, type AgentSummary, type Attachment, type Chat, type ChatView, type ChatSummary, type CodexLimits, type FastkoreAuthentication, type FastkoreNavigationTarget, type FileStorageStatus, type InterfaceScale, type ModelCatalog, type ProjectSummary, type RelatedChatSummary, type Run, type Settings, type Status, type UnassignedChatSummary, type User } from '../shared/types';
 import './style.css';
 import './workspace.css';
+import { ChatFileDrop } from './ChatFileDrop';
 import { ChatArchiveDialog } from './ChatArchiveDialog';
 import { ChatVisuals } from './ChatVisuals';
 import { shortUserName } from './user-name';
@@ -133,10 +134,11 @@ async function copy(text: string) {
 }
 const requestId = () => globalThis.crypto?.randomUUID?.() ?? `web-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 const focusControls = 'a, button, input, textarea, select, label, summary, dialog, [contenteditable], [tabindex], [role="button"], [role="option"]';
-type DraftAttachment = Attachment & { screenshot?: { file: File; preview: string; uploaded?: { projectId: string; id: string } } };
+type DraftAttachment = Attachment & { local?: { file: File; preview?: string; uploaded?: { projectId: string; id: string } } };
 type ScreenshotRequest = { id: string; slot: string; timer: ReturnType<typeof setTimeout> };
 const maxDraftAttachments = 8;
 const draftAttachmentLimit = 'К вопросу можно прикрепить до 8 файлов.';
+const clipboardImageExtensions: Record<string, string> = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp', 'image/gif': 'gif' };
 
 function uploadChatAttachment(projectId: string, file: File) {
   const form = new FormData();
@@ -184,7 +186,7 @@ function App() {
   const [panel, setPanel] = useState<'settings' | 'project' | 'project-settings' | 'search' | 'archive' | 'related' | 'rename-chat' | 'reset-chat' | 'share-chat' | null>(null);
   const [renameDraft, setRenameDraft] = useState<{ projectId: string; chatId: string; title: string; destinationId?: string }>();
   const [modelPreview, setModelPreview] = useState<{ name: string; url: string; format: PreviewModelFormat }>();
-  const [screenshotPreview, setScreenshotPreview] = useState<DraftAttachment['screenshot']>();
+  const [screenshotPreview, setScreenshotPreview] = useState<{ file: File; preview: string }>();
   const projectFromComposer = useRef(false);
   const [projectActionTarget, setProjectActionTarget] = useState<ProjectSummary | null>(null);
   const [settingsProjectSearch, setSettingsProjectSearch] = useState('');
@@ -213,7 +215,7 @@ function App() {
   const input = useRef<HTMLTextAreaElement>(null), fileInput = useRef<HTMLInputElement>(null), end = useRef<HTMLDivElement>(null);
   const focusedComposer = useRef<HTMLTextAreaElement | null>(null);
   const scroll = useRef<HTMLDivElement>(null), stick = useRef(true), loadingSettings = useRef(false);
-  const sending = useRef(false);
+  const sending = useRef(false), uploadingAttachments = useRef(false);
   const sendAttempt = useRef<{ chatId: string; content: string; requestId: string } | null>(null);
   const relatedDraftKey = currentErpContext.current.active && erpChatKey ? 'erp:' + erpChatKey : '';
   const draftSlot = chatId || relatedDraftKey;
@@ -311,6 +313,7 @@ function App() {
   const unavailableConsultant = agents.find(agent => agent.id !== 'universal' && agent.id !== messageAgent?.id && !agent.available && agent.unavailableReason);
   const canAttach = canEdit && messageAgent?.available === true && messageAgent.toolIds.includes('chat-files');
   const canAttachToDraft = chatId ? canAttach : !projectId || messageAgent?.toolIds.includes('chat-files') === true;
+  const canPickFiles = canAttachToDraft && (!projectId || messageAgent?.available === true) && !pending;
   const showScreenshot = inFastkore && !!erpAuth && readySession === erpAuth && hostSupportsScreenshot;
   const canReadFastkore = !!projectId && messageAgent?.toolIds.includes('fastkore') === true;
   const canStartChat = !chatId && !!newAgent && !!selectedProject;
@@ -446,7 +449,7 @@ function App() {
         finishScreenshotRequest();
         if ('error' in screenshot) { setError(screenshot.error); return; }
         const { name, size } = screenshot.file;
-        setFiles(old => ({ ...old, [active.slot]: [...(old[active.slot] ?? []), { id: active.id, name, size, screenshot }] }));
+        setFiles(old => ({ ...old, [active.slot]: [...(old[active.slot] ?? []), { id: active.id, name, size, local: screenshot }] }));
         return;
       }
       if (erpAuth && isFastkoreContextMessage(event.data)) {
@@ -921,7 +924,7 @@ function App() {
   async function send(override?: string) {
     const navigation = contextNavigation.current;
     const text = (override ?? draft).trim();
-    if (!text || pending || sending.current || screenshotRequest.current?.slot === draftSlot) return;
+    if (!text || pending || sending.current || uploadingAttachments.current || screenshotRequest.current?.slot === draftSlot) return;
     if (canPromptForProject) {
       setProjectRequested(true);
       projectPicker.current?.open();
@@ -958,14 +961,14 @@ function App() {
           }
         }
         const attachmentIds: string[] = [];
-        for (const { id, screenshot } of attachments) {
-          if (!screenshot) { attachmentIds.push(id); continue; }
-          if (screenshot.uploaded?.projectId === project) { attachmentIds.push(screenshot.uploaded.id); continue; }
-          const uploaded = await uploadChatAttachment(project, screenshot.file);
+        for (const { id, local } of attachments) {
+          if (!local) { attachmentIds.push(id); continue; }
+          if (local.uploaded?.projectId === project) { attachmentIds.push(local.uploaded.id); continue; }
+          const uploaded = await uploadChatAttachment(project, local.file);
           attachmentIds.push(uploaded.id);
           const uploadedRef = { projectId: project, id: uploaded.id };
           setFiles(old => ({ ...old, [attachmentSlot]: (old[attachmentSlot] ?? []).map(item => item.id === id
-            ? { ...item, screenshot: { ...screenshot, uploaded: uploadedRef } } : item) }));
+            ? { ...item, local: { ...local, uploaded: uploadedRef } } : item) }));
         }
         const message = { text, attachmentIds, fastkoreContext: snapshot, recommendedSpecialistId: specialistId };
         const content = JSON.stringify(message);
@@ -985,18 +988,28 @@ function App() {
       sending.current = false;
     }
   }
-  async function upload(list: FileList | null) {
-    if (!list || !projectId || !chatId || !canAttach) return;
-    const p = projectId, c = chatId;
-    await action(async () => {
-      const reserved = screenshotRequest.current?.slot === c ? 1 : 0;
-      if (attachments.length + list.length + reserved > maxDraftAttachments) throw new Error(draftAttachmentLimit);
-      for (const file of Array.from(list)) {
-        if (file.size > 20 * 1024 * 1024) throw new Error('Максимальный размер вложения — 20 МБ.');
-        const uploaded = await uploadChatAttachment(p, file);
-        setFiles(old => ({ ...old, [c]: [...(old[c] ?? []), uploaded] }));
-      }
-    }); if (fileInput.current) fileInput.current.value = '';
+  async function attachFiles(list: File[]) {
+    if (!list.length || !canPickFiles || sending.current || uploadingAttachments.current) return;
+    const reserved = screenshotRequest.current?.slot === draftSlot ? 1 : 0;
+    if (attachments.length + list.length + reserved > maxDraftAttachments) { setError(draftAttachmentLimit); return; }
+    if (list.some(file => file.size > 20 * 1024 * 1024)) { setError('Максимальный размер вложения — 20 МБ.'); return; }
+    if (!chatId) {
+      const staged: DraftAttachment[] = list.map(file => ({ id: requestId(), name: file.name, size: file.size, local: { file } }));
+      setError('');
+      setFiles(old => ({ ...old, [draftSlot]: [...(old[draftSlot] ?? []), ...staged] }));
+      return;
+    }
+    const epoch = authEpoch;
+    uploadingAttachments.current = true;
+    try {
+      await action(async () => {
+        for (const file of list) {
+          const uploaded = await uploadChatAttachment(projectId, file);
+          if (epoch !== authEpoch) return;
+          setFiles(old => ({ ...old, [draftSlot]: [...(old[draftSlot] ?? []), uploaded] }));
+        }
+      });
+    } finally { uploadingAttachments.current = false; }
   }
   async function copyItem(text: string, label: string) { try { await copy(text); setCopied(label); setTimeout(() => setCopied(''), 1800); } catch (e) { fail(e); } }
   async function changeInterfaceScale(scale: InterfaceScale) {
@@ -1299,23 +1312,45 @@ function App() {
     </div>}
     {waitingForParticipant && <p className="composer-status" role="status">{sharedChatWaitMessage}</p>}
     <div className="bridge-editor">
-      {attachments.length > 0 && <div className="attachment-chips">{attachments.map(attachment => <span key={attachment.id}>
-        {attachment.screenshot ? <button type="button" className="draft-screenshot-thumb" title="Просмотреть скриншот"
-          aria-label="Просмотреть скриншот" onClick={() => setScreenshotPreview(attachment.screenshot)}>
-          <img src={attachment.screenshot.preview} alt="" />
-        </button> : <FileText size={14} />}
-        {attachment.name}<button type="button" aria-label={'Убрать ' + attachment.name} disabled={!!attachment.screenshot && pending}
-          onClick={() => setFiles(old => ({ ...old, [draftSlot]: (old[draftSlot] ?? []).filter(item => item.id !== attachment.id) }))}><X size={13} /></button>
-      </span>)}</div>}
+      {attachments.length > 0 && <div className="attachment-chips">{attachments.map(attachment => {
+        const local = attachment.local, preview = local?.preview;
+        return <span key={attachment.id}>
+          {local && preview ? <button type="button" className="draft-screenshot-thumb" title="Просмотреть скриншот"
+            aria-label="Просмотреть скриншот" onClick={() => setScreenshotPreview({ file: local.file, preview })}>
+            <img src={preview} alt="" />
+          </button> : <FileText size={14} />}
+          {attachment.name}<button type="button" aria-label={'Убрать ' + attachment.name} disabled={!!local && pending}
+            onClick={() => setFiles(old => ({ ...old, [draftSlot]: (old[draftSlot] ?? []).filter(item => item.id !== attachment.id) }))}><X size={13} /></button>
+        </span>;
+      })}</div>}
       <ComposerInput key={specialistKey} input={input} draft={draft}
         placeholder={hasMessages ? 'Продолжить разговор…' : 'Напишите сообщение…'}
         editable={draftEditable} pickerEnabled={draftEditable && !pending && (chatId ? canEdit : !!selectedProject)}
         agents={otherSpecialists} specialistId={specialistId}
         onDraft={text => setDrafts(old => ({ ...old, [draftSlot]: text }))}
         onSpecialist={id => setSpecialists(old => ({ ...old, [specialistKey]: id }))}
+        onPaste={event => {
+          const clipboard = event.clipboardData;
+          const images = Array.from(clipboard.items)
+            .filter(item => item.kind === 'file' && item.type.startsWith('image/'))
+            .flatMap(item => { const file = item.getAsFile(); return file ? [file] : []; });
+          const list = images.length ? images : Array.from(clipboard.files).filter(file => file.type.startsWith('image/'));
+          if (!list.length) return;
+          event.preventDefault();
+          if (!canPickFiles) { setError('Сейчас нельзя прикрепить изображение к этому сообщению.'); return; }
+          if (list.some(file => !Object.hasOwn(clipboardImageExtensions, file.type))) {
+            setError('Вставьте изображение в формате PNG, JPG, WebP или GIF.');
+            return;
+          }
+          void attachFiles(list.map((file, index) => new File([file], `Скриншот-${requestId()}-${index + 1}.${clipboardImageExtensions[file.type]}`, { type: file.type })));
+        }}
         onSend={() => void send()} controls={pickerButton => <div className="bridge-editor-controls">
-        <input type="file" multiple ref={fileInput} onChange={e => void upload(e.target.files)} />
-        <button className="workspace-icon" title={canAttach ? 'Прикрепить файл' : 'Агенту не разрешено читать вложения'} aria-label="Прикрепить файл" onClick={() => fileInput.current?.click()} disabled={!canAttach || pending}><Plus size={19} /></button>
+        <input type="file" multiple ref={fileInput} onChange={e => {
+          const list = Array.from(e.currentTarget.files ?? []);
+          e.currentTarget.value = '';
+          void attachFiles(list);
+        }} />
+        <button type="button" className="workspace-icon" title={canAttachToDraft ? 'Прикрепить файл' : 'Агенту не разрешено читать вложения'} aria-label="Прикрепить файл" onClick={() => fileInput.current?.click()} disabled={!canPickFiles}><Plus size={19} /></button>
         {showScreenshot && <button type="button" className="workspace-icon" aria-label="Приложить скриншот" aria-busy={screenshotSlot === draftSlot}
           title={screenshotSlot !== undefined ? 'Fastkore делает скриншот…' : canAttachToDraft ? 'Приложить скриншот' : 'Агенту не разрешено читать вложения'}
           disabled={!canAttachToDraft || pending || screenshotSlot !== undefined} onClick={captureScreenshot}>
@@ -1469,7 +1504,7 @@ function App() {
       </div>
       <SidebarResizeHandle />
     </aside>
-    <main className="workspace-main">
+    <ChatFileDrop enabled={canPickFiles && !panel} onFiles={list => void attachFiles(list)} onError={setError}>
       <header className="workspace-top">
         {sidebarCollapsed && <button ref={sidebarExpandButton} type="button" className="workspace-icon workspace-sidebar-toggle"
           aria-controls="workspace-sidebar" aria-expanded="false" aria-label="Развернуть боковую панель" title="Развернуть боковую панель"
@@ -1532,7 +1567,7 @@ function App() {
           : selectedProject ? 'Новый чат' : 'Выберите проект'}</h2>
         {composer}
       </div>}
-    </main>
+    </ChatFileDrop>
     {screenshotPreview && <WorkspaceDialog title={screenshotPreview.file.name} className="draft-screenshot-dialog" close={() => setScreenshotPreview(undefined)}>
       <img src={screenshotPreview.preview} alt="Скриншот Fastkore" />
     </WorkspaceDialog>}

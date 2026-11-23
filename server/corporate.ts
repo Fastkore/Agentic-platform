@@ -48,7 +48,10 @@ export function initializeCorporate(state: State): Corporate {
     ], datasets: []
   };
   migrateEstimateOperation(state.corporate);
-  for (const profile of state.corporate.profiles) delete (profile as AgentProfile & { outputMode?: unknown }).outputMode;
+  for (const profile of state.corporate.profiles) {
+    delete (profile as AgentProfile & { outputMode?: unknown }).outputMode;
+    profile.autoConnect ??= profile.id === 'universal';
+  }
   const base = state.corporate.profiles.find(profile => profile.id === 'universal');
   if (base) Object.assign(base, { name: baseAssistantName, enabled: true });
   else state.corporate.profiles.unshift(baseAssistant());
@@ -119,11 +122,12 @@ export class CorporateAccess {
     if (!user || user.disabled) return [];
     return this.connectedProfiles(project).filter(profile => profile.id !== 'universal' && profile.id !== mainProfileId && !this.unavailable(profile, project));
   }
-  defaultProjectPolicy(includeFastkore: boolean): ProjectAgentPolicy {
+  defaultProjectPolicy(mode: 'new' | 'legacy'): ProjectAgentPolicy {
+    const legacy = mode === 'legacy';
     return {
-      revision: includeFastkore ? 0 : 1,
-      connections: this.data.profiles.filter(profile => profile.enabled).map(profile => ({
-        profileId: profile.id, fileIds: null, toolIds: this.tools(profile).filter(id => includeFastkore || id !== 'fastkore'),
+      revision: legacy ? 0 : 1,
+      connections: this.data.profiles.filter(profile => profile.enabled && (legacy || profile.autoConnect)).map(profile => ({
+        profileId: profile.id, fileIds: null, toolIds: this.tools(profile).filter(id => legacy || id !== 'fastkore'),
       })),
     };
   }
@@ -186,6 +190,7 @@ export class CorporateAccess {
       throw new BridgeError('Добавьте до пяти разных файлов .md или .txt общим объёмом до 6 000 символов.');
     }
     const value: AgentProfile = { ...input, name: input.name.trim(), description: input.description.trim(), revision: (old?.revision ?? 0) + 1,
+      autoConnect: input.autoConnect ?? old?.autoConnect ?? (input.id === 'universal'),
       toolIds: input.toolIds ?? old?.toolIds, icon: input.icon ?? old?.icon, instructionFiles };
     if (!value.name || !value.operationIds.length) throw new BridgeError('Укажите название и хотя бы одну операцию.');
     if (!value.description && old?.description !== '') throw new BridgeError('Кратко опишите, для каких задач подходит агент.');

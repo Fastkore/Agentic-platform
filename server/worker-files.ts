@@ -10,11 +10,11 @@ const inputLimit = 160 * 1024 * 1024;
 const outputLimit = 60 * 1024 * 1024;
 
 export async function stageWorkerFiles(directory: string, storage: FileStorage, project: Project,
-  attachments: Attachment[], previous: Attachment[], library: Attachment[], signal: AbortSignal) {
+  attachments: Attachment[], previous: Attachment[], earlierAttachments: Attachment[], signal: AbortSignal) {
   await mkdir(path.join(directory, 'output'));
   let total = 0;
   const seen = new Set<string>();
-  const groups = { attachments, previous: previous.slice(0, 8), project: library.slice(0, 20) };
+  const groups = { attachments, previous: previous.slice(0, 8), earlier: earlierAttachments };
   for (const [kind, files] of Object.entries(groups)) {
     for (const file of files) {
       signal.throwIfAborted();
@@ -34,6 +34,7 @@ export async function stageWorkerFiles(directory: string, storage: FileStorage, 
       seen.add(file.id);
     }
   }
+  return seen;
 }
 
 export async function* workerOutputs(directory: string, signal: AbortSignal, generated: { name: string; contents: Buffer }[] = []) {
