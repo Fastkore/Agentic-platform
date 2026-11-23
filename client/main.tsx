@@ -1662,7 +1662,7 @@ function App() {
         {!searchLoading && !searchable.length && <p className="composer-status">Ничего не найдено</p>}
       </div>
     </WorkspaceDialog>}
-    {panel === 'project' && canCreateProject && <WorkspaceDialog title="Новый проект" className="workspace-project-form" close={closePanel}>
+    {panel === 'project' && canCreateProject && <WorkspaceDialog title="Новый проект" className="workspace-project-form workspace-chat-rename" close={closePanel}>
       <form onSubmit={e => { e.preventDefault(); void action(async () => {
         const selectForChat = projectFromComposer.current || (!!relatedDraftKey && !chatId);
         const previous = selected.current, navigation = contextNavigation.current;
@@ -1674,11 +1674,15 @@ function App() {
         if (selectForChat) await selectComposerProject(p.id);
         else navigateTo(p.id);
       }); }}>
-        <input id="project-name" aria-label="Название проекта" placeholder="Введите название" value={projectName}
-          onChange={e => setProjectName(e.target.value)} required={!canAttachProjectDirectory || !folderPath.trim()} maxLength={100} autoFocus />
+        <label htmlFor="project-name">Название проекта</label>
+        <input id="project-name" data-dialog-focus placeholder="Введите название" value={projectName}
+          onChange={e => setProjectName(e.target.value)} required={!canAttachProjectDirectory || !folderPath.trim()} maxLength={100} />
         {canAttachProjectDirectory && <><label htmlFor="directory">Папка на сервере <span>необязательно</span></label><input id="directory" value={folderPath} onChange={e => setFolderPath(e.target.value)} placeholder={status?.executionDisabled ? '/projects/Финансы' : 'C:\\Проекты\\Финансы'} /></>}
         {error && <div className="inline-error" role="alert">{error}</div>}
-        <button className="primary w-full" disabled={pending}>{folderPath.trim() && canAttachProjectDirectory ? 'Подключить папку' : 'Создать проект'}</button>
+        <div className="settings-dialog-actions">
+          <button type="button" className="secondary" disabled={pending} onClick={() => { setProjectName(''); setFolderPath(''); closePanel(); }}>Отмена</button>
+          <button type="submit" className="primary" disabled={pending}>{folderPath.trim() && canAttachProjectDirectory ? 'Подключить папку' : 'Создать проект'}</button>
+        </div>
       </form>
     </WorkspaceDialog>}
     {panel === 'project-settings' && projectActionTarget && canManageProjects &&

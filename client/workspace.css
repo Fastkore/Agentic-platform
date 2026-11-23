@@ -1013,6 +1013,7 @@
 .workspace-chat-rename form > :is(input, select) + label { margin-top: 12px; }
 .workspace-chat-rename form > input:not([type="checkbox"]) { margin: 0; min-height: 36px; padding: 6px 10px; }
 .workspace-chat-rename .settings-dialog-actions { margin-top: 10px; }
+.workspace-project-form form > input:focus { outline: none; box-shadow: none; }
 .workspace-chat-rename .settings-dialog-actions > :is(.primary, .secondary) {
   min-height: 34px; padding: 5px 12px; font-size: 13px; font-weight: 550;
 }
