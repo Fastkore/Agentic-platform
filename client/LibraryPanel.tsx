@@ -1,6 +1,8 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { ChevronLeft, Database, HardDrive, Layers, Plus, Trash2 } from 'lucide-react';
 import type { LibraryFolderSummary, LibraryProfile, OutputPolicy } from '../shared/library';
+import { externalLabels, type ExternalProvider, type ExternalSelection } from '../shared/library';
+import { ExternalLibraryPicker } from './ExternalLibraryPicker';
 import { PermissionSwitch } from './PermissionSwitch';
 import { Select } from './Select';
 import { formatBytes, type Request } from './library-upload';
@@ -43,6 +45,40 @@ export function FolderForm({ draft, setDraft, isAdmin, disabled }: {
   </div>;
 }
 
+export function CreateLibraryForm({ request, pending, submit, cancel, project }: {
+  request: Request; pending: boolean; submit: (draft: FolderDraft & { external?: ExternalSelection }) => void; cancel: () => void; project?: boolean;
+}) {
+  const [draft, setDraft] = useState(emptyFolderDraft);
+  const [kind, setKind] = useState('s3'), [provider, setProvider] = useState<ExternalProvider>('dropbox');
+  const [selection, setSelection] = useState<ExternalSelection>();
+  const suggestedName = useRef('');
+  const ready = !!draft.name.trim() && (kind === 's3' || !!selection);
+  return <form className="agent-card library-form" onSubmit={e => { e.preventDefault(); if (ready && !pending) submit({ ...draft, external: kind === 'external' ? selection : undefined }); }}>
+    <fieldset disabled={pending} className="library-source-fields">
+      <label htmlFor="library-kind">Тип библиотеки</label>
+      <Select id="library-kind" className="settings-select" options={options({ s3: 'Обычная библиотека (S3)', external: 'Внешняя библиотека' })} value={kind}
+        onChange={value => { setKind(value); setSelection(undefined); }} />
+      {kind === 'external' ? <>
+        <label htmlFor="library-provider">Внешний диск</label>
+        <Select id="library-provider" className="settings-select" options={options(externalLabels)} value={provider}
+          onChange={value => { setProvider(value as ExternalProvider); setSelection(undefined); }} />
+        <ExternalLibraryPicker key={provider} provider={provider} request={request} onSelect={(next, name) => {
+          setSelection(next);
+          if (name) {
+            const previous = suggestedName.current, suggestion = name.slice(0,120);
+            suggestedName.current = suggestion;
+            setDraft(current => !current.name.trim() || current.name === previous ? { ...current, name: suggestion } : current);
+          }
+        }} />
+      </> : <p className="help">После создания нажмите «Загрузить папку» и выберите материалы на компьютере. Подключение к S3 настраивает администратор сервера.</p>}
+    </fieldset>
+    <FolderForm draft={draft} setDraft={setDraft} isAdmin disabled={pending} />
+    {project && <p className="help">Библиотека подключится к этому проекту. Доступ агентам можно назначить на вкладке прав.</p>}
+    <div className="settings-actions"><button type="submit" className="primary" disabled={pending || !ready}>{project ? 'Создать и подключить' : 'Создать'}</button>
+      <button type="button" className="secondary" disabled={pending} onClick={cancel}>Отмена</button></div>
+  </form>;
+}
+
 /** Settings → Library: all folders the user may manage, storage status and the projects each folder is connected to. */
 export function LibraryPanel({ request, isAdmin }: { request: Request; isAdmin: boolean }) {
   const [folders, setFolders] = useState<LibraryFolderSummary[]>();
@@ -51,7 +87,6 @@ export function LibraryPanel({ request, isAdmin }: { request: Request; isAdmin: 
   const [folderSearch, setFolderSearch] = useState('');
   const [projectSearch, setProjectSearch] = useState('');
   const [creating, setCreating] = useState(false);
-  const [draft, setDraft] = useState<FolderDraft>(emptyFolderDraft);
   const [editing, setEditing] = useState<{ draft: FolderDraft; revision: number }>();
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
@@ -135,11 +170,11 @@ export function LibraryPanel({ request, isAdmin }: { request: Request; isAdmin: 
           <button type="button" className="secondary" disabled={pending || !editing} onClick={() => setEditing(undefined)}>Отмена</button>
           {folder.canDelete && <button type="button" className="secondary library-danger" disabled={pending} onClick={() => {
             const where = folder.projects.length ? `\nПапка исчезнет из проектов: ${folder.projects.map(p => p.name ?? p.id).join(', ')}.` : '';
-            if (confirm(`Удалить папку «${folder.name}» со всеми файлами?${where}\nДействие нельзя отменить.`)) void act(async () => {
+            if (confirm(folder.external ? `Отключить библиотеку «${folder.name}»? Оригиналы останутся на диске.${where}` : `Удалить папку «${folder.name}» со всеми файлами?${where}\nДействие нельзя отменить.`)) void act(async () => {
               await request(`/api/library/${folder.id}?revision=${folder.revision}`, { method: 'DELETE' });
               setSelected(undefined);
             }, 'Папка удалена.');
-          }}><Trash2 size={16} aria-hidden="true" />Удалить папку</button>}
+          }}><Trash2 size={16} aria-hidden="true" />{folder.external ? 'Отключить библиотеку' : 'Удалить папку'}</button>}
         </div>
       </form>
     </section>}
@@ -150,19 +185,14 @@ export function LibraryPanel({ request, isAdmin }: { request: Request; isAdmin: 
     {error && <p className="inline-error" role="alert">{error}</p>}
     {notice && <p className="help" role="status">{notice}</p>}
     <section className="library-folders" aria-label="Папки библиотеки">
-      <div className="settings-model-row">
+      <div className="library-folders-heading">
         <strong>Папки библиотеки</strong>
         {isAdmin && <button type="button" className="secondary" aria-expanded={creating} onClick={() => setCreating(!creating)}><Plus size={16} aria-hidden="true" />Новая папка</button>}
       </div>
-      {creating && <form className="agent-card library-form" onSubmit={e => { e.preventDefault(); void act(async () => {
+      {creating && <CreateLibraryForm request={request} pending={pending} cancel={() => setCreating(false)} submit={draft => void act(async () => {
         const created = await request<LibraryFolderSummary>('/api/library', { method: 'POST', body: JSON.stringify(draft) });
-        setCreating(false); setDraft(emptyFolderDraft); setSelected(created.id);
-      }, 'Папка создана. Загрузите в неё материалы.'); }}>
-        <FolderForm draft={draft} setDraft={setDraft} isAdmin={isAdmin} />
-        <p className="help">После создания в карточке появится кнопка «Загрузить папку» для выбора каталога на компьютере.</p>
-        <div className="settings-actions"><button type="submit" className="primary" disabled={pending || !draft.name.trim()}>Создать</button>
-          <button type="button" className="secondary" onClick={() => setCreating(false)}>Отмена</button></div>
-      </form>}
+        setCreating(false); setSelected(created.id);
+      }, draft.external ? 'Создана внешняя библиотека.' : 'Папка создана. Загрузите в неё материалы.')} />}
       {folders && folders.length > 0 && <input type="search" aria-label="Поиск по папкам библиотеки" placeholder="Поиск по папкам библиотеки…"
         value={folderSearch} onChange={event => setFolderSearch(event.target.value)} />}
       {visibleFolders?.length ? <ul className="settings-records">{visibleFolders.map(f => <li key={f.id}>
@@ -180,6 +210,10 @@ export function LibraryPanel({ request, isAdmin }: { request: Request; isAdmin: 
         <strong><HardDrive size={15} aria-hidden="true" /> {storage.configured ? (storage.kind === 's3' ? 'Хранилище MinIO' : 'Локальное хранилище') : 'Хранилище не настроено'}</strong>
         <button type="button" className="secondary" disabled={pending || !storage.configured} onClick={() => void checkStorage()}>Проверить</button>
       </div>
+      <details className="help"><summary>Как подключить S3</summary><p>Создайте отдельный закрытый бакет для библиотеки.
+        Укажите на сервере BRIDGE_LIBRARY_S3_BUCKET, BRIDGE_LIBRARY_S3_ACCESS_KEY и BRIDGE_LIBRARY_S3_SECRET_KEY_FILE.
+        Для S3-совместимого сервиса задайте также BRIDGE_LIBRARY_S3_ENDPOINT. После перезапуска нажмите «Проверить».
+        {' '}<a href="https://docs.aws.amazon.com/AmazonS3/latest/userguide/GetStartedWithS3.html" target="_blank" rel="noreferrer">Инструкция Amazon S3</a></p></details>
       {storageCheck && <p className={storageCheck.failed ? 'inline-error' : 'help'} role={storageCheck.failed ? 'alert' : 'status'}>{storageCheck.message}</p>}
       {!storage.configured && storage.problem && <p className="inline-error">{storage.problem}</p>}
     </section>}

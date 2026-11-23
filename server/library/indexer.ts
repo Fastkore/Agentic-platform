@@ -235,8 +235,8 @@ export class LibraryIndexer {
     const kind = classify(file.path);
     if (kind.kind === 'binary') return { state: 'unsupported_format', mediaType: 'application/octet-stream', note: 'Двоичный формат' };
     if (kind.kind === 'unsupported') return { state: 'unsupported_format', note: 'Формат документа пока не поддерживается' };
-    const store = this.registry.store();
     const blob = this.db.prepare('SELECT object_key FROM blobs WHERE id=?').get(file.blob_id) as { object_key: string };
+    const store = this.registry.objectStore(blob.object_key);
     if (kind.kind === 'xlsx' || kind.kind === 'pdf' || kind.kind === 'docx') {
       if (file.size > 64 * 1024 * 1024) return { state: 'unsupported_format', note: 'Документ превышает 64 МиБ для извлечения' };
       const data = (await this.readObject(store, blob.object_key))!;
@@ -254,7 +254,7 @@ export class LibraryIndexer {
       const derived = Buffer.from(text, 'utf8');
       const processed = await this.processText({ data: derived, mode: 'derived', indexTextBytes: this.registry.limits.indexTextBytes });
       if (!('chunks' in processed)) return processed;
-      const textBlobId = await this.storeDerived(derived);
+      const textBlobId = await this.storeDerived(derived, blob.object_key);
       return { state: 'indexed', mediaType, encoding: 'utf-8', lines: processed.lines, language: kind.language, textBlobId, rows: processed };
     }
     // Binary content without a known extension is recognised from the first bytes without downloading the rest.
@@ -263,7 +263,7 @@ export class LibraryIndexer {
     const processed = await this.processText({ data, mode: 'object', indexTextBytes: this.registry.limits.indexTextBytes });
     if (!('chunks' in processed)) return processed;
     if (processed.state !== 'indexed' && processed.state !== 'limited') return { state: processed.state, encoding: processed.encoding, note: processed.note };
-    const textBlobId = processed.derived ? await this.storeDerived(Buffer.from(processed.derived)) : undefined;
+    const textBlobId = processed.derived ? await this.storeDerived(Buffer.from(processed.derived), blob.object_key) : undefined;
     return { state: processed.state, encoding: processed.encoding, mediaType: processed.mediaType, lines: processed.lines, language: kind.language, textBlobId, note: processed.note, rows: processed };
   }
   /** Runs text processing in the index worker under the per-file time and memory budget. */
@@ -294,12 +294,12 @@ export class LibraryIndexer {
     } finally { stream.destroy(); }
   }
   /** Extracted text is stored once per content, outside any folder. */
-  private async storeDerived(data: Buffer) {
+  private async storeDerived(data: Buffer, originalKey: string) {
     const id = 'd_' + randomUUID().replaceAll('-', '');
-    const key = blobKey('derived', id);
+    const key = blobKey(originalKey.startsWith('library/external_') ? 'external_derived' : 'derived', id);
     this.db.prepare("INSERT INTO blobs (id, folder_id, object_key, sha256, size, kind, state, created_at) VALUES (?,NULL,?,?,?,'derived','pending',?)")
       .run(id, key, createHash('sha256').update(data).digest('hex'), data.length, Date.now());
-    await this.registry.store().put(key, data);
+    await this.registry.objectStore(key).put(key, data);
     this.db.prepare("UPDATE blobs SET state='verified' WHERE id=?").run(id);
     return id;
   }

@@ -1474,7 +1474,8 @@ export class Workspace {
       answer.attachments = produced;
       if (produced.length) answer.fileScope = fileScope;
       const { text, visuals } = splitChatVisuals(result.response);
-      const publication = projectSourceTools && this.library.publish(text, sourceRun!.scope, projectSourceTools.log, visuals && chatVisualPublicationText(visuals));
+      const publication = projectSourceTools && await this.library.publishChecked(text, sourceRun!.scope, projectSourceTools.log, visuals && chatVisualPublicationText(visuals));
+      this.checkJob(job, run); signal.throwIfAborted();
       if (visuals && (!publication || publication.allowed)) answer.visuals = visuals;
       answer.text = publication ? publication.text : text;
       answer.usage = addUsage(result.usage, consultationUsage); answer.status = 'complete';

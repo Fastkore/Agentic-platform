@@ -6,7 +6,7 @@ import { Select } from './Select';
 import { PermissionSwitch } from './PermissionSwitch';
 import type { Request } from './library-upload';
 import { folderLine, LibraryFolderCard } from './LibraryFolderCard';
-import { emptyFolderDraft, FolderForm, outputModes, profileLabels } from './LibraryPanel';
+import { CreateLibraryForm, outputModes, profileLabels } from './LibraryPanel';
 import './specialists.css';
 import './library.css';
 
@@ -22,7 +22,6 @@ export function ProjectLibraryPanel({ project, request, section, isAdmin, initia
   const [expanded, setExpanded] = useState<string>();
   const [search, setSearch] = useState('');
   const [creating, setCreating] = useState(false);
-  const [draft, setDraft] = useState(emptyFolderDraft);
   const [profileFilter, setProfileFilter] = useState(initialProfileId ?? '');
   const [detail, setDetail] = useState<LibraryCell>();
   const [error, setError] = useState('');
@@ -60,18 +59,12 @@ export function ProjectLibraryPanel({ project, request, section, isAdmin, initia
     {view && <div className="library-panel">
 
       {section === 'folders' && <>
-        {creating && <form className="agent-card library-form" onSubmit={e => { e.preventDefault(); void act(async () => {
+        {creating && <CreateLibraryForm request={request} pending={pending} project cancel={() => setCreating(false)} submit={draft => void act(async () => {
           const created = await request<LibraryFolderSummary>('/api/library', { method: 'POST', body: JSON.stringify(draft) });
+          setCreating(false);
           await request(base, { method: 'POST', body: JSON.stringify({ folderId: created.id }) });
-          setCreating(false); setExpanded(created.id); setDraft(emptyFolderDraft);
-        }); }}>
-          <FolderForm draft={draft} setDraft={setDraft} isAdmin={isAdmin} />
-          <p className="help">Папка появится в общей библиотеке и подключится к проекту. Агент начнёт её использовать после загрузки материалов и назначения агентам.</p>
-          <div className="settings-actions">
-            <button type="submit" className="primary" disabled={pending || !draft.name.trim()}>Создать и подключить</button>
-            <button type="button" className="secondary" onClick={() => setCreating(false)}>Отмена</button>
-          </div>
-        </form>}
+          setExpanded(created.id);
+        })} />}
         <input type="search" aria-label="Поиск по папкам библиотеки" placeholder="Поиск по папкам библиотеки…" value={search}
           onChange={event => setSearch(event.target.value)} />
         {view.connections.some(c => matches(c.folderName)) || view.available.some(f => matches(f.name)) ? <ul className="settings-records project-library-connections">{view.connections.filter(c => matches(c.folderName)).map(c => {

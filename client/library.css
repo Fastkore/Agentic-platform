@@ -62,12 +62,13 @@
 
 /* Settings → Library. */
 .library-settings { display: grid; gap: 14px; }
-.library-heading, .library-storage-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 12px; }
+.library-heading, .library-storage-row, .library-folders-heading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 12px; }
 .library-settings > h2, .library-heading h2 { margin: 0; font-size: 22px; font-weight: 650; line-height: 1.2; overflow-wrap: anywhere; }
 .library-heading .specialist-back { margin: 0; }
 .library-settings :is(.library-card-body, .library-card-actions) { margin-inline-start: 0; }
 .library-settings .settings-records strong { display: inline-flex; align-items: center; gap: 6px; }
-.library-folders .settings-model-row { margin-bottom: 10px; }
+.library-folders-heading { margin-bottom: 10px; }
+.library-folders-heading .secondary { flex: none; white-space: nowrap; }
 .library-storage { display: grid; gap: 6px; padding-top: 8px; border-top: 1px solid var(--border); }
 .library-storage-row strong { display: inline-flex; align-items: center; gap: 6px; }
 .library-storage-row .secondary { min-height: 32px; padding: 5px 10px; font-size: 12px; }
@@ -121,3 +122,5 @@
   box-sizing: border-box;
   block-size: max(40px, 2.75rem);
 }
+
+.library-source-fields { display: grid; gap: .6rem; padding: 0; border: 0; min-width: 0; }

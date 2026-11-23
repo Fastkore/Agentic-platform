@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useState } from 'react';
 import { FilePlus2, FileText, Folder, FolderOpen, ListX, RefreshCw, Trash2, Upload } from 'lucide-react';
 import type { LibraryFolderSummary, OperationMode } from '../shared/library';
+import { externalLabels, type ExternalSelection } from '../shared/library';
+import { ExternalLibraryPicker } from './ExternalLibraryPicker';
 import { formatBytes, type Request } from './library-upload';
 import { LibraryUploadPanel } from './LibraryUploadPanel';
 
@@ -16,6 +18,7 @@ const date = (value?: string) => value ? new Date(value).toLocaleString('ru', { 
 /** One line about the folder: current content, update in progress, last failure. */
 export function folderLine(folder: LibraryFolderSummary) {
   const parts: string[] = [];
+  if (folder.external) parts.push(externalLabels[folder.external.provider] + ' · только чтение');
   const op = folder.operation;
   if (folder.current) {
     parts.push(`${folder.current.files.toLocaleString('ru')} файлов · ${formatBytes(folder.current.bytes)}`);
@@ -39,8 +42,10 @@ export function LibraryFolderCard({ request, folder, isAdmin, reload }: { reques
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [pending, setPending] = useState(false);
+  const [reconnecting, setReconnecting] = useState(false);
+  const [selection, setSelection] = useState<ExternalSelection>();
   const canManage = folder.canManage || isAdmin;
-  const preparing = folder.operation?.status === 'preparing';
+  const preparing = folder.operation?.status === 'preparing' || folder.external?.syncing;
   useEffect(() => {
     if (!preparing) return;
     const timer = setInterval(reload, 4000);
@@ -67,10 +72,22 @@ export function LibraryFolderCard({ request, folder, isAdmin, reload }: { reques
   const crumbs = tree ? tree.path.split('/').filter(Boolean) : [];
 
   return <div className="library-card-body">
-    {upload ? <LibraryUploadPanel request={request} folder={folder} mode={upload} canDecideSecrets={canManage} close={() => setUpload(undefined)} done={reload} /> : <>
+    {folder.external && <div>
+      <p className="help">{externalLabels[folder.external.provider]} / {folder.external.folder} · только чтение
+        {folder.external.checkedAt && ' · проверено ' + date(folder.external.checkedAt)}</p>
+      {folder.external.error && <p className="inline-error" role="alert">{folder.external.error}</p>}
+      {preparing && <p className="help" role="status">Идёт синхронизация и подготовка к поиску…</p>}
+      <div className="settings-actions">
+        {canManage && <button type="button" className="secondary" disabled={pending || preparing} onClick={() => void act(() => post(base + '/external/sync'))}>Синхронизировать</button>}
+        {isAdmin && <button type="button" className="secondary" onClick={() => { setReconnecting(!reconnecting); setSelection(undefined); }}> {reconnecting ? 'Отмена' : 'Восстановить связь'}</button>}
+      </div>
+      {reconnecting && <><ExternalLibraryPicker provider={folder.external.provider} request={request} onSelect={setSelection} />
+        <button type="button" className="secondary" disabled={pending || !selection} onClick={() => void act(async () => { await post(base + '/external/reconnect', selection); setReconnecting(false); }, 'Связь восстановлена.')}>Подключить исходную папку</button></>}
+    </div>}
+    {upload && !folder.external ? <LibraryUploadPanel request={request} folder={folder} mode={upload} canDecideSecrets={canManage} close={() => setUpload(undefined)} done={reload} /> : <>
       {folder.failed && !folder.operation && <p className="library-warning" role="status">
         Последнее обновление не опубликовано: {folder.failed.failure === 'conflict' ? 'папку уже обновила другая операция.'
-          : `не обработано файлов ${folder.failed.coverage.errors}. Агент пока использует прежнее содержимое.`}</p>}
+          : `не обработано файлов ${folder.failed.coverage.errors}.`}</p>}
       {folder.operation?.status === 'preparing' && <p className="help" role="status">Идёт подготовка к поиску. До её окончания агент использует прежнее содержимое папки.</p>}
       <div className="settings-actions library-card-actions">
         {folder.canUpload && <>
@@ -85,7 +102,7 @@ export function LibraryFolderCard({ request, folder, isAdmin, reload }: { reques
           aria-expanded={!!problems && !problems.failed} onClick={() => problems && !problems.failed ? setView(undefined) : void showProblems(false)}><ListX size={16} aria-hidden="true" />Файлы без поиска</button>}
         {folder.failed && !folder.operation && <button type="button" className="secondary" disabled={pending}
           aria-expanded={!!problems?.failed} onClick={() => problems?.failed ? setView(undefined) : void showProblems(true)}><ListX size={16} aria-hidden="true" />Что не обработано</button>}
-        {folder.canUpload && !folder.operation && (folder.failed || folder.current?.errors) ? <button type="button" className="secondary" disabled={pending}
+        {(folder.canUpload || folder.external && canManage) && !preparing && !folder.operation && (folder.failed || folder.current?.errors) ? <button type="button" className="secondary" disabled={pending}
           onClick={() => void act(() => post(`${base}/retry`), 'Повторная обработка запущена.')}><RefreshCw size={16} aria-hidden="true" />Повторить обработку</button> : null}
         {canManage && folder.failed?.failure === 'partial_index' && !folder.operation && <button type="button" className="secondary" disabled={pending} onClick={() => {
           if (confirm('Опубликовать обновление с необработанными файлами? Агент будет предупреждён о неполном покрытии.')) void act(() => post(`${base}/accept-coverage`), 'Обновление опубликовано с неполным покрытием.');

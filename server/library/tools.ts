@@ -29,11 +29,12 @@ export interface LibraryToolContext {
 export class RunReadLog {
   calls = 0;
   bytes = 0;
+  readonly consulted = new Set<string>();
   private excerpts: string[] = [];
   constructor(readonly runId: string) {}
   record(text: string) { this.excerpts.push(text); }
   texts() { return this.excerpts; }
-  purge() { this.excerpts.length = 0; }
+  purge() { this.excerpts.length = 0; this.consulted.clear(); }
 }
 
 export function withLibrary(other: CodexTools | undefined, ctx: LibraryToolContext, log: RunReadLog): CodexTools {
@@ -83,32 +84,49 @@ export function withLibrary(other: CodexTools | undefined, ctx: LibraryToolConte
         }
         if (name === 'library_tree') {
           const found = entry(input.folder);
+          await registry.external.verify(found.folderId, found.stateId);
+          ctx.authorize(); entry(found.folderId);
+          log.consulted.add(found.folderId);
           const tree = registry.tree(found.stateId, typeof input.path === 'string' ? input.path : '', typeof input.cursor === 'string' ? input.cursor : '', toolLimits.treeEntries,
             found.paths ? new Set(found.paths) : undefined);
           return respond({ ...basis(found, tree.path || '/'), entries: tree.entries, next: tree.next });
         }
         if (name === 'library_search') {
-          const list = input.folder === undefined ? scope.entries.filter(e => policy.stillAllowed(scope, e)).map(target) : [target(entry(input.folder))];
+          const candidates = input.folder === undefined ? scope.entries.filter(e => policy.stillAllowed(scope, e)).map(target) : [target(entry(input.folder))];
           const mode = input.mode === 'fulltext' || input.mode === 'files' ? input.mode : 'exact';
+          const list: typeof candidates = [], unavailable: string[] = [];
+          for (const candidate of candidates) {
+            try {
+              await registry.external.verify(candidate.folderId, candidate.stateId);
+              list.push(candidate);
+            } catch (e) {
+              if (input.folder !== undefined) throw e;
+              unavailable.push(candidate.folderId);
+            }
+          }
+          ctx.authorize(); signal.throwIfAborted();
+          for (const t of list) { entry(t.folderId); log.consulted.add(t.folderId); }
           const result = reader.search(list, String(input.query ?? ''), { mode, pathPrefix: typeof input.pathPrefix === 'string' ? input.pathPrefix : undefined,
             caseSensitive: input.caseSensitive === true, offset: typeof input.cursor === 'number' ? input.cursor : 0 });
           const byFolder = new Map(list.map(t => [t.folderId, t.entry]));
           for (const hit of result.hits) if (mode !== 'files') log.record(hit.text);
-          return respond({ matches: result.hits.map(hit => ({ ...basis(byFolder.get(hit.folderId)!, hit.path, hit.line, undefined, hit.section), fileId: hit.fileId,
-            folderId: hit.folderId, text: mode === 'files' ? undefined : hit.text })), next: result.next, filesMatched: result.filesMatched,
+          return respond({ unavailableFolders: unavailable.length ? unavailable : undefined, matches: result.hits.map(hit => ({ ...basis(byFolder.get(hit.folderId)!, hit.path, hit.line, undefined, hit.section), fileId: hit.fileId,
+            folderId: hit.folderId, source: registry.external.link(byFolder.get(hit.folderId)!.stateId, hit.path), text: mode === 'files' ? undefined : hit.text })), next: result.next, filesMatched: result.filesMatched,
             note: result.limited ? 'Совпадений слишком много, показана часть: уточни запрос или укажи pathPrefix.' : undefined });
         }
         const found = entry(input.folder);
         const file = typeof input.fileId === 'string' ? registry.file(found.stateId, input.fileId) : typeof input.path === 'string' ? reader.fileByPath(found.stateId, input.path) : undefined;
         if (!file || (found.paths && !found.paths.includes(file.path))) return fail('Файл не найден в папке. Используй library_tree или library_search.');
+        await registry.external.verify(found.folderId, found.stateId);
         const result = await reader.readLines(found.stateId, file.file_id, typeof input.startLine === 'number' ? input.startLine : 1,
           typeof input.lineCount === 'number' ? input.lineCount : toolLimits.readLines, signal);
         ctx.authorize(); signal.throwIfAborted();
         entry(found.folderId);
+        log.consulted.add(found.folderId);
         const text = result.lines.map(l => l.text).join('\n');
         log.record(text);
         if (result.header) log.record(result.header);
-        return respond({ ...basis(found, file.path, result.lines[0]?.n, result.lines.at(-1)?.n, result.section), language: file.language ?? undefined, encoding: file.encoding ?? undefined,
+        return respond({ ...basis(found, file.path, result.lines[0]?.n, result.lines.at(-1)?.n, result.section), source: registry.external.link(found.stateId, file.path), language: file.language ?? undefined, encoding: file.encoding ?? undefined,
           extraction: file.extraction_state, note: file.extraction_note ?? undefined, header: result.header ? `1: ${result.header}` : undefined, totalLines: result.totalLines, nextLine: result.nextLine, truncated: result.truncated || undefined,
           lines: result.lines.map(l => `${l.n}: ${l.text}`) });
       } catch (error) {

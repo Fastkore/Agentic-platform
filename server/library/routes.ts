@@ -1,5 +1,5 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
-import { libraryActions, type LibraryAction, type LibraryClassification, type LibraryProfile, type OutputPolicy } from '../../shared/library.js';
+import { externalProviders, type ExternalProvider, type ExternalSelection, libraryActions, type LibraryAction, type LibraryClassification, type LibraryProfile, type OutputPolicy } from '../../shared/library.js';
 import { BridgeError } from '../store.js';
 import type { LibraryPolicy } from './policy.js';
 import type { LibraryReader } from './reader.js';
@@ -39,13 +39,40 @@ export function libraryRoutes(app: FastifyInstance, deps: LibraryRouteDeps) {
     await registry.storage.store.check();
     return { ok: true, kind: registry.storage.store.kind };
   });
+  const selection = obj({ connection: anyId, folder: { type: 'string', minLength: 1, maxLength: 4096 } }, ['connection', 'folder']);
+  app.post<{ Body: { provider: ExternalProvider } }>(base + '/external/authorize', { schema: { body: obj({ provider: { enum: externalProviders } }, ['provider']) } },
+    async request => registry.external.auth.begin(admin(request).id, request.body.provider));
+  app.post<{ Body: { state: string; code: string } }>(base + '/external/authorize/finish', { schema: { body: obj({ state: anyId, code: { type: 'string', minLength: 1, maxLength: 4096 } }, ['state','code']) } },
+    async request => registry.external.auth.finish(admin(request).id, request.body.state, request.body.code));
+  app.post<{ Body: { connection: string; parent?: string } }>(base + '/external/folders', { schema: { body: obj({ connection: anyId, parent: { type: 'string', maxLength: 4096 } }, ['connection']) } },
+    async request => registry.external.auth.folders(admin(request).id, request.body.connection, request.body.parent));
+  app.post<{ Params: {folderId: string}; Body: ExternalSelection }>(base + '/:folderId/external/reconnect', { schema: { params: folderParams, body: selection } },
+    async request => {
+      const owner = admin(request).id;
+      registry.external.reconnect(owner, request.params.folderId, request.body);
+      registry.external.schedule(request.params.folderId);
+      return { ok: true };
+    });
+  app.post<{ Params: {folderId: string} }>(base + '/:folderId/external/sync', { schema: { params: folderParams } }, async (request, reply) => {
+    const folder = registry.requireFolder(actor(request), request.params.folderId, 'manage');
+    if (!registry.external.has(folder.id)) throw notFound();
+    registry.external.schedule(folder.id);
+    return reply.code(202).send({ ok: true });
+  });
   app.get(base + '/audit', async request => { admin(request); return registry.auditPage(); });
   app.get(base, async request => registry.listFolders(actor(request)));
-  app.post<{ Body: { name: string; description?: string; profile?: LibraryProfile; classification?: LibraryClassification; outputPolicy?: OutputPolicy; active?: boolean; quotaBytes?: number;
+  app.post<{ Body: { name: string; description?: string; profile?: LibraryProfile; classification?: LibraryClassification; outputPolicy?: OutputPolicy; active?: boolean; quotaBytes?: number; external?: ExternalSelection;
     managers?: { userId: string; actions: LibraryAction[] }[] } }>(base, { schema: { body: obj({
       name: { type: 'string', minLength: 1, maxLength: 120 }, description: { type: 'string', maxLength: 2000 }, profile: { enum: ['code', 'documents'] },
-      classification: { enum: ['shared', 'restricted'] }, outputPolicy, active: { type: 'boolean' }, quotaBytes: { type: 'integer', minimum: 1 }, managers }, ['name']) } },
-  async (request, reply) => reply.code(201).send(registry.createFolder(actor(request), request.body)));
+      classification: { enum: ['shared', 'restricted'] }, outputPolicy, active: { type: 'boolean' }, quotaBytes: { type: 'integer', minimum: 1 }, managers, external: selection }, ['name']) } },
+  async (request, reply) => {
+    const folder = registry.createFolder(actor(request), request.body);
+    if (request.body.external) {
+      registry.external.auth.discard(request.body.external.connection);
+      registry.external.schedule(folder.id);
+    }
+    return reply.code(201).send(folder);
+  });
   app.get<{ Params: { folderId: string } }>(base + '/:folderId', { schema: { params: folderParams } }, async request => registry.getFolder(actor(request), request.params.folderId));
   app.patch<{ Params: { folderId: string }; Body: { revision: number; name?: string; description?: string; profile?: LibraryProfile; classification?: LibraryClassification;
     outputPolicy?: OutputPolicy; active?: boolean; quotaBytes?: number; managers?: { userId: string; actions: LibraryAction[] }[] } }>(base + '/:folderId', { schema: { params: folderParams, body: obj({
@@ -58,7 +85,10 @@ export function libraryRoutes(app: FastifyInstance, deps: LibraryRouteDeps) {
   app.get<{ Params: { folderId: string }; Querystring: { path?: string; cursor?: string } }>(base + '/:folderId/tree',
     { schema: { params: folderParams, querystring: obj({ path: { type: 'string', maxLength: 1024 }, cursor: { type: 'string', maxLength: 1100 } }) } }, async request => {
       registry.visibleFolder(actor(request), request.params.folderId);
-      return registry.tree(current(request.params.folderId).id, request.query.path ?? '', request.query.cursor ?? '');
+      const state = current(request.params.folderId);
+      await registry.external.verify(request.params.folderId, state.id);
+      registry.visibleFolder(actor(request), request.params.folderId);
+      return registry.tree(state.id, request.query.path ?? '', request.query.cursor ?? '');
     });
   /** Files without search, of the current content or of the last update that was not published. */
   app.get<{ Params: { folderId: string }; Querystring: { failed?: '1' } }>(base + '/:folderId/problems',
@@ -67,6 +97,8 @@ export function libraryRoutes(app: FastifyInstance, deps: LibraryRouteDeps) {
       const folder = registry.getFolder(a, request.params.folderId);
       const stateId = request.query.failed === '1' ? folder.failed?.stateId : registry.currentState(folder.id)?.id;
       if (!stateId) throw notFound();
+      await registry.external.verify(folder.id, stateId);
+      registry.visibleFolder(actor(request), folder.id);
       return registry.problems(stateId);
     });
   /** Originals: separate view/download permissions, audited; never used by agent tools. */
@@ -76,13 +108,15 @@ export function libraryRoutes(app: FastifyInstance, deps: LibraryRouteDeps) {
       const a = actor(request), download = request.query.download === '1';
       registry.requireFolder(a, request.params.folderId, download ? 'download_original' : 'view_original');
       const state = current(request.params.folderId);
+      await registry.external.verify(request.params.folderId, state.id);
+      registry.requireFolder(actor(request), request.params.folderId, download ? 'download_original' : 'view_original');
       const file = registry.file(state.id, request.params.fileId);
       if (!file) throw notFound();
       registry.recordAudit({ actorId: a.id, action: download ? 'library.original.download' : 'library.original.view', targetId: file.file_id,
         details: { objectIds: { folderId: request.params.folderId } } });
       if (!download) { const result = await reader.readLines(state.id, file.file_id, Number(request.query.line ?? 1), 200); return { ...result, file: { path: file.path } }; }
       const blob = registry.db.prepare('SELECT object_key FROM blobs WHERE id=?').get(file.blob_id) as { object_key: string };
-      const stream = await registry.store().stream(blob.object_key);
+      const stream = await registry.objectStore(blob.object_key).stream(blob.object_key);
       const name = encodeURIComponent(file.path.split('/').at(-1)!).replace(/[!'()*]/g, c => '%' + c.charCodeAt(0).toString(16));
       return reply.type('application/octet-stream').header('Content-Disposition', "attachment; filename*=UTF-8''" + name).header('Content-Length', String(file.size)).send(stream);
     });

@@ -14,6 +14,7 @@ export class ProjectLibrary {
   readonly reader: LibraryReader;
   readonly indexer: LibraryIndexer;
   private started = false;
+  private syncTimer?: ReturnType<typeof setInterval>;
   private collector?: ReturnType<typeof setInterval>;
   constructor(root: string, storage: LibraryStorageConfig, directory: PlatformDirectory, limits: LibraryLimits = libraryLimitsFromEnv()) {
     this.registry = new LibraryRegistry(root, storage, limits);
@@ -27,11 +28,16 @@ export class ProjectLibrary {
     if (this.started) return;
     this.started = true;
     this.indexer.start();
+    void this.registry.external.poll().catch(() => {});
+    this.syncTimer = setInterval(() => { void this.registry.external.poll().catch(() => {}); }, 5 * 60_000);
+    this.syncTimer.unref();
     this.collector = setInterval(() => { void this.registry.collectGarbage().catch(() => {}); }, 10 * 60_000);
     this.collector.unref?.();
   }
   async stop() {
     clearInterval(this.collector);
+    clearInterval(this.syncTimer);
+    await this.registry.external.stop();
     await this.indexer.stop();
     this.registry.close();
   }
@@ -65,7 +71,14 @@ export class ProjectLibrary {
    * Server-side check before a library-backed answer is published: current rights and verbatim reproduction. Content changes during the
    * answer are not checked (owner decision). Include any text shown by structured visual blocks in the check.
    */
-  publish(answer: string, scope: RunLibraryScope, log: RunReadLog, visualText = '') {
+  async publishChecked(answer: string, scope: RunLibraryScope, log: RunReadLog, visualText = '') {
+    try {
+      for (const e of scope.entries) if (log.consulted.has(e.folderId)) await this.registry.external.verify(e.folderId, e.stateId);
+    }
+    catch { log.purge(); return { allowed: false, text: 'Ответ не опубликован. Проверьте подключение и актуальность внешней библиотеки.' }; }
+    return this.publish(answer, scope, log, visualText);
+  }
+  private publish(answer: string, scope: RunLibraryScope, log: RunReadLog, visualText = '') {
     const userId = scope.actorId;
     try {
       if (scope.entries.some(entry => !this.policy.stillAllowed(scope, entry))) {

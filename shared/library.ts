@@ -1,4 +1,10 @@
 /** Project library: shared contracts for the server and the browser. A library folder has exactly one current content. */
+export const externalProviders = ['dropbox', 'google', 'yandex'] as const;
+export type ExternalProvider = typeof externalProviders[number];
+export const externalLabels = { dropbox: 'Dropbox', google: 'Google Drive', yandex: 'Яндекс Диск' };
+export interface ExternalSelection { connection: string; folder: string }
+export interface ExternalFolder { id: string; name: string }
+export interface ExternalSummary { provider: ExternalProvider; folder: string; checkedAt?: string; error?: string; syncing: boolean }
 export type LibraryProfile = 'code' | 'documents';
 export type LibraryClassification = 'shared' | 'restricted';
 export type OutputPolicy = 'explanation_only' | 'excerpts_allowed';
@@ -26,6 +32,7 @@ export interface OperationSummary {
   processing?: { state: ContentState; coverage: Coverage; failure?: string };
 }
 export interface LibraryFolderSummary {
+  external?: ExternalSummary;
   id: string; name: string; description: string; profile: LibraryProfile; classification: LibraryClassification; outputPolicy: OutputPolicy;
   active: boolean;
   quotaBytes: number; usedBytes: number; revision: number; createdAt: string;

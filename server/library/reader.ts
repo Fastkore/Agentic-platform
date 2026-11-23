@@ -49,9 +49,8 @@ export class LibraryReader {
       .get(contentKey(file.sha256, file.size), start) as { line: number; offset: number } | undefined;
     const blobId = file.text_blob_id ?? file.blob_id;
     const blob = this.db.prepare('SELECT object_key FROM blobs WHERE id=?').get(blobId) as { object_key: string } | undefined;
-    const store = this.registry.storage.store;
-    if (!blob || !store) throw new BridgeError('Хранилище библиотеки недоступно.', 503);
-    const stream = await store.stream(blob.object_key, signal, anchor?.offset ?? 0);
+    if (!blob) throw new BridgeError('Хранилище библиотеки недоступно.', 503);
+    const stream = await this.registry.objectStore(blob.object_key).stream(blob.object_key, signal, anchor?.offset ?? 0);
     const lines: { n: number; text: string }[] = [];
     let n = (anchor?.line ?? 1) - 1, bytes = 0, truncated = false;
     const reader = createInterface({ input: stream, crlfDelay: Infinity });
@@ -75,7 +74,7 @@ export class LibraryReader {
       section: lines.length && file.text_blob_id ? this.section(file, lines[0].n) : undefined, header };
   }
   private async firstLine(key: string, signal?: AbortSignal) {
-    const stream = await this.registry.storage.store!.stream(key, signal, 0);
+    const stream = await this.registry.objectStore(key).stream(key, signal, 0);
     const reader = createInterface({ input: stream, crlfDelay: Infinity });
     try { for await (const raw of reader) return raw.replace(/^\uFEFF/, '').slice(0, maxLineChars); }
     finally { reader.close(); stream.destroy(); }

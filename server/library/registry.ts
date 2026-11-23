@@ -5,12 +5,13 @@ import { DatabaseSync } from 'node:sqlite';
 import type { AuditEvent } from '../../shared/types.js';
 import {
   excluded, libraryActions, libraryDefaults, pathKey, pathProblem, suspiciousSecret,
-  type ContentState, type Coverage, type LibraryAction, type LibraryClassification, type LibraryFolderSummary, type LibraryProfile, type ManifestEntry,
+  type ExternalSelection, type ContentState, type Coverage, type LibraryAction, type LibraryClassification, type LibraryFolderSummary, type LibraryProfile, type ManifestEntry,
   type OperationMode, type OperationStatus, type OperationSummary, type OutputPolicy, type UploadFileStatus,
 } from '../../shared/library.js';
 import { AuditJournal, publishAudit, type NewAuditEvent } from '../audit-journal.js';
 import { BridgeError } from '../store.js';
-import { blobKey, type LibraryStorageConfig } from './blob-store.js';
+import { ExternalLibraries } from './external.js';
+import { FilesystemLibraryBlobStore, blobKey, type LibraryStorageConfig } from './blob-store.js';
 
 export interface LibraryActor { id: string; admin: boolean; credentialId?: string }
 export interface LibraryLimits {
@@ -47,7 +48,7 @@ const upgradedDocuments = ['xlsx', 'docx'];
 const upToDate = `(c.processor >= (CASE WHEN ${upgradedDocuments.map(e => `lower(f.path) LIKE '%.${e}'`).join(' OR ')} THEN 2 ELSE 1 END)
   AND NOT (c.state='unsupported_encoding' AND c.processor < 2))`;
 
-const schemaVersion = 3;
+const schemaVersion = 4;
 const migrations: Record<number, string> = {
   1: `
 CREATE TABLE folders (id TEXT PRIMARY KEY, name TEXT NOT NULL, description TEXT NOT NULL, profile TEXT NOT NULL CHECK(profile IN ('code','documents')),
@@ -98,6 +99,12 @@ CREATE TABLE imports (key TEXT PRIMARY KEY, done_at TEXT NOT NULL, report TEXT N
 CREATE TABLE chunk_refs (content TEXT NOT NULL, chunk_rowid INTEGER NOT NULL, PRIMARY KEY(content,chunk_rowid)) WITHOUT ROWID;
 INSERT INTO chunk_refs (content,chunk_rowid) SELECT content,rowid FROM chunks;
 `,
+  4: `
+CREATE TABLE external_sources(folder_id TEXT PRIMARY KEY REFERENCES folders(id), provider TEXT NOT NULL, remote_id TEXT NOT NULL,
+  identity TEXT NOT NULL, name TEXT NOT NULL, credentials TEXT NOT NULL, checked_at TEXT, error TEXT, sync_owner TEXT, lease_until INTEGER);
+ALTER TABLE states ADD COLUMN drive_signature TEXT;
+CREATE TABLE external_files(state_id TEXT NOT NULL REFERENCES states(id), path TEXT NOT NULL, remote_id TEXT NOT NULL, revision TEXT NOT NULL, link TEXT, PRIMARY KEY(state_id,path));
+`,
   3: `
 ALTER TABLE folders ADD COLUMN active INTEGER NOT NULL DEFAULT 1 CHECK(active IN (0,1));
 UPDATE folders SET active=0 WHERE classification='restricted';
@@ -137,6 +144,9 @@ const fileSelect = `SELECT f.*, coalesce(c.state,'pending') extraction_state, c.
  */
 export class LibraryRegistry {
   readonly db: DatabaseSync;
+  readonly external: ExternalLibraries;
+  private readonly externalCache: FilesystemLibraryBlobStore;
+  objectStore(key: string) { return key.startsWith('library/external_') ? this.externalCache : this.store(); }
   private readonly audit: AuditJournal;
   private activeParts = 0;
   private fileLocks = new Map<string, Promise<unknown>>();
@@ -144,6 +154,8 @@ export class LibraryRegistry {
   projectName: (projectId: string) => string | undefined = () => undefined;
   canSeeProject: (actor: LibraryActor, projectId: string) => boolean = () => true;
   constructor(root: string, readonly storage: LibraryStorageConfig, readonly limits: LibraryLimits = libraryLimitsFromEnv(), private readonly now = () => Date.now()) {
+    this.externalCache = new FilesystemLibraryBlobStore(path.join(root, 'drive-cache'));
+    this.external = new ExternalLibraries(this, root);
     mkdirSync(root, { recursive: true, mode: 0o700 });
     const file = path.join(root, 'library.sqlite');
     this.db = new DatabaseSync(file);
@@ -214,7 +226,7 @@ export class LibraryRegistry {
     return json<LibraryAction[]>(row?.actions, []).filter(a => (libraryActions as readonly string[]).includes(a));
   }
   can(actor: LibraryActor, folderId: string, action: LibraryAction) {
-    if (!this.folderRow(folderId)) return false;
+    if (!this.folderRow(folderId) || (action === 'upload' && this.external.has(folderId))) return false;
     return actor.admin || this.managerActions(folderId, actor.id).includes(action);
   }
   /** Returns the folder if visible to a manager; unknown and foreign ids are indistinguishable (404). */
@@ -286,7 +298,7 @@ export class LibraryRegistry {
     const projects = (this.db.prepare('SELECT project_id FROM connections WHERE folder_id=? ORDER BY rowid').all(row.id) as { project_id: string }[])
       .filter(c => this.canSeeProject(actor, c.project_id))
       .map(c => ({ id: c.project_id, name: this.projectName(c.project_id) }));
-    return { id: row.id, name: row.name, description: row.description, profile: row.profile, classification: row.classification, outputPolicy: row.output_policy, active: !!row.active,
+    return { id: row.id, external: this.external.summary(row.id), name: row.name, description: row.description, profile: row.profile, classification: row.classification, outputPolicy: row.output_policy, active: !!row.active,
       quotaBytes: row.quota_bytes, usedBytes: this.usedBytes(row.id), revision: row.revision, createdAt: row.created_at, updatedAt: row.updated_at ?? undefined,
       current: current && this.coverage(current), operation: operation && this.operationSummary(operation.id),
       failed: failed && { stateId: failed.id, coverage: this.coverage(failed), failure: failed.failure ?? undefined },
@@ -306,7 +318,7 @@ export class LibraryRegistry {
   }
   getFolder(actor: LibraryActor, id: string) { return this.summary(this.visibleFolder(actor, id), actor); }
   createFolder(actor: LibraryActor, input: { name: string; description?: string; profile?: LibraryProfile; classification?: LibraryClassification; outputPolicy?: OutputPolicy;
-    active?: boolean; quotaBytes?: number; managers?: { userId: string; actions: LibraryAction[] }[]; origin?: string }) {
+    active?: boolean; quotaBytes?: number; managers?: { userId: string; actions: LibraryAction[] }[]; origin?: string; external?: ExternalSelection }) {
     if (!actor.admin) throw new BridgeError('Папки библиотеки создаёт администратор.', 403);
     const name = input.name.trim();
     if (!name || name.length > 120) throw new BridgeError('Укажите название папки до 120 символов.');
@@ -320,6 +332,7 @@ export class LibraryRegistry {
           .run(id, name, (input.description ?? '').trim().slice(0, 2000), input.profile ?? 'documents', input.classification ?? 'shared', input.outputPolicy ?? 'explanation_only',
             quota, Number(input.active ?? (input.classification !== 'restricted')),
             actor.id, new Date(this.now()).toISOString(), input.origin ?? null);
+        if (input.external) this.external.attach(actor.id, id, input.external);
         for (const m of input.managers ?? []) this.db.prepare('INSERT INTO folder_managers VALUES (?,?,?)').run(id, m.userId, JSON.stringify([...new Set(m.actions)]));
         return this.summary(this.folderRow(id)!, actor);
       }, () => [{ actorId: actor.id, action: 'library.folder.create', targetId: id }]);
@@ -372,10 +385,12 @@ export class LibraryRegistry {
       const projects = (this.db.prepare('SELECT project_id FROM connections WHERE folder_id=?').all(id) as { project_id: string }[]).map(r => r.project_id);
       const at = this.now();
       for (const op of this.db.prepare("SELECT id FROM operations WHERE folder_id=? AND status IN ('open','preparing')").all(id) as { id: string }[]) this.closeOperation(op.id, 'cancelled');
+      this.db.prepare("UPDATE blobs SET state='orphan',orphaned_at=? WHERE folder_id=? AND state='pending' AND object_key GLOB 'library/external_*'").run(at,id);
+      this.db.prepare('DELETE FROM external_sources WHERE folder_id=?').run(id);
       this.db.prepare('DELETE FROM grants WHERE folder_id=?').run(id);
       this.db.prepare('DELETE FROM connections WHERE folder_id=?').run(id);
       this.db.prepare('DELETE FROM folder_managers WHERE folder_id=?').run(id);
-      this.db.prepare("UPDATE states SET status='superseded' WHERE folder_id=? AND status IN ('ready','failed')").run(id);
+      this.db.prepare("UPDATE states SET status='superseded' WHERE folder_id=? AND status IN ('ready','failed','preparing')").run(id);
       this.db.prepare("UPDATE folders SET deleted_at=?, current_state=NULL, name=name || ' [удалена ' || id || ']', revision=revision+1 WHERE id=?").run(new Date(at).toISOString(), id);
       return { ok: true, projects };
     }, value => [{ actorId: actor.id, action: 'library.folder.delete', targetId: id, details: { objectIds: { projects: value.projects.join(',') } } }]);
@@ -808,7 +823,8 @@ export class LibraryRegistry {
    * The result replaces the current content after processing, like an update.
    */
   retry(actor: LibraryActor, folderId: string) {
-    const folder = this.requireFolder(actor, folderId, 'upload');
+    const external = this.external.has(folderId);
+    const folder = this.requireFolder(actor, folderId, external ? 'manage' : 'upload');
     return this.tx(() => {
       if (this.activeOperation(folderId)) throw busy();
       const failed = this.lastFailedState(folder);
@@ -824,6 +840,10 @@ export class LibraryRegistry {
       this.db.prepare(`INSERT INTO operations (id, folder_id, mode, actor_id, idempotency_key, request_hash, status, expires_at, declared_files, declared_bytes, base_state, exclusions, created_at)
         VALUES (?,?,'retry',?,?,?,'preparing',?,0,0,?,'[]',?)`).run(id, folderId, actor.id, 'retry-' + id.replaceAll('-', '').slice(0, 24), hash(id), at, folder.current_state, at);
       const stateId = this.prepareState(folder, files, folder.current_state, actor.id, json<string[]>(source.exclusions, []));
+      if (external) {
+        this.db.prepare('UPDATE states SET drive_signature=(SELECT drive_signature FROM states WHERE id=?) WHERE id=?').run(source.id,stateId);
+        this.db.prepare('INSERT INTO external_files SELECT ?,path,remote_id,revision,link FROM external_files WHERE state_id=?').run(stateId,source.id);
+      }
       this.db.prepare('UPDATE operations SET state_id=? WHERE id=?').run(stateId, id);
       this.tryPublish(stateId);
       return this.operationSummary(id);
@@ -842,7 +862,7 @@ export class LibraryRegistry {
       return this.summary(this.folderRow(folderId)!, actor);
     }, () => [{ actorId: actor.id, action: 'library.accept_partial', targetId: folderId }]);
   }
-  private prepareState(folder: FolderRow, files: Omit<StateFileRow, 'state_id' | 'content'>[], baseState: string | null, actorId: string, exclusions: string[]) {
+  prepareState(folder: FolderRow, files: Omit<StateFileRow, 'state_id' | 'content'>[], baseState: string | null, actorId: string, exclusions: string[]) {
     const id = 'st_' + randomUUID().replaceAll('-', '');
     const manifest = createHash('sha256');
     let bytes = 0;
@@ -983,6 +1003,7 @@ export class LibraryRegistry {
       const at = this.now();
       for (const id of old) {
         const blobIds = (this.db.prepare('SELECT DISTINCT blob_id id FROM state_files WHERE state_id=?').all(id) as { id: string }[]).map(r => r.id);
+        this.db.prepare('DELETE FROM external_files WHERE state_id=?').run(id);
         this.db.prepare('DELETE FROM state_files WHERE state_id=?').run(id);
         this.db.prepare('DELETE FROM index_jobs WHERE state_id=?').run(id);
         this.db.prepare("UPDATE states SET status='removed' WHERE id=?").run(id);
@@ -1001,10 +1022,11 @@ export class LibraryRegistry {
       this.db.prepare('DELETE FROM run_scopes WHERE created_at<?').run(at - 7 * 86_400_000);
     });
     const store = this.storage.store;
-    if (!store) return { deleted: 0, failed: 0 };
+
     const pendingMultipart = this.db.prepare(`SELECT f.operation_id, f.file_id, f.s3_upload_id, b.object_key FROM operation_files f JOIN operations o ON o.id=f.operation_id JOIN blobs b ON b.id=f.blob_id
       WHERE f.s3_upload_id IS NOT NULL AND o.status IN ('cancelled','expired','failed')`).all() as { operation_id: string; file_id: string; s3_upload_id: string; object_key: string }[];
     for (const item of pendingMultipart) {
+      if (!store) break;
       try { await store.abortMultipart(item.object_key, item.s3_upload_id); this.db.prepare('UPDATE operation_files SET s3_upload_id=NULL WHERE operation_id=? AND file_id=?').run(item.operation_id, item.file_id); }
       catch { /* retried next time */ }
     }
@@ -1013,18 +1035,17 @@ export class LibraryRegistry {
       AND NOT EXISTS (SELECT 1 FROM operation_files u JOIN operations o ON o.id=u.operation_id WHERE u.blob_id=blobs.id AND o.status='open') LIMIT 1000`).all(this.now() - grace) as { id: string; object_key: string }[];
     let deleted = 0, failed = 0;
     for (const blob of candidates) {
-      try { await store.delete(blob.object_key); this.db.prepare("UPDATE blobs SET state='deleted' WHERE id=?").run(blob.id); deleted++; }
+      try { await this.objectStore(blob.object_key).delete(blob.object_key); this.db.prepare("UPDATE blobs SET state='deleted' WHERE id=?").run(blob.id); deleted++; }
       catch { failed++; }
     }
     return { deleted, failed };
   }
   /** Read-only check: objects of current contents exist with the recorded size. */
   async verifyObjects(folderId?: string) {
-    const store = this.store();
     const rows = this.db.prepare(`SELECT DISTINCT b.id, b.object_key, b.size FROM blobs b WHERE b.state='verified' ${folderId ? 'AND b.folder_id=?' : ''}`).all(...(folderId ? [folderId] : [])) as
       { id: string; object_key: string; size: number }[];
     const missing: string[] = [];
-    for (const row of rows) { const head = await store.head(row.object_key); if (!head || head.size !== row.size) missing.push(row.id); }
+    for (const row of rows) { const head = await this.objectStore(row.object_key).head(row.object_key); if (!head || head.size !== row.size) missing.push(row.id); }
     return { checked: rows.length, missing };
   }
 }
