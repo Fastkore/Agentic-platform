@@ -208,7 +208,7 @@ function App() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => localStorage.getItem('bridge-sidebar-collapsed') === '1');
   const sidebarCollapseButton = useRef<HTMLButtonElement>(null), sidebarExpandButton = useRef<HTMLButtonElement>(null);
   const accountMenu = useRef<HTMLDetailsElement>(null);
-  const [error, setError] = useState(''), [pending, setPending] = useState(false), [copied, setCopied] = useState(''), [folderPath, setFolderPath] = useState(''), [projectName, setProjectName] = useState('');
+  const [error, setError] = useState(''), [pending, setPending] = useState(false), [copied, setCopied] = useState(''), [projectName, setProjectName] = useState('');
   const [reconnecting, setReconnecting] = useState(false);
   const [agentCatalog, setAgentCatalog] = useState<{ projectId: string; list: AgentSummary[] }>();
   const agents = agentCatalog?.projectId === projectId ? agentCatalog.list : [];
@@ -1666,9 +1666,9 @@ function App() {
       <form onSubmit={e => { e.preventDefault(); void action(async () => {
         const selectForChat = projectFromComposer.current || (!!relatedDraftKey && !chatId);
         const previous = selected.current, navigation = contextNavigation.current;
-        const p = await post<ProjectSummary>('/api/projects', { ...(folderPath.trim() && canAttachProjectDirectory ? { directory: folderPath.trim() } : {}), ...(projectName.trim() ? { name: projectName.trim() } : {}) });
+        const p = await post<ProjectSummary>('/api/projects', { name: projectName.trim() });
         setProjects(await api('/api/projects'));
-        closePanel(); setFolderPath(''); setProjectName('');
+        closePanel(); setProjectName('');
         if (selected.current.projectId !== previous.projectId || selected.current.chatId !== previous.chatId ||
           contextNavigation.current !== navigation) return;
         if (selectForChat) await selectComposerProject(p.id);
@@ -1676,12 +1676,11 @@ function App() {
       }); }}>
         <label htmlFor="project-name">Название проекта</label>
         <input id="project-name" data-dialog-focus placeholder="Введите название" value={projectName}
-          onChange={e => setProjectName(e.target.value)} required={!canAttachProjectDirectory || !folderPath.trim()} maxLength={100} />
-        {canAttachProjectDirectory && <><label htmlFor="directory">Папка на сервере <span>необязательно</span></label><input id="directory" value={folderPath} onChange={e => setFolderPath(e.target.value)} placeholder={status?.executionDisabled ? '/projects/Финансы' : 'C:\\Проекты\\Финансы'} /></>}
+          onChange={e => setProjectName(e.target.value)} required maxLength={100} />
         {error && <div className="inline-error" role="alert">{error}</div>}
         <div className="settings-dialog-actions">
-          <button type="button" className="secondary" disabled={pending} onClick={() => { setProjectName(''); setFolderPath(''); closePanel(); }}>Отмена</button>
-          <button type="submit" className="primary" disabled={pending}>{folderPath.trim() && canAttachProjectDirectory ? 'Подключить папку' : 'Создать проект'}</button>
+          <button type="button" className="secondary" disabled={pending} onClick={() => { setProjectName(''); closePanel(); }}>Отмена</button>
+          <button type="submit" className="primary" disabled={pending || !projectName.trim()}>Создать проект</button>
         </div>
       </form>
     </WorkspaceDialog>}
