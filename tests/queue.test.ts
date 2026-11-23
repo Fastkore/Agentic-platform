@@ -79,8 +79,8 @@ test('queued work survives shutdown; cancelled queue entries never execute', asy
   } finally { await workspace.shutdown(); }
 });
 
-test('provider lanes run different chats concurrently but preserve FIFO across models in the same chat', async () => {
-  const root = await mkdtemp(path.join(tmpdir(), 'bridge-chat-lanes-'));
+test('one queue shares slots across models and preserves order within each chat', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'bridge-chat-queue-'));
   const store = new Store(root), started: string[] = [];
   const releases = new Map<string, () => void>();
   const fake: CodexRunner = {
@@ -98,24 +98,24 @@ test('provider lanes run different chats concurrently but preserve FIFO across m
   };
   const workspace = new Workspace(store, fake);
   try {
-    await workspace.settings({ cliPath: process.execPath });
+    await workspace.settings({ cliPath: process.execPath, executionConcurrency: 2 });
     const project = await workspace.addProject(root);
     const a = await workspace.addChat(project.id), b = await workspace.addChat(project.id), c = await workspace.addChat(project.id);
     a.model = 'codex/model'; b.model = 'codex/model'; c.model = 'antigravity/model';
     const first = await workspace.send(project.id, a.id, 'first', []);
     await until(() => started.includes('first'));
-    const queued = await workspace.send(project.id, b.id, 'second', []); // GLM lane occupied.
+    const second = await workspace.send(project.id, b.id, 'second', []);
+    await until(() => started.includes('second'));
     b.model = 'antigravity/model';
     const later = await workspace.send(project.id, b.id, 'third', []); // Cannot leapfrog second.
     const independent = await workspace.send(project.id, c.id, 'independent', []);
-    await until(() => started.includes('independent'));
-    assert.equal(queued.status, 'queued'); assert.equal(later.status, 'queued');
+    assert.equal(second.status, 'running'); assert.equal(later.status, 'queued'); assert.equal(independent.status, 'queued');
+    releases.get('first')!(); await until(() => started.includes('independent'));
+    assert.equal(first.status, 'complete'); assert.ok(!started.includes('third'));
     releases.get('independent')!(); await until(() => independent.status === 'complete');
     assert.ok(!started.includes('third'));
-    releases.get('first')!(); await until(() => started.includes('second'));
-    assert.equal(first.status, 'complete'); assert.ok(!started.includes('third'));
     releases.get('second')!(); await until(() => started.includes('third'));
-    assert.equal(queued.status, 'complete');
+    assert.equal(second.status, 'complete');
     releases.get('third')!(); await until(() => !workspace.busy);
     assert.deepEqual(workspace.chat(project.id, b.id).messages.map(message => message.text), ['second', 'second', 'third', 'third']);
     assert.match(b.sessionScope!, /google-account/);
@@ -137,7 +137,7 @@ test('two GLM chats overlap and cancelling one releases only its slot', async ()
     },
   });
   try {
-    await workspace.settings({ cliPath: process.execPath });
+    await workspace.settings({ cliPath: process.execPath, executionConcurrency: 2 });
     const project = await workspace.addProject(root);
     const chats = await Promise.all([0, 1, 2].map(() => workspace.addChat(project.id)));
     for (const chat of chats) chat.model = 'glm/glm-test';

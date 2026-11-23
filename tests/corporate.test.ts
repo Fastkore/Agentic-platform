@@ -22,7 +22,7 @@ async function fixture(respond?: (request: CodexRequest, signal: AbortSignal) =>
     calls.push(r);
     if (r.consultation) return { response: (await respond?.(r, signal)) ?? 'Консультация', usage: { inputTokens: 2, cachedInputTokens: 0, outputTokens: 1 } };
     await onEvent({ kind: 'session', text: '87db344a-98f3-42c8-bba8-c7d9f3dcff11' });
-    if (r.prompt.includes('BLOCK')) await new Promise((resolve, reject) => { if (signal.aborted) reject(Error('aborted')); signal.addEventListener('abort', () => reject(Error('aborted')), { once: true }); });
+    if (r.prompt.endsWith('\nBLOCK')) await new Promise((resolve, reject) => { if (signal.aborted) reject(Error('aborted')); signal.addEventListener('abort', () => reject(Error('aborted')), { once: true }); });
     return { sessionId: '87db344a-98f3-42c8-bba8-c7d9f3dcff11', response: (await respond?.(r, signal)) ?? 'OK', usage: { inputTokens: 200, cachedInputTokens: 100, outputTokens: 30 } };
   } };
   const store = new Store(path.join(root, 'data')), workspace = new Workspace(store, runner); await workspace.settings({ cliPath: process.execPath, includePreviews: false });
@@ -502,7 +502,7 @@ test('ERP role permissions require an administrator, reject stale saves and surv
     assert.equal((await f.req('PATCH', route, f.token, payload)).statusCode, 403);
     const saved = await f.req('PATCH', route, f.admin, payload);
     assert.equal(saved.statusCode, 200, saved.body);
-    assert.deepEqual(saved.json(), { mcp: false, cli: true, readOnly: false, createProjects: true, webSearch: false, webRead: false, webRequests: false, revision: 1 });
+    assert.deepEqual(saved.json(), { mcp: false, cli: true, fileWrite: true, readOnly: false, createProjects: true, webSearch: false, webRead: false, webRequests: false, revision: 1 });
     assert.equal((await f.req('PATCH', route, f.admin, payload)).statusCode, 409);
     const restricted = await f.req('PATCH', route, f.admin, { ...payload, readOnly: true, revision: 1 });
     assert.equal(restricted.statusCode, 200, restricted.body);

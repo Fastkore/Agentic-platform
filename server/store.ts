@@ -9,6 +9,7 @@ import type { PersonalInstructions, WorkNote } from '../shared/personal-instruct
 import { migrateFastkoreChatBindings } from './fastkore-chat.js';
 import { parseFastkoreContext } from '../shared/fastkore-context.js';
 import { AuditJournal, auditPageSize, compareAudit, publishAudit, type AuditCursor, type NewAuditEvent } from './audit-journal.js';
+import { validExecutionConcurrency } from './execution-concurrency.js';
 
 export class BridgeError extends Error { constructor(message: string, public statusCode = 400) { super(message); } }
 export function redact(text: string) { return text.replace(/\bfkap1\.[a-f0-9-]{36}\.[A-Za-z0-9_-]+\b/gi, '[REDACTED]').replace(/\b(?:fku[ag]1|fkct1)\.[A-Za-z0-9._-]+/gi, '[REDACTED]').replace(/\b(?:sk-|ccb_[ks]_)[A-Za-z0-9_-]{8,}\b/g, '[REDACTED]').replace(/(Bearer\s+)[^\s"']+/gi, '$1[REDACTED]').replace(/((?:access_token|refresh_token|api_key|authorization|password|delegation|grant|login_challenge|ticket|pairing_code|pairingCode|connectionKey|erp_key_verifier|erpKeyVerifier|__Host-bridge_sso_start|__Host-bridge_session)["'\s:=]+)[^\s,"';}&]+/gi, '$1[REDACTED]'); }
@@ -82,6 +83,10 @@ export class Store {
         try { legacy = this.readLegacy(this.legacyFile); } catch { legacy = this.readLegacy(this.legacyFile + '.bak'); }
       }
       this.state = initialized ? this.load() : legacy ?? empty();
+      const concurrency: unknown = this.state.settings.executionConcurrency;
+      const total = concurrency && typeof concurrency === 'object' && 'total' in concurrency ? concurrency.total : concurrency;
+      if (validExecutionConcurrency(total)) this.state.settings.executionConcurrency = total;
+      else delete this.state.settings.executionConcurrency;
       this.state.settings.model ??= '';
       this.state.settings.reasoningEffort ??= 'high';
       this.state.settings.agentInstructions ??= DEFAULT_AGENT_INSTRUCTIONS;

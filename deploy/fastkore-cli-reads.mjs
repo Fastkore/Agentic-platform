@@ -5,13 +5,19 @@ const id = value => typeof value === 'string' && guid.test(value);
 const ids = (list, max) => Array.isArray(list) && list.length > 0 && list.length <= max && list.every(id) && new Set(list).size === list.length;
 const validText = value => typeof value === 'string' && !!value.trim() && value.length <= 8192 && !/[\x00\r\n]/.test(value) && !value.startsWith('--');
 const fields = ['type','version','view','entity_set_id','entity_set_name','entity_ids','chat_key','tile_id','filter_status','filter_xml',
-  'catalog_id','folder_id','tree_parent_id','deleted','scope_reproducible','owner_entity_set_id','owner_entity_id','link_id','control_uid','tile_name','entity_type_ids'];
+  'catalog_id','folder_id','tree_parent_id','deleted','scope_reproducible','owner_entity_set_id','owner_entity_id','link_id','control_uid','tile_name','entity_type_ids',
+  'catalog_kind','catalog_name','catalog_link_path','catalog_link_names','folder_kind','folder_entity_set_id','folder_name','entity_types','filter_display','entity_uri'];
 
 function listContext(value) {
-  if (!only(value, fields) || value.type !== 'fastkore.context' || value.version !== 1 || value.view !== 'list' ||
+  if (!only(value, fields) || value.type !== 'fastkore.context' || ![1, 2].includes(value.version) || value.view !== 'list' ||
     !id(value.entity_set_id) || value.scope_reproducible !== true || !Array.isArray(value.entity_ids) ||
     value.entity_ids.length > 2000 || !value.entity_ids.every(id) || ![null, false, true].includes(value.deleted) ||
     [value.owner_entity_set_id, value.owner_entity_id, value.link_id].some(field => field != null)) return false;
+  if (value.version === 2 && (value.catalog_kind !== 'link' || !id(value.catalog_id) || !Array.isArray(value.catalog_link_path) ||
+    !value.catalog_link_path.length || value.catalog_link_path.length > 32 || !value.catalog_link_path.every(id) ||
+    !['folder_id', 'folder_kind', 'folder_entity_set_id'].every(key => Object.hasOwn(value, key)) ||
+    (value.folder_id ? value.folder_kind !== 'link' || !id(value.folder_entity_set_id) : value.folder_kind !== null || value.folder_entity_set_id !== null))) return false;
+  if (value.version === 1 && value.catalog_kind === 'link') return false;
   if (value.entity_set_name != null && (typeof value.entity_set_name !== 'string' || value.entity_set_name.length > 200) ||
     value.tile_name != null && (typeof value.tile_name !== 'string' || value.tile_name.length > 120) ||
     value.entity_type_ids !== undefined && !ids(value.entity_type_ids, 128) ||

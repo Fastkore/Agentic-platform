@@ -409,6 +409,10 @@ export class FastkoreSso {
       mcpEnabled: item.mcpEnabled, cliEnabled: item.cliEnabled,
       mcpCa: item.mcpUrl && new URL(item.mcpUrl).origin === origin ? ca : undefined };
   }
+  connectionSettings(id: string) {
+    const item = this.find(id);
+    return { installation: this.publicInstallation(item), origin: new URL(item.validateTicketUrl).origin, ca: this.tlsTrust(item)?.pem };
+  }
   start(theme: Theme, previousCookie: string) {
     const now = Date.now();
     for (const [key, attempt] of this.attempts) if (attempt.expires <= now) this.attempts.delete(key);

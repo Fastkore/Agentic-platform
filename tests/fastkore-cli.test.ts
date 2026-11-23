@@ -102,7 +102,7 @@ test('Fastkore CLI uses a fresh ticket per command and stops after ERP revokes t
     assert.equal(tickets.size, 0);
     cliEnabled = true;
     wrongTrust = true;
-    await assert.rejects(run({ operation: 'auth-info' }), /не совпадает с привязкой/);
+    await assert.rejects(run({ operation: 'auth-info' }), /CA исполнителя CLI отличается/);
     assert.equal(tickets.size, 0);
     wrongTrust = false;
     wrongAudience = true;

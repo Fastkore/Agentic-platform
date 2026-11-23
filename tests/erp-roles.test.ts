@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { Credential, State } from '../shared/types.js';
-import { erpRoleCatalog, erpRolesForUser, observeErpRoles, restoreErpRoles, erpCredentialPermissions, erpRolePermissions } from '../server/erp-roles.js';
+import { erpRoleCatalog, erpRolesForUser, observeErpRoles, restoreErpRoles, erpCredentialPermissions, erpFileWriteAllowed, erpRolePermissions } from '../server/erp-roles.js';
 
 test('ERP role migration keeps the newest name across users and preserves catalog deletion on restart', () => {
   const session = (userId: string, createdAt: string, name: string) => ({
@@ -46,4 +46,23 @@ test('ERP role MCP and CLI permissions are scoped to installation/GUID and combi
   assert.deepEqual(erpCredentialPermissions(state, credential), { mcp: true, cli: true });
   credential.source = 'local';
   assert.deepEqual(erpCredentialPermissions(state, credential), { mcp: false, cli: false });
+});
+
+test('file writing defaults to allowed for ERP and follows installation-scoped role grants', () => {
+  const state = { sso: { rolePermissions: [
+    { installationId: 'a', roleId: 'leader', mcp: true, cli: true, fileWrite: false, revision: 1 },
+    { installationId: 'a', roleId: 'admin', mcp: true, cli: true, fileWrite: true, readOnly: true, revision: 1 },
+  ] } } as State;
+  const credential = { source: 'fastkore', installationId: 'a', externalRoles: [{ id: 'leader', name: 'Руководитель' }] } as Credential;
+  assert.equal(erpFileWriteAllowed(state, credential), false);
+  credential.externalRoles!.push({ id: 'admin', name: 'Администратор' });
+  assert.equal(erpFileWriteAllowed(state, credential), true);
+  credential.externalRoles = [{ id: 'leader', name: 'Переименованная роль' }];
+  assert.equal(erpFileWriteAllowed(state, credential), false);
+  credential.installationId = 'b';
+  assert.equal(erpFileWriteAllowed(state, credential), true);
+  credential.installationId = 'a'; credential.externalRoles = undefined;
+  assert.equal(erpFileWriteAllowed(state, credential), true);
+  credential.source = 'local';
+  assert.equal(erpFileWriteAllowed(state, credential), false);
 });

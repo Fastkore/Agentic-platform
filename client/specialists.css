@@ -57,7 +57,8 @@
 .specialist-tabs { display: flex; flex: none; gap: 4px; overflow-x: auto; border-bottom: 1px solid var(--border); padding: 0 0 8px; }
 .specialist-tabs > button { display: inline-flex; align-items: center; justify-content: center; gap: 7px; padding: 9px 12px; border-radius: 8px; white-space: nowrap; color: var(--text-muted); }
 .specialist-tabs > button[aria-selected="true"] { color: var(--accent-strong); background: var(--accent-soft); }
-.specialist-tabs > button:hover { background: var(--hover); }
+.specialist-tabs > button:not([aria-selected="true"]):hover { background: var(--hover); }
+.specialist-tabs > button > svg { flex: none; }
 .specialist-tabpanel { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; padding: 14px 6px 10px 0; overscroll-behavior: contain; }
 .specialist-tabpanel[hidden] { display: none; }
 .specialist-tabpanel > .specialist-card + .specialist-card { margin-top: 14px; }

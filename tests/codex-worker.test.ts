@@ -201,7 +201,7 @@ test('CLI tools expose only fixed offline descriptions and recheck the session',
   assert.deepEqual(calls, ['data-query']);
 });
 
-test('different providers run in parallel; the same provider serializes with a clear refusal', async () => {
+test('different providers share the same execution limit', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'bridge-parallel-'));
   const { mkdir, writeFile } = await import('node:fs/promises');
   const { ExecutionAccountStore } = await import('../server/execution-accounts.js');
@@ -234,19 +234,57 @@ test('different providers run in parallel; the same provider serializes with a c
   const worker = createCodexWorker(undefined, undefined, store);
   try {
     await worker.listen({ path: socket });
-    const pendingGemini = worker.inject({ method: 'POST', url: '/run', payload: { prompt: 'Первый', model: 'gemini/gm-x' } });
-    await new Promise(resolve => setTimeout(resolve, 60));
-    const pendingGlm = worker.inject({ method: 'POST', url: '/run', payload: { prompt: 'Второй', model: 'glm/gm-x' } });
-    await new Promise(resolve => setTimeout(resolve, 60));
+    const pendingGemini = worker.inject({ method: 'POST', url: '/run', payload: { prompt: 'Первый', model: 'gemini/gm-x', executionConcurrency: 2 } });
+    const pendingGlm = worker.inject({ method: 'POST', url: '/run', payload: { prompt: 'Второй', model: 'glm/gm-x', executionConcurrency: 2 } });
+    const deadline = Date.now() + 5000;
+    while (gates.size < 2 && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 10));
     assert.ok(started.has('gemini') && started.has('glm'), 'both providers must be running at the same time');
-    const blocked = await worker.inject({ method: 'POST', url: '/run', payload: { prompt: 'Третий', model: 'gemini/gm-x' } });
+    const blocked = await worker.inject({ method: 'POST', url: '/run', payload: { prompt: 'Третий', model: 'gemini/gm-x', executionConcurrency: 2 } });
     assert.equal(blocked.statusCode, 409);
     assert.match(JSON.parse(blocked.body).error, /занят/);
     gates.get('gemini')!(); gates.get('glm')!();
     const first = await pendingGemini, second = await pendingGlm;
     assert.equal(JSON.parse(first.body.trim().split('\n').at(-1)!).result.response, 'OK-gemini');
     assert.equal(JSON.parse(second.body.trim().split('\n').at(-1)!).result.response, 'OK-glm');
-  } finally { await worker.close(); store.close(); await rm(root, { recursive: true, force: true }); }
+  } finally { for (const release of gates.values()) release(); await worker.close(); store.close(); await rm(root, { recursive: true, force: true }); }
+});
+
+test('the shared limit serves eight Codex sessions and rejects duplicate sessions', async () => {
+  const gates = new Map<string, () => void>();
+  const worker = createCodexWorker({
+    inspect: async () => ({ path: '', version: 'fake', authentication: 'chatgpt', status: '' }),
+    async run(request) {
+      await new Promise<void>(resolve => gates.set(request.prompt, resolve));
+      return { response: request.prompt };
+    },
+  });
+  const limit = 8;
+  const run = (prompt: string, sessionId: string) => worker.inject({ method: 'POST', url: '/run', payload: { prompt, sessionId, executionConcurrency: limit } });
+  const waitFor = async (slots: number) => {
+    const deadline = Date.now() + 5000;
+    while (gates.size < slots && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 10));
+    assert.equal(gates.size, slots);
+  };
+  const firstSession = randomUUID();
+  try {
+    const first = run('first', firstSession);
+    await waitFor(1);
+    assert.equal((await run('duplicate', firstSession.toUpperCase())).statusCode, 409);
+    const others = Array.from({ length: 7 }, (_, i) => run('job-' + i, randomUUID()));
+    await waitFor(8);
+    assert.deepEqual((await worker.inject('/health')).json().concurrency, limit);
+    assert.equal((await run('ninth', randomUUID())).statusCode, 409);
+    gates.get('first')!();
+    await first;
+    const resumed = run('resumed', firstSession);
+    await waitFor(9);
+    for (const release of gates.values()) release();
+    assert.match((await resumed).body, /"response":"resumed"/);
+    assert.ok((await Promise.all(others)).every(result => result.statusCode === 200));
+  } finally {
+    for (const release of gates.values()) release();
+    await worker.close();
+  }
 });
 
 test('parallel specialist consultations keep their parent cancellation and tool results separate', async () => {
@@ -304,7 +342,7 @@ test('parallel specialist consultations keep their parent cancellation and tool 
   }
 });
 
-test('the worker admits two GLM requests and freeing one does not lose the other controller', async () => {
+test('freeing one of two GLM slots does not lose the other controller', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'bridge-glm-slots-'));
   const { writeFile } = await import('node:fs/promises');
   const { ExecutionAccountStore } = await import('../server/execution-accounts.js');
@@ -317,7 +355,7 @@ test('the worker admits two GLM requests and freeing one does not lose the other
     run: async request => { await new Promise<void>(resolve => gates.set(request.prompt, resolve)); return { response: request.prompt }; },
   });
   const worker = createCodexWorker(undefined, undefined, accounts);
-  const run = (prompt: string) => worker.inject({ method: 'POST', url: '/run', payload: { prompt, model: 'glm/glm-test' } });
+  const run = (prompt: string) => worker.inject({ method: 'POST', url: '/run', payload: { prompt, model: 'glm/glm-test', executionConcurrency: 2 } });
   const until = async (check: () => boolean) => {
     const deadline = Date.now() + 5000;
     while (!check()) { if (Date.now() > deadline) throw Error('timeout'); await new Promise(resolve => setTimeout(resolve, 10)); }

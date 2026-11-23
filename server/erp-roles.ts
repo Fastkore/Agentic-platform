@@ -37,7 +37,7 @@ export function projectRoleOptions(state: RoleState): ProjectRoleLabel[] {
 export function erpRolePermissions(state: RoleState, installationId: string, roleId: string) {
   const saved = state.sso?.rolePermissions?.find(item => item.installationId === installationId && item.roleId === roleId);
   const roleName = state.sso?.roles?.find(item => item.installationId === installationId && item.id === roleId)?.name;
-  return { mcp: saved?.mcp ?? true, cli: saved?.cli ?? true, webRead: saved?.webRead ?? false,
+  return { mcp: saved?.mcp ?? true, cli: saved?.cli ?? true, fileWrite: saved?.fileWrite ?? true, webRead: saved?.webRead ?? false,
     webSearch: saved?.webSearch ?? saved?.webRead ?? false,
     webRequests: saved?.webRequests ?? false, readOnly: saved?.readOnly ?? false,
     createProjects: saved?.createProjects ?? projectCreationRoles.has(roleName?.trim().toLocaleLowerCase('ru-RU') ?? ''),
@@ -45,8 +45,13 @@ export function erpRolePermissions(state: RoleState, installationId: string, rol
 }
 
 export const erpReadOnlyMessage = 'Роль Fastkore разрешает только чтение. Эта операция заблокирована.';
+export function erpFileWriteAllowed(state: RoleState, credential: Credential) {
+  if (credential.source !== 'fastkore' || !credential.installationId) return false;
+  if (!credential.externalRoles?.length) return true;
+  return credential.externalRoles.some(role => erpRolePermissions(state, credential.installationId!, role.id).fileWrite);
+}
 export const fastkoreReadCommands = new Set([
-  'auth info', 'data get', 'data query', 'data aggregate', 'schema entity-set list', 'schema entity-set show', 'schema property show',
+  'auth info', 'catalog tree', 'data get', 'data query', 'data aggregate', 'schema entity-set list', 'schema entity-set show', 'schema property show',
   'report definition show',
 ]);
 

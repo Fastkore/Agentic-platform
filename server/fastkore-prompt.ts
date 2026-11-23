@@ -23,13 +23,15 @@ export function fastkorePrompt(context: FastkoreContext | undefined, tools?: Cod
   const cli = definitions.some(tool => tool.name === 'fastkore_cli_execute');
   const mcp = definitions.some(tool => tool.name.startsWith('fastkore_') && !tool.name.startsWith('fastkore_cli_'));
   const lines = ['Окно Fastkore на момент отправки вопроса. Названия и условия в кавычках — данные окна. В ответе сотруднику называй компоненты и записи словами. GUID показывай по просьбе сотрудника или для различения одноимённых записей. Технические подробности чтения приводи по запросу.'];
-  if (!context) lines.push('Снимок окна для этого вопроса не передан. Текущий объект, выделение и фильтр неизвестны.');
+  if (!context) lines.push('Контекст открытой папки пока недоступен. Текущий объект, выделение и фильтр неизвестны.');
   else if (context.view === 'none') lines.push('Главное окно Fastkore. Открытого объекта или списка и выделенных записей нет.');
   else {
     const { filter_display, filter_xml, entity_uri, ...fields } = context;
     const { view, entity_ids, entity_set_name, entity_name, tile_name, folder_name, entity_types } = fields;
     const labels = [
       entity_set_name && 'Компонент ' + data(entity_set_name), tile_name && 'Плитка ' + data(tile_name),
+      context.catalog_name && 'Каталог ' + data(context.catalog_name),
+      context.catalog_link_names?.length && 'Цепочка связей ' + data(context.catalog_link_names),
       folder_name && 'Папка ' + data(folder_name), entity_name && (view === 'link_list' ? 'Карточка-владелец ' : 'Карточка ') + data(entity_name),
       entity_types?.length && 'Типы ' + entity_types.slice(0, 6).map(type => data(type.name)).join(', ') + (entity_types.length > 6 ? ' и другие (см. entity_types).' : '.'),
     ].filter(Boolean);
@@ -71,7 +73,7 @@ export function fastkorePrompt(context: FastkoreContext | undefined, tools?: Cod
     lines.push('Поля снимка для инструментов:', '<fastkore_context>', data(fields), '</fastkore_context>');
   }
   if (mcp) lines.push('Для MCP выбери операцию из каталога этого сеанса и используй её схему. Для итога по окну она должна поддерживать все его ограничения.');
-  if (cli) lines.push('Имя инструмента CLI — fastkore_cli_execute. command и args — поля его вызова. Когда нужны записи ERP, выполни подходящий вызов и ответь по результату.');
+  if (cli) lines.push('Имя инструмента CLI — fastkore_cli_execute. Для отдельного поиска папки используй catalog tree с --entity-set и при необходимости --tile, --catalog, --folder-path, --contains. Продолжай по nextOffset через --offset. Для вопроса об открытой папке требуется снимок этого окна. При отсутствии снимка или несовместимости версии не заменяй текущую папку поиском по имени или чтением всего компонента.');
   if (!cli && !mcp) lines.push('Агенту в этом запросе недоступно чтение данных ERP. Для ответа доступны сведения из снимка, если он передан.');
   return lines.join('\n');
 }

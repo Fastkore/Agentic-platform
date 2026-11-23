@@ -560,7 +560,7 @@
   container-type: inline-size;
   container-name: project-settings;
 }
-.project-settings-tabs { flex: none; margin-bottom: 14px; }
+.project-settings-tabs, .server-settings-tabs { flex: none; margin-bottom: 14px; }
 .project-chats-panel { display: flex; flex: 1; min-height: 0; }
 .project-chats-layout {
   display: grid; grid-template-columns: minmax(175px, 32%) minmax(0, 1fr); width: 100%; min-height: 0;
@@ -693,6 +693,12 @@
 .chat-permission-state { display: inline-flex; align-items: center; gap: 6px; color: var(--text-muted); font-size: 12px; white-space: nowrap; }
 .chat-permission-state[data-enabled="true"] { color: var(--success); }
 .chat-access-settings > .help { margin-top: 12px; }
+.chat-files-dialog { width: min(720px, calc(100vw - 24px)); }
+.chat-stored-files { display: grid; gap: 8px; margin-top: 14px; }
+.chat-stored-file { display: flex; align-items: center; gap: 9px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 9px; }
+.chat-stored-file > svg, .chat-stored-file > button { flex: none; }
+.chat-stored-file > div { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.chat-stored-file small { display: block; color: var(--text-muted); margin-top: 3px; }
 .workspace-settings:open { display: grid; grid-template-rows: auto minmax(0, 1fr); }
 .workspace-settings > header { padding: 12px 24px; min-height: 54px; }
 .settings-layout { display: grid; grid-template: minmax(0, 1fr) / 288px minmax(0, 1fr); border-top: 1px solid var(--border); }
@@ -909,10 +915,21 @@
 .execution-account-create .settings-actions { align-items: flex-start; }
 .execution-account-create input { flex: 1; min-width: 160px; }
 .settings-models { display: grid; gap: 8px; }
-.settings-model-row { display: grid; grid-template-columns: minmax(0, 1fr) 32px min(45%, 240px); align-items: center; gap: 6px; }
+.settings-model-row { display: grid; grid-template-columns: minmax(0, 250px) minmax(0, 288px) 32px; align-items: center; gap: 8px 12px; }
 .settings-model-row label { margin: 0; font-size: 14px; font-weight: 600; color: var(--text); overflow-wrap: anywhere; }
 .settings-model-row .workspace-icon { width: 32px; height: 32px; }
-.settings-content .settings-model-row .settings-select { grid-column: 3; width: 100%; min-width: 0; min-height: 34px; padding-block: 5px; margin: 0; }
+.settings-content .settings-model-row .settings-select { grid-column: 2; width: 100%; min-width: 0; min-height: 34px; padding-block: 5px; margin: 0; }
+@media (max-width: 720px) {
+  .settings-model-row { grid-template-columns: minmax(0, 1fr) 32px; }
+  .settings-model-row label { grid-column: 1 / -1; }
+  .settings-content .settings-model-row .settings-select { grid-column: 1; }
+}
+.execution-concurrency .settings-actions { align-items: center; margin-top: 12px; }
+.workspace-dialog .execution-concurrency .settings-actions > :is(input, .secondary) {
+  box-sizing: border-box; height: 38px; min-height: 38px; margin: 0; line-height: 20px; padding-block: 8px;
+}
+.workspace-dialog .execution-concurrency input[type="number"] { width: 96px; padding-inline: 10px; }
+.workspace-dialog .execution-concurrency .settings-actions > :focus-visible { outline-offset: -2px; }
 .dictation-model-list { display: grid; gap: 6px; }
 .dictation-model-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 8px; border: 1px solid var(--border); border-radius: 8px; }
 .dictation-model-row small { color: var(--text-muted); }
@@ -1038,7 +1055,20 @@
 .settings-records > li { padding: 16px 18px; }
 .settings-server .setting-section { padding: 18px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); }
 .settings-server .setting-section:last-child { padding: 18px; }
-.settings-server h3 { margin-bottom: 12px; }
+.fastkore-checks { display: grid; gap: 12px; padding-block: 8px; }
+.fastkore-checks > button { justify-self: start; }
+.fastkore-check { display: flex; gap: 9px; align-items: flex-start; }
+.fastkore-check > svg { flex: none; margin-top: 2px; color: var(--text-muted); }
+.fastkore-check[data-ready="true"] > svg { color: var(--accent-strong); }
+.fastkore-check b { font-size: 14px; }
+.fastkore-check p { margin: 4px 0 0; color: var(--text-muted); font-size: 13px; overflow-wrap: anywhere; }
+.settings-server h3 { margin: 0 0 12px; font-size: 14px; font-weight: 600; line-height: 1.4; }
+.settings-server h3 > label { margin: 0; font: inherit; color: inherit; }
+.settings-server h3 > .toggle-row { width: 100%; }
+.settings-server h3 .toggle-row b { font: inherit; }
+.settings-server :is(.execution-concurrency, .settings-voice) h3 { margin-bottom: 4px; }
+:is(.execution-concurrency, .settings-voice) > .help { margin: 0; line-height: 1.5; }
+.settings-voice .dictation-model-list { margin-top: 12px; }
 .workspace-dialog::backdrop { backdrop-filter: blur(4px); }
 .workspace-dialog.personal-instructions-compact { border: 0; border-radius: 7px; box-shadow: none; }
 .personal-instructions-compact :is(.personal-file-icon, .personal-search, .personal-text, .personal-title-input,

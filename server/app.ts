@@ -17,19 +17,20 @@ import { instructionComponent } from './instruction-context.js';
 import { UploadAdmission } from './upload-admission.js';
 import { loadDictation, maxDictationBytes, validateDictation, type TranscribeDictation } from './dictation.js';
 import { interfaceScales, specialistFileLimits, specialistIcons, unassignedChatsLabel } from '../shared/types.js';
-import type { DictationModelId, InterfaceScale } from '../shared/types.js';
+import type { DictationModelId, FastkoreConnectionCheck, InterfaceScale } from '../shared/types.js';
 import { fastkoreChatTitle, fastkoreExecutionContext, parseFastkoreContext } from '../shared/fastkore-context.js';
-import { canReadChatAttachment } from '../shared/chat-attachments.js';
+import { canReadChatAttachment, chatFileEntries } from '../shared/chat-attachments.js';
 import { chatBinding, fastkoreChatSessionMatches, matchesFastkoreChat, migrateFastkoreChatBindings, parentFastkoreChatBindings } from './fastkore-chat.js';
 import { FastkoreMcp } from './fastkore-mcp.js';
 import { FastkoreCli, type FastkoreCliTiming } from './fastkore-cli.js';
 import { elapsedMs } from './run-timing.js';
 import { RemoteCodexRunner } from './codex-remote.js';
 import { executionProviders, gigaChatScopes, type ExecutionProvider, type GigaChatScope } from '../shared/execution-accounts.js';
-import { canAccessProject, canRenameProject, creationRoles, projectRoleOptions, erpRoleCatalog, restoreErpRoles, erpRolePermissions, erpCredentialPermissions, internetCredentialPermissions, isErpReadOnly, erpReadOnlyMessage, fastkoreReadCommands } from './erp-roles.js';
+import { canAccessProject, canRenameProject, creationRoles, projectRoleOptions, erpRoleCatalog, restoreErpRoles, erpRolePermissions, erpCredentialPermissions, erpFileWriteAllowed, internetCredentialPermissions, isErpReadOnly, erpReadOnlyMessage, fastkoreReadCommands } from './erp-roles.js';
 import { withInternetTools } from './internet-tools.js';
 import { withFastkoreCliDescription } from './codex-tools.js';
 import { formatFastkoreCliResult, withFastkoreCliCommands } from './fastkore-cli-tools.js';
+import { executionConcurrencySchema } from './execution-concurrency.js';
 import type { AgentProfile, Credential, Dataset, FastkoreAuthentication, FastkoreInstallation, FastkoreKeyIssue, FastkoreRolePermissions, FileStorageProvider, ProjectAgentPolicy, ProjectAgentSettings, Settings, User, WorkRole } from '../shared/types.js';
 import type { AuditEvent, ProjectRolePolicy, ProjectRoleSettings, RelatedChatSummary, Run, UnassignedChatSummary, UserRecord } from '../shared/types.js';
 import { agentToolIds } from '../shared/agent-tools.js';
@@ -96,6 +97,28 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
   const cliSocket = process.env.BRIDGE_FASTKORE_CLI_SOCKET;
   const fastkoreCli = cliSocket ? new FastkoreCli(cliSocket) : undefined;
   const cliTicketsEnabled = process.env.BRIDGE_FASTKORE_CLI_TICKETS === '1';
+  async function cliConnectionProblem(binding: { origin: string; ca?: string; cliEnabled?: boolean }) {
+    if (!workspace.isolatedCodex || workspace.executionDisabled) return 'Изолированный исполнитель задач отключён на сервере платформы.';
+    if (binding.cliEnabled === false) return 'CLI отключён в настройках установки ERP.';
+    if (!fastkoreCli) return 'Исполнитель CLI не подключён. Настройте BRIDGE_FASTKORE_CLI_SOCKET на сервере платформы.';
+    if (!cliTicketsEnabled) return 'Выдача билетов CLI выключена на сервере платформы. Установите BRIDGE_INSTANCE_CLI_TICKETS=1 в окружении экземпляра и перезапустите приложение.';
+    try { await fastkoreCli.checkTrust(binding, AbortSignal.timeout(2500)); }
+    catch (error) { return error instanceof BridgeError ? error.message : 'Исполнитель CLI недоступен. Проверьте контейнер CLI.'; }
+  }
+  async function connectionChecks(id: string): Promise<FastkoreConnectionCheck[]> {
+    const { installation, origin, ca } = configuredSso().connectionSettings(id);
+    const cliProblem = await cliConnectionProblem({ origin, ca, cliEnabled: installation.cliEnabled });
+    return [
+      { id: 'sso', ready: installation.enabled, message: installation.enabled ? 'Вход из ERP включён.'
+        : installation.tlsConfirmationRequired ? 'Подтвердите сертификат TLS сервера ERP.'
+        : installation.pairingStatus === 'paired' ? 'Вход приостановлен. Разрешите вход в управлении установкой.' : 'Завершите подключение одноразовым кодом из ERP.' },
+      { id: 'mcp', ready: !!installation.mcpUrl && installation.mcpEnabled !== false,
+        message: installation.mcpEnabled === false ? 'MCP отключён в настройках установки.'
+          : installation.mcpUrl ? 'Адрес сохранён. Доступ к инструментам проверяется от имени сотрудника при обращении из чата.'
+          : 'Не указан HTTPS-адрес MCP. Сохраните адрес веб-сервера ERP с путём /webapi/mcp.' },
+      { id: 'cli', ready: !cliProblem, message: cliProblem ?? 'Исполнитель подключён. Адрес и CA совпадают с ERP. Доступ к данным проверяется от имени сотрудника при выполнении команды.' },
+    ];
+  }
   const accountWorker = process.env.BRIDGE_CODEX_SOCKET && new RemoteCodexRunner(process.env.BRIDGE_CODEX_SOCKET);
   access.onSessionsRemoved = (sessions, reason) => {
     for (const session of sessions) void fastkoreMcp?.revoke(session).then(result => {
@@ -442,17 +465,18 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
   });
   app.patch<{ Params: { installationId: string; roleId: string }; Body: FastkoreRolePermissions }>(
     '/api/admin/erp-roles/:installationId/:roleId/permissions', { schema: { body: object({ mcp: { type: 'boolean' }, cli: { type: 'boolean' },
-      webSearch: { type: 'boolean' }, webRead: { type: 'boolean' }, webRequests: { type: 'boolean' },
+      webSearch: { type: 'boolean' }, webRead: { type: 'boolean' }, webRequests: { type: 'boolean' }, fileWrite: { type: 'boolean' },
       readOnly: { type: 'boolean' }, createProjects: { type: 'boolean' }, renameProjects: { type: 'boolean' },
       revision: { type: 'integer', minimum: 0 } }, ['mcp', 'cli', 'revision']) } }, async request => {
       admin(request);
-      return workspace.store.changeAccess(draft => {
+      const result = await workspace.store.changeAccess(draft => {
         const actor = admin(request), { installationId, roleId } = request.params;
         if (!draft.sso?.roles?.some(role => role.installationId === installationId && role.id === roleId)) throw new BridgeError('Роль не найдена.', 404);
         const previous = erpRolePermissions(draft, installationId, roleId);
         if (previous.revision !== request.body.revision) throw new BridgeError('Разрешения изменены. Откройте настройки роли заново.', 409);
         const records = draft.sso.rolePermissions ??= [];
         const value = { installationId, roleId, mcp: request.body.mcp, cli: request.body.cli,
+          fileWrite: request.body.fileWrite ?? previous.fileWrite,
           readOnly: request.body.readOnly ?? previous.readOnly, createProjects: request.body.createProjects ?? previous.createProjects,
           webSearch: request.body.webSearch ?? previous.webSearch,
           webRead: request.body.webRead ?? previous.webRead, webRequests: request.body.webRequests ?? previous.webRequests, revision: previous.revision + 1 };
@@ -461,8 +485,11 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
         draft.security?.audit.unshift({ id: randomUUID(), actorId: actor.id, action: 'erp.role.permissions', targetId: installationId + '/' + roleId, createdAt: new Date().toISOString() });
         draft.security?.audit.splice(1000);
         return { mcp: value.mcp, cli: value.cli, readOnly: value.readOnly, createProjects: value.createProjects,
+          fileWrite: value.fileWrite,
           webSearch: value.webSearch, webRead: value.webRead, webRequests: value.webRequests, revision: value.revision };
       });
+      if (!result.fileWrite) workspace.revokeFileWrites();
+      return result;
     });
   app.delete<{ Params: { installationId: string; roleId: string } }>('/api/admin/erp-roles/:installationId/:roleId', async request => {
     admin(request);
@@ -517,6 +544,10 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
     const { name, mcpUrl } = installation;
     return { name, mcpUrl };
   });
+  app.get('/api/admin/fastkore/mcp/checks', async request => {
+    const { installationId } = browserMcpInstallation(request);
+    return connectionChecks(installationId);
+  });
   app.patch<{ Body: { mcpUrl: string } }>('/api/admin/fastkore/mcp', {
     schema: { body: object({ mcpUrl: string(2048) }, ['mcpUrl']) },
   }, request => {
@@ -540,6 +571,10 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
     return fastkoreCli.describe();
   });
   const tlsFingerprint = { type: 'string', pattern: '^[0-9a-fA-F]{2}(:[0-9a-fA-F]{2}){31}$' };
+  app.get<{ Params: { id: string } }>('/api/admin/fastkore/installations/:id/checks', async request => {
+    localAdmin(request);
+    return connectionChecks(request.params.id);
+  });
   app.post<{ Body: { validateTicketUrl: string } }>('/api/admin/fastkore/tls/check', {
     schema: { body: object({ validateTicketUrl: string(2048) }, ['validateTicketUrl']) },
   }, async request => {
@@ -690,19 +725,25 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
     const fastkoreToolsStatus = credential.source === 'fastkore' ? fastkoreMcp?.status(credential) : undefined;
     const isolatedToolsEnabled = workspace.isolatedCodex && !workspace.executionDisabled;
     const erpPermissions = erpCredentialPermissions(workspace.store.state, credential);
-    const cliBinding = isolatedToolsEnabled && erpPermissions.cli && cliTicketsEnabled && fastkoreCli && sso?.delegationBinding(credential);
+    const binding = credential.source === 'fastkore' ? sso?.delegationBinding(credential) : undefined;
+    const cliProblem = binding && erpPermissions.cli ? await cliConnectionProblem(binding) : undefined;
     const internetPermissions = internetCredentialPermissions(workspace.store.state, credential);
-    const cliAllowed = !!(cliBinding && cliBinding.cliEnabled !== false && cliBinding.ca && sso?.openDelegation(credential, cliBinding.revision));
+    const cliAllowed = !!(binding && erpPermissions.cli && !cliProblem && sso?.openDelegation(credential, binding.revision));
     const mcpAllowed = isolatedToolsEnabled && erpPermissions.mcp && fastkoreToolsStatus === 'ready';
     const delegationProblem = fastkoreToolsStatus === 'reauth' ? 'Делегирование ERP завершилось. Откройте помощника заново из Fastkore.'
       : !credential.erpDelegation ? 'Fastkore Server не передал делегирование для этого входа.' : undefined;
     const toolPermissions = {
+      fileWrite: credential.source === 'fastkore' && erpFileWriteAllowed(workspace.store.state, credential),
       cli: cliAllowed,
       mcp: mcpAllowed,
       cliUnavailableReason: !cliAllowed && credential.source === 'fastkore' ? !erpPermissions.cli
-        ? 'CLI отключён разрешениями роли.' : delegationProblem ?? 'Проверьте настройки исполнителя CLI и установки Fastkore.' : undefined,
+        ? 'CLI отключён разрешениями роли.' : delegationProblem ?? cliProblem ?? 'Подключение ERP недоступно. Откройте помощника заново из Fastkore.' : undefined,
       mcpUnavailableReason: !mcpAllowed && credential.source === 'fastkore' ? !erpPermissions.mcp
-        ? 'MCP отключён разрешениями роли.' : delegationProblem ?? 'Проверьте HTTPS-адрес MCP и настройки установки Fastkore.' : undefined,
+        ? 'MCP отключён разрешениями роли.' : delegationProblem
+          ?? (!isolatedToolsEnabled ? 'Изолированный исполнитель задач отключён на сервере платформы.'
+            : binding?.mcpEnabled === false ? 'MCP отключён в настройках установки ERP.'
+            : !binding?.mcpUrl ? 'В настройках установки ERP не указан HTTPS-адрес MCP с путём /webapi/mcp.'
+            : 'Подключение MCP недоступно. Откройте помощника заново из Fastkore.') : undefined,
       webSearch: !!(isolatedToolsEnabled && accountWorker && internetPermissions.search),
       webRead: isolatedToolsEnabled && internetPermissions.read,
     };
@@ -732,7 +773,8 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
       cli: u.role === 'admin' ? cli : cli && { ...cli, path: '', status: '' },
       isolatedCodex: workspace.isolatedCodex, workerFilesAvailable: workspace.workerFilesAvailable, codexLimitsRevision: workspace.codexLimitsRevision,
       settings: { ...settings, cliPath: u.role === 'admin' ? settings.cliPath : '',
-        agentInstructions: manageSettings ? settings.agentInstructions : undefined },
+        agentInstructions: manageSettings ? settings.agentInstructions : undefined,
+        executionConcurrency: manageSettings && workspace.isolatedCodex ? workspace.executionConcurrency : undefined },
       addresses: publicOrigin ? [publicOrigin] : addresses(port, lan), port, lan, executionDisabled: workspace.executionDisabled,
       dictationAvailable: !!transcribeDictation, dictationEnabled: dictationEnabled(),
       fastkoreToolsStatus, toolPermissions,
@@ -804,9 +846,9 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
   }, async request => workspace.tokenActivity(request.query.timeZone ?? 'UTC', access.users(user(request))));
   app.post('/api/cli/check', async request => { admin(request); return workspace.isolatedCodex ? workspace.codexConnection(true) : workspace.inspect(); });
   app.post('/api/subscription/check', async (request, reply) => { admin(request); const run = await workspace.subscription(); return reply.code(202).header('Location', `/api/runs/${run.id}`).send(run); });
-  app.patch<{ Body: Partial<Settings> }>('/api/settings', { schema: { body: object({ cliPath: { type: 'string', maxLength: 2000 }, allowWrite: { type: 'boolean' }, includePreviews: { type: 'boolean' }, model: modelSchema, reasoningEffort: { enum: ['low', 'medium', 'high', 'xhigh'] }, dictationEnabled: { type: 'boolean' }, agentInstructions: string(8000) }) } }, async request => {
+  app.patch<{ Body: Partial<Settings> }>('/api/settings', { schema: { body: object({ cliPath: { type: 'string', maxLength: 2000 }, allowWrite: { type: 'boolean' }, includePreviews: { type: 'boolean' }, model: modelSchema, reasoningEffort: { enum: ['low', 'medium', 'high', 'xhigh'] }, dictationEnabled: { type: 'boolean' }, agentInstructions: string(8000), executionConcurrency: executionConcurrencySchema }) } }, async request => {
     admin(request);
-    if (request.body.agentInstructions !== undefined || (workspace.isolatedCodex && request.body.allowWrite !== undefined)) settingsAdmin(request);
+    if (request.body.agentInstructions !== undefined || request.body.executionConcurrency !== undefined || (workspace.isolatedCodex && request.body.allowWrite !== undefined)) settingsAdmin(request);
     if (request.body.dictationEnabled && !transcribeDictation) throw new BridgeError('Сервис распознавания речи не настроен.', 409);
     const settings = await workspace.settings(request.body);
     return isSettingsAdmin(principal(request)) ? settings : { ...settings, agentInstructions: undefined };
@@ -1080,6 +1122,47 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
     }
     return actor;
   }));
+  app.get<{ Params: ChatParams }>(chatPath + '/files', request => {
+    const chat = requestChat(request), actor = user(request);
+    return chatFileEntries(chat, actor).map(({ file, messageId, canDelete }) => ({
+      id: file.id, name: file.name, size: file.size, messageId, canDelete,
+    }));
+  });
+  app.post<{ Params: ChatParams; Body: { fileId: string } }>(chatPath + '/files', {
+    schema: { body: object({ fileId: string(100) }, ['fileId']) },
+  }, request => workspace.storeChatFile(request.params.projectId, request.params.chatId, request.body.fileId, () => {
+    requestChat(request, 'post'); return user(request);
+  }));
+  app.get<{ Params: ChatParams & { fileId: string } }>(chatPath + '/files/:fileId', async (request, reply) => {
+    const find = () => {
+      const entry = chatFileEntries(requestChat(request), user(request)).find(item => item.file.id === request.params.fileId);
+      if (!entry) throw new BridgeError('Файл чата не найден.', 404);
+      return entry.file;
+    };
+    const file = find(), contents = await workspace.files.read(workspace.project(request.params.projectId), file);
+    find();
+    const name = encodeURIComponent(file.name).replace(/[!'()*]/g, c => '%' + c.charCodeAt(0).toString(16));
+    return reply.type('application/octet-stream').header('Cache-Control', 'private, no-store')
+      .header('Content-Disposition', "attachment; filename*=UTF-8''" + name).send(contents);
+  });
+  app.delete<{ Params: ChatParams & { fileId: string } }>(chatPath + '/files/:fileId', request => {
+    const { projectId, chatId, fileId } = request.params;
+    return workspace.deleteChatFile(projectId, chatId, fileId, () => { requestChat(request, 'post'); return user(request); });
+  });
+  app.post<{ Params: ChatParams & { fileId: string } }>(chatPath + '/files/:fileId/attach', async request => {
+    const { projectId, fileId } = request.params;
+    const find = () => {
+      const chat = requestChat(request, 'post');
+      const entry = chatFileEntries(chat, user(request)).find(item => item.file.id === fileId);
+      if (!entry) throw new BridgeError('Файл чата не найден.', 404);
+      return entry.file;
+    };
+    const file = find(), actor = user(request);
+    if (file.ownerId === actor.id && workspace.project(projectId).attachments.some(item => item.id === fileId)) return file;
+    const contents = await workspace.files.read(workspace.project(projectId), file);
+    find();
+    return workspace.addAttachment(projectId, file.name, contents, () => { find(); return user(request).id; });
+  });
   app.get<{ Params: ChatParams & { messageId: string; fileId: string } }>(chatPath + '/messages/:messageId/files/:fileId', async (request, reply) => {
     const { projectId, chatId, messageId, fileId } = request.params;
     const findFile = () => {

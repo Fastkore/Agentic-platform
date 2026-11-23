@@ -7,6 +7,9 @@ import { interfaceScales, sharedChatWaitMessage, unassignedChatsLabel, type Agen
 import './style.css';
 import './workspace.css';
 import { ChatFileDrop } from './ChatFileDrop';
+import { ChatFilesDialog } from './ChatFilesDialog';
+import { ExecutionConcurrencySettings } from './ExecutionConcurrencySettings';
+import { ServerSettingsTabs } from './SettingsTabs';
 import { ChatArchiveDialog } from './ChatArchiveDialog';
 import { ChatVisuals } from './ChatVisuals';
 import { shortUserName } from './user-name';
@@ -140,10 +143,12 @@ const maxDraftAttachments = 8;
 const draftAttachmentLimit = 'К вопросу можно прикрепить до 8 файлов.';
 const clipboardImageExtensions: Record<string, string> = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp', 'image/gif': 'gif' };
 
-function uploadChatAttachment(projectId: string, file: File) {
+async function uploadChatAttachment(projectId: string, file: File, chatId?: string) {
   const form = new FormData();
   form.append('file', file);
-  return api<Attachment>(`/api/projects/${projectId}/attachments`, { method: 'POST', body: form });
+  const uploaded = await api<Attachment>(`/api/projects/${projectId}/attachments`, { method: 'POST', body: form });
+  if (chatId) await api(`/api/projects/${projectId}/chats/${chatId}/files`, { method: 'POST', body: JSON.stringify({ fileId: uploaded.id }) });
+  return uploaded;
 }
 
 function App() {
@@ -183,7 +188,7 @@ function App() {
   useEffect(() => { setProjectRequested(false); }, [projectId, chatId, contextVersion]);
   const [drafts, setDrafts] = useState<Record<string, string>>({}), [files, setFiles] = useState<Record<string, DraftAttachment[]>>({});
   const [specialists, setSpecialists] = useState<Record<string, string | undefined>>({});
-  const [panel, setPanel] = useState<'settings' | 'project' | 'project-settings' | 'search' | 'archive' | 'related' | 'rename-chat' | 'reset-chat' | 'share-chat' | null>(null);
+  const [panel, setPanel] = useState<'settings' | 'project' | 'project-settings' | 'search' | 'archive' | 'related' | 'rename-chat' | 'reset-chat' | 'share-chat' | 'chat-files' | null>(null);
   const [renameDraft, setRenameDraft] = useState<{ projectId: string; chatId: string; title: string; destinationId?: string }>();
   const [modelPreview, setModelPreview] = useState<{ name: string; url: string; format: PreviewModelFormat }>();
   const [screenshotPreview, setScreenshotPreview] = useState<{ file: File; preview: string }>();
@@ -318,7 +323,7 @@ function App() {
   const canReadFastkore = !!projectId && messageAgent?.toolIds.includes('fastkore') === true;
   const canStartChat = !chatId && !!newAgent && !!selectedProject;
   const canPromptForProject = !!status && !chatId && !projectId && !(relatedLoading && currentErpContext.current.active);
-  const canSend = !!status && screenshotSlot !== draftSlot && !(relatedLoading && currentErpContext.current.active) && !status.executionDisabled && !codexUnavailable && (!canReadFastkore || !contextProblem || !!currentErpContext.current.snapshot) && (!attachments.length || canAttachToDraft)
+  const canSend = !!status && screenshotSlot !== draftSlot && !(relatedLoading && currentErpContext.current.active) && !status.executionDisabled && !codexUnavailable && (!attachments.length || canAttachToDraft)
     && !!messageAgent?.available && (!specialistId || otherSpecialists.some(agent => agent.id === specialistId)) && (chatId ? canEdit : canStartChat);
   const canManageSettings = isAdmin && !inFastkore && (authSource === 'local' || !!erpAuth?.browserSettings);
   const canManageProjects = canManageSettings;
@@ -485,8 +490,8 @@ function App() {
     return () => host.removeEventListener('message', receive);
   }, [inFastkore, erpAuth]);
   useEffect(() => {
-    if (inFastkore && erpTheme) webViewHost()?.postMessage({ type: 'fastkore.ui.applied', version: 1, theme: erpTheme.theme });
-  }, [inFastkore, erpTheme]);
+    if (inFastkore && erpTheme && erpAuth) webViewHost()?.postMessage({ type: 'fastkore.ui.applied', version: 1, theme: erpTheme.theme });
+  }, [inFastkore, erpTheme, erpAuth]);
   useEffect(() => {
     const host = inFastkore ? webViewHost() : undefined;
     if (!host || !erpAuth || !loggedIn || !user || readySession === erpAuth) return;
@@ -505,7 +510,7 @@ function App() {
       setChat(null);
       setModelPreview(undefined);
       setScreenshotPreview(undefined);
-      setPanel(current => current === 'share-chat' ? null : current);
+      setPanel(current => current === 'share-chat' || current === 'chat-files' ? null : current);
       setError(current => current === sharedChatWaitMessage ? '' : current);
     }
     if (project) setOpenProjects(old => ({ ...old, [project]: true }));
@@ -933,7 +938,7 @@ function App() {
     const link = relatedDraftKey ? currentErpContext.current : undefined;
     const { snapshot, problem } = currentErpContext.current.active || matchesErpChat || (!chat?.linkedToFastkore &&
       (canReadFastkore || otherSpecialists.some(agent => agent.toolIds.includes('fastkore')))) ? currentErpContext.current : {};
-    if (!canSend || (canReadFastkore && problem && !snapshot)) return;
+    if (!canSend) return;
     if (attachments.length > maxDraftAttachments) { setError(draftAttachmentLimit); return; }
     sending.current = true;
     try {
@@ -964,7 +969,7 @@ function App() {
         for (const { id, local } of attachments) {
           if (!local) { attachmentIds.push(id); continue; }
           if (local.uploaded?.projectId === project) { attachmentIds.push(local.uploaded.id); continue; }
-          const uploaded = await uploadChatAttachment(project, local.file);
+          const uploaded = await uploadChatAttachment(project, local.file, conversation);
           attachmentIds.push(uploaded.id);
           const uploadedRef = { projectId: project, id: uploaded.id };
           setFiles(old => ({ ...old, [attachmentSlot]: (old[attachmentSlot] ?? []).map(item => item.id === id
@@ -1004,7 +1009,7 @@ function App() {
     try {
       await action(async () => {
         for (const file of list) {
-          const uploaded = await uploadChatAttachment(projectId, file);
+          const uploaded = await uploadChatAttachment(projectId, file, chatId);
           if (epoch !== authEpoch) return;
           setFiles(old => ({ ...old, [draftSlot]: [...(old[draftSlot] ?? []), uploaded] }));
         }
@@ -1100,13 +1105,22 @@ function App() {
   const canCreate = !!selectedProject && !!newAgent && !pending;
   const canDictate = status?.dictationEnabled && messageAgent?.available && (chatId ? canEdit : canStartChat);
   const canUseChatTools = !!status && !status.executionDisabled && !codexUnavailable && messageAgent?.available && (chatId ? canEdit : canStartChat);
-  const writeMode = !!(canUseChatTools && status.settings.allowWrite && messageAgent.allowWrite &&
+  const writePermission = status?.isolatedCodex && authSource === 'fastkore'
+    ? status.toolPermissions?.fileWrite === true : !!(status?.settings.allowWrite && messageAgent?.allowWrite);
+  const writeMode = !!(canUseChatTools && writePermission &&
     (!status.isolatedCodex || status.workerFilesAvailable && messageAgent.toolIds.includes('chat-files')));
   function renderChatAccess() {
     if (!status) return <p role="status" className="help">Загрузка…</p>;
     if (!projectId) return <p className="help">Выберите проект, чтобы увидеть доступные инструменты чата.</p>;
+    const fileWriteProblems = [
+      !canUseChatTools && 'Инструменты текущего чата недоступны.',
+      status.isolatedCodex && authSource === 'fastkore' && !writePermission && 'Запись файлов выключена разрешениями роли. Администратор может включить её в разделе «Роли → Запись файлов».',
+      (!status.isolatedCodex || authSource !== 'fastkore') && !writePermission && 'Запись файлов выключена в настройках сервера или агента.',
+      status.isolatedCodex && !status.workerFilesAvailable && 'Папка файлов исполнителя не подключена. Требуется настройка сервера платформы.',
+      status.isolatedCodex && messageAgent && !messageAgent.toolIds.includes('chat-files') && 'В настройках агента отключён инструмент работы с файлами чата.',
+    ].filter(Boolean);
     const permissions = [
-      { name: 'Запись файлов', enabled: writeMode, description: status.isolatedCodex
+      { name: 'Запись файлов', enabled: writeMode, description: !writeMode ? fileWriteProblems.join(' ') : status.isolatedCodex
         ? 'Файлы сохраняются в папке задания.'
         : 'Файлы сохраняются в папке проекта.' },
       { name: 'Fastkore CLI', enabled: canUseChatTools && canReadFastkore && status.toolPermissions?.cli,
@@ -1534,6 +1548,8 @@ function App() {
           {isAdmin && !matchesErpChat && !chat.archivedAt && <button type="button" className="workspace-icon chat-archive-button" aria-label="Перенести чат в архив" title="Перенести чат в архив"
             disabled={pending || chatBusy} onClick={() => void archiveChat()}><Archive size={17} /></button>}
         </>}
+        {chat && <button type="button" className="workspace-icon" title="Файлы чата" aria-label="Файлы чата"
+          onClick={() => setPanel('chat-files')}><Folder size={18} /></button>}
         {erpChatKey && <div className="related-chat-actions">
           <button type="button" className="workspace-icon" title="Связанные чаты" aria-label="Связанные чаты" onClick={() => { setError(''); setPanel('related'); }}><History size={18} /></button>
           {canReset && <button type="button" className="workspace-icon" title="Очистить чат" aria-label="Очистить чат"
@@ -1568,6 +1584,14 @@ function App() {
         {composer}
       </div>}
     </ChatFileDrop>
+    {panel === 'chat-files' && chat && <ChatFilesDialog projectId={projectId} chatId={chat.id} request={api} close={closePanel}
+      canAttach={!!canAttachToDraft && attachments.length < maxDraftAttachments} busy={chatBusy} download={downloadChatFile}
+      attach={file => setFiles(old => ({ ...old, [draftSlot]: [...(old[draftSlot] ?? []).filter(item => item.id !== file.id), file] }))}
+      changed={async fileId => {
+        setFiles(old => ({ ...old, [draftSlot]: (old[draftSlot] ?? []).filter(file => file.id !== fileId && file.local?.uploaded?.id !== fileId) }));
+        const updated = await api<ChatView>(`/api/projects/${projectId}/chats/${chat.id}`);
+        if (selected.current.projectId === projectId && selected.current.chatId === chat.id) setChat(updated);
+      }} />}
     {screenshotPreview && <WorkspaceDialog title={screenshotPreview.file.name} className="draft-screenshot-dialog" close={() => setScreenshotPreview(undefined)}>
       <img src={screenshotPreview.preview} alt="Скриншот Fastkore" />
     </WorkspaceDialog>}
@@ -1718,15 +1742,37 @@ function App() {
               <button className="primary" disabled={pending || busy || !agentInstructions.trim() || agentInstructions.trim() === savedInstructions}>Сохранить</button>
             </div>
           </form>}
-          {settingsSection === 'server' && <>
+          {settingsSection === 'server' && <ServerSettingsTabs general={<>
+            <section className="setting-section settings-models">
+              <h3>Настройки модели</h3>
+              <div className="settings-model-row">
+                <label htmlFor="server-model">Модель по умолчанию</label>
+                <Select id="server-model" className="settings-select" value={serverModel} options={serverModels}
+                  disabled={pending || (modelsLoading && !catalogOptions.length)} onChange={model => void saveSettings({ model })} />
+                <button type="button" className="workspace-icon" aria-label="Обновить список моделей" title="Обновить список моделей"
+                  disabled={modelsLoading} onClick={() => void loadModels(true)}>
+                  {modelsLoading ? <LoaderCircle className="spin" size={16} /> : <RefreshCw size={16} />}
+                </button>
+              </div>
+              <div className="settings-model-row">
+                <label htmlFor="server-reasoning">Рассуждение по умолчанию</label>
+                <Select id="server-reasoning" className="settings-select" value={status?.settings.reasoningEffort ?? 'high'} options={reasoningOptions}
+                  disabled={pending} onChange={value => void saveSettings({ reasoningEffort: value as Settings['reasoningEffort'] })} />
+              </div>
+              {modelError && <p role="status">{modelError}</p>}
+            </section>
+            {status?.settings.executionConcurrency && <ExecutionConcurrencySettings value={status.settings.executionConcurrency}
+              pending={pending} save={executionConcurrency => void saveSettings({ executionConcurrency })} />}
+
+
+            <section className="setting-section settings-voice">
+              <h3><Toggle checked={!!status?.dictationEnabled} disabled={!status?.dictationAvailable || busy || pending} title="Использовать голос" onChange={dictationEnabled => void saveSettings({ dictationEnabled })} /></h3>
+              <p className="help">Голос обрабатывается на сервере платформы. GPU на сервере ускоряет распознавание речи.</p>
+              {status?.dictationAvailable ? <DictationModelSettings request={api} /> : <p className="help">Сервис распознавания речи не настроен.</p>}
+            </section>
+          </>} models={<>
             {status?.isolatedCodex && canManageSettings && <ExecutionAccountsPanel request={api} busy={busy || pending}
               changed={async () => { await post('/api/cli/check'); setStatus(await api('/api/status')); await loadModels(true); }} />}
-            {canAttachProjectDirectory && !projects.length && <section className="setting-section"><h3>История настольной версии</h3><button className="secondary w-full" disabled={pending || busy} onClick={() => void action(async () => {
-              await post('/api/migrations/desktop'); setProjects(await api('/api/projects')); setStatus(await api('/api/status')); closePanel();
-            })}>Перенести проекты и историю</button></section>}
-            <section className="setting-section"><h3>Адрес сервера</h3>
-              {status?.addresses.map(url => <button key={url} className="copy-row" onClick={() => void copyItem(url, url)}><code>{url}</code>{copied === url ? <Check size={14} /> : <Copy size={14} />}</button>)}
-            </section>
             {status && !status.isolatedCodex && <section className="setting-section"><h3>Исполнитель модели</h3>
               <p className="settings-status">{status?.cli?.authentication === 'google' ? 'Подключён Gemini CLI через Google' : status?.cli?.authentication === 'chatgpt' ? 'Подключён через ChatGPT' : status?.cli?.authentication === 'glm' ? 'Подключён GLM (Z.ai) по ключу Coding Plan' : status?.cli?.authentication === 'gigachat' ? 'Подключён GigaChat API' : status?.cli?.authentication === 'api-key' ? 'API-ключ · выполнение отключено' : 'Исполнитель не подключён'}</p>
               <label htmlFor="cli-path">Путь к Codex CLI</label>
@@ -1738,32 +1784,10 @@ function App() {
               </div>
               {subscription && <p role="status">{subscription.error ?? subscription.response ?? subscription.progress}</p>}
             </section>}
-            <section className="setting-section settings-models">
-              <div className="settings-model-row">
-                <label htmlFor="server-model">Модель по умолчанию</label>
-                <button type="button" className="workspace-icon" aria-label="Обновить список моделей" title="Обновить список моделей"
-                  disabled={modelsLoading} onClick={() => void loadModels(true)}>
-                  {modelsLoading ? <LoaderCircle className="spin" size={16} /> : <RefreshCw size={16} />}
-                </button>
-                <Select id="server-model" className="settings-select" value={serverModel} options={serverModels}
-                  disabled={busy || pending || modelsLoading} onChange={model => void saveSettings({ model })} />
-              </div>
-              <div className="settings-model-row">
-                <label htmlFor="server-reasoning">Рассуждение по умолчанию</label>
-                <Select id="server-reasoning" className="settings-select" value={status?.settings.reasoningEffort ?? 'high'} options={reasoningOptions}
-                  disabled={busy || pending} onChange={value => void saveSettings({ reasoningEffort: value as Settings['reasoningEffort'] })} />
-              </div>
-              {modelError && <p role="status">{modelError}</p>}
-            </section>
+          </>} files={<>
             {!status?.isolatedCodex && <section className="setting-section"><h3>Работа с файлами</h3>
               <Toggle checked={status?.settings.allowWrite ?? false} disabled={busy || pending} title="Разрешить запись в проект" onChange={allowWrite => void saveSettings({ allowWrite })} />
               <Toggle checked={status?.settings.includePreviews ?? true} disabled={busy || pending} title="Добавлять выдержки из документов" onChange={includePreviews => void saveSettings({ includePreviews })} />
-            </section>}
-            {status?.workerFilesAvailable && canManageSettings && <section className="setting-section">
-              <h3>Рабочая папка агента</h3>
-              <Toggle checked={status.settings.allowWrite} disabled={busy || pending}
-                title="Разрешить запись в рабочую папку" onChange={allowWrite => void saveSettings({ allowWrite })} />
-              <p className="help">Запись также должна быть разрешена в профиле агента. Готовые файлы можно скачать из чата.</p>
             </section>}
             {status?.fileStorage && canManageSettings && <section className="setting-section">
               <h3>Хранилище файлов</h3>
@@ -1781,12 +1805,15 @@ function App() {
                 ? 'Ранее загруженные файлы остаются в своём хранилище.'
                 : 'S3 пока не настроен на сервере.'}</p>
             </section>}
-            <section className="setting-section">
-              <Toggle checked={!!status?.dictationEnabled} disabled={!status?.dictationAvailable || busy || pending} title="Использовать голос" onChange={dictationEnabled => void saveSettings({ dictationEnabled })} />
-              {status?.dictationAvailable ? <DictationModelSettings request={api} /> : <p className="help">Сервис распознавания речи не настроен.</p>}
+          </>} diagnostics={<>
+            <section className="setting-section"><h3>Адрес сервера</h3>
+              {status?.addresses.map(url => <button key={url} className="copy-row" onClick={() => void copyItem(url, url)}><code>{url}</code>{copied === url ? <Check size={14} /> : <Copy size={14} />}</button>)}
             </section>
+            {canAttachProjectDirectory && !projects.length && <section className="setting-section"><h3>История настольной версии</h3><button className="secondary w-full" disabled={pending || busy} onClick={() => void action(async () => {
+              await post('/api/migrations/desktop'); setProjects(await api('/api/projects')); setStatus(await api('/api/status')); closePanel();
+            })}>Перенести проекты и историю</button></section>}
             {(diagnostics || status?.storageWarning) && <section className="setting-section"><h3>Диагностика</h3>{diagnostics && <pre className="diagnostics settings-log" tabIndex={0} aria-label="Журнал диагностики">{diagnostics}</pre>}{status?.storageWarning && <p role="status">{status.storageWarning}</p>}</section>}
-          </>}
+          </>} />}
           </div>
         </section>
       </div>}

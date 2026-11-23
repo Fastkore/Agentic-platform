@@ -38,11 +38,18 @@ if (capabilities?.success !== true || capabilities.exitCode !== 0 ||
 }
 
 const catalog = commandCatalog(capabilities.data.commands);
+const contextVersions = {};
+for (const command of ['data query', 'data aggregate']) {
+  const { stdout } = await promisify(execFile)(cli, ['agent', 'describe', command, '--json'], { ...cliOptions, maxBuffer: stdoutLimitBytes });
+  const description = JSON.parse(stdout);
+  contextVersions[command] = description.data?.listContextVersions ?? [1];
+}
 const hasOption = (command, flag) => {
   const entry = catalog.get(command);
   return !!entry && [...entry.required, ...entry.optional].some(value => value.split(/\s+/).includes(flag));
 };
 Object.assign(trust, {
+  contextVersions,
   contextPaging: hasOption('data query', '--context') && hasOption('data query', '--page-size') && hasOption('data query', '--after'),
   batchGet: hasOption('data get', '--entities'),
 });
@@ -79,7 +86,8 @@ async function readCommand(req) {
     const argv = await commandArguments(catalog, args.command, args.args, cwd);
     const contextPath = join(cwd, 'context.json');
     const usesContext = argv.some((value, index) => value === '--context' && argv[index + 1] === contextPath);
-    if (usesContext && (!args.context || args.context.type !== 'fastkore.context' || args.context.version !== 1)) return;
+    if (usesContext && (!args.context || args.context.type !== 'fastkore.context' || ![1, 2].includes(args.context.version))) return;
+    if (usesContext && !contextVersions[args.command]?.includes(args.context.version)) return { unsupported: true };
     return { argv, ticket, cwd, context: usesContext ? args.context : undefined, contextPath: usesContext ? contextPath : undefined };
   }
   if ((operation === 'page' && !trust.contextPaging) || (operation === 'get-many' && !trust.batchGet)) return { unsupported: true };

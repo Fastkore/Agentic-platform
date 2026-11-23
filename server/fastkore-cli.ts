@@ -84,11 +84,10 @@ export class FastkoreCli {
     const caFingerprint = new X509Certificate(binding.ca).fingerprint256;
     // Verify the runner's fixed address and CA before sending a ticket.
     const trust = await this.exchange('/trust', undefined, AbortSignal.any([signal, AbortSignal.timeout(2000)])) as
-      { authority?: string; caFingerprint?: string; contextPaging?: boolean; batchGet?: boolean } | null;
-    if (trust?.authority !== authority || trust.caFingerprint !== caFingerprint) {
-      throw new BridgeError('Адрес или CA исполнителя Fastkore CLI не совпадает с привязкой ERP.', 424);
-    }
-    return { authority, caFingerprint, contextPaging: trust.contextPaging === true, batchGet: trust.batchGet === true };
+      { authority?: string; caFingerprint?: string; contextPaging?: boolean; batchGet?: boolean; contextVersions?: Record<string, number[]> } | null;
+    if (trust?.authority !== authority) throw new BridgeError(`Исполнитель CLI настроен на ${trust?.authority ?? 'неизвестный адрес'}, а установка ERP использует ${authority}. Исправьте адрес исполнителя.`, 424);
+    if (trust.caFingerprint !== caFingerprint) throw new BridgeError('CA исполнителя CLI отличается от подтверждённого CA ERP. Обновите сертификат исполнителя.', 424);
+    return { authority, caFingerprint, contextPaging: trust.contextPaging === true, batchGet: trust.batchGet === true, contextVersions: trust.contextVersions };
   }
 
   async run(operation: FastkoreCliOperation, sso: Pick<FastkoreSso, 'delegationBinding' | 'openDelegation'>,
@@ -111,8 +110,13 @@ export class FastkoreCli {
       }
     };
     const trustStarted = performance.now();
-    const { authority, caFingerprint, contextPaging, batchGet } = await this.checkTrust(binding, signal)
+    const { authority, caFingerprint, contextPaging, batchGet, contextVersions } = await this.checkTrust(binding, signal)
       .finally(() => { if (timing) timing.trustMs = elapsedMs(trustStarted); });
+    if ('context' in operation && operation.context?.version === 2 && (operation.operation === 'page' ||
+      operation.operation === 'execute' && operation.args.some(arg => arg === '--context' || arg.startsWith('--context=')))) {
+      const command = operation.operation === 'execute' ? operation.command : 'data query';
+      if (!contextVersions?.[command]?.includes(2)) throw new BridgeError('Исполнитель Fastkore CLI не поддерживает контекст папки v2. Обновите CLI до 27.0.62.0 или новее.', 424);
+    }
     if ((operation.operation === 'page' && !contextPaging) || (operation.operation === 'get-many' && !batchGet)) {
       throw new BridgeError('Установленная Fastkore CLI не поддерживает этот режим чтения.', 422);
     }

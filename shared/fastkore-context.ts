@@ -4,7 +4,7 @@ const guidFields = ['tile_id', 'catalog_id', 'folder_id', 'tree_parent_id', 'own
 const guid = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i;
 const maxSelection = 2000;
 
-type ContextHeader = { type: 'fastkore.context'; version: 1; entity_ids: string[]; chat_key?: string | null };
+type ContextHeader = { type: 'fastkore.context'; version: 1 | 2; entity_ids: string[]; chat_key?: string | null };
 export type FastkoreEntityContext = ContextHeader & {
   view: 'card' | 'list' | 'link_list'; entity_set_id: string; entity_set_name: string | null; filter_xml: string | null;
   entity_name?: string;
@@ -13,6 +13,12 @@ export type FastkoreEntityContext = ContextHeader & {
   entity_type_ids?: string[];
   entity_types?: { id: string; name: string }[];
   folder_name?: string;
+  catalog_name?: string;
+  catalog_kind?: 'stored' | 'link' | null;
+  folder_kind?: 'custom' | 'search' | 'link' | null;
+  catalog_link_path?: string[];
+  catalog_link_names?: string[];
+  folder_entity_set_id?: string | null;
   filter_display?: FastkoreFilterDisplay;
   filter_status: 'included' | 'none' | 'unavailable'; control_uid: string | null;
   deleted: boolean | null; scope_reproducible: boolean;
@@ -24,8 +30,9 @@ export function isFastkoreContextMessage(value: unknown): value is Record<string
 }
 
 export function parseFastkoreContext(value: unknown): FastkoreContext | null {
-  if (!isFastkoreContextMessage(value) || value.version !== 1) return null;
+  if (!isFastkoreContextMessage(value) || (value.version !== 1 && value.version !== 2)) return null;
   const { view, entity_set_id, filter_status, scope_reproducible } = value;
+  if (value.version === 2 && view !== 'list') return null;
   const modern = Object.hasOwn(value, 'chat_key');
   if (modern && (value.chat_key !== null && typeof value.chat_key !== 'string' || Object.hasOwn(value, 'entity_id'))) return null;
   if (modern && !Array.isArray(value.entity_ids)) return null;
@@ -33,7 +40,7 @@ export function parseFastkoreContext(value: unknown): FastkoreContext | null {
   const selected = Object.hasOwn(value, 'entity_ids') ? value.entity_ids : (legacyId == null ? [] : [legacyId]);
   if (!Array.isArray(selected) || selected.length > maxSelection || selected.some(id => typeof id !== 'string' || !guid.test(id))) return null;
   const entity_ids = [...new Set<string>(selected.map(id => id.toLowerCase()))].sort();
-  const header: ContextHeader = { type: 'fastkore.context', version: 1, entity_ids };
+  const header: ContextHeader = { type: 'fastkore.context', version: value.version, entity_ids };
   if (modern) header.chat_key = typeof value.chat_key === 'string' ? value.chat_key.toLowerCase() : null;
   if (view === 'none') {
     if (entity_ids.length || (modern && header.chat_key !== 'home')) return null;
@@ -56,6 +63,31 @@ export function parseFastkoreContext(value: unknown): FastkoreContext | null {
     ids[field] = id?.toLowerCase() ?? null;
   }
   const setId = entity_set_id.toLowerCase();
+  const catalog: Pick<FastkoreEntityContext, 'catalog_name' | 'catalog_kind' | 'folder_kind' | 'catalog_link_path' | 'catalog_link_names' | 'folder_entity_set_id'> = {};
+  if (value.version === 2) {
+    if (view !== 'list' || value.catalog_kind !== 'link' || !ids.catalog_id || ids.link_id || ids.owner_entity_set_id || ids.owner_entity_id ||
+      !Array.isArray(value.catalog_link_path) || !value.catalog_link_path.length || value.catalog_link_path.length > 32 ||
+      value.catalog_link_path.some(id => typeof id !== 'string' || !guid.test(id)) ||
+      !['folder_id', 'folder_kind', 'folder_entity_set_id'].every(field => Object.hasOwn(value, field))) return null;
+    const folderSet = value.folder_entity_set_id;
+    if (ids.folder_id ? value.folder_kind !== 'link' || typeof folderSet !== 'string' || !guid.test(folderSet)
+      : value.folder_kind !== null || folderSet !== null) return null;
+    catalog.catalog_kind = 'link';
+    catalog.catalog_link_path = value.catalog_link_path.map(id => id.toLowerCase());
+    catalog.folder_kind = ids.folder_id ? 'link' : null;
+    catalog.folder_entity_set_id = typeof folderSet === 'string' ? folderSet.toLowerCase() : null;
+    if (value.catalog_link_names != null) {
+      if (!Array.isArray(value.catalog_link_names) || value.catalog_link_names.length > 32 ||
+        value.catalog_link_names.some(name => typeof name !== 'string' || name.length > 200)) return null;
+      catalog.catalog_link_names = value.catalog_link_names.map(name => contextName(name) ?? '');
+    }
+  } else {
+    if (value.catalog_kind != null && value.catalog_kind !== 'stored' || value.folder_kind != null && !['custom', 'search'].includes(String(value.folder_kind))) return null;
+    if (Object.hasOwn(value, 'catalog_kind')) catalog.catalog_kind = value.catalog_kind as 'stored' | null;
+    if (Object.hasOwn(value, 'folder_kind')) catalog.folder_kind = value.folder_kind as 'custom' | 'search' | null;
+  }
+  const catalogName = contextName(value.catalog_name);
+  if (catalogName) catalog.catalog_name = catalogName;
   if (modern) {
     const expected = view === 'card' ? (entity_ids[0] ? `card:${setId}:${entity_ids[0]}` : null)
       : view === 'list' ? (ids.tile_id ? `tile:${ids.tile_id}` : `list:${setId}`)
@@ -86,12 +118,12 @@ export function parseFastkoreContext(value: unknown): FastkoreContext | null {
     ...(entityTypes.length ? { entity_types: entityTypes } : {}),
     ...(folderName ? { folder_name: folderName } : {}),
     ...(filterDisplay ? { filter_display: filterDisplay } : {}),
-    filter_xml: filter_xml as string | null, filter_status, control_uid, deleted, scope_reproducible, ...ids };
+    filter_xml: filter_xml as string | null, filter_status, control_uid, deleted, scope_reproducible, ...ids, ...catalog };
 }
 
 export function fastkoreExecutionContext(context?: FastkoreContext) {
   if (!context || context.view === 'none') return context;
-  const { entity_types, folder_name, filter_display, entity_uri, ...execution } = context;
+  const { entity_uri, filter_display, ...execution } = context;
   return execution;
 }
 
@@ -136,7 +168,8 @@ export function fastkoreSelectionChatKey(context: FastkoreContext): string | und
   // A selected row does not change the contents of the list.
   return JSON.stringify([1, view, entity_set_id, context.tile_id, context.control_uid, context.catalog_id,
     context.folder_id, context.tree_parent_id, context.owner_entity_set_id, context.owner_entity_id, context.link_id,
-    context.deleted, context.filter_status, context.filter_xml?.trim() ?? null]);
+    context.deleted, context.filter_status, context.filter_xml?.trim() ?? null,
+    ...(context.version === 2 ? [context.catalog_link_path, context.folder_entity_set_id] : [])]);
 }
 
 export function fastkoreChatContextKey(context: FastkoreContext): string | undefined {

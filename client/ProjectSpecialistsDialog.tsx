@@ -1,13 +1,13 @@
 import { lazy, Suspense, useEffect, useId, useState, type ReactNode } from 'react';
-import { Bot, Check, Database, Pencil, Plus, Settings2, Trash2, X } from 'lucide-react';
+import { Bot, Check, Database, MessageSquare, Pencil, Plus, Settings2, ShieldCheck, Trash2, Users, X } from 'lucide-react';
 import type { ChatView, ProjectAgentConnection, ProjectAgentPolicy, ProjectAgentSettings, ProjectRoleLabel, ProjectSummary } from '../shared/types';
 import { WorkspaceDialog } from './WorkspaceDialog';
 import { ProjectRolesPanel } from './ProjectRolesPanel';
 import { ProjectChatsPanel } from './ProjectChatsPanel';
-import './specialists.css';
+import { SettingsTabStrip } from './SettingsTabs';
 
 const ProjectLibraryPanel = lazy(() => import('./ProjectLibraryDialog').then(module => ({ default: module.ProjectLibraryPanel })));
-const sections = [['specialists', 'Агенты'], ['library', 'Библиотека'], ['access', 'Доступ к материалам'], ['roles', 'Роли'], ['chats', 'Чаты']] as const;
+const sections = [['specialists', 'Агенты', Bot], ['library', 'Библиотека', Database], ['access', 'Доступ к материалам', ShieldCheck], ['roles', 'Роли', Users], ['chats', 'Чаты', MessageSquare]] as const;
 type Section = typeof sections[number][0];
 
 export function ProjectSettingsDialog({ project, request, close, openSpecialist, rename, remove, isAdmin, rolesChanged, renderChat, chatError }: {
@@ -106,20 +106,8 @@ export function ProjectSettingsDialog({ project, request, close, openSpecialist,
       {isAdmin && <button type="button" className="secondary project-delete" disabled={busy} aria-haspopup="dialog"
         onClick={() => { setDeleteError(''); setConfirmDelete(true); }}><Trash2 size={16} aria-hidden="true" />Удалить проект</button>}
     </div>
-    <div className="specialist-tabs project-settings-tabs" role="tablist" aria-label="Разделы настроек проекта" onKeyDown={event => {
-      if (busy) return;
-      const current = sections.findIndex(([id]) => id === section);
-      const next = event.key === 'Home' ? 0 : event.key === 'End' ? sections.length - 1 : event.key === 'ArrowRight'
-        ? (current + 1) % sections.length : event.key === 'ArrowLeft' ? (current + sections.length - 1) % sections.length : -1;
-      if (next < 0) return;
-      event.preventDefault();
-      openSection(sections[next][0]);
-      event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="tab"]')[next]?.focus();
-    }}>
-      {sections.map(([id, label]) => <button key={id} id={tabs + id} type="button" role="tab" aria-selected={id === section}
-        aria-controls={tabs + '-panel'} tabIndex={id === section ? 0 : -1} disabled={busy}
-        onClick={() => openSection(id)}>{label}</button>)}
-    </div>
+    <SettingsTabStrip sections={sections} value={section} select={openSection} id={tabs} label="Разделы настроек проекта"
+      panelId={() => tabs + '-panel'} className="project-settings-tabs" disabled={busy} />
     {error && !adding && <p className="inline-error" role="alert">{error}</p>}
     {section === 'chats' && chatError && <p className="inline-error" role="alert">{chatError}</p>}
     <div id={tabs + '-panel'} role="tabpanel" aria-labelledby={tabs + section} tabIndex={0}

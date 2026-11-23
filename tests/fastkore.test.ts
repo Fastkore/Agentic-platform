@@ -113,6 +113,58 @@ async function fixture(pairingClient?: PairingClient) {
     get calls() { return calls; }, setValidator: (fn: TicketValidator) => { validate = fn; } };
 }
 
+test('file writing is controlled by ERP roles even with legacy server and agent write settings disabled', async t => {
+  const f = await fixture();
+  try {
+    const role = { id: randomUUID(), name: 'Руководитель' };
+    f.setValidator(async () => ({ ...identity(f.id, f.userId), user: { id: f.userId, display_name: 'Руководитель', roles: [role] } }));
+    const session = await f.login();
+    assert.equal(f.store.state.settings.allowWrite, false);
+    assert.equal(f.store.state.corporate!.profiles.find(item => item.id === 'universal')!.allowWrite, false);
+    const status = () => f.asCookie(session, 'GET', '/api/status');
+    assert.equal((await status()).json().toolPermissions.fileWrite, true);
+    const revoked = t.mock.method(f.workspace, 'revokeFileWrites');
+    const url = '/api/admin/erp-roles/' + f.id + '/' + role.id + '/permissions';
+    const denied = await f.req('PATCH', url, f.admin, { mcp: true, cli: true, fileWrite: false, revision: 0 });
+    assert.equal(denied.statusCode, 200);
+    assert.equal(denied.json().fileWrite, false);
+    assert.equal(revoked.mock.callCount(), 1);
+    assert.equal((await status()).json().toolPermissions.fileWrite, false);
+    assert.equal((await f.req('PATCH', url, f.admin, { mcp: true, cli: true, fileWrite: true, revision: 0 })).statusCode, 409);
+    const enabled = await f.req('PATCH', url, f.admin, { mcp: true, cli: true, fileWrite: true, revision: denied.json().revision });
+    assert.equal(enabled.statusCode, 200);
+    assert.equal((await status()).json().toolPermissions.fileWrite, true);
+  } finally { await f.app.close(); }
+});
+
+test('connection checks explain missing setup and require a local administrator', async t => {
+  const f = await fixture();
+  try {
+    const url = installations + '/' + f.id + '/checks';
+    assert.equal((await f.req('GET', url)).statusCode, 401);
+    const session = await f.login();
+    assert.equal((await f.asCookie(session, 'GET', url)).statusCode, 403);
+    const result = await f.req('GET', url, f.admin);
+    assert.equal(result.statusCode, 200);
+    const checks = result.json();
+    assert.equal(checks.find((item: { id: string }) => item.id === 'sso').ready, true);
+    assert.match(checks.find((item: { id: string }) => item.id === 'mcp').message, /Не указан HTTPS-адрес MCP/);
+    assert.match(checks.find((item: { id: string }) => item.id === 'cli').message, /исполнитель задач отключён/);
+    t.mock.getter(f.workspace, 'isolatedCodex', () => true);
+    t.mock.getter(f.workspace, 'executionDisabled', () => false);
+    const cliCheck = (await f.req('GET', url, f.admin)).json().find((item: { id: string }) => item.id === 'cli');
+    assert.match(cliCheck.message, /BRIDGE_FASTKORE_CLI_SOCKET/);
+    await f.patch({ mcpUrl: 'https://erp.example.test/webapi/mcp' });
+    const configured = (await f.req('GET', url, f.admin)).json();
+    assert.equal(configured.find((item: { id: string }) => item.id === 'mcp').ready, true);
+    assert.doesNotMatch(JSON.stringify(configured), /connectionKey|sealedGrant|BEGIN CERTIFICATE/);
+    await f.patch({ mcpEnabled: false });
+    const disabled = (await f.req('GET', url, f.admin)).json().find((item: { id: string }) => item.id === 'mcp');
+    assert.equal(disabled.ready, false);
+    assert.match(disabled.message, /отключён/);
+  } finally { await f.app.close(); }
+});
+
 test('1.1 provisions a cookie-only identity with no automatic platform rights', async () => {
   const f = await fixture();
   try {

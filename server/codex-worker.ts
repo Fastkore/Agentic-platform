@@ -14,7 +14,7 @@ import type { CodexLimits } from '../shared/types.js';
 import { limitsForModel } from './google-limits.js';
 import { readGlmKey } from './glm.js';
 import { searchZai } from './internet-search.js';
-import { executorCapacity, providerCapacity } from './execution-concurrency.js';
+import { defaultExecutionConcurrency, executionConcurrencySchema, validExecutionConcurrency } from './execution-concurrency.js';
 import { chatImagesUnsupportedProvider, chatImageUrlPattern, maxChatImages, maxChatImagePayload, maxChatImageUrlLength, supportsChatImages } from './chat-images.js';
 import { jobOfficeTool, runJobOffice } from './job-office.js';
 import { jobFilesTool, useJobFiles } from './job-files.js';
@@ -39,6 +39,7 @@ const runSchema = {
     steeringKey: { type: 'string', pattern: '^[0-9a-f-]{36}$' },
     workDirectoryId: { type: 'string', pattern: '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' },
     reasoningEffort: { enum: ['low', 'medium', 'high', 'xhigh'] },
+    executionConcurrency: executionConcurrencySchema,
     toolDefinitions: { type: 'array', maxItems: 200, items: {
       type: 'object', additionalProperties: false, required: ['type', 'name', 'description', 'inputSchema'],
       properties: { type: { const: 'function' }, name: { type: 'string', pattern: '^(?:fastkore_[a-zA-Z0-9_-]{1,55}|library_(?:list|tree|search|read)|internet_(?:search|read|request)|knowledge|freecad_(?:design|linkage)|consult_specialist|my_instructions)$' },
@@ -50,9 +51,11 @@ const runSchema = {
 export function createCodexWorker(codex: CodexRunner = new CodexClient([], 'worker'), jobsRoot = process.env.BRIDGE_CODEX_JOB_FILES,
   accounts?: ExecutionAccountStore) {
   const app = Fastify({ logger: false, bodyLimit: workerBodyLimit, ajv: { customOptions: { removeAdditional: false, coerceTypes: false } } });
-  const activeLanes = new Map<string, Set<AbortController>>();
-  const activeCount = () => [...activeLanes.values()].reduce((count, lane) => count + lane.size, 0);
-  const consultations = new Map<string, { signal: AbortSignal; controller: AbortController; lane: string; running: boolean }>();
+  const active = new Set<AbortController>();
+  let activeJobs = 0;
+  const activeSessions = new Set<string>();
+  let lastLimit = defaultExecutionConcurrency();
+  const consultations = new Map<string, { signal: AbortSignal; controller: AbortController; running: boolean }>();
   let changingAccount = false;
   const runner = async (model?: string) => accounts ? accounts.runner((await accounts.select(model)).account.id) : codex;
   const pendingTools = new Map<string, { resolve: (result: CodexToolResult) => void; maxResponseChars: number }>();
@@ -79,7 +82,7 @@ export function createCodexWorker(codex: CodexRunner = new CodexClient([], 'work
     return reply.code(status).send({ error: error instanceof BridgeError && /^\/accounts\/[a-f0-9-]+\/key$/.test(_req.url)
       ? error.message : 'Исполнитель модели не выполнил запрос.' });
   });
-  app.get('/health', async () => ({ ok: true, active: activeCount(), concurrency: { total: executorCapacity(), glm: providerCapacity('glm') } }));
+  app.get('/health', async () => ({ ok: true, active: activeJobs, concurrency: lastLimit }));
   app.post<{ Body: { query: string } }>('/internet/search', { schema: { body: {
     type: 'object', additionalProperties: false, required: ['query'], properties: { query: { type: 'string', minLength: 1, maxLength: 400 } },
   } } }, async (request, reply) => {
@@ -113,7 +116,7 @@ export function createCodexWorker(codex: CodexRunner = new CodexClient([], 'work
   });
   app.get('/accounts', async () => { if (!accounts) throw new BridgeError('Управление аккаунтами недоступно.', 503); return accounts.list(); });
   async function changeAccount<T>(work: () => Promise<T>) {
-    if (!accounts || activeLanes.size || changingAccount) throw new BridgeError('Дождитесь завершения задания.', 409);
+    if (!accounts || active.size || changingAccount) throw new BridgeError('Дождитесь завершения задания.', 409);
     changingAccount = true;
     try { return await work(); } finally { changingAccount = false; }
   }
@@ -135,7 +138,7 @@ export function createCodexWorker(codex: CodexRunner = new CodexClient([], 'work
     properties: { id: { type: 'string', maxLength: 36 }, success: { type: 'boolean' }, text: { type: 'string', maxLength: maxFastkoreCliResponseChars } },
   } } }, async request => {
     const pending = pendingTools.get(request.body.id);
-    if (!activeLanes.size || !pending) throw new BridgeError('Вызов инструмента завершён.', 409);
+    if (!active.size || !pending) throw new BridgeError('Вызов инструмента завершён.', 409);
     if (request.body.text.length > pending.maxResponseChars) throw new BridgeError('Ответ превышает лимит вызова инструмента.', 413);
     pendingTools.delete(request.body.id);
     pending.resolve({ success: request.body.success, text: request.body.text });
@@ -151,23 +154,28 @@ export function createCodexWorker(codex: CodexRunner = new CodexClient([], 'work
     if (imagePayload > maxChatImagePayload) {
       throw new BridgeError('Общий размер изображений превышает 20 МБ.', 413);
     }
+    const limit = request.body.executionConcurrency ?? defaultExecutionConcurrency();
+    if (!validExecutionConcurrency(limit)) throw new BridgeError('Некорректные лимиты исполнителя.', 400);
+    lastLimit = limit;
     const consultation = request.body.consultation === true;
     const selection = accounts ? await accounts.select(request.body.model).catch((error: Error) => ({ error })) : undefined;
     const lane = selection && !('error' in selection) ? selection.account.provider : 'codex';
+    const session = request.body.sessionId?.toLowerCase();
     const parent = consultation && request.body.consultationKey ? consultations.get(request.body.consultationKey) : undefined;
     if (consultation) {
-      if (!parent || parent.signal.aborted || parent.running || !activeLanes.get(parent.lane)?.has(parent.controller) ||
-        activeCount() >= executorCapacity() || (lane !== parent.lane && (activeLanes.get(lane)?.size ?? 0) >= providerCapacity(lane)) ||
+      if (!parent || parent.signal.aborted || parent.running || !active.has(parent.controller) ||
         !request.body.ephemeral || request.body.sessionId || request.body.workDirectoryId ||
         request.body.toolDefinitions?.some(tool => tool.name === 'consult_specialist')) throw new BridgeError('Консультация недоступна.', 409);
-    } else if ((activeLanes.get(lane)?.size ?? 0) >= providerCapacity(lane) || activeCount() >= executorCapacity() || changingAccount) {
+    } else if (activeJobs >= limit || changingAccount || (session && activeSessions.has(session))) {
       // Sent directly: a pre-hijack throw would lose the specific reason to the generic handler.
-      return reply.code(409).send({ error: 'Исполнитель этого провайдера занят. Дождитесь завершения задания.' });
+      return reply.code(409).send({ error: 'Исполнитель занят. Дождитесь завершения задания.' });
     }
     const controller = new AbortController();
     if (parent) parent.running = true;
-    const laneControllers = activeLanes.get(lane) ?? new Set<AbortController>();
-    laneControllers.add(controller); activeLanes.set(lane, laneControllers);
+    active.add(controller);
+    // A consultation borrows its waiting parent's slot and cannot be nested.
+    if (!parent) activeJobs++;
+    if (session) activeSessions.add(session);
     const runSignal = parent ? AbortSignal.any([controller.signal, parent.signal]) : controller.signal;
     let provider = 'Исполнитель модели';
     const { raw } = reply;
@@ -180,7 +188,7 @@ export function createCodexWorker(codex: CodexRunner = new CodexClient([], 'work
     }
     try {
       await requireLogin(runSignal, request.body.model);
-      const { toolDefinitions, workDirectoryId, steeringKey, ...body } = request.body;
+      const { toolDefinitions, workDirectoryId, steeringKey, executionConcurrency: _executionConcurrency, ...body } = request.body;
       const selected = selection && !('error' in selection) ? selection : undefined;
       if (selected) body.model = selected.model;
       if (body.imageUrls?.length && !supportsChatImages(lane)) throw new BridgeError(chatImagesUnsupportedProvider, 503);
@@ -205,7 +213,7 @@ export function createCodexWorker(codex: CodexRunner = new CodexClient([], 'work
           if (!toolDefinitions?.some(tool => tool.name === name)) return { success: false, text: 'Инструмент не разрешён для этого запроса.' };
           const id = randomUUID();
           const stop = AbortSignal.any([signal, runSignal, AbortSignal.timeout(name === 'consult_specialist' ? 195_000 : (name.startsWith('fastkore_cli_') || name.startsWith('freecad_')) ? 125_000 : 45_000)]);
-          if (name === 'consult_specialist') consultations.set(id, { signal: stop, controller, lane, running: false });
+          if (name === 'consult_specialist') consultations.set(id, { signal: stop, controller, running: false });
           const requestedLimit = name === 'fastkore_cli_execute' && args && typeof args === 'object'
             ? (args as Record<string, unknown>).maxResponseChars : undefined;
           const maxResponseChars = isFastkoreCliResponseLimit(requestedLimit) ? requestedLimit : defaultToolResponseChars;
@@ -234,12 +242,13 @@ export function createCodexWorker(codex: CodexRunner = new CodexClient([], 'work
     } finally {
       if (!consultation && request.body.steeringKey) steeringTurns.delete(request.body.steeringKey);
       if (parent) parent.running = false;
-      laneControllers.delete(controller);
-      if (!laneControllers.size) activeLanes.delete(lane);
+      active.delete(controller);
+      if (!parent) activeJobs--;
+      if (session) activeSessions.delete(session);
       raw.end();
     }
   });
-  app.addHook('preClose', async () => { for (const lane of activeLanes.values()) for (const controller of lane) controller.abort(); });
+  app.addHook('preClose', async () => { for (const controller of active) controller.abort(); });
   app.addHook('onClose', async () => { accounts?.close(); });
   return app;
 }

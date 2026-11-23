@@ -65,6 +65,11 @@ test('a read-only chat sends uploaded JPEG, a Fastkore screenshot and a text att
     const screenshotId = await upload(screenshot.file.name, screenshot.file);
     const documentId = await upload('note.txt', new Blob(['Текстовый файл тоже прочитан']));
     const url = `/api/projects/${project.id}/chats/${chat.id}/messages`;
+    const fileList = `/api/projects/${project.id}/chats/${chat.id}/files`;
+    const stored = await app.inject({ method: 'POST', url: fileList, headers, payload: { fileId: imageId } });
+    assert.equal(stored.statusCode, 200, stored.body);
+    assert.equal((await app.inject({ url: fileList, headers })).json()[0].id, imageId);
+    assert.deepEqual((await app.inject({ url: fileList + '/' + imageId, headers })).rawPayload, jpeg);
     const sent = await app.inject({ method: 'POST', url, headers, payload: { text: 'VERIFY_CHAT_IMAGE', attachmentIds: [imageId, screenshotId, documentId] } });
     assert.equal(sent.statusCode, 202, sent.body);
     const deadline = Date.now() + 8000;
@@ -79,8 +84,30 @@ test('a read-only chat sends uploaded JPEG, a Fastkore screenshot and a text att
     });
     assert.deepEqual(chat.messages[0].attachments.map(file => file.name), ['photo.JPG', screenshot.file.name, 'note.txt']);
 
+    // The image upload remains available after a cancelled answer and a text-only retry.
+    chat.messages[1].status = 'cancelled';
+    await workspace.store.save();
+    const listing = await app.inject({ url: `/api/projects/${project.id}/chats/${chat.id}/files`, headers });
+    assert.equal(listing.statusCode, 200);
+    assert.equal(listing.json().length, 3);
+    const downloaded = await app.inject({ url: `/api/projects/${project.id}/chats/${chat.id}/messages/${chat.messages[0].id}/files/${imageId}`, headers });
+    assert.equal(downloaded.statusCode, 200);
+    assert.deepEqual(downloaded.rawPayload, jpeg);
+    const followup = await app.inject({ method: 'POST', url, headers, payload: { text: 'VERIFY_CHAT_IMAGE что видишь?', attachmentIds: [] } });
+    assert.equal(followup.statusCode, 202);
+    const followupDeadline = Date.now() + 8000;
+    while (workspace.busy && Date.now() < followupDeadline) await new Promise(resolve => setTimeout(resolve, 10));
+    const followupRun = workspace.getRun(followup.json().id);
+    assert.equal(followupRun.status, 'complete', followupRun.error);
+    assert.equal(JSON.parse(followupRun.response!).images.length, 2);
+    const removed = await app.inject({ method: 'DELETE', url: `/api/projects/${project.id}/chats/${chat.id}/files/${imageId}`, headers });
+    assert.equal(removed.statusCode, 200, removed.body);
+    assert.equal(chat.messages.some(message => message.attachments.some(file => file.id === imageId)), false);
+    assert.equal(project.attachments.some(file => file.id === imageId), false);
+    assert.equal((await app.inject({ url: `/api/projects/${project.id}/chats/${chat.id}/messages/${chat.messages[0].id}/files/${imageId}`, headers })).statusCode, 404);
+
     chat.model = 'gemini/test';
-    const unsupported = await app.inject({ method: 'POST', url, headers, payload: { text: 'Фото', attachmentIds: [imageId] } });
+    const unsupported = await app.inject({ method: 'POST', url, headers, payload: { text: 'Фото', attachmentIds: [screenshotId] } });
     assert.equal(unsupported.statusCode, 422, unsupported.body);
     assert.match(unsupported.body, /выберите модель ChatGPT или GLM/);
   } finally {

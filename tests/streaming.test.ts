@@ -56,7 +56,7 @@ test('queued text is visible to the sender and sending it now consumes the job o
   });
   const app = await createApp(workspace);
   try {
-    await workspace.settings({ cliPath: process.execPath });
+    await workspace.settings({ cliPath: process.execPath, executionConcurrency: 1 });
     const boot = await app.inject({ method: 'POST', url: '/api/local-login', headers: { host: '127.0.0.1', 'x-bridge-local': '1' } });
     const setup = await app.inject({ method: 'POST', url: '/api/auth/setup', headers: { authorization: 'Bearer ' + boot.json().token },
       payload: { username: 'tester', name: 'Tester', password: 'Fixture-password-2026' } });

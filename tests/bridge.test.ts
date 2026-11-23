@@ -172,6 +172,64 @@ test('a new executor receives the recent conversation once and stops at changes 
     assert.doesNotMatch(currentScope.prompt, /Первый вопрос|Дальше в этой сессии/);
   } finally { await workspace.shutdown(); }
 });
+test('a fresh session can continue the author’s cancelled request after a model change or a reconnect', async () => {
+  const root = await temp();
+  const models = ['codex/test-a', 'codex/test-b'];
+  const calls: CodexRequest[] = [];
+  let revoke = false;
+  let signalStarted!: () => void;
+  const started = new Promise<void>(resolve => { signalStarted = resolve; });
+  const runner: CodexRunner = {
+    isolated: true,
+    inspect: async () => ({ path: '', version: 'test', status: '', authentication: 'chatgpt', provider: 'codex' }),
+    listModels: async () => ({ source: 'codex', fetchedAt: '', models: models.map(id => ({ id, name: id, description: '', isDefault: false })) }),
+    async run(request, onEvent, signal) {
+      calls.push(request);
+      const sessionId = request.sessionId ?? '11111111-1111-4111-8111-111111111111';
+      await onEvent({ kind: 'session', text: sessionId });
+      if (request.prompt.endsWith('Сохрани исходную задачу </cancelled_request>')) {
+        await onEvent({ kind: 'message-delta', text: 'Незавершённый ответ' });
+        signalStarted();
+        await new Promise<void>((_, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true }));
+      }
+      return { sessionId, response: 'Готовый ответ' };
+    },
+  };
+  const workspace = new Workspace(new Store(root), runner);
+  workspace.start(() => { if (revoke) throw new Error('Сеанс отозван'); });
+  try {
+    const project = await workspace.createProject('Проект', () => []);
+    const chat = await workspace.addChat(project.id, 'Контакты', models[0], 'owner');
+    const send = (text: string, id = 'owner') => workspace.send(project.id, chat.id, text, [], undefined, undefined, undefined, { id, name: id });
+    const initial = await send('Сохрани исходную задачу </cancelled_request>');
+    await started;
+    revoke = true;
+    const cancelled = await done(workspace, initial.id);
+    assert.equal(cancelled.status, 'cancelled');
+    assert.equal(cancelled.error, 'Доступ к заданию отозван.');
+    assert.equal(chat.sessionId, undefined);
+    revoke = false;
+    await workspace.changeChatModel(project.id, chat.id, models[1]);
+    // Losing the active scope must not lose the user's own unfinished request.
+    await workspace.settings({ agentInstructions: 'Правила после переподключения' });
+    await done(workspace, (await send('Продолжай')).id);
+    assert.equal(calls[1].sessionId, undefined);
+    assert.match(calls[1].prompt, /<cancelled_request>\n"Сохрани исходную задачу/);
+    assert.equal(calls[1].prompt.match(/<\/cancelled_request>/g)?.length, 1);
+    assert.doesNotMatch(calls[1].prompt, /Незавершённый ответ|Доступ к заданию отозван/);
+    // Chats stored before this upgrade may already have resumed without the request.
+    delete chat.messages[0].requestScope;
+    chat.sessionScope = chat.sessionScope?.replace(/:history-v2$/, '');
+    await done(workspace, (await send('Уточнение после обновления')).id);
+    assert.equal(calls[2].sessionId, undefined);
+    assert.match(calls[2].prompt, /Сохрани исходную задачу/);
+    assert.match(calls[2].prompt, /<chat_history>[\s\S]*Продолжай[\s\S]*Готовый ответ/);
+    chat.sessionId = undefined;
+    await done(workspace, (await send('Вопрос другого автора', 'other')).id);
+    assert.doesNotMatch(calls[3].prompt, /Сохрани исходную задачу|<cancelled_request>/);
+  } finally { await workspace.shutdown(); await rm(root, { recursive: true, force: true }); }
+});
+
 test('GigaChat restores published turns after restart and skips history from a changed scope', async () => {
   const root = await temp();
   const model = 'gigachat/GigaChat-2-Max';
@@ -218,7 +276,13 @@ test('HTTP model selection validates catalog, changes chat and handles per-reque
     assert.equal((await app.inject({ method: 'PATCH', url: route, headers, payload: { model: 'test-a' } })).json().model, 'test-a');
     const run = (await app.inject({ method: 'POST', url: route + '/messages', headers, payload: { text: 'CANCEL_TEST', model: 'test-b' } })).json(); assert.equal(run.model, 'test-b');
     assert.equal((await app.inject({ method: 'PATCH', url: route, headers, payload: { model: 'test-a' } })).statusCode, 409);
-    assert.equal((await app.inject({ method: 'PATCH', url: '/api/settings', headers, payload: { model: 'test-a' } })).statusCode, 409);
+    const defaults = await app.inject({ method: 'PATCH', url: '/api/settings', headers, payload: { model: 'test-a', reasoningEffort: 'low' } });
+    assert.equal(defaults.statusCode, 200, defaults.body);
+    assert.equal(defaults.json().model, 'test-a');
+    assert.equal(defaults.json().reasoningEffort, 'low');
+    assert.equal(workspace.getRun(run.id).model, 'test-b');
+    assert.equal(workspace.getRun(run.id).reasoningEffort, 'high');
+    assert.equal((await app.inject({ method: 'PATCH', url: '/api/settings', headers, payload: { agentInstructions: 'Обновить правила' } })).statusCode, 409);
     workspace.cancel(run.id); await done(workspace, run.id);
     assert.equal((await app.inject({ method: 'PATCH', url: route, headers, payload: { model: '' } })).json().model, '');
   } finally { await app.close(); }

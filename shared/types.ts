@@ -6,7 +6,8 @@ import type { ExecutionProvider } from './execution-accounts.js';
 export type FileStorageProvider = 'local' | 's3';
 export interface FileStorageStatus { provider: FileStorageProvider; s3Configured: boolean }
 export type ReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh';
-export interface Settings { cliPath: string; allowWrite: boolean; includePreviews: boolean; model: string; reasoningEffort?: ReasoningEffort; dictationEnabled?: boolean; agentInstructions?: string; fileStorageProvider?: FileStorageProvider }
+export const maxExecutionConcurrency = 32;
+export interface Settings { cliPath: string; allowWrite: boolean; includePreviews: boolean; model: string; reasoningEffort?: ReasoningEffort; dictationEnabled?: boolean; agentInstructions?: string; fileStorageProvider?: FileStorageProvider; executionConcurrency?: number }
 export type DictationModelId = 'turbo' | 'quality';
 export interface DictationModels {
   active: DictationModelId | null;
@@ -29,13 +30,13 @@ export interface TokenActivityReport {
 export type RunStatus = 'queued' | 'running' | 'complete' | 'cancelled' | 'error' | 'interrupted';
 export interface ProjectFile { id: string; name: string; size: number; uploadedAt: string }
 export interface Attachment { id: string; name: string; path?: string; storage?: 's3'; size: number; ownerId?: string; libraryUploadedAt?: string; uploadedAt?: string }
-export interface Message { id: string; role: 'user' | 'assistant'; text: string; status: RunStatus; createdAt: string; attachments: Attachment[]; visuals?: ChatVisual[]; instructionSave?: 'saved' | 'already-saved' | 'not-saved'; usage?: Usage; runId?: string; model?: string; authorId?: string; authorName?: string; fileScope?: string; freecadSourceId?: string; historyScope?: string; specialistName?: string; consultedSpecialists?: string[] }
+export interface Message { id: string; role: 'user' | 'assistant'; text: string; status: RunStatus; createdAt: string; attachments: Attachment[]; visuals?: ChatVisual[]; instructionSave?: 'saved' | 'already-saved' | 'not-saved'; usage?: Usage; runId?: string; model?: string; authorId?: string; authorName?: string; fileScope?: string; freecadSourceId?: string; historyScope?: string; requestScope?: string; specialistName?: string; consultedSpecialists?: string[] }
 export interface ErpContext { installationId: string; entityType: string; entityId: string }
 export interface FastkoreChatBinding { installationId: string; externalUserId?: string; key: string; view: FastkoreContext['view']; entitySetId?: string; entityId?: string; entityName?: string; contextName?: string; entityUri?: string; tileId?: string; tileName?: string }
 export type FastkoreNavigationTarget = { installationId: string } & ({ entityUri: string } | { tileId: string; tileName?: string });
 export type ChatView = Chat & { fastkoreNavigation?: FastkoreNavigationTarget };
 export interface ExternalIdentity { installationId: string; externalUserId: string; userId: string }
-export interface Chat { reasoningEffort?: ReasoningEffort; id: string; title: string; titleCustomized?: true; sessionId?: string; sessionScope?: string; sessionProvider?: CliInfo['provider']; historyReplayPending?: true; legacyHistory?: { lastAnswerId: string; scope: string; turns: number }; cliWorkspaceProjectId?: string; consultantIds?: string[]; knowledgeRevision?: string; specialistSessions?: Record<string, Pick<Chat, 'sessionId' | 'sessionScope' | 'knowledgeRevision'>>; updatedAt: string; archivedAt?: string; messages: Message[]; lastCompletedReplyId?: string; model?: string; agentProfileId?: string; erpContext?: ErpContext; fastkoreBinding?: FastkoreChatBinding; fastkoreHistory?: { binding: FastkoreChatBinding; turns: number } | null; linkedToFastkore?: true; ownerId?: string; ownerName?: string; visibility?: 'private' | 'project' }
+export interface Chat { storedFiles?: Attachment[]; reasoningEffort?: ReasoningEffort; id: string; title: string; titleCustomized?: true; sessionId?: string; sessionScope?: string; sessionProvider?: CliInfo['provider']; historyReplayPending?: true; legacyHistory?: { lastAnswerId: string; scope: string; turns: number }; cliWorkspaceProjectId?: string; consultantIds?: string[]; knowledgeRevision?: string; specialistSessions?: Record<string, Pick<Chat, 'sessionId' | 'sessionScope' | 'knowledgeRevision'>>; updatedAt: string; archivedAt?: string; messages: Message[]; lastCompletedReplyId?: string; model?: string; agentProfileId?: string; erpContext?: ErpContext; fastkoreBinding?: FastkoreChatBinding; fastkoreHistory?: { binding: FastkoreChatBinding; turns: number } | null; linkedToFastkore?: true; ownerId?: string; ownerName?: string; visibility?: 'private' | 'project' }
 export interface ProjectAgentConnection { profileId: string; toolIds: AgentToolId[]; fileIds: string[] | null }
 export interface ProjectAgentPolicy { revision: number; connections: ProjectAgentConnection[] }
 export interface ProjectAgentSettings {
@@ -72,7 +73,7 @@ export interface RunToolContext { operation?: string; scope?: 'current' | 'erp';
 export interface Run { reasoningEffort?: ReasoningEffort; id: string; projectId?: string; chatId?: string; status: RunStatus; progress: string; tool?: string; toolContext?: RunToolContext; canSteer?: boolean; steeringTo?: string; createdAt: string; startedAt?: string; completedAt?: string; response?: string; error?: string; usage?: Usage; timing?: RunTiming; usageOnly?: true; clientRequestId?: string; requestHash?: string; model?: string; executionProvider?: CliInfo['provider']; ownerId?: string; agentProfileId?: string; profileRevision?: number }
 export interface QueuedRun extends Run { queuedText?: string; queuedFiles?: number }
 /** Trusted queue input. Never return this record from HTTP handlers. */
-export interface Job { runId: string; kind: 'chat' | 'subscription'; text: string; attachmentIds: string[]; authorId?: string; credentialId?: string; scope?: string; fastkoreContext?: FastkoreContext; recommendedSpecialistId?: string; specialistName?: string; specialistScope?: string }
+export interface Job { runId: string; kind: 'chat' | 'subscription'; text: string; attachmentIds: string[]; authorId?: string; credentialId?: string; scope?: string; fastkoreContext?: FastkoreContext; recommendedSpecialistId?: string; specialistName?: string; specialistScope?: string; fileWrite?: boolean }
 export interface User { id: string; username: string; name: string; role: 'admin' | 'employee'; roleId?: string; disabled: boolean }
 export const interfaceScales = [60, 70, 80, 90, 100, 110] as const;
 export type InterfaceScale = typeof interfaceScales[number];
@@ -90,7 +91,7 @@ export interface StoredErpDelegation { sealedGrant: string; expiresAt: number; r
 export interface FastkoreRole { id: string; name: string }
 export interface FastkoreRoleRecord extends FastkoreRole { installationId: string; lastSeenAt: string }
 export interface FastkoreRoleSnapshot { installationId: string; externalUserId: string; roles?: FastkoreRole[]; updatedAt: string }
-export interface FastkoreRolePermissions { mcp: boolean; cli: boolean; readOnly?: boolean; createProjects?: boolean; webSearch?: boolean; webRead?: boolean; webRequests?: boolean; revision: number }
+export interface FastkoreRolePermissions { mcp: boolean; cli: boolean; fileWrite?: boolean; readOnly?: boolean; createProjects?: boolean; webSearch?: boolean; webRead?: boolean; webRequests?: boolean; revision: number }
 export interface FastkoreRoleSummary extends FastkoreRoleRecord { installationName: string; userCount: number; permissions: FastkoreRolePermissions }
 export interface TeamUser extends User {
   erpRoles: { installationId: string; roles?: FastkoreRole[] }[];
@@ -115,6 +116,7 @@ export interface AuditEvent {
 export interface Security { users: UserRecord[]; credentials: Credential[]; audit: AuditEvent[]; pendingFastkoreAdminId?: string }
 export interface FastkoreTlsInfo { origin: string; fingerprint: string; subject: string; expiresAt: string }
 export interface FastkoreTlsTrust extends FastkoreTlsInfo { pem: string }
+export interface FastkoreConnectionCheck { id: 'sso' | 'mcp' | 'cli'; ready: boolean; message: string }
 export interface FastkoreInstallation { id: string; name: string; validateTicketUrl: string; mcpUrl?: string; mcpEnabled?: boolean; cliEnabled?: boolean; enabled: boolean; autoProvision: true; defaultRoleId: 'sso_pending'; sessionTtlSeconds: 1800; pairingStatus: 'manual' | 'unpaired' | 'pending' | 'paired'; pairedAt?: string; pairingRotationPending?: boolean; tlsFingerprint?: string; tlsConfirmationRequired?: boolean }
 export interface FastkoreKeyIssue { installationId: string; connectionKey: string; erpKeyVerifier: string }
 export interface FastkoreAuthentication { source: 'fastkore'; installationId: string; externalUserId: string; expiresAt: string; csrfToken: string; canChangePassword: false; roles?: FastkoreRole[]; canOpenBrowserSettings?: boolean; browserSettings?: boolean }
@@ -136,5 +138,5 @@ export const sharedChatWaitMessage = 'Другой участник ждёт о�
 export interface UnassignedChatSummary extends ChatSummary { projectId: string }
 export interface ArchivedChatSummary extends ChatSummary { projectId: string; projectName: string; archivedAt: string }
 export interface RelatedChatSummary extends ChatSummary { projectId: string; projectName: string; parent?: true; contextMatches?: false; legacyContext?: true }
-export interface ToolPermissions { cli: boolean; mcp: boolean; cliUnavailableReason?: string; mcpUnavailableReason?: string; webSearch: boolean; webRead?: boolean }
+export interface ToolPermissions { cli: boolean; mcp: boolean; fileWrite?: boolean; cliUnavailableReason?: string; mcpUnavailableReason?: string; webSearch: boolean; webRead?: boolean }
 export interface Status { version: string; activeRun: Run | null; activeRuns?: Run[]; queuedRuns: QueuedRun[]; unreadChatReplies?: Record<string, string>; busy: boolean; executionDisabled?: boolean; isolatedCodex?: boolean; workerFilesAvailable?: boolean; codexLimitsRevision?: number; user: User; setupRequired: boolean; canCreateProject?: boolean; dictationAvailable?: boolean; dictationEnabled?: boolean; fastkoreToolsStatus?: 'unavailable' | 'ready' | 'reauth'; toolPermissions?: ToolPermissions; cli: CliInfo | null; settings: Settings; addresses: string[]; port: number; lan: boolean; storageWarning?: string; fileStorage?: FileStorageStatus }

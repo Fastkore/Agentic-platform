@@ -54,6 +54,6 @@ test('per-agent capabilities and screen determine available read routes', () => 
   assert.doesNotMatch(render({ view: 'card', entity_ids: [] }, cli), /"command":"data get"/);
   assert.ok(render({ view: 'card' }, cli).includes(JSON.stringify(['--entity-set', set, '--entity', selected])));
   assert.match(render({ view: 'none', entity_ids: [] }), /Открытого объекта или списка.*нет/);
-  assert.match(fastkorePrompt(undefined, undefined, true), /Снимок окна.*не передан/);
+  assert.match(fastkorePrompt(undefined, undefined, true), /Контекст открытой папки пока недоступен/);
   assert.equal(fastkorePrompt(undefined), '');
 });

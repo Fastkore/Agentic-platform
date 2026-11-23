@@ -335,7 +335,10 @@ test('uploaded 3D models can be opened by their owner and an administrator withi
     }
     assert.equal((await f.req('GET', chatUrl, reader.token)).statusCode, 200);
     assert.equal((await f.req('GET', fileUrl + model.id, reader.token)).statusCode, 404);
-    assert.equal((await f.req('GET', fileUrl + document.id, owner.token)).statusCode, 404);
+    assert.equal((await f.req('GET', fileUrl + document.id, owner.token)).statusCode, 200);
+    assert.equal((await f.req('GET', fileUrl + document.id, reader.token)).statusCode, 404);
+    assert.deepEqual((await f.req('GET', chatUrl + '/files', reader.token)).json(), []);
+    assert.equal((await f.req('DELETE', chatUrl + '/files/' + document.id, reader.token)).statusCode, 404);
   } finally { await f.app.close(); }
 });
 

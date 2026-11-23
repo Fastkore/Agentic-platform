@@ -1,6 +1,12 @@
-const bounded = (value: string | undefined, fallback: number) => {
-  const parsed = Number(value ?? fallback);
-  return Number.isInteger(parsed) && parsed >= 1 && parsed <= 16 ? parsed : fallback;
-};
-export const executorCapacity = () => bounded(process.env.BRIDGE_EXECUTOR_CONCURRENCY, 4);
-export const providerCapacity = (provider: string) => provider === 'glm' ? bounded(process.env.BRIDGE_GLM_CONCURRENCY, 2) : 1;
+import { maxExecutionConcurrency } from '../shared/types.js';
+
+export const executionConcurrencySchema = { type: 'integer', minimum: 1, maximum: maxExecutionConcurrency } as const;
+
+export function validExecutionConcurrency(value: unknown): value is number {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 1 && value <= maxExecutionConcurrency;
+}
+
+export function defaultExecutionConcurrency() {
+  const limit = Number(process.env.BRIDGE_EXECUTOR_CONCURRENCY);
+  return validExecutionConcurrency(limit) ? limit : 4;
+}
