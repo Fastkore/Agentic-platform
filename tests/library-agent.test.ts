@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { SOURCE_TRUST_INSTRUCTIONS } from '../server/agent-context.js';
 import { fixture, grantedFolder, idle, json } from './library-app.js';
 
@@ -218,12 +219,14 @@ test('the project routes a quote to an estimator with its own library grant and 
       const list = await tools.call('library_list', {}, signal);
       assert.equal(list.success, true, list.text);
       const [folder] = json(list.text).folders;
-      const found = await tools.call('library_search', { query: 'SH-12' }, signal);
+      const found = await tools.call('library_search', { query: 'SH-12', mode: 'exact' }, signal);
       assert.equal(found.success, true, found.text);
       const [match] = json(found.text).matches;
-      const file = await tools.call('library_read', { folder: folder.folder, path: match.path }, signal);
+      const file = await tools.call('library_read', { folder: folder.folder, fileId: match.fileId, startLine: Number(match.lines), lineCount: 1 }, signal);
       assert.match(file.text, /12000/);
       assert.match(file.text, /ПРОВЕРОЧНЫЙ МАРКЕР/);
+      assert.equal(json(file.text).lines.length, 1);
+      assert.doesNotMatch(file.text, /19000/);
       assert.equal((await tools.call('knowledge', { section: 'fastkore', action: 'index' }, signal)).success, true);
       return 'Стоимость позиции SH-12 составляет 12 000 рублей.';
     }
@@ -243,7 +246,7 @@ test('the project routes a quote to an estimator with its own library grant and 
     const original = f.workspace.corporate.data.profiles.find(profile => profile.id === 'estimator')!;
     await f.workspace.corporate.saveProfile({ role: 'admin', id: 'test-admin', disabled: false, name: 'Test', username: 'test' },
       { ...original, enabled: true, description: 'Расчёт стоимости по прайсу проекта' });
-    await grantedFolder(f, { 'price.csv': 'sku,price,note\nSH-12,12000,' + embeddedInstruction + '\n' }, { profileId: 'estimator', profile: 'documents' });
+    await grantedFolder(f, { 'price.csv': 'sku,price,note\nSH-12,12000,' + embeddedInstruction + '\nSH-19,19000,\n' }, { profileId: 'estimator', profile: 'documents' });
     const route = `/api/projects/${f.project.id}/chats`;
     async function ask(agentProfileId?: string, requiredSpecialistId?: string) {
       const created = await f.req('POST', route, f.token, { agentProfileId });
@@ -254,6 +257,15 @@ test('the project routes a quote to an estimator with its own library grant and 
       assert.equal(sent.statusCode, 202, sent.body);
       await idle(f.workspace);
       assert.equal(f.workspace.getRun(sent.json().id).status, 'complete', f.workspace.getRun(sent.json().id).error);
+      const log = (await f.req('GET', '/api/library/audit', f.admin)).json().filter(event => event.details?.runId === sent.json().id);
+      const search = log.find(event => event.action === 'library.tool.search')?.details.objectIds;
+      const read = log.find(event => event.action === 'library.tool.read')?.details.objectIds;
+      assert.deepEqual(search, { profileId: 'estimator', mode: 'exact', matches: '1',
+        queryDigest: createHash('sha256').update('SH-12').digest('hex') });
+      assert.equal(read.profileId, 'estimator');
+      assert.equal(read.startLine, '2');
+      assert.equal(read.requestedLines, '1');
+      assert.equal(read.returnedLines, '1');
       return (await f.req('GET', chat, f.token)).json().messages.at(-1);
     }
     for (const required of [undefined, 'estimator']) {
