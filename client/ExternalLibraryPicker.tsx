@@ -8,8 +8,8 @@ const guides = {
     steps: ['Создайте приложение с типом Scoped access и доступом Full Dropbox.'] },
   google: { url: 'https://console.cloud.google.com/apis/credentials', id: 'Client ID', secret: 'Client secret', location: 'Клиенты OAuth', redirect: 'Authorized redirect URIs',
     steps: ['Выберите проект в Google Cloud и включите Google Drive API.', 'В Google Auth Platform откройте Audience и выберите аудиторию. В Data Access добавьте разрешение https://www.googleapis.com/auth/drive.readonly. В режиме Testing добавьте свой аккаунт в Test users.', 'Откройте Clients → Create client и выберите Web application.'] },
-  yandex: { url: 'https://oauth.yandex.ru/', id: 'ClientID', secret: 'Client secret', location: 'Карточка приложения', redirect: 'Redirect URI',
-    steps: ['В кабинете Яндекс OAuth нажмите «Создать приложение», укажите название и выберите платформу «Веб-сервисы».', 'В правах доступа найдите Яндекс Диск и выберите «Чтение всего Диска» (cloud_api:disk.read).'] },
+  yandex: { url: 'https://oauth.yandex.ru/client/new/', id: 'ClientID', secret: 'Client secret', location: 'Карточка приложения', redirect: 'Redirect URI',
+    steps: ['Выберите «Для доступа к API или отладки». Укажите название приложения и контактную почту.', 'В правах доступа найдите Яндекс Диск и выберите «Чтение всего Диска» (cloud_api:disk.read).'] },
 };
 function DropboxPermissions() {
   return <aside className="library-drive-permissions">
@@ -43,6 +43,9 @@ export function ExternalLibraryPicker({ provider, request, onSelect, selectionCo
   const [clientId, setClientId] = useState('');
   const [secret, setSecret] = useState('');
   const [copied, setCopied] = useState(false);
+  const [code, setCode] = useState('');
+  const finishLogin = useRef<((code?: string) => Promise<void>) | null>(null);
+  const screenCode = provider === 'yandex' && redirect === 'https://oauth.yandex.ru/verification_code';
   const guide = guides[provider];
   useEffect(() => {
     const abort = new AbortController();
@@ -85,28 +88,29 @@ export function ExternalLibraryPicker({ provider, request, onSelect, selectionCo
       popup.opener = null;
       flow.signal.addEventListener('abort', () => popup.close(), { once: true });
     }
-    setChosen(false); setBusy(true); setAuthUrl(''); setConnection(''); setTrail([]); setFolders([]); setError(''); onSelect(undefined);
+    setCode(''); setChosen(false); setBusy(true); setAuthUrl(''); setConnection(''); setTrail([]); setFolders([]); setError(''); onSelect(undefined);
     try {
       const setup = availability === 'missing' ? { id: clientId.trim(), secret: secret.trim() } : undefined;
       const { state, url } = await post<{state: string; url: string}>('authorize', { provider, setup });
       if (flow.signal.aborted) { popup?.close(); return; }
-      const channel = new BroadcastChannel('library-oauth-' + state);
+      const channel = screenCode ? undefined : new BroadcastChannel('library-oauth-' + state);
       const timeout = window.setTimeout(() => {
         flow.abort(); setBusy(false); setAuthUrl(''); setError('Время входа истекло. Подключитесь ещё раз.');
       }, 15 * 60_000);
-      const cleanup = () => { channel.close(); window.clearTimeout(timeout); };
+      const cleanup = () => { finishLogin.current = null; channel?.close(); window.clearTimeout(timeout); };
       flow.signal.addEventListener('abort', cleanup, { once: true });
-      channel.onmessage = async ({ data }) => {
-        cleanup(); setAuthUrl('');
+      finishLogin.current = async confirmation => {
+        cleanup(); setAuthUrl(''); setCode(''); popup?.close();
         try {
-          if (!data?.code) throw new Error('Вход отменён. Можно повторить подключение.');
-          await post('authorize/finish', { state, code: data.code });
+          if (!confirmation) throw new Error('Вход отменён. Можно повторить подключение.');
+          await post('authorize/finish', { state, code: confirmation });
           if (flow.signal.aborted) return;
           setSecret(''); setAvailability('ready'); setStep('start');
           setConnection(state);
           await browse(state, [], flow.signal);
         } catch (e) { if (!flow.signal.aborted) { setError((e as Error).message); setBusy(false); } }
       };
+      if (channel) channel.onmessage = ({ data }) => { if (!flow.signal.aborted) void finishLogin.current?.(data?.code); };
       setAuthUrl(url);
       if (popup) popup.location.replace(url);
     } catch (e) { popup?.close(); if (!flow.signal.aborted) { setError((e as Error).message); setBusy(false); } }
@@ -139,14 +143,16 @@ export function ExternalLibraryPicker({ provider, request, onSelect, selectionCo
       <a className={provider === 'dropbox' ? 'library-provider-link' : undefined} href={guide.url} target="_blank" rel="noreferrer">Открыть кабинет {name} ↗</a>
       <ol>{guide.steps.map((text, index) => <li key={text}>{text}{provider === 'google' && index === 0 && <>
         {' '}<a href="https://console.cloud.google.com/apis/library/drive.googleapis.com" target="_blank" rel="noreferrer">Открыть Google Drive API</a>
-      </>}</li>)}<li>В поле <b>{guide.redirect}</b> вставьте адрес ниже и сохраните настройки.</li></ol>
-      <label>Адрес возврата<input readOnly value={redirect} onFocus={e => e.currentTarget.select()} /></label>
+      </>}</li>)}{screenCode
+        ? <li>Оставьте адрес возврата Яндекса <code>{redirect}</code> и нажмите «Создать приложение».</li>
+        : <li>В поле <b>{guide.redirect}</b> вставьте адрес ниже и сохраните настройки.</li>}</ol>
+      {!screenCode && <label>Адрес возврата<input readOnly value={redirect} onFocus={e => e.currentTarget.select()} /></label>}
       {provider === 'dropbox' && <DropboxPermissions />}
       <div className="settings-actions">
-        <button type="button" className="secondary" onClick={async () => {
+        {!screenCode && <button type="button" className="secondary" onClick={async () => {
           try { await navigator.clipboard.writeText(redirect); setCopied(true); setError(''); }
           catch { setError('Выделите адрес в поле выше и скопируйте его.'); }
-        }}>{copied ? 'Адрес скопирован' : 'Скопировать адрес'}</button>
+        }}>{copied ? 'Адрес скопирован' : 'Скопировать адрес'}</button>}
         <button type="button" className="primary" onClick={() => { setError(''); setStep('keys'); }}>Далее — ввести ключи</button>
       </div>
     </>}
@@ -173,11 +179,19 @@ export function ExternalLibraryPicker({ provider, request, onSelect, selectionCo
     </>}
     {authUrl && <>
       <strong role="status">Завершите вход в {name}</strong>
-      <p className="help">Подтвердите доступ и вернитесь сюда для выбора папки.</p>
+      {screenCode ? <>
+        <p className="help">Разрешите чтение Диска в окне Яндекса. Скопируйте показанный код, вернитесь сюда и вставьте его в поле.</p>
+        <label>Код подтверждения Яндекса<input autoComplete="one-time-code" inputMode="numeric" value={code}
+          maxLength={32} onChange={event => setCode(event.target.value)} onKeyDown={event => {
+            if (event.key === 'Enter') { event.preventDefault(); if (code.trim()) void finishLogin.current?.(code.trim()); }
+          }} /></label>
+      </> : <p className="help">Подтвердите доступ и вернитесь сюда для выбора папки.</p>}
       <div className="settings-actions">
+        {screenCode && <button type="button" className="primary" disabled={!code.trim()}
+          onClick={() => void finishLogin.current?.(code.trim())}>Подтвердить код</button>}
         <a href={authUrl} target="_blank" rel="noopener noreferrer">Открыть окно входа</a>
         <button type="button" className="secondary" onClick={() => {
-          controller.current?.abort(); setAuthUrl(''); setBusy(false);
+          controller.current?.abort(); setCode(''); setAuthUrl(''); setBusy(false);
         }}>Назад</button>
       </div>
     </>}

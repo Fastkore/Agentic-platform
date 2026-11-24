@@ -6,7 +6,8 @@ import { CloudDrive, providers } from './cloud-drive.js';
 
 interface Tokens { access: string; refresh?: string; expires: number }
 export interface DriveKeys { id: string; secret: string }
-interface Draft { setup?: DriveKeys; owner: string; provider: ExternalProvider; expires: number; verifier?: string; tokens?: Tokens; folders: Map<string, { name: string; identity: string }> }
+type AppKeys = DriveKeys & { screenCode?: boolean };
+interface Draft { redirect: string; setup?: AppKeys; owner: string; provider: ExternalProvider; expires: number; verifier?: string; tokens?: Tokens; folders: Map<string, { name: string; identity: string }> }
 const draftLifetime = 15 * 60_000;
 const expiredDraft = () => new BridgeError('Сеанс подключения завершён. Войдите в диск ещё раз, чтобы выбрать папку.', 410);
 const expired = () => new BridgeError('Подключение истекло. Нажмите «Подключить» ещё раз.', 409);
@@ -15,7 +16,8 @@ function environmentKeys(provider: ExternalProvider): DriveKeys | undefined {
   const id = process.env[prefix + '_CLIENT_ID'], secret = process.env[prefix + '_CLIENT_SECRET'];
   return id && secret ? { id, secret } : undefined;
 }
-function redirectUri() {
+function redirectUri(provider: ExternalProvider, keys?: AppKeys) {
+  if (provider === 'yandex' && (!keys || keys.screenCode)) return 'https://oauth.yandex.ru/verification_code';
   if (!process.env.BRIDGE_PUBLIC_ORIGIN) throw new BridgeError('Публичный адрес платформы не задан.', 503);
   return new URL('/library-oauth.html', process.env.BRIDGE_PUBLIC_ORIGIN).href;
 }
@@ -34,7 +36,7 @@ export class DriveAuth {
   private drafts = new Map<string, Draft>();
   constructor(private settings: LibrarySettings) {}
   private keys(provider: ExternalProvider) {
-    return this.settings.read<DriveKeys>(provider) ?? environmentKeys(provider);
+    return this.settings.read<AppKeys>(provider) ?? environmentKeys(provider);
   }
   private requireKeys(provider: ExternalProvider) {
     const keys = this.keys(provider);
@@ -51,17 +53,19 @@ export class DriveAuth {
     return new CloudDrive(provider, tokens.access);
   }
   status(provider: ExternalProvider) {
-    return { configured: !!this.keys(provider), redirectUri: redirectUri() };
+    const keys = this.keys(provider);
+    return { configured: !!keys, redirectUri: redirectUri(provider, keys) };
   }
   begin(owner: string, provider: ExternalProvider, setup?: DriveKeys) {
     const existing = this.keys(provider);
     if (existing && setup) throw new BridgeError('Сервис уже настроен. Обновите форму, чтобы войти.', 409);
-    const { id } = existing ?? setup ?? this.requireKeys(provider);
-    const redirect = redirectUri();
+    const newKeys = setup && (provider === 'yandex' ? { ...setup, screenCode: true } : setup);
+    const keys = existing ?? newKeys ?? this.requireKeys(provider);
+    const redirect = redirectUri(provider, keys);
     for (const [key, draft] of this.drafts) if (draft.expires <= Date.now()) this.drafts.delete(key);
     const state = randomUUID(), verifier = randomBytes(48).toString('base64url');
-    this.drafts.set(state, { provider, owner, setup, verifier, expires: Date.now() + draftLifetime, folders: new Map() });
-    const params = new URLSearchParams({ client_id: id, redirect_uri: redirect, state, response_type: 'code', scope: providers[provider].scope,
+    this.drafts.set(state, { provider, owner, setup: newKeys, redirect, verifier, expires: Date.now() + draftLifetime, folders: new Map() });
+    const params = new URLSearchParams({ client_id: keys.id, redirect_uri: redirect, state, response_type: 'code', scope: providers[provider].scope,
       code_challenge_method: 'S256', code_challenge: createHash('sha256').update(verifier).digest('base64url') });
     if (provider === 'dropbox') params.set('token_access_type', 'offline');
     if (provider === 'google') { params.set('access_type', 'offline'); params.set('prompt', 'consent select_account'); }
@@ -78,7 +82,7 @@ export class DriveAuth {
     delete draft.verifier;
     const setup = draft.setup;
     delete draft.setup;
-    const tokens = await exchange(draft.provider, setup ?? this.requireKeys(draft.provider), { grant_type: 'authorization_code', code, code_verifier: verifier, redirect_uri: redirectUri() });
+    const tokens = await exchange(draft.provider, setup ?? this.requireKeys(draft.provider), { grant_type: 'authorization_code', code, code_verifier: verifier, redirect_uri: draft.redirect });
     if (setup) {
       const current = this.keys(draft.provider);
       if (current && (current.id !== setup.id || current.secret !== setup.secret)) throw new BridgeError('Другой администратор уже подключил сервис. Войдите ещё раз.', 409);

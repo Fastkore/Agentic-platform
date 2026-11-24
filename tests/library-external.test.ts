@@ -11,6 +11,39 @@ import { LibraryReader } from '../server/library/reader.js';
 import { CloudDrive, providers } from '../server/library/cloud-drive.js';
 import { admin, startOperation } from './library-helpers.js';
 
+test('Yandex API apps use the verification page and exchange the displayed code with PKCE', async t => {
+  const root = await mkdtemp(path.join(tmpdir(), 'yandex-library-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const settings = new LibrarySettings(root);
+  const auth = new DriveAuth(settings);
+  const keys = { id: 'test-client', secret: 'test-secret' };
+  const redirect = 'https://oauth.yandex.ru/verification_code';
+  assert.equal(auth.status('yandex').redirectUri, redirect);
+  const login = auth.begin('owner', 'yandex', keys);
+  const params = new URL(login.url).searchParams;
+  assert.equal(params.get('redirect_uri'), redirect);
+  assert.equal(params.get('response_type'), 'code');
+  assert.equal(params.get('scope'), 'cloud_api:disk.read');
+  assert.equal(params.get('code_challenge_method'), 'S256');
+  t.mock.method(globalThis, 'fetch', async (url: string, init: RequestInit) => {
+    assert.equal(url, providers.yandex.token);
+    const body = init.body as URLSearchParams;
+    assert.equal(body.get('code'), '0123456');
+    assert.equal(body.get('redirect_uri'), redirect);
+    const { createHash } = await import('node:crypto');
+    assert.equal(createHash('sha256').update(body.get('code_verifier')!).digest('base64url'), params.get('code_challenge'));
+    return Response.json({ access_token: 'test-token', refresh_token: 'test-refresh', expires_in: 3600 });
+  });
+  await assert.rejects(auth.finish('other', login.state, '0123456'));
+  await auth.finish('owner', login.state, '0123456');
+  await assert.rejects(auth.finish('owner', login.state, '0123456'));
+  const reopened = new DriveAuth(settings);
+  assert.equal(new URL(reopened.begin('owner','yandex').url).searchParams.get('redirect_uri'), redirect);
+  settings.write('yandex', keys);
+  process.env.BRIDGE_PUBLIC_ORIGIN = 'https://platform.example';
+  assert.equal(new URL(reopened.begin('owner','yandex').url).searchParams.get('redirect_uri'), 'https://platform.example/library-oauth.html');
+});
+
 test('private Drive library without S3: OAuth, picker, index updates, revocation and cleanup', async t => {
   const root = await mkdtemp(path.join(tmpdir(), 'external-library-'));
   const registry = new LibraryRegistry(root, {}), indexer = new LibraryIndexer(registry), reader = new LibraryReader(registry);
