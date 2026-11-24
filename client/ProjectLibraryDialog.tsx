@@ -5,7 +5,7 @@ import type { LibraryCell, LibraryConnection, LibraryFolderSummary, OutputPolicy
 import { SettingsTabStrip } from './SettingsTabs';
 import { Select } from './Select';
 import { PermissionSwitch } from './PermissionSwitch';
-import type { Request } from './library-upload';
+import { formatFileCount, type Request } from './library-upload';
 import { folderLine, LibraryFolderCard, useLibraryRefresh } from './LibraryFolderCard';
 import { CreateLibraryForm, LibraryCreateButtons, LibrarySearch, libraryTabs, LibraryKindIcon, type LibraryKind, outputModes, profileLabels } from './LibraryPanel';
 import './specialists.css';
@@ -94,7 +94,7 @@ export function ProjectLibraryPanel({ project, request, section, isAdmin, initia
             <div className="library-card-body">
               <p className="help">{c.folderActive ? 'Активна' : 'Неактивна'} · {profileLabels[c.profile]} · {outputModes[c.outputPolicy]}</p>
               {c.description && <p className="help">{c.description}</p>}
-              <p className="help">{folder ? folderLine(folder) : c.current ? `${c.current.files.toLocaleString('ru')} файлов` : 'Материалов пока нет'}</p>
+              <p className="help">{folder ? folderLine(folder) : c.current ? formatFileCount(c.current.files) : 'Материалов пока нет'}</p>
               {c.folderActive && c.classification === 'restricted' && <p className="library-warning">Для этой папки также действуют правила закрытого анализа.</p>}
               <p className="help">Агенты: {assigned.length ? assigned.join(', ') : 'не назначены — агент папку не использует'}</p>
             </div>
@@ -123,13 +123,13 @@ export function ProjectLibraryPanel({ project, request, section, isAdmin, initia
         {view.connections.length ? <div className="library-matrix-wrap"><table className="library-matrix">
           <thead><tr><th scope="col">Папка</th>{profiles.map(p => <th key={p.id} scope="col">{p.name}</th>)}</tr></thead>
           <tbody>{view.connections.map(c => <tr key={c.folderId}>
-            <th scope="row"><strong>{c.folderName}</strong><small>{c.current ? `${c.current.files.toLocaleString('ru')} файлов` : 'пусто'}</small></th>
+            <th scope="row"><strong>{c.folderName}</strong><small>{c.current ? formatFileCount(c.current.files) : 'пусто'}</small></th>
             {profiles.map(p => {
               const cell = view.cells.find(x => x.folderId === c.folderId && x.profileId === p.id)!;
               return <td key={p.id} data-state={cell.allowed ? 'allowed' : cell.granted ? 'blocked' : 'off'}>
                 <span className="library-cell">
                   <PermissionSwitch name={`${c.folderName} — ${p.name}`} checked={cell.granted} disabled={pending || !c.canManage} onChange={checked => void grant(c, p.id, checked)} />
-                  <span>{cell.granted ? (cell.allowed ? outputModes[cell.outputPolicy!] + (cell.files !== undefined ? ` · ${cell.files} файл.` : '') : 'Недоступно') : 'Нет доступа'}</span>
+                  <span>{cell.granted ? (cell.allowed ? outputModes[cell.outputPolicy!] + (cell.files !== undefined ? ` · ${formatFileCount(cell.files)}` : '') : 'Недоступно') : 'Нет доступа'}</span>
                   <button type="button" className="workspace-icon" title="Почему" aria-label={`Доступ: ${c.folderName} — ${p.name}`} onClick={() => setDetail(cell)}><Info size={15} /></button>
                 </span>
               </td>;
@@ -142,7 +142,7 @@ export function ProjectLibraryPanel({ project, request, section, isAdmin, initia
           return <div className="agent-card library-detail" role="status">
             <strong>{c?.folderName} — {p?.name}</strong>
             <p className="help">{detail.allowed ? 'Агент может использовать папку.' : detail.reasons.join('; ')}</p>
-            {detail.files !== undefined && <p className="help">Доступ ограничен {detail.files} файлами (перенесено из прежних «Файлов проекта»).
+            {detail.files !== undefined && <p className="help">В списке разрешённых материалов — {formatFileCount(detail.files)} (перенесено из прежних «Файлов проекта»).
               {c?.canManage && <> <button type="button" className="secondary" disabled={pending} onClick={() => void grant(c, detail.profileId, true, { allFiles: true }).then(() => setDetail(undefined))}>Открыть всю папку</button></>}</p>}
             <div className="settings-actions"><button type="button" className="secondary" onClick={() => setDetail(undefined)}>Закрыть</button></div>
           </div>;

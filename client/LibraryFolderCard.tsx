@@ -3,7 +3,7 @@ import { FilePlus2, FileText, Folder, FolderOpen, ListX, RefreshCw, Trash2, Uplo
 import type { LibraryFolderSummary, OperationMode } from '../shared/library';
 import { externalLabels, type ExternalSelection } from '../shared/library';
 import { ExternalLibraryPicker, driveSessionExpired } from './ExternalLibraryPicker';
-import { formatBytes, type Request } from './library-upload';
+import { formatBytes, formatFileCount, type Request } from './library-upload';
 import { LibraryUploadPanel } from './LibraryUploadPanel';
 
 interface Problems { counts: Record<string, number>; files: { path: string; state: string; note: string | null }[] }
@@ -21,12 +21,12 @@ export function folderLine(folder: LibraryFolderSummary) {
   if (folder.external) parts.push(externalLabels[folder.external.provider] + ' · только чтение');
   const op = folder.operation;
   if (folder.current) {
-    parts.push(`Файлы: ${folder.current.files.toLocaleString('ru')} · ${formatBytes(folder.current.bytes)}`);
+    parts.push(`${formatFileCount(folder.current.files)} · ${formatBytes(folder.current.bytes)}`);
     const without = folder.current.unsupported + folder.current.errors;
     if (without) parts.push(`без поиска ${without}`);
     if (folder.updatedAt) parts.push('обновлено ' + date(folder.updatedAt));
   } else if (folder.external?.preparingFiles !== undefined) {
-    parts.push(`Найдено файлов: ${folder.external.preparingFiles.toLocaleString('ru')} · подготовка к поиску`);
+    parts.push(`${formatFileCount(folder.external.preparingFiles)} · подготовка к поиску`);
   } else if (folder.external?.syncing) {
     parts.push('Получаем файлы с диска');
   } else if (folder.external?.error || folder.failed) {

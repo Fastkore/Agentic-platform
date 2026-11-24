@@ -201,4 +201,11 @@ export async function cancelUpload(request: Request, folderId: string, operation
   rememberUpload(folderId);
 }
 export function forgetUpload(folderId: string) { rememberUpload(folderId); }
+const filePluralRules = new Intl.PluralRules('ru');
+export function formatFileCount(count: number) {
+  const form = filePluralRules.select(count);
+  const noun = form === 'one' ? 'файл' : form === 'few' ? 'файла' : 'файлов';
+  return count.toLocaleString('ru') + ' ' + noun;
+}
+
 export const formatBytes = (n: number) => n < 1024 ? n + ' Б' : n < 1048576 ? (n / 1024).toFixed(1) + ' КиБ' : n < 1073741824 ? (n / 1048576).toFixed(1) + ' МиБ' : (n / 1073741824).toFixed(2) + ' ГиБ';
