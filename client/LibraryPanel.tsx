@@ -3,7 +3,7 @@ import { ChevronLeft, Database, HardDrive, Layers, Plus, Trash2 } from 'lucide-r
 import type { LibraryFolderSummary, LibraryProfile, OutputPolicy } from '../shared/library';
 import { externalLabels, type ExternalProvider, type ExternalSelection } from '../shared/library';
 import { LibraryStorageSetup, type StorageStatus } from './LibraryStorageSetup';
-import { ExternalLibraryPicker } from './ExternalLibraryPicker';
+import { ExternalLibraryPicker, driveSessionExpired } from './ExternalLibraryPicker';
 import { PermissionSwitch } from './PermissionSwitch';
 import { WorkspaceDialog } from './WorkspaceDialog';
 import { Select } from './Select';
@@ -47,7 +47,7 @@ export function LibraryCreateButtons({ kind, select, disabled }: { kind?: Librar
   )}</span>;
 }
 export function CreateLibraryForm({ kind, request, pending, submit, cancel, project, storageChanged, error }: {
-  kind: LibraryKind; request: Request; pending: boolean; submit: (draft: FolderDraft & { external?: ExternalSelection }) => void; cancel: () => void; project?: boolean; storageChanged?: () => void; error?: string;
+  kind: LibraryKind; request: Request; pending: boolean; submit: (create: () => Promise<LibraryFolderSummary>) => void; cancel: () => void; project?: boolean; storageChanged?: () => void; error?: string;
 }) {
   const [draft, setDraft] = useState(emptyFolderDraft);
   const [provider, setProvider] = useState<ExternalProvider>('dropbox');
@@ -63,17 +63,26 @@ export function CreateLibraryForm({ kind, request, pending, submit, cancel, proj
     return () => abort.abort();
   }, [kind, request, reloadStorage]);
   const [selection, setSelection] = useState<ExternalSelection>();
+  const [attempt, setAttempt] = useState(0);
   const suggestedName = useRef('');
   const showDetails = kind === 's3' ? !!storage?.configured : !!selection;
   const ready = !!draft.name.trim() && showDetails;
-  const form = <form className={kind === 'external' ? 'library-form' : 'agent-card library-form'} onSubmit={e => { e.preventDefault(); if (ready && !pending) submit({ ...draft, external: kind === 'external' ? selection : undefined }); }}>
+  async function create() {
+    try {
+      return await request<LibraryFolderSummary>('/api/library', { method: 'POST', body: JSON.stringify({ ...draft, external: selection }) });
+    } catch (e) {
+      if (selection && driveSessionExpired(e)) { setSelection(undefined); setAttempt(n => n + 1); }
+      throw e;
+    }
+  }
+  const form = <form className={kind === 'external' ? 'library-form' : 'agent-card library-form'} onSubmit={e => { e.preventDefault(); if (ready && !pending) submit(create); }}>
     {kind === 's3' && <strong>Обычная библиотека</strong>}
     <fieldset disabled={pending} className="library-source-fields">
       {kind === 'external' ? <>
         <label htmlFor="library-provider">Внешний диск</label>
         <Select id="library-provider" className="settings-select" options={options(externalLabels)} value={provider}
           onChange={value => { setProvider(value as ExternalProvider); setSelection(undefined); }} />
-        <ExternalLibraryPicker key={provider} selectionConfirmed={!!selection} provider={provider} request={request} onSelect={(next, name) => {
+        <ExternalLibraryPicker key={provider + attempt} selectionConfirmed={!!selection} provider={provider} request={request} onSelect={(next, name) => {
           setSelection(next);
           if (name) {
             const previous = suggestedName.current, suggestion = name.slice(0,120);
@@ -213,10 +222,10 @@ export function LibraryPanel({ request, isAdmin }: { request: Request; isAdmin: 
         <strong>Папки библиотеки</strong>
         {isAdmin && <LibraryCreateButtons kind={creating} select={value => { setError(''); setCreating(value); }} disabled={pending} />}
       </div>
-      {creating && <CreateLibraryForm key={creating} kind={creating} error={error} storageChanged={reload} request={request} pending={pending} cancel={() => setCreating(undefined)} submit={draft => void act(async () => {
-        const created = await request<LibraryFolderSummary>('/api/library', { method: 'POST', body: JSON.stringify(draft) });
+      {creating && <CreateLibraryForm key={creating} kind={creating} error={error} storageChanged={reload} request={request} pending={pending} cancel={() => setCreating(undefined)} submit={create => void act(async () => {
+        const created = await create();
         setCreating(undefined); setSelected(created.id);
-      }, draft.external ? 'Создана внешняя библиотека.' : 'Папка создана. Загрузите в неё материалы.')} />}
+      }, creating === 'external' ? 'Создана внешняя библиотека.' : 'Папка создана. Загрузите в неё материалы.')} />}
       {folders && folders.length > 0 && <input type="search" aria-label="Поиск по папкам библиотеки" placeholder="Поиск по папкам библиотеки…"
         value={folderSearch} onChange={event => setFolderSearch(event.target.value)} />}
       {visibleFolders?.length ? <ul className="settings-records">{visibleFolders.map(f => <li key={f.id}>

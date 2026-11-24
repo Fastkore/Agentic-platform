@@ -59,8 +59,8 @@ export function ProjectLibraryPanel({ project, request, section, isAdmin, initia
     {view && <div className="library-panel">
 
       {section === 'folders' && <>
-        {creating && <CreateLibraryForm key={creating} kind={creating} error={error} request={request} pending={pending} project cancel={() => setCreating(undefined)} submit={draft => void act(async () => {
-          const created = await request<LibraryFolderSummary>('/api/library', { method: 'POST', body: JSON.stringify(draft) });
+        {creating && <CreateLibraryForm key={creating} kind={creating} error={error} request={request} pending={pending} project cancel={() => setCreating(undefined)} submit={create => void act(async () => {
+          const created = await create();
           setCreating(undefined);
           await request(base, { method: 'POST', body: JSON.stringify({ folderId: created.id }) });
           setExpanded(created.id);

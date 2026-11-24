@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { FilePlus2, FileText, Folder, FolderOpen, ListX, RefreshCw, Trash2, Upload } from 'lucide-react';
 import type { LibraryFolderSummary, OperationMode } from '../shared/library';
 import { externalLabels, type ExternalSelection } from '../shared/library';
-import { ExternalLibraryPicker } from './ExternalLibraryPicker';
+import { ExternalLibraryPicker, driveSessionExpired } from './ExternalLibraryPicker';
 import { formatBytes, type Request } from './library-upload';
 import { LibraryUploadPanel } from './LibraryUploadPanel';
 
@@ -42,6 +42,7 @@ export function LibraryFolderCard({ request, folder, isAdmin, reload }: { reques
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [pending, setPending] = useState(false);
+  const [attempt, setAttempt] = useState(0);
   const [reconnecting, setReconnecting] = useState(false);
   const [selection, setSelection] = useState<ExternalSelection>();
   const canManage = folder.canManage || isAdmin;
@@ -54,7 +55,10 @@ export function LibraryFolderCard({ request, folder, isAdmin, reload }: { reques
   async function act(work: () => Promise<unknown>, done?: string) {
     if (pending) return;
     setPending(true); setError(''); setNotice('');
-    try { await work(); reload(); if (done) setNotice(done); } catch (e) { setError((e as Error).message); reload(); } finally { setPending(false); }
+    try { await work(); reload(); if (done) setNotice(done); } catch (e) {
+      if (reconnecting && driveSessionExpired(e)) { setSelection(undefined); setAttempt(n => n + 1); }
+      setError((e as Error).message); reload();
+    } finally { setPending(false); }
   }
   const post = (url: string, body: unknown = {}) => request(url, { method: 'POST', body: JSON.stringify(body) });
   const browse = useCallback(async (path: string) => {
@@ -81,7 +85,7 @@ export function LibraryFolderCard({ request, folder, isAdmin, reload }: { reques
         {canManage && <button type="button" className="secondary" disabled={pending || preparing} onClick={() => void act(() => post(base + '/external/sync'))}>Синхронизировать</button>}
         {isAdmin && <button type="button" className="secondary" onClick={() => { setReconnecting(!reconnecting); setSelection(undefined); }}> {reconnecting ? 'Отмена' : 'Восстановить связь'}</button>}
       </div>
-      {reconnecting && <><ExternalLibraryPicker provider={folder.external.provider} request={request} onSelect={setSelection} />
+      {reconnecting && <><ExternalLibraryPicker key={attempt} provider={folder.external.provider} request={request} onSelect={setSelection} />
         <button type="button" className="secondary" disabled={pending || !selection} onClick={() => void act(async () => { await post(base + '/external/reconnect', selection); setReconnecting(false); }, 'Связь восстановлена.')}>Подключить исходную папку</button></>}
     </div>}
     {upload && !folder.external ? <LibraryUploadPanel request={request} folder={folder} mode={upload} canDecideSecrets={canManage} close={() => setUpload(undefined)} done={reload} /> : <>

@@ -169,6 +169,8 @@ test('external HTTP connection uses regular project grants and checks remote acc
   });
   const base = '/api/library/external';
   const statusUrl = base + '/status/dropbox';
+  assert.equal((await f.req('POST',base+'/folders',f.admin,{connection:'expired-draft'})).statusCode,410);
+  assert.equal((await f.req('POST','/api/library',f.admin,{name:'Expired',external:{connection:'expired-draft',folder:'id:docs'}})).statusCode,410);
   assert.equal((await f.req('GET',statusUrl,f.token)).statusCode,403);
   const redirectUri = 'https://agents.example.test/library-oauth.html';
   assert.deepEqual((await f.req('GET',statusUrl,f.admin)).json(),{configured:true, redirectUri});

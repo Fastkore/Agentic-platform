@@ -7,6 +7,8 @@ import { CloudDrive, providers } from './cloud-drive.js';
 interface Tokens { access: string; refresh?: string; expires: number }
 export interface DriveKeys { id: string; secret: string }
 interface Draft { setup?: DriveKeys; owner: string; provider: ExternalProvider; expires: number; verifier?: string; tokens?: Tokens; folders: Map<string, { name: string; identity: string }> }
+const draftLifetime = 15 * 60_000;
+const expiredDraft = () => new BridgeError('Сеанс подключения завершён. Войдите в диск ещё раз, чтобы выбрать папку.', 410);
 const expired = () => new BridgeError('Подключение истекло. Нажмите «Подключить» ещё раз.', 409);
 function environmentKeys(provider: ExternalProvider): DriveKeys | undefined {
   const prefix = 'BRIDGE_LIBRARY_' + provider.toUpperCase();
@@ -58,7 +60,7 @@ export class DriveAuth {
     const redirect = redirectUri();
     for (const [key, draft] of this.drafts) if (draft.expires <= Date.now()) this.drafts.delete(key);
     const state = randomUUID(), verifier = randomBytes(48).toString('base64url');
-    this.drafts.set(state, { provider, owner, setup, verifier, expires: Date.now() + 900_000, folders: new Map() });
+    this.drafts.set(state, { provider, owner, setup, verifier, expires: Date.now() + draftLifetime, folders: new Map() });
     const params = new URLSearchParams({ client_id: id, redirect_uri: redirect, state, response_type: 'code', scope: providers[provider].scope,
       code_challenge_method: 'S256', code_challenge: createHash('sha256').update(verifier).digest('base64url') });
     if (provider === 'dropbox') params.set('token_access_type', 'offline');
@@ -67,12 +69,12 @@ export class DriveAuth {
   }
   private draft(owner: string, id: string) {
     const draft = this.drafts.get(id);
-    if (!draft || draft.owner !== owner || draft.expires <= Date.now()) throw expired();
+    if (!draft || draft.owner !== owner || draft.expires <= Date.now()) throw expiredDraft();
     return draft;
   }
   async finish(owner: string, state: string, code: string) {
     const draft = this.draft(owner, state), verifier = draft.verifier;
-    if (!verifier) throw expired();
+    if (!verifier) throw expiredDraft();
     delete draft.verifier;
     const setup = draft.setup;
     delete draft.setup;
@@ -83,11 +85,12 @@ export class DriveAuth {
       if (!current) this.settings.write(draft.provider, setup);
     }
     draft.tokens = tokens;
+    draft.expires = Math.min(tokens.expires, Date.now() + draftLifetime);
     return { ok: true };
   }
   async folders(owner: string, id: string, parent?: string) {
     const draft = this.draft(owner, id);
-    if (!draft.tokens || parent !== undefined && !draft.folders.has(parent)) throw expired();
+    if (!draft.tokens || parent !== undefined && !draft.folders.has(parent)) throw expiredDraft();
     const drive = new CloudDrive(draft.provider, draft.tokens.access);
     const folders = [];
     for await (const entry of drive.children(parent ?? drive.root())) if (entry.dir) {
@@ -95,6 +98,7 @@ export class DriveAuth {
       draft.folders.set(entry.id, { name: entry.name, identity: entry.identity ?? entry.id });
       if (draft.folders.size > 50000) throw new BridgeError('Слишком много папок для выбора.', 413);
     }
+    draft.expires = Math.min(draft.tokens.expires, Date.now() + draftLifetime);
     return folders.sort((a,b) => a.name.localeCompare(b.name, 'ru'));
   }
   selected(owner: string, selection: ExternalSelection) {

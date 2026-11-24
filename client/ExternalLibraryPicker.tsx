@@ -6,10 +6,14 @@ const guides = {
   dropbox: { url: 'https://www.dropbox.com/developers/apps/create', id: 'App key', secret: 'App secret', location: 'Settings', redirect: 'OAuth 2 → Redirect URIs',
     steps: ['Создайте приложение с типом Scoped access и доступом Full Dropbox.', 'Во вкладке Permissions отметьте files.metadata.read и files.content.read и нажмите Submit.'] },
   google: { url: 'https://console.cloud.google.com/apis/credentials', id: 'Client ID', secret: 'Client secret', location: 'Клиенты OAuth', redirect: 'Authorized redirect URIs',
-    steps: ['Выберите проект в Google Cloud и включите Google Drive API.', 'В Google Auth Platform настройте аудиторию и доступ drive.readonly. В режиме Testing добавьте свой аккаунт в Test users.', 'Создайте OAuth client ID типа Web application.'] },
+    steps: ['Выберите проект в Google Cloud и включите Google Drive API.', 'В Google Auth Platform откройте Audience и выберите аудиторию. В Data Access добавьте разрешение https://www.googleapis.com/auth/drive.readonly. В режиме Testing добавьте свой аккаунт в Test users.', 'Откройте Clients → Create client и выберите Web application.'] },
   yandex: { url: 'https://oauth.yandex.ru/', id: 'ClientID', secret: 'Client secret', location: 'Карточка приложения', redirect: 'Redirect URI',
-    steps: ['Создайте приложение Яндекс OAuth и выберите платформу «Веб-сервисы».', 'Добавьте разрешение на чтение Диска (cloud_api:disk.read).'] },
+    steps: ['В кабинете Яндекс OAuth нажмите «Создать приложение», укажите название и выберите платформу «Веб-сервисы».', 'В правах доступа найдите Яндекс Диск и выберите «Чтение всего Диска» (cloud_api:disk.read).'] },
 };
+export function driveSessionExpired(error: unknown) {
+  return typeof error === 'object' && error !== null && 'status' in error && error.status === 410;
+}
+
 export function ExternalLibraryPicker({ provider, request, onSelect, selectionConfirmed }: {
   selectionConfirmed?: boolean; provider: ExternalProvider; request: Request; onSelect: (selection?: ExternalSelection, folderName?: string) => void;
 }) {
@@ -49,7 +53,14 @@ export function ExternalLibraryPicker({ provider, request, onSelect, selectionCo
       const list = await post<ExternalFolder[]>('folders', { connection: id, parent: current?.id });
       if (signal?.aborted) return;
       setFolders(list); setTrail(path); setConnection(id);
-    } catch (e) { if (!signal?.aborted) setError((e as Error).message); }
+    } catch (e) {
+      if (signal?.aborted) return;
+      if (driveSessionExpired(e)) {
+        setConnection(''); setFolders([]); setTrail([]);
+        setCheck(n => n + 1);
+      }
+      setError((e as Error).message);
+    }
     finally { if (!signal?.aborted) setBusy(false); }
   }
   async function connect() {
@@ -111,7 +122,9 @@ export function ExternalLibraryPicker({ provider, request, onSelect, selectionCo
     {step === 'register' && <>
       <strong>Шаг 1. Зарегистрируйте приложение в {name}</strong>
       <a href={guide.url} target="_blank" rel="noreferrer">Открыть кабинет {name} ↗</a>
-      <ol>{guide.steps.map(text => <li key={text}>{text}</li>)}<li>В поле <b>{guide.redirect}</b> вставьте адрес ниже и сохраните настройки.</li></ol>
+      <ol>{guide.steps.map((text, index) => <li key={text}>{text}{provider === 'google' && index === 0 && <>
+        {' '}<a href="https://console.cloud.google.com/apis/library/drive.googleapis.com" target="_blank" rel="noreferrer">Открыть Google Drive API</a>
+      </>}</li>)}<li>В поле <b>{guide.redirect}</b> вставьте адрес ниже и сохраните настройки.</li></ol>
       <label>Адрес возврата<input readOnly value={redirect} onFocus={e => e.currentTarget.select()} /></label>
       <div className="settings-actions">
         <button type="button" className="secondary" onClick={async () => {
