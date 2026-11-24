@@ -159,6 +159,9 @@ export function ExternalLibraryPicker({ provider, request, onSelect, selectionCo
     {step === 'keys' && <>
       <strong>Шаг 2. Введите ключи и войдите</strong>
       {provider === 'dropbox' && <DropboxPermissions />}
+      {provider === 'google' && <p className="help">Если приложение в режиме <b>Testing</b>, откройте
+        {' '}<a className="library-provider-link" href="https://console.cloud.google.com/auth/audience" target="_blank" rel="noreferrer">Google Auth Platform → Audience ↗</a>
+        {' '}в проекте этого Client ID. В разделе <b>Test users → Add users</b> добавьте адрес аккаунта, с которым будете входить, и нажмите <b>Save</b>.</p>}
       <p className="help">В кабинете {name} откройте «{guide.location}». Скопируйте два значения из карточки приложения.</p>
       <label>{guide.id}<input autoComplete="off" spellCheck={false} value={clientId} onChange={e => setClientId(e.target.value)} maxLength={2048} /></label>
       <label>{guide.secret}<input autoComplete="new-password" type="password" value={secret} onChange={e => setSecret(e.target.value)} maxLength={2048} /></label>
