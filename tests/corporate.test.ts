@@ -232,6 +232,46 @@ test('an employee chooses a project for a new named Fastkore chat and can move i
   } finally { await f.app.close(); }
 });
 
+test('a card with history in an inaccessible project can open a private chat in the selected project', async () => {
+  const f = await fixture();
+  try {
+    const destination = await f.workspace.createProject('Поддержка', () => f.projectRoles);
+    const component = randomUUID(), entity = randomUUID();
+    const context = { type: 'fastkore.context', version: 1, view: 'card', entity_set_id: component, entity_ids: [entity],
+      entity_name: 'Обращение #17559', chat_key: 'card:' + component + ':' + entity, filter_status: 'none', scope_reproducible: true };
+    const open = (projectId: string) => f.req('POST', '/api/fastkore/chats', f.token, { projectId, context });
+    const related = () => f.req('POST', '/api/fastkore/chats/related', f.token, { context });
+    const original = await open(f.project.id);
+    assert.equal(original.statusCode, 201);
+    const originalId = original.json().chat.id;
+    const sourcePath = '/api/projects/' + f.project.id + '/chats/' + originalId;
+    assert.equal((await f.req('POST', sourcePath + '/messages', f.token, { text: 'Прежняя переписка', fastkoreContext: context })).statusCode, 202);
+    await idle(f.workspace);
+    assert.equal((await f.setProjectRoles(f.project.id, [])).statusCode, 200);
+    assert.deepEqual((await related()).json(), []);
+    assert.equal((await open(f.project.id)).statusCode, 404);
+    const attempts = await Promise.all([open(destination.id), open(destination.id)]);
+    assert.deepEqual(attempts.map(r => r.statusCode).sort(), [200, 201]);
+    const replacement = attempts[0].json().chat;
+    assert.equal(attempts[1].json().chat.id, replacement.id);
+    assert.equal(attempts[0].json().projectId, destination.id);
+    assert.notEqual(replacement.id, originalId);
+    assert.deepEqual(replacement.messages, []);
+    assert.equal(replacement.visibility, 'private');
+    assert.equal((await f.req('POST', '/api/projects/' + destination.id + '/chats/' + replacement.id + '/messages',
+      f.token, { text: 'Привет', fastkoreContext: context })).statusCode, 202);
+    await idle(f.workspace);
+    assert.match(f.calls.at(-1)!.prompt, /Привет/);
+    assert.doesNotMatch(f.calls.at(-1)!.prompt, /Прежняя переписка/);
+    assert.deepEqual((await related()).json().map((row: { id: string }) => row.id), [replacement.id]);
+    assert.equal((await f.req('GET', sourcePath, f.token)).statusCode, 404);
+    assert.equal((await f.setProjectRoles(f.project.id, f.projectRoles)).statusCode, 200);
+    assert.equal((await open(f.project.id)).json().chat.id, originalId);
+    assert.equal((await open(destination.id)).json().chat.id, replacement.id);
+    assert.match((await f.req('GET', sourcePath, f.token)).body, /Прежняя переписка/);
+  } finally { await f.app.close(); }
+});
+
 test('Fastkore navigation uses the saved chat target and does not expose it outside the owner ERP session', async () => {
   const f = await fixture();
   try {

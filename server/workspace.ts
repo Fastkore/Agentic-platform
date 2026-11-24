@@ -585,11 +585,10 @@ export class Workspace {
     return this.admit(async () => {
       this.writable();
       const { user: actor, credential } = authorize();
-      const previous = (!fresh || binding.tileId || binding.externalUserId) && this.relatedFastkoreChats(actor, binding, credential)[0];
-      if (previous) return { chat: previous.chat, projectId: previous.project.id, created: false };
-      if (binding.externalUserId && this.store.state.projects.some(project => project.chats.some(chat => !chat.archivedAt && chat.ownerId === actor.id &&
-        chat.fastkoreBinding?.installationId === binding.installationId && chat.fastkoreBinding.externalUserId === binding.externalUserId && chat.fastkoreBinding.key === binding.key))) {
-        throw new BridgeError('Проект, в котором хранится история этого контекста, недоступен.', 403);
+      if (!fresh || binding.tileId || binding.externalUserId) {
+        const accessible = this.relatedFastkoreChats(actor, binding, credential);
+        const previous = accessible.find(item => item.project.id === projectId) ?? accessible[0];
+        if (previous) return { chat: previous.chat, projectId: previous.project.id, created: false };
       }
       const chat = await this.addChat(projectId, binding.contextName ?? binding.entityName, '', actor.id, authorize, agentProfileId, binding);
       return { chat, projectId, created: true };
