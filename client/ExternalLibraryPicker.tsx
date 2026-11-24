@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { ChevronRight } from 'lucide-react';
 import { externalLabels, type ExternalFolder, type ExternalProvider, type ExternalSelection } from '../shared/library';
 import type { Request } from './library-upload';
 
@@ -191,9 +192,11 @@ export function ExternalLibraryPicker({ provider, request, onSelect, selectionCo
           <button type="button" className="secondary" onClick={() => void connect()}>Сменить аккаунт</button>
         </div>}
       </> : <>
-        {folders.length > 0 && <ul className="settings-records">{folders.map(folder => <li key={folder.id}>
-          <button type="button" className="library-dir" disabled={busy} aria-label={'Открыть папку «' + folder.name + '»'}
-            onClick={() => void browse(connection, [...trail, folder], controller.current?.signal)}>{folder.name}</button>
+        {folders.length > 0 && <ul className="settings-records library-drive-folders">{folders.map(folder => <li key={folder.id}>
+          <button type="button" disabled={busy} aria-label={'Открыть папку «' + folder.name + '»'}
+            onClick={() => void browse(connection, [...trail, folder], controller.current?.signal)}>
+            <span>{folder.name}</span><ChevronRight size={15} aria-hidden="true" />
+          </button>
         </li>)}</ul>}
         {!busy && !error && !folders.length && <p className="help">{current ? 'Вложенных папок нет. Вы можете выбрать эту папку.' : 'Нет доступных папок. Создайте папку на диске и обновите список.'}</p>}
         <div className="settings-actions">

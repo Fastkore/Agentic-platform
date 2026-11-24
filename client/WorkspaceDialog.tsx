@@ -1,8 +1,8 @@
 import { useEffect, useId, useRef, type ReactNode } from 'react';
 import { ArrowLeft, Settings, X } from 'lucide-react';
 
-export function WorkspaceDialog({ title, className, close, back, children }: {
-  title: string; className: string; close: () => void; back?: () => void; children: ReactNode;
+export function WorkspaceDialog({ title, className, close, back, closeOnBackdrop = true, children }: {
+  title: string; className: string; close: () => void; back?: () => void; closeOnBackdrop?: boolean; children: ReactNode;
 }) {
   const ref = useRef<HTMLDialogElement>(null);
   const heading = useId();
@@ -18,7 +18,7 @@ export function WorkspaceDialog({ title, className, close, back, children }: {
     e.stopPropagation();
     close();
   }} onClick={e => {
-    if (e.target !== e.currentTarget) return;
+    if (!closeOnBackdrop || e.target !== e.currentTarget) return;
     const rect = e.currentTarget.getBoundingClientRect();
     if (e.clientX < rect.left || e.clientX > rect.right || e.clientY < rect.top || e.clientY > rect.bottom) close();
   }}>

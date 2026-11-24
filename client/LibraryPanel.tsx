@@ -107,7 +107,7 @@ export function CreateLibraryForm({ kind, request, pending, submit, cancel, proj
         : <button type="button" className="secondary" disabled={pending} onClick={() => setSelection(undefined)}>Изменить выбор</button>}</div>}
   </form>;
   return kind === 'external'
-    ? <WorkspaceDialog title="Внешняя библиотека" className="external-library-dialog" close={() => { if (!pending) cancel(); }}>{form}</WorkspaceDialog>
+    ? <WorkspaceDialog title="Внешняя библиотека" className="external-library-dialog" closeOnBackdrop={false} close={() => { if (!pending) cancel(); }}>{form}</WorkspaceDialog>
     : form;
 }
 

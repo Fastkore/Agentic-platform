@@ -134,6 +134,16 @@
 .library-drive-permissions { display: grid; gap: .45rem; padding: .8rem 1rem; border-inline-start: 3px solid var(--accent); background: var(--control); border-radius: 6px; }
 .library-drive-permissions :is(p, ul) { margin: 0; }
 .library-drive-permissions ul { padding-inline-start: 1.4em; }
+.settings-records.library-drive-folders { border-radius: 8px; overflow: hidden; }
+.settings-records.library-drive-folders > li { display: block; padding: 0; }
+.library-drive-folders button {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  width: 100%; min-height: 32px; padding: 4px 8px; border: 0; background: transparent;
+  color: var(--text); font: inherit; text-align: start; overflow-wrap: anywhere;
+}
+.library-drive-folders button svg { flex: none; color: var(--text-muted); }
+.library-drive-folders button:enabled:is(:hover, :focus-visible) { background: var(--selected); color: var(--accent-strong); }
+.library-drive-folders button:focus-visible { outline: 2px solid var(--accent-strong); outline-offset: -2px; }
 
 .workspace-dialog.external-library-dialog { width: min(620px, calc(100vw - 24px)); }
 .external-library-dialog .settings-actions { display: flex; flex-flow: row nowrap; align-items: center; gap: 8px; }
