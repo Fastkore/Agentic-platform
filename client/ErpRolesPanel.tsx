@@ -11,7 +11,7 @@ const permissionColumns = [
     { key: 'webRequests', name: 'Внешние запросы', icon: Send }],
   [{ key: 'webSearch', name: 'Веб-поиск', icon: Search }, { key: 'webRead', name: 'Чтение страниц', icon: Globe },
     { key: 'fileWrite', name: 'Запись файлов', icon: FilePenLine }],
-  [{ key: 'createProjects', name: 'Создание и переименование проектов', icon: FolderPlus },
+  [{ key: 'createProjects', name: 'Создание проектов, изменение названия и инструкции', icon: FolderPlus },
     { key: 'readOnly', name: 'Только чтение в Fastkore', icon: LockKeyhole }],
 ] as const;
 

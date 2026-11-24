@@ -112,7 +112,7 @@ test('Fastkore CLI uses a fresh ticket per command and stops after ERP revokes t
     wrongUser = true;
     await assert.rejects(run({ operation: 'auth-info' }), /не совпал с пользователем SSO/);
     denied = true;
-    await assert.rejects(run({ operation: 'auth-info' }), /отозван/);
+    await assert.rejects(run({ operation: 'auth-info' }), /отклонила делегирование.*билета CLI/);
     assert.ok(forgotten);
     assert.equal(used.length, 6);
   } finally {

@@ -693,6 +693,9 @@
 .chat-permission-state { display: inline-flex; align-items: center; gap: 6px; color: var(--text-muted); font-size: 12px; white-space: nowrap; }
 .chat-permission-state[data-enabled="true"] { color: var(--success); }
 .chat-access-settings > .help { margin-top: 12px; }
+.project-instructions-form { display: grid; gap: 10px; }
+.project-instructions-form textarea, .workspace-project-form textarea { width: 100%; resize: vertical; }
+.project-instructions-text { white-space: pre-wrap; overflow-wrap: anywhere; }
 .chat-files-dialog { width: min(720px, calc(100vw - 24px)); }
 .chat-stored-files { display: grid; gap: 8px; margin-top: 14px; }
 .chat-stored-file { display: flex; align-items: center; gap: 9px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 9px; }

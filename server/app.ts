@@ -16,7 +16,7 @@ import { instructionTile, personalInstructionLimits as personalLimits, type Pers
 import { instructionComponent } from './instruction-context.js';
 import { UploadAdmission } from './upload-admission.js';
 import { loadDictation, maxDictationBytes, validateDictation, type TranscribeDictation } from './dictation.js';
-import { interfaceScales, specialistFileLimits, specialistIcons, unassignedChatsLabel } from '../shared/types.js';
+import { maxProjectInstructions, interfaceScales, specialistFileLimits, specialistIcons, unassignedChatsLabel } from '../shared/types.js';
 import type { DictationModelId, FastkoreConnectionCheck, InterfaceScale } from '../shared/types.js';
 import { fastkoreChatTitle, fastkoreExecutionContext, parseFastkoreContext } from '../shared/fastkore-context.js';
 import { canReadChatAttachment, chatFileEntries } from '../shared/chat-attachments.js';
@@ -96,18 +96,42 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
   const fastkoreMcp = sso ? new FastkoreMcp(sso, (id, reason) => access.forgetErpDelegation(id, reason)) : undefined;
   const cliSocket = process.env.BRIDGE_FASTKORE_CLI_SOCKET;
   const fastkoreCli = cliSocket ? new FastkoreCli(cliSocket) : undefined;
-  const cliTicketsEnabled = process.env.BRIDGE_FASTKORE_CLI_TICKETS === '1';
-  async function cliConnectionProblem(binding: { origin: string; ca?: string; cliEnabled?: boolean }) {
-    if (!workspace.isolatedCodex || workspace.executionDisabled) return 'Изолированный исполнитель задач отключён на сервере платформы.';
-    if (binding.cliEnabled === false) return 'CLI отключён в настройках установки ERP.';
-    if (!fastkoreCli) return 'Исполнитель CLI не подключён. Настройте BRIDGE_FASTKORE_CLI_SOCKET на сервере платформы.';
-    if (!cliTicketsEnabled) return 'Выдача билетов CLI выключена на сервере платформы. Установите BRIDGE_INSTANCE_CLI_TICKETS=1 в окружении экземпляра и перезапустите приложение.';
-    try { await fastkoreCli.checkTrust(binding, AbortSignal.timeout(2500)); }
-    catch (error) { return error instanceof BridgeError ? error.message : 'Исполнитель CLI недоступен. Проверьте контейнер CLI.'; }
+  function cliConfigurationProblem(binding?: { cliEnabled?: boolean }) {
+    if (binding?.cliEnabled === false) return 'CLI отключён для этой установки. Администратор может включить его в настройках подключения Fastkore.';
+    if (!workspace.isolatedCodex || workspace.executionDisabled) return 'Изолированный исполнитель задач отключён на сервере платформы. Обратитесь к администратору.';
+    if (!fastkoreCli) return 'Исполнитель CLI не подключён. Администратору нужно настроить BRIDGE_FASTKORE_CLI_SOCKET на сервере платформы.';
+  }
+  async function cliTrustProblem(binding: { origin: string; ca?: string }, signal: AbortSignal) {
+    try { await fastkoreCli!.checkTrust(binding, signal); }
+    catch (error) {
+      signal.throwIfAborted();
+      return error instanceof BridgeError ? error.message : 'Не удалось проверить подключение CLI. Попросите администратора проверить службу CLI и сертификат ERP.';
+    }
+  }
+  function erpToolAccess(credential: Credential) {
+    const roles = erpCredentialPermissions(workspace.store.state, credential);
+    const binding = sso?.delegationBinding(credential);
+    const toolsStatus = credential.source === 'fastkore' ? fastkoreMcp?.status(credential, binding) : undefined;
+    const login = credential.source !== 'fastkore' ? 'Откройте помощника из Fastkore под своей учётной записью для доступа к данным ERP.' : undefined;
+    const reconnect = toolsStatus === 'reauth' ? fastkoreMcp?.reconnectReason(credential) : undefined;
+    const delegation = reconnect ?? (credential.browserParentId ? 'Этот браузерный сеанс открыт для настроек. Для работы с данными вернитесь в чат внутри Fastkore.'
+      : !credential.erpDelegation ? 'При входе ERP не передала разрешение действовать от вашего имени. Попросите администратора проверить делегирование в Fastkore.'
+      : !binding ? 'Платформа не нашла действующее подключение этой установки ERP. Попросите администратора проверить привязку.' : undefined);
+    const roleProblem = (kind: 'mcp' | 'cli') => roles[kind] ? undefined
+      : `${kind.toUpperCase()} отключён разрешениями роли. Попросите администратора включить инструмент в настройках вашей роли Fastkore.`;
+    const cliSetup = login ?? roleProblem('cli') ?? cliConfigurationProblem(binding);
+    const mcpSetup = login ?? roleProblem('mcp') ?? (binding?.mcpEnabled === false
+      ? 'MCP отключён для этой установки. Администратор может включить его в настройках подключения Fastkore.'
+      : !workspace.isolatedCodex || workspace.executionDisabled ? 'Изолированный исполнитель задач отключён на сервере платформы. Обратитесь к администратору.'
+      : binding && !binding.mcpUrl ? 'В настройках установки ERP не указан HTTPS-адрес MCP с путём /webapi/mcp. Попросите администратора сохранить адрес сервера.' : undefined);
+    const mcpProblem = mcpSetup ?? delegation ?? (toolsStatus !== 'ready' ? 'Платформа не смогла подготовить сеанс MCP. Повторите запрос позже.' : undefined);
+    const cliProblem = cliSetup ?? delegation;
+    return { roles, binding, toolsStatus, mcpProblem, cliProblem, cliSetup,
+      reconnectReason: (!cliSetup || !mcpSetup) ? reconnect : undefined };
   }
   async function connectionChecks(id: string): Promise<FastkoreConnectionCheck[]> {
     const { installation, origin, ca } = configuredSso().connectionSettings(id);
-    const cliProblem = await cliConnectionProblem({ origin, ca, cliEnabled: installation.cliEnabled });
+    const cliProblem = cliConfigurationProblem(installation) ?? await cliTrustProblem({ origin, ca }, new AbortController().signal);
     return [
       { id: 'sso', ready: installation.enabled, message: installation.enabled ? 'Вход из ERP включён.'
         : installation.tlsConfirmationRequired ? 'Подтвердите сертификат TLS сервера ERP.'
@@ -129,52 +153,52 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
     }).catch(() => console.error(JSON.stringify({ event: 'erp.delegation.audit_failed', sessionId: session.id })));
   };
   workspace.prepareFastkoreTools = async (credentialId, context, authorize, signal, run) => {
-    if (!fastkoreMcp) return {};
+    if (!sso || !fastkoreMcp) return {};
     const session = () => {
       authorize();
       return access.authenticateCredential(credentialId).credential;
     };
     const credential = session();
-    const permissions = erpCredentialPermissions(workspace.store.state, credential);
-    if (!permissions.mcp && !permissions.cli) return { problem: credential.source === 'fastkore'
-      ? 'Fastkore MCP и CLI отключены разрешениями ролей сотрудника.' : 'Для инструментов ERP откройте помощника из Fastkore под своей учётной записью.' };
+    const accessAtStart = erpToolAccess(credential);
     const checkPermission = (kind: 'mcp' | 'cli') => {
       const active = session();
       if (!erpCredentialPermissions(workspace.store.state, active)[kind]) throw new BridgeError(`Доступ к Fastkore ${kind.toUpperCase()} отключён разрешениями ролей сотрудника.`, 403);
       return active;
     };
-    const current = () => checkPermission('cli');
+    const current = () => {
+      const active = checkPermission('cli');
+      if (sso.delegationBinding(active)?.cliEnabled === false) throw new BridgeError('CLI отключён в настройках установки ERP.', 403);
+      return active;
+    };
     const audit = (action: string, targetId: string, details: AuditEvent['details']) => {
       workspace.store.recordAudit({ actorId: credential.userId, action, targetId, details: {
         sessionId: credential.id, installationId: credential.installationId, runId: run?.id, chatId: run?.chatId, ...details,
       } });
     };
     const mcpStarted = performance.now();
-    const integration = permissions.mcp ? await fastkoreMcp.prepare(credential, () => { checkPermission('mcp'); }, signal, ({ tool, parameters, ...details }) =>
+    const integration = !accessAtStart.mcpProblem ? await fastkoreMcp.prepare(credential, () => { checkPermission('mcp'); }, signal, ({ tool, parameters, ...details }) =>
       audit('erp.mcp.call', tool, { ...details, objectIds: erpAuditIds(parameters) }),
       () => isErpReadOnly(workspace.store.state, checkPermission('mcp'))).finally(() => {
         if (run?.timing) run.timing.mcpSetupMs ??= elapsedMs(mcpStarted);
-      }) : {};
-    if (!permissions.cli || !fastkoreCli || !sso || credential.source !== 'fastkore' || sso.delegationBinding(credential)?.cliEnabled === false) return integration;
+      }) : { problem: accessAtStart.mcpProblem };
+    const cli = erpToolAccess(session());
+    const problems = (cliProblem?: string) => [integration.problem && 'MCP — ' + integration.problem, cliProblem && 'CLI — ' + cliProblem].filter(Boolean).join(' ') || undefined;
+    if (cli.cliSetup || !fastkoreCli) return { tools: integration.tools, problem: problems(cli.cliProblem) };
     const base = integration.tools ?? {
       definitions: [], call: async () => ({ success: false, text: 'Инструмент Fastkore недоступен.' }),
     };
     const descriptionOnly = () => withFastkoreCliDescription(base, (command, callSignal) => fastkoreCli.describe(command, callSignal), () => { current(); });
-    const active = current();
-    const binding = cliTicketsEnabled ? sso.delegationBinding(active) : undefined;
-    if (!binding || !sso.openDelegation(active, binding.revision)) return { ...integration, tools: descriptionOnly() };
-    let support;
+    if (cli.cliProblem || !cli.binding) return { tools: descriptionOnly(), problem: problems(cli.cliProblem) };
     const cliStarted = performance.now();
     try {
-      support = await fastkoreCli.checkTrust(binding, signal);
-    } catch (error) {
-      signal.throwIfAborted();
-      const problem = error instanceof BridgeError ? error.message : 'Исполнитель Fastkore CLI недоступен.';
-      return { tools: descriptionOnly(), problem: [integration.problem, problem].filter(Boolean).join(' ') };
+      const problem = await cliTrustProblem(cli.binding, signal);
+      if (problem) return { tools: descriptionOnly(), problem: problems(problem) };
     } finally {
       if (run?.timing) run.timing.cliSetupMs ??= elapsedMs(cliStarted);
     }
-    current();
+    const afterTrust = erpToolAccess(session());
+    if (afterTrust.cliSetup) return { tools: integration.tools, problem: problems(afterTrust.cliSetup) };
+    if (afterTrust.cliProblem) return { tools: descriptionOnly(), problem: problems(afterTrust.cliProblem) };
     const commands = run ? withFastkoreCliCommands(base, () => fastkoreCli.describe(),
       (command, callSignal) => fastkoreCli.describeCommand(command, callSignal),
       async (command, args, callSignal, fields, maxResponseChars) => {
@@ -196,7 +220,7 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
           return { success, text: formatted.text };
         } finally { audit('erp.cli.command', command, { success, elapsedMs: elapsedMs(started), ...timing, responseChars }); }
       }, () => { current(); }) : descriptionOnly();
-    return { tools: commands, problem: integration.problem };
+    return { tools: commands, problem: problems() };
   };
   migrateFastkoreChatBindings(workspace.store.state);
   if (sso) {
@@ -719,31 +743,29 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
     (credential.source === 'fastkore' && creationRoles(workspace.store.state, credential).length > 0);
   app.get('/api/status', async request => {
     const cli = await workspace.codexConnection();
-    const { user: u, credential } = principal(request);
+    let active = principal(request);
+    let erp = erpToolAccess(active.credential);
+    let trustProblem: string | undefined;
+    if (!erp.cliProblem && erp.binding) {
+      trustProblem = await cliTrustProblem(erp.binding, request.signal);
+      active = principal(request);
+      erp = erpToolAccess(active.credential);
+    }
+    const { user: u, credential } = active;
     const manageSettings = isSettingsAdmin({ user: u, credential });
     const settings = workspace.store.state.settings;
-    const fastkoreToolsStatus = credential.source === 'fastkore' ? fastkoreMcp?.status(credential) : undefined;
     const isolatedToolsEnabled = workspace.isolatedCodex && !workspace.executionDisabled;
-    const erpPermissions = erpCredentialPermissions(workspace.store.state, credential);
-    const binding = credential.source === 'fastkore' ? sso?.delegationBinding(credential) : undefined;
-    const cliProblem = binding && erpPermissions.cli ? await cliConnectionProblem(binding) : undefined;
+    const fastkoreToolsStatus = erp.toolsStatus;
+    const cliProblem = erp.cliProblem ?? trustProblem;
+    const previousCatalogProblem = fastkoreMcp?.lastCatalogProblem(credential.id);
+    const mcpProblem = erp.mcpProblem ?? (previousCatalogProblem && 'При последней загрузке инструментов: ' + previousCatalogProblem + ' Платформа проверит MCP снова при следующем запросе.');
     const internetPermissions = internetCredentialPermissions(workspace.store.state, credential);
-    const cliAllowed = !!(binding && erpPermissions.cli && !cliProblem && sso?.openDelegation(credential, binding.revision));
-    const mcpAllowed = isolatedToolsEnabled && erpPermissions.mcp && fastkoreToolsStatus === 'ready';
-    const delegationProblem = fastkoreToolsStatus === 'reauth' ? 'Делегирование ERP завершилось. Откройте помощника заново из Fastkore.'
-      : !credential.erpDelegation ? 'Fastkore Server не передал делегирование для этого входа.' : undefined;
     const toolPermissions = {
+      erpRoles: credential.source === 'fastkore' ? erp.roles : undefined,
+      reconnectReason: erp.reconnectReason,
       fileWrite: credential.source === 'fastkore' && erpFileWriteAllowed(workspace.store.state, credential),
-      cli: cliAllowed,
-      mcp: mcpAllowed,
-      cliUnavailableReason: !cliAllowed && credential.source === 'fastkore' ? !erpPermissions.cli
-        ? 'CLI отключён разрешениями роли.' : delegationProblem ?? cliProblem ?? 'Подключение ERP недоступно. Откройте помощника заново из Fastkore.' : undefined,
-      mcpUnavailableReason: !mcpAllowed && credential.source === 'fastkore' ? !erpPermissions.mcp
-        ? 'MCP отключён разрешениями роли.' : delegationProblem
-          ?? (!isolatedToolsEnabled ? 'Изолированный исполнитель задач отключён на сервере платформы.'
-            : binding?.mcpEnabled === false ? 'MCP отключён в настройках установки ERP.'
-            : !binding?.mcpUrl ? 'В настройках установки ERP не указан HTTPS-адрес MCP с путём /webapi/mcp.'
-            : 'Подключение MCP недоступно. Откройте помощника заново из Fastkore.') : undefined,
+      cli: !cliProblem, mcp: !mcpProblem,
+      cliUnavailableReason: cliProblem, mcpUnavailableReason: mcpProblem,
       webSearch: !!(isolatedToolsEnabled && accountWorker && internetPermissions.search),
       webRead: isolatedToolsEnabled && internetPermissions.read,
     };
@@ -899,15 +921,16 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
     const p = principal(request);
     const catalog = isSettingsAdmin(p) ? projectRoleOptions(workspace.store.state) : undefined;
     return workspace.store.state.projects.filter(project => canAccessProject(p.user, project, p.credential)).map(project => ({
-      id: project.id, name: project.name, directory: project.directory,
+      id: project.id, name: project.name, instructions: project.instructions, directory: project.directory,
       canRename: canRenameProject(workspace.store.state, p.user, project, p.credential),
       chatCount: project.chats.filter(chat => !chat.archivedAt && access.canChat(p.user, chat) && chatIdentityMatches(p, chat)).length,
       roles: catalog?.filter(role => project.rolePolicy?.roles.some(selected => selected.installationId === role.installationId && selected.roleId === role.roleId)),
     }));
   });
   app.post('/api/migrations/desktop', async request => { localAdmin(request); const result = await workspace.importDesktop(); access.migrate(); await workspace.store.save(); return result; });
-  app.post<{ Body: { directory?: string; name?: string } }>('/api/projects', { schema: { body: object({ directory: string(2000), name: string(100) }) } }, async (request, reply) => {
-    const { directory, name } = request.body;
+  const instructionsText = { type: 'string', maxLength: maxProjectInstructions };
+  app.post<{ Body: { directory?: string; name?: string; instructions?: string } }>('/api/projects', { schema: { body: object({ directory: string(2000), name: string(100), instructions: instructionsText }) } }, async (request, reply) => {
+    const { directory, name, instructions } = request.body;
     if (directory !== undefined) localAdmin(request);
     const authorize = () => {
       const { user: u, credential } = principal(request);
@@ -916,21 +939,25 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
     };
     authorize();
     const project = directory === undefined
-      ? await workspace.createProject(name ?? '', authorize)
-      : await workspace.addProject(directory, name, workspace.isolatedCodex ? workspace.corporate.defaultProjectPolicy('new') : undefined);
+      ? await workspace.createProject(name ?? '', authorize, instructions)
+      : await workspace.addProject(directory, name, workspace.isolatedCodex ? workspace.corporate.defaultProjectPolicy('new') : undefined, instructions);
     if (directory !== undefined) { access.migrate(); await workspace.store.save(); }
-    return reply.code(201).send({ id: project.id, name: project.name, directory: project.directory, chatCount: project.chats.length });
+    return reply.code(201).send({ id: project.id, name: project.name, instructions: project.instructions, directory: project.directory, chatCount: project.chats.length });
   });
-  app.patch<{ Params: { projectId: string }; Body: { name: string } }>('/api/projects/:projectId', {
-    schema: { body: object({ name: string(100) }, ['name']) },
-  }, request => workspace.renameProject(request.params.projectId, request.body.name, () => {
+  function projectEditor(request: FastifyRequest, id: string) {
     const principalNow = principal(request);
-    const project = access.project(principalNow.user, request.params.projectId, principalNow.credential);
+    const project = access.project(principalNow.user, id, principalNow.credential);
     if (!canRenameProject(workspace.store.state, principalNow.user, project, principalNow.credential)) {
-      throw new BridgeError('У вас нет права переименовать этот проект.', 403);
+      throw new BridgeError('Ваша роль не позволяет изменять этот проект.', 403);
     }
     return principalNow.user.id;
-  }));
+  }
+  app.patch<{ Params: { projectId: string }; Body: { name: string } }>('/api/projects/:projectId', {
+    schema: { body: object({ name: string(100) }, ['name']) },
+  }, request => workspace.renameProject(request.params.projectId, request.body.name, () => projectEditor(request, request.params.projectId)));
+  app.put<{ Params: { projectId: string }; Body: { instructions: string; previous: string } }>('/api/projects/:projectId/instructions', {
+    schema: { body: object({ instructions: instructionsText, previous: instructionsText }, ['instructions', 'previous']) },
+  }, request => workspace.saveProjectInstructions(request.params.projectId, request.body, () => projectEditor(request, request.params.projectId)));
   app.delete<{ Params: { projectId: string } }>('/api/projects/:projectId', request =>
     workspace.deleteProject(request.params.projectId, () => settingsAdmin(request)));
   const projectRolesPath = '/api/projects/:projectId/roles';
@@ -946,7 +973,12 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
     }, ['revision', 'roles']) },
   }, request => access.setProjectRoles(() => settingsAdmin(request), request.params.projectId, request.body));
   app.get<{ Params: { projectId: string } }>('/api/projects/:projectId/agents', async request => {
-    return workspace.corporate.list(user(request), requestProject(request, request.params.projectId));
+    const { user, credential } = principal(request);
+    const project = requestProject(request, request.params.projectId);
+    const agents = workspace.corporate.list(user, project);
+    if (credential.source !== 'fastkore' || process.env.BRIDGE_LIBRARY_CLOSED_ANALYSIS !== 'verified') return agents;
+    return agents.map(agent => ({ ...agent, closedAnalysis: workspace.library.policy.runScope(user.id, project.id, agent.id, credential.id)
+      .entries.some(entry => entry.classification === 'restricted') }));
   });
   const projectAgentSettings = '/api/projects/:projectId/agent-settings';
   app.get<{ Params: { projectId: string } }>(projectAgentSettings, async (request): Promise<ProjectAgentSettings> => {

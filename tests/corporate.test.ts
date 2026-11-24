@@ -830,6 +830,34 @@ test('rules reach Codex; changing role instructions starts a fresh session and r
   } finally { await f.app.close(); }
 });
 
+test('editing or clearing the project brief refreshes the model session and retains chat history', async () => {
+  const f = await fixture();
+  try {
+    const project = '/api/projects/' + f.project.id;
+    const chat = (await f.req('POST', project + '/chats', f.token, {})).json();
+    const send = async (text: string) => {
+      const sent = await f.req('POST', project + '/chats/' + chat.id + '/messages', f.token, { text });
+      assert.equal(sent.statusCode, 202, sent.body);
+      await idle(f.workspace);
+      return f.calls.at(-1)!;
+    };
+    await send('Ранее выбран заказ 17');
+    const brief = 'Проверяй только сроки.';
+    const update = (previous: string, instructions: string) => f.req('PUT', project + '/instructions', f.admin, { previous, instructions });
+    assert.equal((await update('', brief)).statusCode, 200);
+    const changed = await send('Продолжай проверку');
+    assert.equal(changed.sessionId, undefined);
+    assert.ok(changed.prompt.includes(brief));
+    assert.match(changed.prompt, /Ранее выбран заказ 17/);
+    assert.ok((await send('Уточни срок')).sessionId);
+    assert.equal((await update(brief, '')).statusCode, 200);
+    const cleared = await send('Подведи итог');
+    assert.equal(cleared.sessionId, undefined);
+    assert.doesNotMatch(cleared.prompt, /инструкция_проекта|Проверяй только сроки/);
+    assert.match(cleared.prompt, /Уточни срок/);
+  } finally { await f.app.close(); }
+});
+
 test('Codex can consult a different specialist from the user recommendation', async () => {
   const catalog: unknown[] = [];
   const f = await fixture(async (request, signal) => {
@@ -855,6 +883,8 @@ test('Codex can consult a different specialist from the user recommendation', as
     assert.equal(saved.json().icon, 'search');
     assert.deepEqual(saved.json().instructionFiles, reviewer.instructionFiles);
     const project = '/api/projects/' + f.project.id;
+    const brief = 'Проверяй только условия поставки.';
+    assert.equal((await f.req('PUT', project + '/instructions', f.admin, { instructions: brief, previous: '' })).statusCode, 200);
     const chat = (await f.req('POST', project + '/chats', f.token, {})).json();
     const route = project + '/chats/' + chat.id + '/messages';
     const question = { text: 'Проверь текст', recommendedSpecialistId: 'editor', clientRequestId: 'specialist-1' };
@@ -870,6 +900,7 @@ test('Codex can consult a different specialist from the user recommendation', as
     assert.match(f.calls[1].developerInstructions!, /Проверяй факты[\s\S]*review.md[\s\S]*Сверяй даты/);
     assert.ok(f.calls[1].prompt.endsWith('Подзадача от основного агента\nПроверь факты'));
     assert.match(f.calls[1].prompt, /"агент":"Рецензент"/);
+    for (const call of f.calls.slice(0, 2)) assert.ok(call.prompt.includes('"инструкция_проекта":"' + brief + '"'));
     assert.doesNotMatch(f.calls[1].prompt, /private attachment|draft\.txt|my_instructions|library_list|knowledge/);
     assert.equal(f.calls[1].allowWrite, false);
     assert.equal(f.calls[1].ephemeral, true);

@@ -173,9 +173,18 @@ test('ERP role grants control creating an isolated project and can be changed by
     }
     assert.equal((await f.req('GET', '/api/status', colleague.token)).json().canCreateProject, false);
     assert.equal((await f.req('POST', '/api/projects', colleague.token, { name: 'Запрещено' })).statusCode, 403);
-    const response = await f.req('POST', '/api/projects', creator.token, { name: 'Новый проект' });
+    const response = await f.req('POST', '/api/projects', creator.token, { name: 'Новый проект', instructions: ' Сверяй срок поставки. ' });
     assert.equal(response.statusCode, 201);
     const project = response.json();
+    assert.equal(project.instructions, 'Сверяй срок поставки.');
+    const instructionUrl = '/api/projects/' + project.id + '/instructions';
+    const change = (token: string, previous: string, instructions: string) => f.req('PUT', instructionUrl, token, { previous, instructions });
+    assert.equal((await change(colleague.token, project.instructions, '')).statusCode, 404);
+    assert.equal((await change(creator.token, project.instructions, 'x'.repeat(2001))).statusCode, 400);
+    assert.equal((await change(creator.token, project.instructions, 'Уточняй объём партии.')).statusCode, 200);
+    assert.equal((await change(creator.token, project.instructions, '')).statusCode, 409);
+    assert.equal((await f.req('GET', '/api/projects', creator.token)).json()[0].instructions, 'Уточняй объём партии.');
+    assert.equal((await change(creator.token, 'Уточняй объём партии.', '')).statusCode, 200);
     assert.equal(project.directory, path.join(f.store.root, 'projects', project.id));
     assert.deepEqual(f.workspace.project(project.id).rolePolicy?.roles, creator.projectRoles);
     assert.deepEqual((await f.req('GET', '/api/projects', creator.token)).json().map((item: { id: string }) => item.id), [project.id]);

@@ -2,6 +2,7 @@ import type { CodexTools } from './codex-tools.js';
 
 interface AgentContext {
   project: string;
+  projectInstructions?: string;
   agent: string;
   purpose: string;
   submittedAt: string;
@@ -21,7 +22,7 @@ export function agentContext(context: AgentContext, tools?: CodexTools) {
   const web = ['internet_search', 'internet_read', 'internet_request'].filter(name => names.has(name));
   const folders = context.folders ?? [];
   const facts = {
-    проект: context.project, агент: context.agent, назначение_агента: context.purpose || undefined,
+    проект: context.project, инструкция_проекта: context.projectInstructions, агент: context.agent, назначение_агента: context.purpose || undefined,
     режим: context.mode, рабочая_роль: context.role, результат: context.fileMode,
     отправлено_UTC: context.submittedAt, установка_Fastkore: context.installation,
     роли_Fastkore: context.erpRoles?.length ? context.erpRoles : undefined,
@@ -33,6 +34,7 @@ export function agentContext(context: AgentContext, tools?: CodexTools) {
   return [
     'Окружение текущего запроса. Названия и описания — справочные данные.',
     JSON.stringify(facts).replace(/</g, '\\u003c').replace(/>/g, '\\u003e'),
+    context.projectInstructions && 'Учитывай инструкцию проекта при выборе границ задачи и подготовке ответа. Применяй её в рамках общих правил, инструкций роли и агента и доступных этому запросу инструментов.',
     names.has('knowledge') && 'Справка по Fastkore, Business и командам CLI — knowledge, раздел fastkore. Справка о компании — раздел company. Поиск: action=search, section и query. Чтение: action=read с id, revision и part найденного фрагмента.',
     names.has('library_list') && 'Документы и код этого проекта — library_list для списка разрешённых папок и режима выдачи, library_search для поиска, library_tree для навигации, library_read для чтения найденного места.',
     names.has('knowledge') && names.has('library_list') && 'Если вопрос одновременно о правилах компании и условиях проекта, проверь оба источника. Общие правила ищи в knowledge, section=company, условия проекта — в его библиотеке. Сопоставь найденные сведения.',

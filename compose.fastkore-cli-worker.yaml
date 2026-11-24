@@ -2,7 +2,6 @@ services:
   app:
     environment:
       BRIDGE_FASTKORE_CLI_SOCKET: /run/fastkore-cli/pilot.sock
-      BRIDGE_FASTKORE_CLI_TICKETS: ${BRIDGE_FASTKORE_CLI_TICKETS:-0}
       BRIDGE_FASTKORE_CLI_STDOUT_MAX_BYTES: ${BRIDGE_FASTKORE_CLI_STDOUT_MAX_BYTES:-8388608}
     volumes:
       - fastkore_cli_ticket_socket:/run/fastkore-cli:ro

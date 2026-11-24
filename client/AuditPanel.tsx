@@ -13,7 +13,7 @@ const labels: Record<string, string> = {
   'erp.delegation.session_ended': 'Завершён сеанс с доступом к ERP',
   'user.update': 'Изменён пользователь', 'user.delete': 'Удалена учётная запись', 'user.projects': 'Изменён доступ к проектам',
   'project.members': 'Изменены участники проекта', 'project.roles': 'Изменены роли проекта',
-  'project.agents': 'Изменены агенты проекта', 'project.rename': 'Проект переименован', 'project.delete': 'Проект удалён',
+  'project.agents': 'Изменены агенты проекта', 'project.instructions': 'Изменена инструкция проекта', 'project.rename': 'Проект переименован', 'project.delete': 'Проект удалён',
   'role.update': 'Изменена рабочая роль', 'profile.update': 'Изменён агент', 'dataset.update': 'Изменён источник',
   'chat.private': 'Чат сделан личным', 'chat.project': 'Чат открыт проекту',
   'chat.archive': 'Чат перемещён в архив', 'chat.restore': 'Чат восстановлен из архива', 'chat.delete': 'Чат удалён',

@@ -16,6 +16,15 @@ const pairingTtl = 5 * 60_000;
 const maxAttempts = 5000;
 const maxTicketResponseBytes = 64 * 1024;
 export type Theme = 'light' | 'dark';
+export function delegationLossMessage(reason?: Credential['erpDelegationLoss']) {
+  const cause = reason === 'expired' ? 'Истёк срок доступа к данным ERP.'
+    : reason === 'binding_changed' ? 'Изменилась привязка платформы к установке ERP.'
+    : reason === 'grant_unreadable' ? 'Платформа не смогла прочитать сохранённое делегирование ERP.'
+    : reason === 'cli_ticket_denied' ? 'ERP отклонила делегирование сотрудника при выдаче билета CLI.'
+    : reason === 'mcp_token_denied' ? 'ERP отклонила делегирование сотрудника при выдаче токена MCP.'
+    : 'Доступ к ERP завершён или отозван.';
+  return cause + ' Откройте помощника заново из Fastkore.';
+}
 export interface ErpDelegation { grant: string; expiresAt: number }
 export interface TicketIdentity { installationId: string; externalUserId: string; displayName: string; roles?: FastkoreRole[]; delegation?: ErpDelegation }
 interface ExchangeInput { installation_id: string; ticket: string; login_challenge: string }

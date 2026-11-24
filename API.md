@@ -49,8 +49,9 @@ HTTP-маршруты обслуживают веб-интерфейс. Для �
 | GET | /api/admin/knowledge/{section}/files/{id} | Скачать оригинал |
 | PUT | /api/admin/knowledge/{section}/files/{id}?revision={revision} | Заменить файл через multipart-поле file с проверкой версии |
 | DELETE | /api/admin/knowledge/{section}/files/{id} | Удалить документ и индекс. Тело `{revision}` |
-| GET | /api/projects | [{id, name, directory, chatCount}] |
-| POST | /api/projects | Подключить папку сервера: {directory, name?} |
+| GET | /api/projects | У доступных проектов возвращаются `id`, `name`, `directory`, `chatCount` и заполненная `instructions`. |
+| POST | /api/projects | Создать проект по названию или подключить папку сервера. Необязательное поле `instructions` содержит до 2000 символов. |
+| PUT | /api/projects/{projectId}/instructions | Участник с правом переименования проекта передаёт `{instructions, previous}`. Пустая строка очищает инструкцию. При конфликте версий сервер возвращает 409. |
 | DELETE | /api/projects/{projectId} | Администратор удаляет проект. Чаты и вложения сохраняются. При активных или ожидающих заданиях возвращается 409. |
 | GET | /api/chats/without-project | Активные чаты из удалённых проектов, доступные владельцу или администратору. `projectId` сохраняется как ключ маршрута истории. |
 | GET | /api/projects/{projectId}/chats | [{id, title, updatedAt, messageCount}]. В настройках администратора `?includeArchived=true` включает доступные архивные чаты с полем `archivedAt`. |

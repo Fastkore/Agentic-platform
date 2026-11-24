@@ -410,15 +410,12 @@ test('an existing WebView session keeps only its own sealed ERP grant across an 
 });
 
 test('a valid SSO grant exposes CLI tools without MCP and only with a trusted runner', async t => {
-  const socket = process.env.BRIDGE_FASTKORE_CLI_SOCKET, tickets = process.env.BRIDGE_FASTKORE_CLI_TICKETS;
+  const socket = process.env.BRIDGE_FASTKORE_CLI_SOCKET;
   t.after(() => {
     if (socket === undefined) delete process.env.BRIDGE_FASTKORE_CLI_SOCKET;
     else process.env.BRIDGE_FASTKORE_CLI_SOCKET = socket;
-    if (tickets === undefined) delete process.env.BRIDGE_FASTKORE_CLI_TICKETS;
-    else process.env.BRIDGE_FASTKORE_CLI_TICKETS = tickets;
   });
   process.env.BRIDGE_FASTKORE_CLI_SOCKET = 'test-runner';
-  process.env.BRIDGE_FASTKORE_CLI_TICKETS = '1';
   let trusted = false;
   let cliData: unknown = { text: 'private ERP content' };
   const check = t.mock.method(FastkoreCli.prototype, 'checkTrust', async () => {
@@ -431,6 +428,8 @@ test('a valid SSO grant exposes CLI tools without MCP and only with a trusted ru
   });
   const f = await fixture();
   try {
+    t.mock.getter(f.workspace, 'isolatedCodex', () => true);
+    t.mock.getter(f.workspace, 'executionDisabled', () => false);
     const grant = 'fkug1.' + random();
     const claims = identity(f.id, f.userId);
     const roles = [{ id: randomUUID(), name: 'Запись' }, { id: randomUUID(), name: 'Чтение' }];
@@ -447,13 +446,21 @@ test('a valid SSO grant exposes CLI tools without MCP and only with a trusted ru
     assert.deepEqual(blocked.tools?.definitions.map(tool => tool.name), ['fastkore_cli_describe']);
     trusted = true;
     const ready = await prepare();
-    assert.equal(ready.problem, undefined);
+    assert.match(ready.problem!, /не указан HTTPS-адрес MCP/);
     assert.deepEqual(ready.tools?.definitions.map(tool => tool.name), [
       'fastkore_cli_catalog', 'fastkore_cli_command_describe', 'fastkore_cli_execute',
     ]);
     assert.equal(check.mock.callCount(), 2);
+    const permissions = async () => (await f.asCookie(session, 'GET', '/api/status')).json().toolPermissions;
+    assert.equal((await permissions()).cli, true);
     assert.equal((await f.patch({ cliEnabled: false })).statusCode, 200);
     assert.equal((await prepare()).tools, undefined);
+    const off = await permissions();
+    assert.equal(off.cli, false);
+    assert.equal(off.erpRoles.cli, true);
+    assert.match(off.cliUnavailableReason, /CLI отключён для этой установки/);
+    assert.equal(off.reconnectReason, undefined);
+    await assert.rejects(ready.tools!.call('fastkore_cli_catalog', {}, signal), /отключён/);
     assert.equal((await f.patch({ cliEnabled: true })).statusCode, 200);
     const entitySetId = randomUUID(), entityId = randomUUID();
     assert.equal((await ready.tools!.call('fastkore_cli_execute', { command: 'data get', args: ['--entity-set', entitySetId, '--entity', entityId] }, signal)).success, true);
@@ -500,6 +507,21 @@ test('a valid SSO grant exposes CLI tools without MCP and only with a trusted ru
     const invalidLimit = await ready.tools!.call('fastkore_cli_execute', { ...report, maxResponseChars: 200_001 }, signal);
     assert.equal(invalidLimit.success, false);
     assert.match(invalidLimit.text, /maxResponseChars/);
+    for (const [index, role] of roles.entries()) {
+      const saved = await f.req('PATCH', `/api/admin/erp-roles/${f.id}/${role.id}/permissions`, f.admin,
+        { cli: false, mcp: true, revision: index });
+      assert.equal(saved.statusCode, 200, saved.body);
+    }
+    const disabledByRole = await permissions();
+    assert.equal(disabledByRole.cli, false);
+    assert.equal(disabledByRole.erpRoles.cli, false);
+    assert.match(disabledByRole.cliUnavailableReason, /разрешениями роли/);
+    assert.equal((await prepare()).tools, undefined);
+    await assert.rejects(ready.tools!.call('fastkore_cli_catalog', {}, signal), /разрешениями ролей/);
+    assert.equal((await f.req('PATCH', `/api/admin/erp-roles/${f.id}/${roles[0].id}/permissions`, f.admin,
+      { cli: true, mcp: false, revision: 1 })).statusCode, 200);
+    assert.equal((await permissions()).cli, true);
+    assert.ok((await prepare()).tools?.definitions.some(tool => tool.name === 'fastkore_cli_execute'));
     await f.asCookie(session, 'POST', '/api/auth/logout', {});
     await assert.rejects(prepare());
   } finally { await f.app.close(); }

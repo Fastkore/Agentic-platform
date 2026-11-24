@@ -1,21 +1,23 @@
 import { lazy, Suspense, useEffect, useId, useState, type ReactNode } from 'react';
-import { Bot, Check, Database, MessageSquare, Pencil, Plus, Settings2, ShieldCheck, Trash2, Users, X } from 'lucide-react';
+import { Bot, Check, Database, FileText, MessageSquare, Pencil, Plus, Settings2, ShieldCheck, Trash2, Users, X } from 'lucide-react';
 import type { ChatView, ProjectAgentConnection, ProjectAgentPolicy, ProjectAgentSettings, ProjectRoleLabel, ProjectSummary } from '../shared/types';
 import { WorkspaceDialog } from './WorkspaceDialog';
 import { ProjectRolesPanel } from './ProjectRolesPanel';
+import { ProjectInstructions } from './ProjectInstructions';
 import { ProjectChatsPanel } from './ProjectChatsPanel';
 import { SettingsTabStrip } from './SettingsTabs';
 
 const ProjectLibraryPanel = lazy(() => import('./ProjectLibraryDialog').then(module => ({ default: module.ProjectLibraryPanel })));
-const sections = [['specialists', 'Агенты', Bot], ['library', 'Библиотека', Database], ['access', 'Доступ к материалам', ShieldCheck], ['roles', 'Роли', Users], ['chats', 'Чаты', MessageSquare]] as const;
+const sections = [['specialists', 'Агенты', Bot], ['instructions', 'Инструкция', FileText], ['library', 'Библиотека', Database], ['access', 'Доступ к материалам', ShieldCheck], ['roles', 'Роли', Users], ['chats', 'Чаты', MessageSquare]] as const;
 type Section = typeof sections[number][0];
 
-export function ProjectSettingsDialog({ project, request, close, openSpecialist, rename, remove, isAdmin, rolesChanged, renderChat, chatError }: {
+export function ProjectSettingsDialog({ project, request, close, openSpecialist, rename, saveInstructions, remove, isAdmin, rolesChanged, renderChat, chatError }: {
   project: ProjectSummary;
   request: <T>(url: string, init?: RequestInit) => Promise<T>;
   close: () => void;
   openSpecialist: (id: string) => void;
   rename: (name: string) => Promise<string>;
+  saveInstructions: (previous: string, instructions: string) => Promise<string>;
   remove: () => Promise<void>;
   isAdmin: boolean;
   rolesChanged: (roles: ProjectRoleLabel[]) => void;
@@ -112,7 +114,7 @@ export function ProjectSettingsDialog({ project, request, close, openSpecialist,
     {section === 'chats' && chatError && <p className="inline-error" role="alert">{chatError}</p>}
     <div id={tabs + '-panel'} role="tabpanel" aria-labelledby={tabs + section} tabIndex={0}
       className={section === 'chats' ? 'project-chats-panel' : 'project-agent-scroll'}>
-    {section === 'specialists' ? <>
+    {section === 'instructions' ? <ProjectInstructions project={project} save={saveInstructions} /> : section === 'specialists' ? <>
     <div className="project-agents-intro">
       <strong>Подключённые агенты</strong>
       {settings?.isolated && <button type="button" className="secondary" disabled={pending} aria-haspopup="dialog"

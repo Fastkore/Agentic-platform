@@ -15,6 +15,7 @@ test('Fastkore MCP forwards native tool schemas and arguments, isolates SSO sess
   const orderSchema = { type: 'object', properties: { guid: { type: 'string', format: 'uuid' } }, required: ['guid'], additionalProperties: false };
   let denyNext = false;
   let orderErrorStatus = 200;
+  let catalogStatus = 200;
   const server = createServer(tls, async (req, res) => {
     let body = ''; for await (const chunk of req) body += chunk;
     const value = JSON.parse(body);
@@ -50,6 +51,7 @@ test('Fastkore MCP forwards native tool schemas and arguments, isolates SSO sess
     assert.equal(req.headers['mcp-session-id'], 'session-' + user);
     if (value.method === 'notifications/initialized') { send(202); return; }
     if (value.method === 'tools/list') {
+      if (catalogStatus !== 200) { send(catalogStatus); return; }
       const inputSchema = { type: 'object', properties: {} };
       if (value.params.cursor === 'next') rpc({ tools: [{ name: 'GetOrders', inputSchema }, { name: 'GetOrder', inputSchema: orderSchema }] });
       else rpc({ tools: [{ name: 'GetCurrentUserInfo', inputSchema }, { name: 'CreateSalesOrder', inputSchema }], nextCursor: 'next' });
@@ -69,10 +71,10 @@ test('Fastkore MCP forwards native tool schemas and arguments, isolates SSO sess
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
   const address = server.address(); assert.ok(address && typeof address !== 'string');
   const origin = `https://127.0.0.1:${address.port}`;
-  const binding = { origin, key, ca: tls.cert, mcpCa: tls.cert, revision: 'rev', mcpUrl: origin + '/webapi/mcp' };
+  const binding = { origin, key, ca: tls.cert, mcpCa: tls.cert, revision: 'rev', mcpUrl: origin + '/webapi/mcp', mcpEnabled: true };
   const invalidations: string[] = [];
   const manager = () => new FastkoreMcp({
-    delegationBinding: () => binding,
+    delegationBinding: () => ({ ...binding, mcpUrl: binding.mcpEnabled ? binding.mcpUrl : undefined }),
     openDelegation: c => c.erpDelegation && { grant: 'fkug1.' + c.userId, expiresAt: c.erpDelegation.expiresAt },
   }, async (id, reason) => {
     invalidations.push(reason);
@@ -96,6 +98,18 @@ test('Fastkore MCP forwards native tool schemas and arguments, isolates SSO sess
     assert.deepEqual(a.tools.definitions.map(tool => tool.name), ['fastkore_GetCurrentUserInfo', 'fastkore_CreateSalesOrder', 'fastkore_GetOrders', 'fastkore_GetOrder']);
     assert.deepEqual(a.tools.definitions.find(tool => tool.name === 'fastkore_GetOrder')?.inputSchema, orderSchema);
     assert.equal((await a.tools.call('fastkore_UnknownTool', {}, signal)).success, false);
+    binding.mcpEnabled = false;
+    assert.equal(mcp.status(alice), 'unavailable');
+    assert.match((await a.tools.call('fastkore_GetOrders', {}, signal)).text, /отключён в настройках/);
+    assert.equal(calls.length, 0);
+    binding.mcpEnabled = true;
+    catalogStatus = 503;
+    assert.match((await prepare(alice)).problem!, /MCP вернул HTTP 503/);
+    assert.match(mcp.lastCatalogProblem(alice.id)!, /503/);
+    assert.equal(mcp.lastCatalogProblem(boris.id), undefined);
+    catalogStatus = 200;
+    assert.ok((await prepare(alice)).tools);
+    assert.equal(mcp.lastCatalogProblem(alice.id), undefined);
     assert.match((await a.tools.call('fastkore_GetCurrentUserInfo', {}, signal)).text, /user=alice/);
     assert.doesNotMatch((await b.tools.call('fastkore_GetCurrentUserInfo', {}, signal)).text, /fkua1/);
     assert.deepEqual([...issued.values()], [1, 1]);
@@ -144,7 +158,7 @@ test('Fastkore MCP forwards native tool schemas and arguments, isolates SSO sess
     revoked.add('boris');
     const denied = await manager().prepare(boris, () => {}, signal);
     assert.deepEqual(invalidations, ['mcp_token_denied']);
-    assert.match(denied.problem!, /доступ к ERP завершён или отозван/i);
+    assert.match(denied.problem!, /отклонила делегирование.*токена MCP/);
     assert.equal(boris.erpDelegation, undefined);
     assert.equal(manager().status(boris), 'reauth');
     const expired = { ...alice, id: randomUUID() };

@@ -20,12 +20,10 @@ if ($BuildContext) {
         ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $overridePath -Encoding utf8
     $buildStack = $stack + @('-f', $overridePath)
 }
-$previousTickets = $env:BRIDGE_FASTKORE_CLI_TICKETS
 $previousCliVersion = $env:BRIDGE_FASTKORE_CLI_PACKAGE_VERSION
 $appStopped = $false
 try {
     Invoke-Docker info --format '{{.ServerVersion}}'
-    $env:BRIDGE_FASTKORE_CLI_TICKETS = '1'
     if ($CliVersion) {
         if (!(Test-Path -LiteralPath "private/fastkore-cli-pilot/$CliVersion-sso/.agent-platform-import.json")) {
             throw 'Import the selected CLI package with Import-FastkoreCli.ps1 first.'
@@ -68,7 +66,6 @@ import { FastkoreCli } from './dist/server/fastkore-cli.js';
 const source = readFileSync('./dist/server/fastkore.js','utf8');
 assert.match(source,/ticketRoles/);
 assert.match(source,/maxTicketResponseBytes\s*=\s*64\s*\*\s*1024/);
-assert.equal(process.env.BRIDGE_FASTKORE_CLI_TICKETS,'1');
 const cli = new FastkoreCli(process.env.BRIDGE_FASTKORE_CLI_SOCKET);
 const catalog = await cli.describe();
 assert.equal(catalog.ok,true);
@@ -82,7 +79,5 @@ console.log(JSON.stringify({rolesSupported:true,ssoLimitBytes:65536,cliReady:tru
         Write-Warning 'Update failed after stopping the app. Attempting to start it again.'
         & docker @stack up -d --no-build app
     }
-    if ($null -eq $previousTickets) { Remove-Item Env:BRIDGE_FASTKORE_CLI_TICKETS -ErrorAction SilentlyContinue }
-    else { $env:BRIDGE_FASTKORE_CLI_TICKETS = $previousTickets }
     $env:BRIDGE_FASTKORE_CLI_PACKAGE_VERSION = $previousCliVersion
 }

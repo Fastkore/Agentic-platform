@@ -3,7 +3,7 @@ import { request } from 'node:http';
 import type { Credential } from '../shared/types.js';
 import type { FastkoreContext, FastkoreEntityContext } from '../shared/fastkore-context.js';
 import type { FastkoreCliCommand } from './codex-tools.js';
-import { postErpJson, type FastkoreSso } from './fastkore.js';
+import { delegationLossMessage, postErpJson, type FastkoreSso } from './fastkore.js';
 import { BridgeError, redact } from './store.js';
 import { elapsedMs } from './run-timing.js';
 
@@ -21,7 +21,7 @@ export type FastkoreCliOperation = FastkoreCliRead | { operation: 'auth-info' } 
 export type FastkoreCliResult = { success: boolean; exitCode: number; data?: unknown; error?: undefined } |
   { success: boolean | null; exitCode: number | null; data?: undefined; error: { code: 'cli_stdout_too_large'; actualBytes: number; limitBytes: number } };
 const audience = 'fastkore-cli';
-const unavailable = 'Исполнитель Fastkore CLI недоступен.';
+const unavailable = 'Платформа не получила ответ от исполнителя Fastkore CLI. Повторите запрос. Если ошибка повторится, попросите администратора проверить службу CLI.';
 const reauth = 'Доступ к ERP завершён или отозван. Войдите в помощника из Fastkore заново.';
 const ticketPattern = /^fkct1\.[A-Za-z0-9._-]{1,4096}$(?![\s\S])/;
 
@@ -102,8 +102,8 @@ export class FastkoreCli {
       signal.throwIfAborted();
       const session = current();
       const now = sso.delegationBinding(session);
+      if (now?.cliEnabled === false) throw new BridgeError('Fastkore CLI отключена в настройках установки.', 403);
       if (session.id !== credential.id || session.erpDelegationRevoked ||
-        now?.cliEnabled === false ||
         session.erpDelegation?.sealedGrant !== credential.erpDelegation?.sealedGrant ||
         now?.revision !== binding.revision || now.origin !== binding.origin || grant.expiresAt <= Date.now()) {
         throw new BridgeError(reauth, 403);
@@ -129,7 +129,7 @@ export class FastkoreCli {
     if (timing) timing.ticketStatus = status;
     if (status === 403) {
       await forget(credential.id);
-      throw new BridgeError(reauth, 403);
+      throw new BridgeError(delegationLossMessage('cli_ticket_denied'), 403);
     }
     if (status === 401) throw new BridgeError('ERP отклонила ключ привязки Fastkore. Проверьте подключение.', 424);
     if (status === 404) throw new BridgeError('Эта версия ERP ещё не выдаёт билеты Fastkore CLI.', 424);

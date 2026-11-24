@@ -284,6 +284,7 @@ export class Access {
       if (credential?.erpDelegation) {
         delete credential.erpDelegation;
         credential.erpDelegationRevoked = true;
+        credential.erpDelegationLoss = reason;
         return this.audit(credential.userId, 'erp.delegation.invalidated', id, draft.security, {
           sessionId: id, installationId: credential.installationId, delegationReason: reason,
           status: reason === 'mcp_token_denied' || reason === 'cli_ticket_denied' ? 403 : undefined,

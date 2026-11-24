@@ -2,20 +2,20 @@ import { request } from 'node:https';
 import type { AuditEvent, Credential, ErpDelegationLoss } from '../shared/types.js';
 import { erpReadOnlyMessage } from './erp-roles.js';
 import type { CodexTools, CodexToolDefinition } from './codex-tools.js';
-import { postErpJson, type ErpDelegation, type FastkoreSso } from './fastkore.js';
+import { delegationLossMessage, postErpJson, type ErpDelegation, type FastkoreSso } from './fastkore.js';
 import { BridgeError, redact } from './store.js';
 import { elapsedMs } from './run-timing.js';
 
 type Binding = NonNullable<ReturnType<FastkoreSso['delegationBinding']>>;
 type Token = { value: string; expiresAt: number };
-type Session = { credential: Credential; delegation: ErpDelegation; revision: string; token?: Token; refresh?: Promise<Token> };
+type Session = { credential: Credential; delegation: ErpDelegation; revision: string; token?: Token; refresh?: Promise<Token>; catalogProblem?: string };
 type Tool = { upstream: string; definition: CodexToolDefinition };
 type RpcTiming = { mcpTokenMs?: number; mcpHttpMs?: number };
 type CallDiagnostic = Pick<NonNullable<AuditEvent['details']>, 'status' | 'mcpFailure' | 'mcpErrorCode'>;
 type ReadAudit = RpcTiming & CallDiagnostic & { tool: string; parameters: Record<string, unknown>; success: boolean; elapsedMs: number };
 const audience = 'fastkore-mcp';
 const reauth = 'Доступ к ERP завершён или отозван. Откройте помощника из Fastkore заново.';
-const unavailable = 'Инструменты Fastkore сейчас недоступны. Чат доступен.';
+const unavailable = 'Не удалось получить корректный ответ от сервера MCP. Повторите запрос. Если ошибка повторится, попросите администратора проверить адрес MCP и журнал ERP.';
 const maxResponse = 768 * 1024;
 // Methods verified as read-only in Fastkore.Business. Unknown methods require write access.
 const readTools = new Set([
@@ -76,40 +76,45 @@ function postMcp(url: string, token: string, ca: string | undefined, body: unkno
         resolve({ status, value: JSON.parse(text), sessionId });
       } catch { res.destroy(); reject(new BridgeError(unavailable, 502)); }
     });
-    req.on('error', () => reject(new BridgeError(unavailable, 502)));
+    req.on('error', () => reject(new BridgeError(requestSignal.aborted
+      ? 'Сервер MCP не ответил вовремя. Повторите запрос.'
+      : 'Не удалось установить соединение с MCP. Попросите администратора проверить адрес, сеть и сертификат сервера ERP.', 502)));
     req.end(json);
   });
 }
 
 export class FastkoreMcp {
   private readonly sessions = new Map<string, Session>();
-  private readonly expired = new Set<string>();
+  private readonly expired = new Map<string, ErpDelegationLoss>();
 
   constructor(private readonly sso: Pick<FastkoreSso, 'delegationBinding' | 'openDelegation'>,
     private readonly forgetDelegation: (credentialId: string, reason: ErpDelegationLoss) => Promise<void>) {}
 
-  status(credential: Credential): 'unavailable' | 'ready' | 'reauth' {
+  status(credential: Credential, binding = this.sso.delegationBinding(credential)): 'unavailable' | 'ready' | 'reauth' {
     if (credential.erpDelegationRevoked || this.expired.has(credential.id)) return 'reauth';
     const stored = credential.erpDelegation;
     if (!stored) return 'unavailable';
-    const binding = this.sso.delegationBinding(credential);
     if (stored.expiresAt <= Date.now() || (binding && stored.revision !== binding.revision)) {
       void this.invalidate(credential.id, stored.expiresAt <= Date.now() ? 'expired' : 'binding_changed');
       return 'reauth';
     }
-    if (!binding?.mcpUrl) return 'unavailable';
-    if (!this.sessions.has(credential.id)) {
-      if (this.sessions.size >= 4096) return 'unavailable';
-      const delegation = this.sso.openDelegation(credential, binding.revision);
-      if (!delegation) { void this.invalidate(credential.id, 'grant_unreadable'); return 'reauth'; }
-      this.sessions.set(credential.id, { credential, delegation, revision: binding.revision });
+    if (!binding) return 'unavailable';
+    if (!this.sessions.has(credential.id) && !this.sso.openDelegation(credential, binding.revision)) {
+      void this.invalidate(credential.id, 'grant_unreadable');
+      return 'reauth';
     }
-    return 'ready';
+    return binding.mcpUrl ? 'ready' : 'unavailable';
   }
+
+  reconnectReason(credential: Credential) {
+    return delegationLossMessage(credential.erpDelegationLoss ?? this.expired.get(credential.id));
+  }
+
+  lastCatalogProblem(id: string) { return this.sessions.get(id)?.catalogProblem; }
 
   invalidate(id: string, reason: ErpDelegationLoss) {
     this.sessions.delete(id);
-    this.expired.add(id);
+    this.expired.set(id, reason);
     return this.forgetDelegation(id, reason).catch(() => {
       // Still fail closed in this process if SQLite is temporarily unavailable.
       console.error(JSON.stringify({ event: 'erp.delegation.persist_failed', sessionId: id, delegationReason: reason }));
@@ -135,12 +140,12 @@ export class FastkoreMcp {
     if (!state.refresh) {
       const { credential, delegation } = state;
       state.refresh = (async () => {
-        const fail = () => new BridgeError(unavailable, 502);
+        const fail = () => new BridgeError('Платформа не получила действительный токен MCP от ERP. Попросите администратора проверить службу выдачи токенов Fastkore.', 502);
         const { status, value } = await postErpJson(binding.origin + '/api/ai/user-token',
           JSON.stringify({ version: 1, delegation: delegation.grant, audience }), binding, fail);
         if (status === 403) {
           if (this.sessions.get(credential.id) === state) await this.invalidate(credential.id, 'mcp_token_denied');
-          throw new BridgeError(reauth, 403);
+          throw new BridgeError(delegationLossMessage('mcp_token_denied'), 403);
         }
         if (status === 401) throw new BridgeError('ERP отклонила ключ привязки Fastkore. Проверьте подключение.', 424);
         if (status === 404) throw new BridgeError('На сервере ERP недоступна выдача токенов MCP.', 424);
@@ -158,15 +163,25 @@ export class FastkoreMcp {
 
   async prepare(credential: Credential, authorize: () => void, signal: AbortSignal,
     audit?: (event: ReadAudit) => void, readOnly: () => boolean = () => false): Promise<{ tools?: CodexTools; problem?: string }> {
-    const status = this.status(credential);
-    if (status === 'reauth') return { problem: reauth };
-    const state = status === 'ready' ? this.sessions.get(credential.id) : undefined;
-    const binding = state && this.sso.delegationBinding(credential);
-    if (!state || !binding?.mcpUrl) return {};
+    const binding = this.sso.delegationBinding(credential);
+    const status = this.status(credential, binding);
+    if (status === 'reauth') return { problem: this.reconnectReason(credential) };
+    if (status !== 'ready' || !binding?.mcpUrl) return {};
+    if (!this.sessions.has(credential.id)) {
+      if (this.sessions.size >= 4096) {
+        for (const [id, session] of this.sessions) if (session.delegation.expiresAt <= Date.now()) this.sessions.delete(id);
+        if (this.sessions.size >= 4096) return { problem: 'Достигнут лимит одновременных сеансов MCP. Повторите запрос позже.' };
+      }
+      const delegation = this.sso.openDelegation(credential, binding.revision);
+      if (!delegation) return { problem: delegationLossMessage('grant_unreadable') };
+      this.sessions.set(credential.id, { credential, delegation, revision: binding.revision });
+    }
+    const state = this.sessions.get(credential.id)!;
     const url = binding.mcpUrl;
     const check = () => {
       authorize();
       const current = this.sso.delegationBinding(credential);
+      if (current?.mcpEnabled === false) throw new BridgeError('MCP отключён в настройках установки ERP.', 403);
       if (this.sessions.get(credential.id) !== state || state.delegation.expiresAt <= Date.now()
         || current?.revision !== state.revision || current.mcpUrl !== url) throw new BridgeError(reauth, 403);
     };
@@ -190,6 +205,12 @@ export class FastkoreMcp {
         .finally(() => { if (timing) timing.mcpHttpMs = elapsedMs(httpStarted); });
       if (response.status === 401 && state.token === token) state.token = undefined;
       check();
+      if (method !== 'tools/call' && response.status >= 400 && !(method === 'initialize' && response.status === 401)) {
+        if (response.status === 401 || response.status === 403) throw new BridgeError('Сервер MCP отказал в доступе к каталогу инструментов. Попросите администратора проверить права сотрудника в ERP.', 424);
+        if (response.status === 404) throw new BridgeError('MCP Fastkore не найден. Проверьте HTTPS-адрес в настройках установки.', 424);
+        if (response.status === 429) throw new BridgeError('Сервер MCP ограничил частоту запросов. Повторите запрос позже.', 429);
+        throw new BridgeError(`Сервер MCP вернул HTTP ${response.status} при подключении. Если ошибка повторится, попросите администратора проверить службу MCP.`, 502);
+      }
       const value = record(response.value);
       if (value?.jsonrpc === '2.0' && value.id === requestId && !('result' in value)) {
         const error = record(value.error);
@@ -207,9 +228,8 @@ export class FastkoreMcp {
       const init = { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'Agent Platform', version: '1' } };
       let initialized = await rpc('initialize', init, signal);
       if (initialized.status === 401) initialized = await rpc('initialize', init, signal);
-      if (initialized.status === 401 || initialized.status === 403) throw new BridgeError('MCP Fastkore отклонил доступ сотрудника.', 424);
-      if (initialized.status === 404) throw new BridgeError('MCP Fastkore не найден. Проверьте HTTPS-адрес в настройках установки.', 424);
-      if (!['2025-06-18', '2025-03-26', '2025-11-25'].includes(initialized.result?.protocolVersion)) throw new BridgeError(unavailable, 502);
+      if (initialized.status === 401) throw new BridgeError('Сервер MCP отклонил новый токен сотрудника. Попросите администратора проверить настройки доступа MCP в Fastkore.', 424);
+      if (!['2025-06-18', '2025-03-26', '2025-11-25'].includes(initialized.result?.protocolVersion)) throw new BridgeError('Сервер MCP не подтвердил поддерживаемую версию протокола. Попросите администратора проверить совместимость сервера с платформой.', 502);
       if (process.env.NODE_ENV === 'production') console.info(JSON.stringify({ event: 'fastkore.mcp.initialized', status: initialized.status }));
       protocol = initialized.result!.protocolVersion;
       const notified = await rpc('notifications/initialized', {}, signal);
@@ -231,7 +251,8 @@ export class FastkoreMcp {
         if (typeof next !== 'string' || next === cursor || next.length > 512 || page === 7) throw new BridgeError(unavailable, 502);
         cursor = next;
       }
-      if (!tools.size) return { problem: unavailable };
+      if (!tools.size) throw new BridgeError('ERP вернула пустой каталог MCP. Попросите администратора проверить доступные сотруднику операции в Fastkore.', 424);
+      state.catalogProblem = undefined;
       const restrictWrites = readOnly();
       return { tools: {
         definitions: [...tools.values()].filter(tool => !restrictWrites || readTools.has(tool.upstream)).map(tool => tool.definition),
@@ -260,7 +281,7 @@ export class FastkoreMcp {
             success = result.result.isError !== true;
             return { success, text };
           } catch (error) {
-            if (error instanceof BridgeError && [reauth, erpReadOnlyMessage].includes(error.message)) return { success: false, text: error.message };
+            if (error instanceof BridgeError && error.statusCode === 403) return { success: false, text: error.message };
             const status = diagnostic.status;
             if (status !== undefined && (status < 200 || status >= 300)) {
               diagnostic.mcpFailure = 'http';
@@ -275,7 +296,9 @@ export class FastkoreMcp {
       } };
     } catch (error) {
       signal.throwIfAborted();
-      return { problem: error instanceof BridgeError && [403, 424, 429].includes(error.statusCode) ? error.message : unavailable };
+      const problem = error instanceof BridgeError ? error.message : unavailable;
+      if (!(error instanceof BridgeError && error.statusCode === 403)) state.catalogProblem = problem;
+      return { problem };
     }
   }
 }
