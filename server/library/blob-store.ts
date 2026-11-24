@@ -65,7 +65,12 @@ export class S3LibraryBlobStore implements LibraryBlobStore {
         if (!this.createBucket || s3Status(error) !== 404) throw error;
         await this.send(new CreateBucketCommand({ Bucket: this.bucket }), 15_000);
       }
-    } catch { throw new BridgeError('Не удалось подключиться к бакету библиотеки. Проверьте настройки сервера.', 503); }
+    } catch (e) {
+      const status = s3Status(e);
+      if (status === 404) throw new BridgeError('Бакет не найден. Проверьте его имя и регион.', 400);
+      if (status === 403 || status === 401) throw new BridgeError('Хранилище отклонило ключи. Проверьте оба значения и права на бакет.', 403);
+      throw new BridgeError('Сервер платформы не смог открыть бакет. Проверьте адрес S3 API, регион и сетевое соединение.', 503);
+    }
   }
   async put(key: string, body: Buffer) {
     checkKey(key);
@@ -198,7 +203,23 @@ export class FilesystemLibraryBlobStore implements LibraryBlobStore {
   close() {}
 }
 
-export interface LibraryStorageConfig { store?: LibraryBlobStore; problem?: string; bucket?: string }
+export interface StorageLocation { endpoint: string; bucket: string; region: string; forcePathStyle: boolean }
+export interface StorageInput extends StorageLocation { accessKeyId: string; secretAccessKey: string }
+export interface LibraryStorageConfig { store?: LibraryBlobStore; problem?: string; bucket?: string; location?: StorageLocation }
+export function storageFromInput(input: StorageInput): LibraryStorageConfig {
+  const { endpoint, bucket, region, forcePathStyle, accessKeyId, secretAccessKey } = input;
+  if (!bucket.trim() || !accessKeyId.trim() || !secretAccessKey.trim() || !region.trim()) throw new BridgeError('Заполните бакет, регион и оба ключа.');
+  if (bucket === process.env.BRIDGE_S3_BUCKET) throw new BridgeError('Выберите отдельный бакет для библиотек. Этот бакет используется для вложений.');
+  let address = '';
+  if (endpoint) {
+    let url: URL;
+    try { url = new URL(endpoint); } catch { throw new BridgeError('Введите полный адрес хранилища, например http://minio:9000.'); }
+    if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.search || url.hash) throw new BridgeError('Укажите HTTP- или HTTPS-адрес сервиса без ключей и параметров.');
+    address = url.href.replace(/\/$/, '');
+  }
+  return { bucket, location: { endpoint: address, bucket, region, forcePathStyle },
+    store: new S3LibraryBlobStore(bucket, { endpoint: address || undefined, region, accessKeyId, secretAccessKey, forcePathStyle }) };
+}
 /** Library storage is configured separately from attachment storage (BRIDGE_S3_*): a private bucket the executor never gets keys for. */
 export function libraryStorageFromEnv(env: NodeJS.ProcessEnv): LibraryStorageConfig {
   if (env.BRIDGE_LIBRARY_STORAGE === 'filesystem') {
@@ -217,6 +238,7 @@ export function libraryStorageFromEnv(env: NodeJS.ProcessEnv): LibraryStorageCon
   }
   if (!accessKeyId || !secretAccessKey) return { problem: 'Для хранилища библиотеки нужны ключи доступа.' };
   const endpoint = env.BRIDGE_LIBRARY_S3_ENDPOINT || undefined;
-  return { bucket, store: new S3LibraryBlobStore(bucket, { endpoint, region: env.BRIDGE_LIBRARY_S3_REGION || 'us-east-1', accessKeyId, secretAccessKey,
+  return { bucket, location: { endpoint: endpoint || '', bucket, region: env.BRIDGE_LIBRARY_S3_REGION || 'us-east-1', forcePathStyle: !!endpoint && env.BRIDGE_LIBRARY_S3_FORCE_PATH_STYLE !== '0' },
+    store: new S3LibraryBlobStore(bucket, { endpoint, region: env.BRIDGE_LIBRARY_S3_REGION || 'us-east-1', accessKeyId, secretAccessKey,
     forcePathStyle: !!endpoint && env.BRIDGE_LIBRARY_S3_FORCE_PATH_STYLE !== '0' }, env.BRIDGE_LIBRARY_S3_CREATE_BUCKET === '1') };
 }

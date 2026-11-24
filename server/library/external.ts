@@ -16,7 +16,7 @@ export class ExternalLibraries {
   private running = new Map<string, Promise<void>>();
   private opening = new Map<string, Promise<CloudDrive>>();
   private stopped = false;
-  constructor(private registry: LibraryRegistry, root: string) { this.auth = new DriveAuth(root); }
+  constructor(private registry: LibraryRegistry) { this.auth = new DriveAuth(registry.settings); }
   private get db() { return this.registry.db; }
   has(id: string) { return !!this.db.prepare('SELECT 1 FROM external_sources WHERE folder_id=?').get(id); }
   private source(id: string) { return this.db.prepare('SELECT * FROM external_sources WHERE folder_id=?').get(id) as Source | undefined; }

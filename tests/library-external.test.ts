@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { DriveAuth } from '../server/library/drive-auth.js';
+import { LibrarySettings } from '../server/library/settings.js';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { LibraryRegistry } from '../server/library/registry.js';
@@ -168,17 +170,24 @@ test('external HTTP connection uses regular project grants and checks remote acc
   const base = '/api/library/external';
   const statusUrl = base + '/status/dropbox';
   assert.equal((await f.req('GET',statusUrl,f.token)).statusCode,403);
-  assert.deepEqual((await f.req('GET',statusUrl,f.admin)).json(),{configured:true});
+  const redirectUri = 'https://agents.example.test/library-oauth.html';
+  assert.deepEqual((await f.req('GET',statusUrl,f.admin)).json(),{configured:true, redirectUri});
   delete process.env.BRIDGE_LIBRARY_DROPBOX_CLIENT_SECRET;
-  try {
-    assert.deepEqual((await f.req('GET',statusUrl,f.admin)).json(),{configured:false});
-  } finally {
-    process.env.BRIDGE_LIBRARY_DROPBOX_CLIENT_SECRET = 'secret';
-  }
-  assert.equal((await f.req('POST',base+'/authorize',f.token,{provider:'dropbox'})).statusCode,403);
-  const started = (await f.req('POST',base+'/authorize',f.admin,{provider:'dropbox'})).json();
-  assert.ok(started.url.startsWith(providers.dropbox.authorize));
+  t.after(() => { process.env.BRIDGE_LIBRARY_DROPBOX_CLIENT_SECRET = 'secret'; });
+  assert.deepEqual((await f.req('GET',statusUrl,f.admin)).json(),{configured:false, redirectUri});
+  const setup = { id: 'wizard-client', secret: 'private-wizard-secret' };
+  const draft = { provider: 'dropbox', setup };
+  assert.equal((await f.req('POST',base+'/authorize',f.token,draft)).statusCode,403);
+  const started = (await f.req('POST',base+'/authorize',f.admin,draft)).json();
+  assert.equal(new URL(started.url).searchParams.get('client_id'), setup.id);
+  assert.ok(!JSON.stringify(started).includes(setup.secret));
+  assert.equal((await f.req('GET',statusUrl,f.admin)).json().configured,false);
   assert.equal((await f.req('POST',base+'/authorize/finish',f.admin,{state:started.state,code:'code'})).statusCode,200);
+  assert.deepEqual((await f.req('GET',statusUrl,f.admin)).json(),{configured:true, redirectUri});
+  const dataDir = path.join(f.root, 'data');
+  const fresh = new DriveAuth(new LibrarySettings(dataDir));
+  assert.equal(new URL(fresh.begin('owner', 'dropbox').url).searchParams.get('client_id'),setup.id);
+  assert.ok(!(await readFile(path.join(dataDir, 'dropbox.env'), 'utf8')).includes(setup.secret));
   const selection = {connection:started.state,folder:(await f.req('POST',base+'/folders',f.admin,{connection:started.state})).json()[0].id};
   const created = await f.req('POST','/api/library',f.admin,{name:'Docs',external:selection});
   assert.equal(created.statusCode,201,created.body);

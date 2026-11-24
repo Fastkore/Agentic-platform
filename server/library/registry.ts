@@ -11,7 +11,8 @@ import {
 import { AuditJournal, publishAudit, type NewAuditEvent } from '../audit-journal.js';
 import { BridgeError } from '../store.js';
 import { ExternalLibraries } from './external.js';
-import { FilesystemLibraryBlobStore, blobKey, type LibraryStorageConfig } from './blob-store.js';
+import { FilesystemLibraryBlobStore, blobKey, storageFromInput, type LibraryBlobStore, type StorageInput, type LibraryStorageConfig } from './blob-store.js';
+import { LibrarySettings } from './settings.js';
 
 export interface LibraryActor { id: string; admin: boolean; credentialId?: string }
 export interface LibraryLimits {
@@ -145,6 +146,9 @@ const fileSelect = `SELECT f.*, coalesce(c.state,'pending') extraction_state, c.
 export class LibraryRegistry {
   readonly db: DatabaseSync;
   readonly external: ExternalLibraries;
+  readonly settings: LibrarySettings;
+  private retiredStores: LibraryBlobStore[] = [];
+  private configuringStorage = false;
   private readonly externalCache: FilesystemLibraryBlobStore;
   objectStore(key: string) { return key.startsWith('library/external_') ? this.externalCache : this.store(); }
   private readonly audit: AuditJournal;
@@ -153,10 +157,16 @@ export class LibraryRegistry {
   /** Project names for summaries; supplied by the workspace. */
   projectName: (projectId: string) => string | undefined = () => undefined;
   canSeeProject: (actor: LibraryActor, projectId: string) => boolean = () => true;
-  constructor(root: string, readonly storage: LibraryStorageConfig, readonly limits: LibraryLimits = libraryLimitsFromEnv(), private readonly now = () => Date.now()) {
+  constructor(root: string, public storage: LibraryStorageConfig, readonly limits: LibraryLimits = libraryLimitsFromEnv(), private readonly now = () => Date.now()) {
     this.externalCache = new FilesystemLibraryBlobStore(path.join(root, 'drive-cache'));
-    this.external = new ExternalLibraries(this, root);
     mkdirSync(root, { recursive: true, mode: 0o700 });
+    this.settings = new LibrarySettings(root);
+    this.external = new ExternalLibraries(this);
+    const saved = this.settings.read<StorageInput>('s3');
+    if (saved) {
+      this.storage = storageFromInput(saved);
+      storage.store?.close();
+    }
     const file = path.join(root, 'library.sqlite');
     this.db = new DatabaseSync(file);
     try {
@@ -182,7 +192,27 @@ export class LibraryRegistry {
     }
   }
   get schemaVersion() { return (this.db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version; }
-  close() { this.db.close(); this.storage.store?.close(); }
+  close() { this.db.close(); this.storage.store?.close(); this.retiredStores.forEach(store => store.close()); }
+
+  async configureStorage(input: StorageInput) {
+    if (this.configuringStorage) throw new BridgeError('Проверка хранилища уже идёт.', 409);
+    const candidate = storageFromInput(input);
+    const store = candidate.store!;
+    this.configuringStorage = true;
+    try {
+      await store.check();
+      const previous = this.storage.location;
+      const sameTarget = previous && previous.bucket === input.bucket && previous.endpoint.replace(/\/$/, '') === candidate.location!.endpoint && (!!previous.endpoint || previous.region === input.region);
+      if (this.storage.store && !sameTarget && this.db.prepare("SELECT 1 FROM blobs WHERE state != 'deleted' AND object_key NOT GLOB 'library/external_*' UNION ALL SELECT 1 FROM operations WHERE status='open' LIMIT 1").get()) {
+        throw new BridgeError('В текущем хранилище уже есть файлы или активные загрузки. Укажите тот же адрес и бакет для обновления ключей.', 409);
+      }
+      this.settings.write('s3', input);
+      // In-flight readers may still be streaming through the previous client.
+      if (this.storage.store) this.retiredStores.push(this.storage.store);
+      this.storage = candidate;
+    } catch (e) { store.close(); throw e; }
+    finally { this.configuringStorage = false; }
+  }
 
   /** Runs write in one IMMEDIATE transaction; audit events commit with the change. */
   tx<T>(write: () => T, events: (value: T) => NewAuditEvent[] = () => []): T {
@@ -208,7 +238,7 @@ export class LibraryRegistry {
   }
   storageStatus() {
     const one = <T>(sql: string) => this.db.prepare(sql).get() as T;
-    return { configured: !!this.storage.store, kind: this.storage.store?.kind, problem: this.storage.problem,
+    return { configured: !!this.storage.store, kind: this.storage.store?.kind, problem: this.storage.problem, location: this.storage.location,
       limits: { maxFiles: this.limits.maxFiles, maxFileBytes: this.limits.maxFileBytes, partBytes: this.limits.partBytes, maxDepth: this.limits.maxDepth,
         maxPathLength: this.limits.maxPathLength, defaultQuotaBytes: this.limits.defaultQuotaBytes, uploadConcurrency: this.limits.uploadConcurrency },
       activeParts: this.activeParts,

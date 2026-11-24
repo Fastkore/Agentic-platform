@@ -84,3 +84,37 @@ test('S3: accepted Windows-1251 and rejected text both release connections; proc
   const file = reader.fileByPath(state.id, 'legacy/f0.cs')!;
   assert.equal((await reader.readLines(state.id, file.file_id, 1, 1)).lines[0].text, 'Привет');
 });
+
+test('storage form verifies a candidate before publishing, persists keys privately and restores the client on restart', async t => {
+  const { createServer } = await import('node:http');
+  const { readFile } = await import('node:fs/promises');
+  const { fixture } = await import('./library-app.js');
+  const http = createServer((req, res) => {
+    res.writeHead(req.method === 'HEAD' && req.url?.startsWith('/library-docs') ? 200 : 403);
+    res.end();
+  });
+  await new Promise<void>(resolve => http.listen(0, '127.0.0.1', resolve));
+  t.after(() => http.close());
+  const address = http.address();
+  assert.ok(address && typeof address !== 'string');
+  const f = await fixture();
+  t.after(() => f.app.close());
+  const input = { endpoint: 'http://127.0.0.1:' + address.port, bucket: 'library-docs', region: 'us-east-1', forcePathStyle: true,
+    accessKeyId: 'wizard-access', secretAccessKey: 'private-storage-wizard-secret' };
+  const url = '/api/library/storage';
+  assert.equal((await f.req('PUT', url, f.token, input)).statusCode, 403);
+  const saved = await f.req('PUT', url, f.admin, input);
+  assert.equal(saved.statusCode, 200, saved.body);
+  const status = await f.req('GET', url, f.admin);
+  assert.equal(status.json().location.bucket, input.bucket);
+  assert.ok(!status.body.includes(input.secretAccessKey) && !status.body.includes(input.accessKeyId));
+  const failed = await f.req('PUT', url, f.admin, { ...input, bucket: 'wrong-bucket' });
+  assert.equal(failed.statusCode, 403);
+  const dataDir = path.join(f.root, 'data');
+  assert.ok(!(await readFile(path.join(dataDir, 's3.env'), 'utf8')).includes(input.secretAccessKey));
+  const reopened = new LibraryRegistry(dataDir, {});
+  try {
+    assert.equal(reopened.storageStatus().location?.bucket, input.bucket);
+    await reopened.store().check();
+  } finally { reopened.close(); }
+});

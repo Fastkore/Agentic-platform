@@ -1,22 +1,23 @@
-import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID } from 'node:crypto';
-import { readFileSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import { LibrarySettings } from './settings.js';
 import type { ExternalProvider, ExternalSelection } from '../../shared/library.js';
-import { externalLabels } from '../../shared/library.js';
 import { BridgeError } from '../store.js';
 import { CloudDrive, providers } from './cloud-drive.js';
 
 interface Tokens { access: string; refresh?: string; expires: number }
-interface Draft { owner: string; provider: ExternalProvider; expires: number; verifier?: string; tokens?: Tokens; folders: Map<string, { name: string; identity: string }> }
+export interface DriveKeys { id: string; secret: string }
+interface Draft { setup?: DriveKeys; owner: string; provider: ExternalProvider; expires: number; verifier?: string; tokens?: Tokens; folders: Map<string, { name: string; identity: string }> }
 const expired = () => new BridgeError('Подключение истекло. Нажмите «Подключить» ещё раз.', 409);
-function settings(provider: ExternalProvider) {
+function environmentKeys(provider: ExternalProvider): DriveKeys | undefined {
   const prefix = 'BRIDGE_LIBRARY_' + provider.toUpperCase();
-  const id = process.env[prefix + '_CLIENT_ID'], secret = process.env[prefix + '_CLIENT_SECRET'], origin = process.env.BRIDGE_PUBLIC_ORIGIN;
-  if (!id || !secret || !origin) throw new BridgeError('Для ' + externalLabels[provider] + ' администратору сервера нужно настроить OAuth-приложение и публичный адрес платформы.', 503);
-  return { id, secret, redirect: new URL('/library-oauth.html', origin).href };
+  const id = process.env[prefix + '_CLIENT_ID'], secret = process.env[prefix + '_CLIENT_SECRET'];
+  return id && secret ? { id, secret } : undefined;
 }
-async function exchange(provider: ExternalProvider, body: Record<string, string>, previous?: string): Promise<Tokens> {
-  const { id, secret } = settings(provider);
+function redirectUri() {
+  if (!process.env.BRIDGE_PUBLIC_ORIGIN) throw new BridgeError('Публичный адрес платформы не задан.', 503);
+  return new URL('/library-oauth.html', process.env.BRIDGE_PUBLIC_ORIGIN).href;
+}
+async function exchange(provider: ExternalProvider, { id, secret }: DriveKeys, body: Record<string, string>, previous?: string): Promise<Tokens> {
   let response: Response;
   try {
     response = await fetch(providers[provider].token, { method: 'POST', redirect: 'error', signal: AbortSignal.timeout(20000),
@@ -29,44 +30,35 @@ async function exchange(provider: ExternalProvider, body: Record<string, string>
 }
 export class DriveAuth {
   private drafts = new Map<string, Draft>();
-  constructor(private root: string) {}
-  private key() {
-    const file = join(this.root, 'drive-oauth.key');
-    try { return readFileSync(file); } catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e; }
-    const key = randomBytes(32);
-    try { writeFileSync(file, key, { flag: 'wx', mode: 0o600 }); return key; }
-    catch (e) { if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e; return readFileSync(file); }
+  constructor(private settings: LibrarySettings) {}
+  private keys(provider: ExternalProvider) {
+    return this.settings.read<DriveKeys>(provider) ?? environmentKeys(provider);
   }
-  seal(tokens: Tokens) {
-    const iv = randomBytes(12), cipher = createCipheriv('aes-256-gcm', this.key(), iv);
-    const encrypted = Buffer.concat([cipher.update(JSON.stringify(tokens)), cipher.final()]);
-    return Buffer.concat([iv, cipher.getAuthTag(), encrypted]).toString('base64');
+  private requireKeys(provider: ExternalProvider) {
+    const keys = this.keys(provider);
+    if (!keys) throw new BridgeError('Введите ключи приложения в мастере подключения.', 409);
+    return keys;
   }
   async open(provider: ExternalProvider, sealed: string, save: (sealed: string) => void) {
-    const data = Buffer.from(sealed, 'base64'), decipher = createDecipheriv('aes-256-gcm', this.key(), data.subarray(0,12));
-    decipher.setAuthTag(data.subarray(12,28));
-    let tokens: Tokens = JSON.parse(Buffer.concat([decipher.update(data.subarray(28)), decipher.final()]).toString());
+    let tokens = this.settings.unseal<Tokens>(sealed);
     if (tokens.expires < Date.now() + 60_000) {
       if (!tokens.refresh) throw expired();
-      tokens = await exchange(provider, { grant_type: 'refresh_token', refresh_token: tokens.refresh }, tokens.refresh);
-      save(this.seal(tokens));
+      tokens = await exchange(provider, this.requireKeys(provider), { grant_type: 'refresh_token', refresh_token: tokens.refresh }, tokens.refresh);
+      save(this.settings.seal(tokens));
     }
     return new CloudDrive(provider, tokens.access);
   }
-  configured(provider: ExternalProvider): boolean {
-    try {
-      settings(provider);
-      return true;
-    } catch {
-      return false;
-    }
+  status(provider: ExternalProvider) {
+    return { configured: !!this.keys(provider), redirectUri: redirectUri() };
   }
-
-  begin(owner: string, provider: ExternalProvider) {
-    const { id, redirect } = settings(provider);
+  begin(owner: string, provider: ExternalProvider, setup?: DriveKeys) {
+    const existing = this.keys(provider);
+    if (existing && setup) throw new BridgeError('Сервис уже настроен. Обновите форму, чтобы войти.', 409);
+    const { id } = existing ?? setup ?? this.requireKeys(provider);
+    const redirect = redirectUri();
     for (const [key, draft] of this.drafts) if (draft.expires <= Date.now()) this.drafts.delete(key);
     const state = randomUUID(), verifier = randomBytes(48).toString('base64url');
-    this.drafts.set(state, { provider, owner, verifier, expires: Date.now() + 900_000, folders: new Map() });
+    this.drafts.set(state, { provider, owner, setup, verifier, expires: Date.now() + 900_000, folders: new Map() });
     const params = new URLSearchParams({ client_id: id, redirect_uri: redirect, state, response_type: 'code', scope: providers[provider].scope,
       code_challenge_method: 'S256', code_challenge: createHash('sha256').update(verifier).digest('base64url') });
     if (provider === 'dropbox') params.set('token_access_type', 'offline');
@@ -82,7 +74,15 @@ export class DriveAuth {
     const draft = this.draft(owner, state), verifier = draft.verifier;
     if (!verifier) throw expired();
     delete draft.verifier;
-    draft.tokens = await exchange(draft.provider, { grant_type: 'authorization_code', code, code_verifier: verifier, redirect_uri: settings(draft.provider).redirect });
+    const setup = draft.setup;
+    delete draft.setup;
+    const tokens = await exchange(draft.provider, setup ?? this.requireKeys(draft.provider), { grant_type: 'authorization_code', code, code_verifier: verifier, redirect_uri: redirectUri() });
+    if (setup) {
+      const current = this.keys(draft.provider);
+      if (current && (current.id !== setup.id || current.secret !== setup.secret)) throw new BridgeError('Другой администратор уже подключил сервис. Войдите ещё раз.', 409);
+      if (!current) this.settings.write(draft.provider, setup);
+    }
+    draft.tokens = tokens;
     return { ok: true };
   }
   async folders(owner: string, id: string, parent?: string) {
@@ -100,7 +100,7 @@ export class DriveAuth {
   selected(owner: string, selection: ExternalSelection) {
     const draft = this.draft(owner, selection.connection), folder = draft.folders.get(selection.folder);
     if (!draft.tokens || !folder) throw new BridgeError('Выберите папку подключённого диска.');
-    return { provider: draft.provider, ...folder, sealed: this.seal(draft.tokens) };
+    return { provider: draft.provider, ...folder, sealed: this.settings.seal(draft.tokens) };
   }
   discard(id: string) { this.drafts.delete(id); }
 }

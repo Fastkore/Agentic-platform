@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useState } from 'react';
-import { ChevronDown, ChevronRight, Info, Plus, RefreshCw } from 'lucide-react';
+import { ChevronDown, ChevronRight, Info, RefreshCw } from 'lucide-react';
 import type { ProjectSummary } from '../shared/types';
 import type { LibraryCell, LibraryConnection, LibraryFolderSummary, OutputPolicy, ProjectLibraryView } from '../shared/library';
 import { Select } from './Select';
 import { PermissionSwitch } from './PermissionSwitch';
 import type { Request } from './library-upload';
 import { folderLine, LibraryFolderCard } from './LibraryFolderCard';
-import { CreateLibraryForm, outputModes, profileLabels } from './LibraryPanel';
+import { CreateLibraryForm, LibraryCreateButtons, type LibraryKind, outputModes, profileLabels } from './LibraryPanel';
 import './specialists.css';
 import './library.css';
 
@@ -21,7 +21,7 @@ export function ProjectLibraryPanel({ project, request, section, isAdmin, initia
   const [folders, setFolders] = useState<LibraryFolderSummary[]>([]);
   const [expanded, setExpanded] = useState<string>();
   const [search, setSearch] = useState('');
-  const [creating, setCreating] = useState(false);
+  const [creating, setCreating] = useState<LibraryKind>();
   const [profileFilter, setProfileFilter] = useState(initialProfileId ?? '');
   const [detail, setDetail] = useState<LibraryCell>();
   const [error, setError] = useState('');
@@ -51,7 +51,7 @@ export function ProjectLibraryPanel({ project, request, section, isAdmin, initia
       <strong>{section === 'folders' ? 'Папки библиотеки' : 'Доступ агентов к папкам'}</strong>
       <span className="project-specialist-actions">
         <button type="button" className="workspace-icon" title="Обновить" aria-label="Обновить" disabled={pending} onClick={() => void load()}><RefreshCw size={16} /></button>
-        {section === 'folders' && isAdmin && <button type="button" className="secondary" aria-expanded={creating} onClick={() => setCreating(!creating)}><Plus size={16} aria-hidden="true" />Новая папка</button>}
+        {section === 'folders' && isAdmin && <LibraryCreateButtons kind={creating} select={setCreating} disabled={pending} />}
       </span>
     </div>
     {error && <p className="inline-error" role="alert">{error}</p>}
@@ -59,9 +59,9 @@ export function ProjectLibraryPanel({ project, request, section, isAdmin, initia
     {view && <div className="library-panel">
 
       {section === 'folders' && <>
-        {creating && <CreateLibraryForm request={request} pending={pending} project cancel={() => setCreating(false)} submit={draft => void act(async () => {
+        {creating && <CreateLibraryForm key={creating} kind={creating} request={request} pending={pending} project cancel={() => setCreating(undefined)} submit={draft => void act(async () => {
           const created = await request<LibraryFolderSummary>('/api/library', { method: 'POST', body: JSON.stringify(draft) });
-          setCreating(false);
+          setCreating(undefined);
           await request(base, { method: 'POST', body: JSON.stringify({ folderId: created.id }) });
           setExpanded(created.id);
         })} />}

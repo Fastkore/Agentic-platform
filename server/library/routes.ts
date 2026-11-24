@@ -3,6 +3,8 @@ import { externalProviders, type ExternalProvider, type ExternalSelection, libra
 import { BridgeError } from '../store.js';
 import type { LibraryPolicy } from './policy.js';
 import type { LibraryReader } from './reader.js';
+import type { DriveKeys } from './drive-auth.js';
+import type { StorageInput } from './blob-store.js';
 import { notFound, type LibraryActor, type LibraryRegistry } from './registry.js';
 
 export interface LibraryRouteDeps {
@@ -39,15 +41,24 @@ export function libraryRoutes(app: FastifyInstance, deps: LibraryRouteDeps) {
     await registry.storage.store.check();
     return { ok: true, kind: registry.storage.store.kind };
   });
+  const credential = { type: 'string', minLength: 1, maxLength: 2048, pattern: '^[!-~]+$' };
+  const storageFields = { endpoint: { type: 'string', maxLength: 2048 }, bucket: { type: 'string', minLength: 3, maxLength: 63, pattern: '^[a-z0-9][a-z0-9.-]*[a-z0-9]$' },
+    region: { type: 'string', minLength: 1, maxLength: 80, pattern: '^[a-zA-Z0-9-]+$' }, forcePathStyle: { type: 'boolean' }, accessKeyId: credential, secretAccessKey: credential };
+  app.put<{ Body: StorageInput }>(base + '/storage', { schema: { body: obj(storageFields, Object.keys(storageFields)) } }, async request => {
+    admin(request);
+    await registry.configureStorage(request.body);
+    return { ok: true };
+  });
   const selection = obj({ connection: anyId, folder: { type: 'string', minLength: 1, maxLength: 4096 } }, ['connection', 'folder']);
   app.get<{ Params: { provider: ExternalProvider } }>(base + '/external/status/:provider', {
     schema: { params: obj({ provider: { enum: externalProviders } }, ['provider']) },
   }, async request => {
     admin(request);
-    return { configured: registry.external.auth.configured(request.params.provider) };
+    return registry.external.auth.status(request.params.provider);
   });
-  app.post<{ Body: { provider: ExternalProvider } }>(base + '/external/authorize', { schema: { body: obj({ provider: { enum: externalProviders } }, ['provider']) } },
-    async request => registry.external.auth.begin(admin(request).id, request.body.provider));
+  app.post<{ Body: { provider: ExternalProvider; setup?: DriveKeys } }>(base + '/external/authorize', { schema: { body: obj({
+    provider: { enum: externalProviders }, setup: obj({ id: credential, secret: credential }, ['id', 'secret']),
+  }, ['provider']) } }, async request => registry.external.auth.begin(admin(request).id, request.body.provider, request.body.setup));
   app.post<{ Body: { state: string; code: string } }>(base + '/external/authorize/finish', { schema: { body: obj({ state: anyId, code: { type: 'string', minLength: 1, maxLength: 4096 } }, ['state','code']) } },
     async request => registry.external.auth.finish(admin(request).id, request.body.state, request.body.code));
   app.post<{ Body: { connection: string; parent?: string } }>(base + '/external/folders', { schema: { body: obj({ connection: anyId, parent: { type: 'string', maxLength: 4096 } }, ['connection']) } },

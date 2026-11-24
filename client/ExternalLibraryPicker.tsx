@@ -2,10 +2,13 @@ import { useEffect, useRef, useState } from 'react';
 import { externalLabels, type ExternalFolder, type ExternalProvider, type ExternalSelection } from '../shared/library';
 import type { Request } from './library-upload';
 
-const setup = {
-  google: ['Включите Google Drive API и создайте OAuth-клиент для веб-приложения с правом drive.readonly.', 'https://developers.google.com/identity/protocols/oauth2/web-server'],
-  dropbox: ['Выберите Scoped access и Full Dropbox. В Permissions включите files.metadata.read и files.content.read.', 'https://www.dropbox.com/developers/apps'],
-  yandex: ['Зарегистрируйте веб-приложение с правом чтения cloud_api:disk.read.', 'https://oauth.yandex.ru/'],
+const guides = {
+  dropbox: { url: 'https://www.dropbox.com/developers/apps/create', id: 'App key', secret: 'App secret', location: 'Settings', redirect: 'OAuth 2 → Redirect URIs',
+    steps: ['Создайте приложение с типом Scoped access и доступом Full Dropbox.', 'Во вкладке Permissions отметьте files.metadata.read и files.content.read и нажмите Submit.'] },
+  google: { url: 'https://console.cloud.google.com/apis/credentials', id: 'Client ID', secret: 'Client secret', location: 'Клиенты OAuth', redirect: 'Authorized redirect URIs',
+    steps: ['Выберите проект в Google Cloud и включите Google Drive API.', 'В Google Auth Platform настройте аудиторию и доступ drive.readonly. В режиме Testing добавьте свой аккаунт в Test users.', 'Создайте OAuth client ID типа Web application.'] },
+  yandex: { url: 'https://oauth.yandex.ru/', id: 'ClientID', secret: 'Client secret', location: 'Карточка приложения', redirect: 'Redirect URI',
+    steps: ['Создайте приложение Яндекс OAuth и выберите платформу «Веб-сервисы».', 'Добавьте разрешение на чтение Диска (cloud_api:disk.read).'] },
 };
 export function ExternalLibraryPicker({ provider, request, onSelect }: {
   provider: ExternalProvider; request: Request; onSelect: (selection?: ExternalSelection, folderName?: string) => void;
@@ -16,11 +19,21 @@ export function ExternalLibraryPicker({ provider, request, onSelect }: {
   const [availability, setAvailability] = useState<'checking' | 'ready' | 'missing' | 'failed'>('checking');
   const [check, setCheck] = useState(0);
   const [chosen, setChosen] = useState(false);
+  const [step, setStep] = useState<'start' | 'register' | 'keys'>('start');
+  const [redirect, setRedirect] = useState('');
+  const [clientId, setClientId] = useState('');
+  const [secret, setSecret] = useState('');
+  const [copied, setCopied] = useState(false);
+  const guide = guides[provider];
   useEffect(() => {
     const abort = new AbortController();
     setAvailability('checking');
-    request<{ configured: boolean }>('/api/library/external/status/' + provider, { signal: abort.signal })
-      .then(result => { if (!abort.signal.aborted) setAvailability(result.configured ? 'ready' : 'missing'); })
+    request<{ configured: boolean; redirectUri: string }>('/api/library/external/status/' + provider, { signal: abort.signal })
+      .then(result => {
+        if (abort.signal.aborted) return;
+        setAvailability(result.configured ? 'ready' : 'missing');
+        setRedirect(result.redirectUri);
+      })
       .catch(() => { if (!abort.signal.aborted) setAvailability('failed'); });
     return () => abort.abort();
   }, [provider, request, check]);
@@ -48,7 +61,8 @@ export function ExternalLibraryPicker({ provider, request, onSelect }: {
     }
     setChosen(false); setBusy(true); setAuthUrl(''); setConnection(''); setTrail([]); setFolders([]); setError(''); onSelect(undefined);
     try {
-      const { state, url } = await post<{state: string; url: string}>('authorize', { provider });
+      const setup = availability === 'missing' ? { id: clientId.trim(), secret: secret.trim() } : undefined;
+      const { state, url } = await post<{state: string; url: string}>('authorize', { provider, setup });
       if (flow.signal.aborted) { popup?.close(); return; }
       const channel = new BroadcastChannel('library-oauth-' + state);
       const timeout = window.setTimeout(() => {
@@ -62,6 +76,7 @@ export function ExternalLibraryPicker({ provider, request, onSelect }: {
           if (!data?.code) throw new Error('Вход отменён. Можно повторить подключение.');
           await post('authorize/finish', { state, code: data.code });
           if (flow.signal.aborted) return;
+          setSecret(''); setAvailability('ready'); setStep('start');
           setConnection(state);
           await browse(state, [], flow.signal);
         } catch (e) { if (!flow.signal.aborted) { setError((e as Error).message); setBusy(false); } }
@@ -84,19 +99,40 @@ export function ExternalLibraryPicker({ provider, request, onSelect }: {
     <p role="alert">Не удалось проверить, доступен ли {name}.</p>
     <button className="secondary" type="button" onClick={() => setCheck(n => n + 1)}>Проверить ещё раз</button>
   </div>;
-  if (availability === 'missing') return <div className="library-form">
-    <strong>Подключение к {name} ещё не настроено</strong>
-    <p className="help">Администратору платформы нужно включить этот диск. Затем здесь появится кнопка входа.</p>
-    <details className="help"><summary>Инструкция для администратора</summary>
-      <p>{setup[provider][0]} Зарегистрируйте адрес возврата для публичного адреса этой платформы: <code>{window.location.origin}/library-oauth.html</code>.</p>
-      <p>Задайте на сервере <code>BRIDGE_PUBLIC_ORIGIN</code>, <code>BRIDGE_LIBRARY_{provider.toUpperCase()}_CLIENT_ID</code> и <code>BRIDGE_LIBRARY_{provider.toUpperCase()}_CLIENT_SECRET</code> и перезапустите приложение.</p>
-      <a href={setup[provider][1]} target="_blank" rel="noreferrer">Настройки приложения {name}</a>
-    </details>
-    <button type="button" className="secondary" onClick={() => setCheck(n => n + 1)}>Проверить настройку</button>
+  if (availability === 'missing' && !authUrl && !busy) return <div className="library-form">
+    {step === 'start' && <>
+      <p className="help">При первом подключении понадобятся два ключа из кабинета {name}. Мастер покажет, где их взять.</p>
+      <button type="button" className="primary" onClick={() => setStep('register')}>Подключить {name}</button>
+    </>}
+    {step === 'register' && <>
+      <strong>Шаг 1. Зарегистрируйте приложение в {name}</strong>
+      <a href={guide.url} target="_blank" rel="noreferrer">Открыть кабинет {name} ↗</a>
+      <ol>{guide.steps.map(text => <li key={text}>{text}</li>)}<li>В поле <b>{guide.redirect}</b> вставьте адрес ниже и сохраните настройки.</li></ol>
+      <label>Адрес возврата<input readOnly value={redirect} onFocus={e => e.currentTarget.select()} /></label>
+      <div className="settings-actions">
+        <button type="button" className="secondary" onClick={async () => {
+          try { await navigator.clipboard.writeText(redirect); setCopied(true); setError(''); }
+          catch { setError('Выделите адрес в поле выше и скопируйте его.'); }
+        }}>{copied ? 'Адрес скопирован' : 'Скопировать адрес'}</button>
+        <button type="button" className="primary" onClick={() => { setError(''); setStep('keys'); }}>Далее — ввести ключи</button>
+      </div>
+    </>}
+    {step === 'keys' && <>
+      <strong>Шаг 2. Введите ключи и войдите</strong>
+      <p className="help">В кабинете {name} откройте «{guide.location}». Скопируйте два значения из карточки приложения.</p>
+      <label>{guide.id}<input autoComplete="off" spellCheck={false} value={clientId} onChange={e => setClientId(e.target.value)} maxLength={2048} /></label>
+      <label>{guide.secret}<input autoComplete="new-password" type="password" value={secret} onChange={e => setSecret(e.target.value)} maxLength={2048} /></label>
+      <div className="settings-actions">
+        <button type="button" className="primary" disabled={!clientId.trim() || !secret.trim()} onClick={() => void connect()}>{signIn}</button>
+        <button type="button" className="secondary" onClick={() => { setStep('register'); setError(''); }}>Назад</button>
+      </div>
+      <p className="help">Подтвердите чтение файлов в окне сервиса. После входа ключи сохранятся для этой платформы.</p>
+    </>}
+    {error && <p role="alert" className="inline-error">{error}</p>}
   </div>;
 
   return <div className="library-form">
-    {!connection && !authUrl && <>
+    {!connection && !authUrl && !busy && <>
       <strong>Подключите аккаунт</strong>
       <p className="help">В отдельном окне разрешите чтение файлов. После входа вы выберете папку для библиотеки.</p>
       <button type="button" className="primary" disabled={busy} onClick={() => void connect()}>{signIn}</button>
@@ -114,7 +150,7 @@ export function ExternalLibraryPicker({ provider, request, onSelect }: {
     {busy && !authUrl && <p className="help" role="status">{connection ? 'Загружаем папки…' : 'Подключаем аккаунт…'}</p>}
     {error && <p className="inline-error" role="alert">{error}</p>}
     {connection && <>
-      <strong>{chosen ? 'Папка для библиотеки выбрана' : 'Выберите папку для библиотеки'}</strong>
+      <strong>{chosen ? 'Папка для библиотеки выбрана' : 'Откройте нужную папку и нажмите «Выбрать»'}</strong>
       <p className="help">{[name, ...trail.map(folder => folder.name)].join(' / ')}</p>
       {chosen ? <>
         <p className="help" role="status">Агенты с доступом к библиотеке смогут искать и читать файлы в папке «{current?.name}» и её подпапках.</p>

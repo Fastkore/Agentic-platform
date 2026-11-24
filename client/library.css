@@ -124,3 +124,9 @@
 }
 
 .library-source-fields { display: grid; gap: .6rem; padding: 0; border: 0; min-width: 0; }
+.library-create-actions, .project-library-settings .project-specialist-actions { display: flex; flex-wrap: wrap; gap: 6px; max-width: 100%; }
+.library-create-actions .secondary { display: inline-flex; gap: 6px; align-items: center; }
+.library-create-actions [aria-expanded="true"] { border-color: var(--accent); }
+.library-source-fields label:has(input:not([type="checkbox"])), .library-setup label:has(select) { display: grid; gap: 4px; }
+.library-source-fields ol { margin: 0; padding-inline-start: 1.5em; }
+.library-source-fields li + li { margin-top: .35em; }
