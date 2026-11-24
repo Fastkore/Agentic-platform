@@ -745,9 +745,10 @@ function App() {
     }).catch(error => { if (alive) fail(error); });
     return () => { alive = false; };
   }, [loggedIn, !!user, setupRequired, user?.roleId, panel, projectId, !!selectedProject]);
-  async function createChat(project: string, context?: FastkoreContext, fresh = false) {
+  async function createChat(project: string, context?: FastkoreContext, fresh = false, profileId?: string) {
     const choices = agentCatalog?.projectId === project ? agentCatalog.list : await api<AgentSummary[]>(agentsUrl(project));
-    const agent = defaultChatAgent(choices);
+    const agent = profileId ? choices.find(item => item.id === profileId && item.available) : defaultChatAgent(choices);
+    if (profileId && !agent) throw new Error('Выбранный агент недоступен в этом проекте.');
     if (!agent) throw new Error('В этом проекте вам пока не доступен ни один агент.');
     const result = context ? await post<{ projectId: string; chat: Chat }>('/api/fastkore/chats', { projectId: project, context, fresh, agentProfileId: agent.id })
       : { projectId: project, chat: await post<Chat>(`/api/projects/${project}/chats`, { agentProfileId: agent.id }) };
@@ -762,20 +763,22 @@ function App() {
     }
     return result;
   }
-  async function newChat(project = projectId, linked = !!relatedDraftKey) {
+  async function newChat(project = projectId, linked = !!relatedDraftKey, profileId?: string) {
     const navigation = contextNavigation.current;
     const context = linked ? currentErpContext.current.snapshot : undefined;
     const key = context && currentErpContext.current.key;
     if (!project || pending || relatedLoading && linked || (project === projectId && !newAgent)) return;
     await action(async () => {
-      const { chat: created, projectId: p } = await createChat(project, context, true);
+      const { chat: created, projectId: p } = await createChat(project, context, true, profileId);
       if (contextNavigation.current !== navigation || key && currentErpContext.current.key !== key) return;
       if (!chatId && !selected.current.chatId) {
         setDrafts(old => old[draftSlot] ? { ...old, [created.id]: old[draftSlot], [draftSlot]: '' } : old);
         moveDraftAttachments(draftSlot, created.id);
-        if (project === projectId) setSpecialists(old => ({ ...old, [created.id]: old[specialistKey], [specialistKey]: undefined }));
+        if (project === projectId) setSpecialists(old => ({ ...old,
+          [created.id]: old[specialistKey] === created.agentProfileId ? undefined : old[specialistKey], [specialistKey]: undefined }));
       }
       currentErpContext.current.active = !!key;
+      if (!key) autoOpenRelated.current = undefined;
       navigateTo(p, created.id);
       setChat(created);
       setPanel(current => current === 'related' ? null : current);
@@ -1225,7 +1228,7 @@ function App() {
           files={inFastkore && message.status === 'complete' && message.attachments.length ? message.attachments : undefined} /> :
           <div className="question-bubble">
             {conversation.visibility !== 'project' && message.authorId && message.authorId !== user.id && <small title={dateTooltip(message.createdAt, message.authorName ?? conversation.ownerName)}>{shortUserName(message.authorName ?? conversation.ownerName)}</small>}
-            {message.specialistName && <small title="Рекомендованный агент">@{message.specialistName}</small>}
+            {message.specialistName && <small title="Предложен для консультации">@{message.specialistName}</small>}
             {message.text}
           </div>}
         {message.status === 'complete' && !!message.visuals?.length && <ChatVisuals visuals={message.visuals} />}
@@ -1245,7 +1248,7 @@ function App() {
           return <button type="button" key={file.id} title={'Скачать ' + file.name} onClick={download}><FileText size={16} />{file.name}</button>;
         })}</div>}
         {['error', 'cancelled', 'interrupted'].includes(message.status) && <div className="message-note">{message.status === 'error' ? 'Ошибка задания' : message.status === 'cancelled' ? 'Задание остановлено' : message.role === 'user' ? 'Доставка уточнения не подтверждена' : 'Задание прервано'}</div>}
-        {message.consultedSpecialists?.length ? <div className="message-specialists">Агенты · {message.consultedSpecialists.join(', ')}</div> : null}
+        {message.consultedSpecialists?.length ? <div className="message-specialists">Консультировали · {message.consultedSpecialists.join(', ')}</div> : null}
         {message.instructionSave && <p className="instruction-save-status" data-saved={message.instructionSave !== 'not-saved'}>
           {message.instructionSave === 'saved' ? 'Сохранено в «Мои инструкции»' : message.instructionSave === 'already-saved'
             ? 'Уже есть в «Моих инструкциях»' : 'Инструкция не сохранена'}
@@ -1319,7 +1322,7 @@ function App() {
         : <span className="sr-only">Ответ готовится</span>}</span>
       {(isAdmin || canPostToChat && (chat?.visibility !== 'project' || run.ownerId === user.id)) && <button onClick={() => void action(async () => { await post('/api/runs/' + run.id + '/cancel'); })}><Square size={12} />Остановить</button>}
     </div>)}
-    {(!hasMessages || withoutProject || showChatConsultants) && <div className="composer-project">
+    {(!hasMessages || withoutProject || messageAgent || showChatConsultants) && <div className="composer-project">
       {(!hasMessages || withoutProject) && <div className="composer-project-picker">
         <Folder size={17} aria-hidden="true" />
         <Select ref={projectPicker} label="Проект" placeholder="Выберите проект" value={withoutProject ? '' : projectId}
@@ -1335,6 +1338,11 @@ function App() {
             ...(canCreateProject ? [{ value: createProjectOption, label: '+ Создать проект' }] : []),
           ]} />
       </div>}
+      {messageAgent && selectedProject && <span className="chat-lead"><Bot size={15} aria-hidden="true" />Чат ведёт {messageAgent.name}</span>}
+      {selectedProject && availableAgents.length > 1 && <Select label="Начать отдельный чат в проекте с агентом" placeholder="Начать отдельный чат"
+        title="Начать отдельный чат в этом проекте" value="" disabled={pending}
+        onChange={id => void newChat(projectId, false, id)}
+        options={availableAgents.map(agent => ({ value: agent.id, label: agent.name }))} />}
       {showChatConsultants && <div key={'consultants:' + chat.id} className="chat-consultants">
         {chatConsultants.map(agent => <span key={agent.id} className="chat-consultant">
           <Bot size={14} aria-hidden="true" />
@@ -1346,12 +1354,11 @@ function App() {
           </button>}
         </span>)}
         {canEdit && canEditChatDetails && (availableConsultants.length > 0
-          ? <Select className="chat-consultants-select" label="Подключить агента" placeholder="Подключить агента"
+          ? <Select className="chat-consultants-select" label="Подключить консультанта к чату" placeholder="Подключить консультанта"
             value="" disabled={pending} onChange={id => void changeChatConsultants([...chatConsultants.map(item => item.id), id])}
             options={availableConsultants.map(agent => ({ value: agent.id, label: agent.name }))} />
-          : agentCatalog?.projectId === projectId && <span className="chat-consultant-notice">
-            {otherSpecialists.length ? 'Все доступные агенты подключены' : unavailableConsultant
-              ? `${unavailableConsultant.name}: ${unavailableConsultant.unavailableReason}` : 'Нет доступных дополнительных агентов'}
+          : agentCatalog?.projectId === projectId && (otherSpecialists.length > 0 || unavailableConsultant) && <span className="chat-consultant-notice">
+            {otherSpecialists.length ? 'Все консультанты подключены' : unavailableConsultant?.name + ' · ' + unavailableConsultant?.unavailableReason}
           </span>)}
       </div>}
     </div>}

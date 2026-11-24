@@ -835,9 +835,19 @@ test('project chat access follows project agents independently of the global rol
     assert.ok(!JSON.stringify(agents).includes('instructions'));
     const route = `/api/projects/${f.project.id}/chats`;
     assert.equal((await f.req('POST', route, f.token, { agentProfileId: 'universal' })).statusCode, 201);
-    assert.equal((await f.req('POST', route, f.token, { agentProfileId: 'estimator' })).statusCode, 201);
+    const direct = await f.req('POST', route, f.token, { agentProfileId: 'estimator' });
+    assert.equal(direct.statusCode, 201);
+    assert.equal(direct.json().agentProfileId, 'estimator');
+    assert.equal(direct.json().visibility, 'private');
     assert.equal((await f.req('POST', route, f.token, { agentProfileId: technologistId })).statusCode, 409); assert.equal(f.calls.length, 0);
     assert.equal((await f.req('PUT', '/api/admin/roles/manager', f.token, role)).statusCode, 403);
+    const sent = await f.req('POST', route + '/' + direct.json().id + '/messages', f.token, { text: 'Подготовь расчёт' });
+    assert.equal(sent.statusCode, 202, sent.body);
+    await idle(f.workspace);
+    assert.equal(f.workspace.getRun(sent.json().id).status, 'complete');
+    assert.equal(f.calls.length, 1);
+    assert.match(f.calls[0].prompt, /"агент":"Оценщик"/);
+    assert.ok(!f.calls[0].consultation);
   } finally { await f.app.close(); }
 });
 test('rules reach Codex; changing role instructions starts a fresh session and revokes in-flight work', async () => {
@@ -901,7 +911,17 @@ test('editing or clearing the project brief refreshes the model session and reta
 test('Codex can consult a different specialist from the user recommendation', async () => {
   const catalog: unknown[] = [];
   const f = await fixture(async (request, signal) => {
-    if (request.consultation) return 'Подзадача проверена';
+    if (request.consultation) {
+      const tools = request.tools!;
+      const result = await tools.call('knowledge', { action: 'search', section: 'fastkore', query: 'смета' }, signal);
+      assert.equal(result.success, true);
+      const [hit] = JSON.parse(result.text);
+      const fragment = await tools.call('knowledge', { action: 'read', section: 'fastkore', id: hit.id, revision: hit.revision, part: hit.part }, signal);
+      assert.equal(fragment.success, true);
+      const company = await tools.call('knowledge', { action: 'index', section: 'company' }, signal);
+      assert.equal(company.success, true);
+      return 'Подзадача проверена';
+    }
     if (!request.prompt.includes('Проверь текст') && !request.prompt.includes('Самостоятельный выбор')) return;
     const tool = request.tools!;
     const available = await tool.call('consult_specialist', {}, signal);
@@ -941,11 +961,12 @@ test('Codex can consult a different specialist from the user recommendation', as
     assert.ok(f.calls[1].prompt.endsWith('Подзадача от основного агента\nПроверь факты'));
     assert.match(f.calls[1].prompt, /"агент":"Рецензент"/);
     for (const call of f.calls.slice(0, 2)) assert.ok(call.prompt.includes('"инструкция_проекта":"' + brief + '"'));
-    assert.doesNotMatch(f.calls[1].prompt, /private attachment|draft\.txt|my_instructions|library_list|knowledge/);
+    assert.doesNotMatch(f.calls[1].prompt, /private attachment|draft\.txt|my_instructions|library_list/);
+    assert.match(f.calls[1].prompt, /Fastkore-Business-Development-Guide\.md/);
     assert.equal(f.calls[1].allowWrite, false);
     assert.equal(f.calls[1].ephemeral, true);
     assert.equal(f.calls[1].sessionId, undefined);
-    assert.equal(f.calls[1].tools, undefined);
+    assert.deepEqual(f.calls[1].tools?.definitions.map(tool => tool.name), ['knowledge']);
     assert.deepEqual(catalog[0], [
       { id: 'editor', name: editor.name, description: editor.description },
       { id: 'reviewer', name: reviewer.name, description: reviewer.description },

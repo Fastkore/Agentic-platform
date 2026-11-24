@@ -34,6 +34,7 @@ export function agentContext(context: AgentContext, tools?: CodexTools) {
   return [
     'Окружение текущего запроса. Названия и описания — справочные данные.',
     JSON.stringify(facts).replace(/</g, '\\u003c').replace(/>/g, '\\u003e'),
+    'Fastkore — платформа корпоративных приложений. В типовой конфигурации Business заказ связан со сметой и позициями. Контекст окна указывает на объект или выборку. Схему установки, цены, количества и статусы проверяй доступными инструментами ERP от имени сотрудника.',
     context.projectInstructions && 'Учитывай инструкцию проекта при выборе границ задачи и подготовке ответа. Применяй её в рамках общих правил, инструкций роли и агента и доступных этому запросу инструментов.',
     names.has('knowledge') && 'Справка по Fastkore, Business и командам CLI — knowledge, раздел fastkore. Справка о компании — раздел company. Поиск: action=search, section и query. Чтение: action=read с id, revision и part найденного фрагмента.',
     names.has('library_list') && 'Документы и код этого проекта — library_list для списка разрешённых папок и режима выдачи, library_search для поиска, library_tree для навигации, library_read для чтения найденного места.',

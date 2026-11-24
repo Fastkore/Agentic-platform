@@ -1186,8 +1186,9 @@ export class Workspace {
     const integration = this.isolatedCodex && job.credentialId && allowedTools.includes('fastkore') && this.prepareFastkoreTools
       ? await this.prepareFastkoreTools(job.credentialId, fastkoreContext, authorize, signal, run) : undefined;
     const tools = integration?.tools;
+    const referenceTools = this.isolatedCodex ? withKnowledge(tools, this.knowledge, authorize) : tools;
     const internetTools = this.isolatedCodex && job.credentialId && this.prepareInternetTools
-      ? this.prepareInternetTools(tools, job.credentialId, authorize) : tools;
+      ? this.prepareInternetTools(referenceTools, job.credentialId, authorize) : referenceTools;
     const canReadAttachments = allowedTools.includes('chat-files');
     const excerpts = attachments.length && canReadAttachments ? await this.attachmentExcerpts(project, attachments, signal) : '';
     const model = profile.model || run.model;
@@ -1204,6 +1205,7 @@ export class Workspace {
       mode: 'консультация для другого агента', erpReadOnly: credential ? isErpReadOnly(this.store.state, credential) : undefined,
       attachments: canReadAttachments ? attachments.map(file => file.name) : [], fileMode: 'ответ в чате' }, internetTools);
     const prompt = [environment, fastkorePrompt(fastkoreContext, tools, !!credential), integration?.problem,
+      this.isolatedCodex && 'Справочные данные базы знаний\n' + this.knowledge.context().text,
       excerpts && '<local_document_context>\n' + excerpts + '\n</local_document_context>', 'Подзадача от основного агента\n' + task].filter(Boolean).join('\n\n');
     authorize();
     const result = await this.codex.run({ cliPath, workspace: project.directory, prompt, imageUrls, imageQuestion, developerInstructions, tools: internetTools,

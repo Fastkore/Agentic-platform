@@ -48,13 +48,13 @@ export function initializeCorporate(state: State): Corporate {
     ], datasets: []
   };
   migrateEstimateOperation(state.corporate);
+  const base = state.corporate.profiles.find(profile => profile.id === 'universal');
+  if (base) Object.assign(base, { name: baseAssistantName, enabled: true });
+  else state.corporate.profiles.unshift(baseAssistant());
   for (const profile of state.corporate.profiles) {
     delete (profile as AgentProfile & { outputMode?: unknown }).outputMode;
     profile.autoConnect ??= profile.id === 'universal';
   }
-  const base = state.corporate.profiles.find(profile => profile.id === 'universal');
-  if (base) Object.assign(base, { name: baseAssistantName, enabled: true });
-  else state.corporate.profiles.unshift(baseAssistant());
   for (const user of state.security?.users ?? []) user.roleId ??= 'employee';
   for (const project of state.projects) for (const chat of project.chats) chat.agentProfileId ??= 'universal';
   return state.corporate;

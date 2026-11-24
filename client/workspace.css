@@ -387,6 +387,7 @@
   display: flex; align-items: center; flex-wrap: wrap; gap: 4px 16px; min-height: 45px; padding: 0 14px; color: var(--text-secondary);
 }
 .composer-project-picker { display: flex; align-items: center; gap: 7px; }
+.chat-lead { display: inline-flex; align-items: center; gap: 6px; min-width: 0; overflow-wrap: anywhere; }
 .composer-project-picker .workspace-select, .editor-model .workspace-select { max-width: min(220px, 35vw); }
 .composer-project svg { flex: 0 0 auto; }
 .bridge-editor {

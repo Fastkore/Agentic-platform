@@ -162,7 +162,7 @@ export function ComposerInput({ input, draft, placeholder, editable, pickerEnabl
   const shell = input.current?.closest('.workspace-shell');
   return <>
     {specialistId && <div className="composer-specialist">
-      <span role="status" title="Рекомендованный агент"><AtSign size={14} aria-hidden="true" />{specialist?.name ?? 'Агент недоступен'}</span>
+      <span role="status" title="Консультант, предложенный для этого вопроса"><AtSign size={14} aria-hidden="true" />Консультация · {specialist?.name ?? 'Агент недоступен'}</span>
       <button type="button" className="workspace-icon" aria-label="Убрать агента" title="Убрать агента"
         disabled={!editable} onClick={() => { onSpecialist(); input.current?.focus(); }}><X size={14} /></button>
     </div>}
@@ -177,11 +177,11 @@ export function ComposerInput({ input, draft, placeholder, editable, pickerEnabl
       }}
       onClick={() => setMention(null)} onBlur={() => setMention(null)} onKeyDown={handleKeys} onPaste={onPaste} />
     {controls(agents.length ? <button type="button" className="workspace-icon composer-mention-button"
-      aria-label="Выбрать агента" title="Выбрать агента · @" aria-expanded={expanded}
+      aria-label="Предложить консультанта для вопроса" title="Предложить консультанта для вопроса · @" aria-expanded={expanded}
       aria-controls={expanded ? listId : undefined} disabled={!pickerEnabled || !agents.length}
       onPointerDown={event => event.preventDefault()} onClick={togglePicker}><AtSign size={17} /></button> : null)}
     {expanded && shell && placement && createPortal(<div ref={menu} className="workspace-select-menu composer-mention-menu"
-      id={listId} role="listbox" aria-label="Агенты" style={placement} onPointerDown={event => event.preventDefault()}>
+      id={listId} role="listbox" aria-label="Консультанты" style={placement} onPointerDown={event => event.preventDefault()}>
       {matches.map((agent, index) => <div key={agent.id} id={listId + '-' + index} role="option"
         aria-selected={agent.id === specialistId} data-active={index === activeIndex}
         onPointerMove={() => setActive(index)} onClick={() => choose(agent)}>

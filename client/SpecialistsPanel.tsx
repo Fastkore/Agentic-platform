@@ -92,8 +92,12 @@ export function SpecialistsPanel({ request, globalInstructions, initialProfileId
     return (filter === 'all' || profile.enabled === (filter === 'enabled')) &&
       [profile.name, profile.description, profile.id].some(value => value.toLocaleLowerCase('ru').includes(search));
   });
-  if (sort === 'name') visible.sort((left, right) => left.name.localeCompare(right.name, 'ru'));
-  if (sort === 'enabled') visible.sort((left, right) => Number(right.enabled) - Number(left.enabled));
+  visible.sort((left, right) => {
+    if (left.id === 'universal' || right.id === 'universal') return Number(right.id === 'universal') - Number(left.id === 'universal');
+    if (sort === 'name') return left.name.localeCompare(right.name, 'ru');
+    if (sort === 'enabled') return Number(right.enabled) - Number(left.enabled);
+    return 0;
+  });
 
   function edit(profile?: Profile) { setError(''); setTab('general'); setEditing(profile ? { ...profile } : undefined); }
   function update(next: Partial<AgentProfile>) { setEditing(profile => profile ? { ...profile, ...next } : profile); }
@@ -168,14 +172,14 @@ export function SpecialistsPanel({ request, globalInstructions, initialProfileId
         <button type="button" className="specialist-name" onClick={() => edit(profile)} disabled={busy}>{profile.name}</button>
         {profile.description && <p>{profile.description}</p>}
         <div className="specialist-meta">
-          <span className="specialist-status" data-enabled={profile.enabled}>{profile.enabled ? 'Включён' : 'Выключен'}</span>
+          <span className="specialist-status" data-enabled={profile.enabled}>{profile.id === 'universal' ? 'Встроенный · по умолчанию в чате' : profile.enabled ? 'Включён' : 'Выключен'}</span>
           <span className="specialist-tool-summary"><Layers3 size={15} aria-hidden="true" />{agentTools.filter(tool => tool.id !== 'fastkore' && (profile.toolIds ?? agentToolIds).includes(tool.id)).map(tool => tool.name).join(', ') || 'Без файловых инструментов'}</span>
         </div>
         {profile.enabled && profile.unavailableReason && <p className="specialist-unavailable">{profile.unavailableReason}</p>}
       </div>
       <div className="specialist-row-actions">
-        <Toggle name={'Включить агента «' + profile.name + '»'} checked={profile.enabled} disabled={busy}
-          onChange={enabled => void save({ ...profile, enabled }, false)} />
+        {profile.id !== 'universal' && <Toggle name={'Включить агента «' + profile.name + '»'} checked={profile.enabled} disabled={busy}
+          onChange={enabled => void save({ ...profile, enabled }, false)} />}
         <button type="button" className="secondary specialist-configure" onClick={() => edit(profile)} disabled={busy}
           aria-label={'Настроить агента «' + profile.name + '»'}><Pencil size={15} /><span>Настроить</span></button>
       </div>
@@ -223,19 +227,20 @@ export function SpecialistsPanel({ request, globalInstructions, initialProfileId
       <section className="specialist-card">
         <h3>Основная информация</h3>
         <div className="specialist-columns">
-          <div><label htmlFor="config-name">Название</label><input id="config-name" maxLength={100} required value={profile.name} onChange={event => update({ name: event.target.value })} /></div>
+          <div><label htmlFor="config-name">Название</label><input id="config-name" maxLength={100} required readOnly={profile.id === 'universal'} value={profile.name} onChange={event => update({ name: event.target.value })} /></div>
           <div><label htmlFor="profile-description">Когда подключать агента</label>
             <input id="profile-description" maxLength={1000} required value={profile.description} aria-describedby="profile-description-help"
               placeholder="Например, для проверки расчётов" onChange={event => update({ description: event.target.value })} />
-            <p id="profile-description-help" className="help">Основной агент использует это описание при выборе консультанта.</p>
+            <p id="profile-description-help" className="help">{profile.id === 'universal' ? 'Ведёт новые чаты в проектах, где подключён.' : 'Основной агент использует это описание при выборе консультанта.'}</p>
           </div>
           {!profile.revision && <div><label htmlFor="config-id">Идентификатор латиницей</label>
             <input id="config-id" pattern="[a-z][a-z0-9_\-]{1,63}" value={profile.id} required onChange={event => update({ id: event.target.value })} />
           </div>}
         </div>
         <div className="specialist-basics">
-          <label className="specialist-enabled"><Toggle name="Агент включён" checked={profile.enabled} onChange={enabled => update({ enabled })} />
-            {profile.enabled ? 'Агент включён' : 'Агент выключен'}</label>
+          {profile.id === 'universal' ? <span>Встроенный агент</span> : <label className="specialist-enabled">
+            <Toggle name="Агент включён" checked={profile.enabled} onChange={enabled => update({ enabled })} />
+            {profile.enabled ? 'Агент включён' : 'Агент выключен'}</label>}
           <div className="specialist-icon-select"><label htmlFor="specialist-icon">Иконка</label>
             <Select id="specialist-icon" className="settings-select" value={profileIcon(profile)} onChange={icon => update({ icon: icon as SpecialistIcon })}
               options={specialistIcons.map(value => ({ value, label: iconLabels[value] }))} />
