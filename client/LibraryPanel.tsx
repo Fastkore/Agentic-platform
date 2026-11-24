@@ -10,7 +10,7 @@ import { PlatformIcon } from './PlatformIcon';
 import { WorkspaceDialog } from './WorkspaceDialog';
 import { Select } from './Select';
 import { formatBytes, type Request } from './library-upload';
-import { folderLine, LibraryFolderCard } from './LibraryFolderCard';
+import { folderLine, LibraryFolderCard, useLibraryRefresh } from './LibraryFolderCard';
 import './specialists.css';
 import './library.css';
 
@@ -149,6 +149,7 @@ export function LibraryPanel({ request, isAdmin }: { request: Request; isAdmin: 
     ]);
   }, [request, isAdmin]);
   useEffect(() => { void load(); }, [load]);
+  useLibraryRefresh(folders, load);
   const reload = useCallback(() => { void load(); }, [load]);
   async function act(work: () => Promise<unknown>, done?: string) {
     if (pending) return;

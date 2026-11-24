@@ -194,7 +194,15 @@ test('external HTTP connection uses regular project grants and checks remote acc
   const created = await f.req('POST','/api/library',f.admin,{name:'Docs',external:selection});
   assert.equal(created.statusCode,201,created.body);
   const folder = created.json(), registry = f.workspace.library.registry;
-  await registry.external.sync(folder.id); await f.workspace.library.indexer.drain();
+  assert.equal(folder.external.syncing, true);
+  const deadline = Date.now() + 15_000;
+  let latest = folder;
+  while (latest.external.syncing && Date.now() < deadline) {
+    await new Promise(resolve => setTimeout(resolve, 100));
+    latest = (await f.req('GET','/api/library/'+folder.id,f.admin)).json();
+  }
+  assert.equal(latest.external.syncing, false);
+  assert.equal(latest.current?.files, 1, 'saving starts both import and indexing without a manual sync');
   assert.equal(refreshes,1);
   assert.equal((await f.req('POST','/api/library/'+folder.id+'/remove-files',f.admin,{paths:['help.txt']})).statusCode,403);
   const project = '/api/projects/'+f.project.id;

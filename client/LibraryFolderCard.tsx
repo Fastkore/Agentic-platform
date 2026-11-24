@@ -40,7 +40,21 @@ export function folderLine(folder: LibraryFolderSummary) {
   return parts.join(' · ');
 }
 
-/** Folder card shared by «Настройки → Библиотека» and «Проект → Библиотека»: upload, update, files, errors. */
+export function useLibraryRefresh(folders: LibraryFolderSummary[] | undefined, load: () => Promise<void>) {
+  const processing = folders?.some(folder => folder.external?.syncing || folder.operation?.status === 'preparing');
+  useEffect(() => {
+    if (!processing) return;
+    let active = true;
+    async function refresh() {
+      await load();
+      if (active) timer = window.setTimeout(refresh, 4000);
+    }
+    let timer = window.setTimeout(refresh, 4000);
+    return () => { active = false; window.clearTimeout(timer); };
+  }, [processing, load]);
+}
+
+/** Folder card shared by platform and project settings: upload, update, files and errors. */
 export function LibraryFolderCard({ request, folder, isAdmin, reload }: { request: Request; folder: LibraryFolderSummary; isAdmin: boolean; reload: () => void }) {
   const base = '/api/library/' + encodeURIComponent(folder.id);
   const [upload, setUpload] = useState<OperationMode>();
@@ -55,11 +69,6 @@ export function LibraryFolderCard({ request, folder, isAdmin, reload }: { reques
   const [selection, setSelection] = useState<ExternalSelection>();
   const canManage = folder.canManage || isAdmin;
   const preparing = folder.operation?.status === 'preparing' || folder.external?.syncing;
-  useEffect(() => {
-    if (!preparing) return;
-    const timer = setInterval(reload, 4000);
-    return () => clearInterval(timer);
-  }, [preparing, reload]);
   async function act(work: () => Promise<unknown>, done?: string) {
     if (pending) return;
     setPending(true); setError(''); setNotice('');

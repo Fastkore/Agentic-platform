@@ -87,6 +87,7 @@ export function libraryRoutes(app: FastifyInstance, deps: LibraryRouteDeps) {
     if (request.body.external) {
       registry.external.auth.discard(request.body.external.connection);
       registry.external.schedule(folder.id);
+      return reply.code(201).send(registry.getFolder(actor(request), folder.id));
     }
     return reply.code(201).send(folder);
   });

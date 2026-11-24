@@ -6,7 +6,7 @@ import { SettingsTabStrip } from './SettingsTabs';
 import { Select } from './Select';
 import { PermissionSwitch } from './PermissionSwitch';
 import type { Request } from './library-upload';
-import { folderLine, LibraryFolderCard } from './LibraryFolderCard';
+import { folderLine, LibraryFolderCard, useLibraryRefresh } from './LibraryFolderCard';
 import { CreateLibraryForm, LibraryCreateButtons, LibrarySearch, libraryTabs, LibraryKindIcon, type LibraryKind, outputModes, profileLabels } from './LibraryPanel';
 import './specialists.css';
 import './library.css';
@@ -36,6 +36,7 @@ export function ProjectLibraryPanel({ project, request, section, isAdmin, initia
     } catch (e) { setError((e as Error).message); }
   }, [base, request]);
   useEffect(() => { void load(); }, [load]);
+  useLibraryRefresh(folders, load);
   const reload = useCallback(() => { void load(); }, [load]);
   async function act(work: () => Promise<unknown>) {
     if (pending) return;
