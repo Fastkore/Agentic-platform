@@ -4,12 +4,25 @@ import type { Request } from './library-upload';
 
 const guides = {
   dropbox: { url: 'https://www.dropbox.com/developers/apps/create', id: 'App key', secret: 'App secret', location: 'Settings', redirect: 'OAuth 2 → Redirect URIs',
-    steps: ['Создайте приложение с типом Scoped access и доступом Full Dropbox.', 'Во вкладке Permissions отметьте files.metadata.read и files.content.read и нажмите Submit.'] },
+    steps: ['Создайте приложение с типом Scoped access и доступом Full Dropbox.'] },
   google: { url: 'https://console.cloud.google.com/apis/credentials', id: 'Client ID', secret: 'Client secret', location: 'Клиенты OAuth', redirect: 'Authorized redirect URIs',
     steps: ['Выберите проект в Google Cloud и включите Google Drive API.', 'В Google Auth Platform откройте Audience и выберите аудиторию. В Data Access добавьте разрешение https://www.googleapis.com/auth/drive.readonly. В режиме Testing добавьте свой аккаунт в Test users.', 'Откройте Clients → Create client и выберите Web application.'] },
   yandex: { url: 'https://oauth.yandex.ru/', id: 'ClientID', secret: 'Client secret', location: 'Карточка приложения', redirect: 'Redirect URI',
     steps: ['В кабинете Яндекс OAuth нажмите «Создать приложение», укажите название и выберите платформу «Веб-сервисы».', 'В правах доступа найдите Яндекс Диск и выберите «Чтение всего Диска» (cloud_api:disk.read).'] },
 };
+function DropboxPermissions() {
+  return <aside className="library-drive-permissions">
+    <strong>Включите оба разрешения для чтения</strong>
+    <p>Откройте своё приложение в <a className="library-provider-link" href="https://www.dropbox.com/developers/apps" target="_blank" rel="noreferrer">кабинете Dropbox ↗</a>.
+      На вкладке <b>Permissions</b> найдите раздел «Файлы и папки» (Files and folders) и поставьте две галочки.</p>
+    <ul>
+      <li><code>files.metadata.read</code> — видеть названия файлов и папок.</li>
+      <li><code>files.content.read</code> — читать содержимое файлов.</li>
+    </ul>
+    <p>Нажмите <b>Submit</b> внизу страницы, чтобы сохранить разрешения.</p>
+  </aside>;
+}
+
 export function driveSessionExpired(error: unknown) {
   return typeof error === 'object' && error !== null && 'status' in error && error.status === 410;
 }
@@ -121,11 +134,12 @@ export function ExternalLibraryPicker({ provider, request, onSelect, selectionCo
     </>}
     {step === 'register' && <>
       <strong>Шаг 1. Зарегистрируйте приложение в {name}</strong>
-      <a href={guide.url} target="_blank" rel="noreferrer">Открыть кабинет {name} ↗</a>
+      <a className={provider === 'dropbox' ? 'library-provider-link' : undefined} href={guide.url} target="_blank" rel="noreferrer">Открыть кабинет {name} ↗</a>
       <ol>{guide.steps.map((text, index) => <li key={text}>{text}{provider === 'google' && index === 0 && <>
         {' '}<a href="https://console.cloud.google.com/apis/library/drive.googleapis.com" target="_blank" rel="noreferrer">Открыть Google Drive API</a>
       </>}</li>)}<li>В поле <b>{guide.redirect}</b> вставьте адрес ниже и сохраните настройки.</li></ol>
       <label>Адрес возврата<input readOnly value={redirect} onFocus={e => e.currentTarget.select()} /></label>
+      {provider === 'dropbox' && <DropboxPermissions />}
       <div className="settings-actions">
         <button type="button" className="secondary" onClick={async () => {
           try { await navigator.clipboard.writeText(redirect); setCopied(true); setError(''); }
@@ -136,6 +150,7 @@ export function ExternalLibraryPicker({ provider, request, onSelect, selectionCo
     </>}
     {step === 'keys' && <>
       <strong>Шаг 2. Введите ключи и войдите</strong>
+      {provider === 'dropbox' && <DropboxPermissions />}
       <p className="help">В кабинете {name} откройте «{guide.location}». Скопируйте два значения из карточки приложения.</p>
       <label>{guide.id}<input autoComplete="off" spellCheck={false} value={clientId} onChange={e => setClientId(e.target.value)} maxLength={2048} /></label>
       <label>{guide.secret}<input autoComplete="new-password" type="password" value={secret} onChange={e => setSecret(e.target.value)} maxLength={2048} /></label>

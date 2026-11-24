@@ -130,6 +130,10 @@
 .library-source-fields label:has(input:not([type="checkbox"])), .library-setup label:has(select) { display: grid; gap: 4px; }
 .library-source-fields ol { margin: 0; padding-inline-start: 1.5em; }
 .library-source-fields li + li { margin-top: .35em; }
+.library-form a.library-provider-link { color: var(--accent-strong); text-decoration: underline; text-underline-offset: .15em; }
+.library-drive-permissions { display: grid; gap: .45rem; padding: .8rem 1rem; border-inline-start: 3px solid var(--accent); background: var(--control); border-radius: 6px; }
+.library-drive-permissions :is(p, ul) { margin: 0; }
+.library-drive-permissions ul { padding-inline-start: 1.4em; }
 
 .workspace-dialog.external-library-dialog { width: min(620px, calc(100vw - 24px)); }
 .external-library-dialog .settings-actions { display: flex; flex-flow: row nowrap; align-items: center; gap: 8px; }
