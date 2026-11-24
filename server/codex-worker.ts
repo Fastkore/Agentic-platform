@@ -79,7 +79,7 @@ export function createCodexWorker(codex: CodexRunner = new CodexClient([], 'work
   };
   app.setErrorHandler((error, _req, reply) => {
     const status = error instanceof BridgeError ? error.statusCode : (error as { validation?: unknown }).validation ? 400 : 502;
-    return reply.code(status).send({ error: error instanceof BridgeError && /^\/accounts\/[a-f0-9-]+\/key$/.test(_req.url)
+    return reply.code(status).send({ error: error instanceof BridgeError && (_req.url === '/proxy' || /^\/accounts\/[a-f0-9-]+\/key$/.test(_req.url))
       ? error.message : 'Исполнитель модели не выполнил запрос.' });
   });
   app.get('/health', async () => ({ ok: true, active: activeJobs, concurrency: lastLimit }));
@@ -124,6 +124,9 @@ export function createCodexWorker(codex: CodexRunner = new CodexClient([], 'work
     type: 'object', additionalProperties: false, required: ['name'], properties: { name: { type: 'string', minLength: 1, maxLength: 100 }, provider: { enum: executionProviders } },
   } } }, request => changeAccount(() => accounts!.create(request.body.name, request.body.provider)));
   app.post<{ Params: { id: string } }>('/accounts/:id/login', request => changeAccount(() => accounts!.login(request.params.id)));
+  app.post<{ Body: { proxyUrl: string } }>('/proxy', { schema: { body: {
+    type: 'object', additionalProperties: false, required: ['proxyUrl'], properties: { proxyUrl: { type: 'string', maxLength: 2048 } },
+  } } }, request => changeAccount(() => accounts!.setProxy(request.body.proxyUrl)));
   app.post<{ Params: { id: string } }>('/accounts/:id/activate', request => changeAccount(() => accounts!.activate(request.params.id)));
   app.post<{ Params: { id: string } }>('/accounts/:id/deactivate', request => changeAccount(() => accounts!.deactivate(request.params.id)));
   app.post<{ Params: { id: string } }>('/accounts/:id/remove', request => changeAccount(() => accounts!.remove(request.params.id)));

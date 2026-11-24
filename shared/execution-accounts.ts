@@ -12,7 +12,7 @@ export interface ExecutionAccount {
   active: boolean;
   login?: { state: 'waiting' | 'complete' | 'error'; url?: string; code?: string; needsCode?: boolean; error?: string };
 }
-export interface ExecutionAccounts { accounts: ExecutionAccount[] }
+export interface ExecutionAccounts { accounts: ExecutionAccount[]; proxyUrl?: string }
 export const executionConnected = (info?: { authentication: string } | null) =>
   info?.authentication === 'chatgpt' || info?.authentication === 'google' || info?.authentication === 'glm' || info?.authentication === 'gigachat';
 // Undefined means "any provider": the active signed-in account executes the run.

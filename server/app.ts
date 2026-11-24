@@ -890,6 +890,13 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
     return accountWorker;
   };
   app.get('/api/admin/execution/accounts', request => accountAccess(request).accounts());
+  app.post<{ Body: { proxyUrl: string } }>('/api/admin/execution/proxy', {
+    schema: { body: object({ proxyUrl: { type: 'string', maxLength: 2048 } }, ['proxyUrl']) },
+  }, async request => {
+    const result = await accountAccess(request, true).setProxy(request.body.proxyUrl);
+    workspace.resetExecutionConnection();
+    return result;
+  });
   app.delete<{ Params: { id: string } }>('/api/admin/execution/accounts/:id', async request => {
     const result = await accountAccess(request, true).accountAction('remove', request.params.id);
     workspace.resetExecutionConnection();

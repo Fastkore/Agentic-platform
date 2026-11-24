@@ -3,12 +3,39 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
-import { ExecutionAccountStore } from '../server/execution-accounts.js';
+import { codexLoginFailure, ExecutionAccountStore } from '../server/execution-accounts.js';
 import { GeminiClient, AntigravityClient, geminiFailure } from '../server/gemini.js';
 import { createCodexWorker } from '../server/codex-worker.js';
 import { BridgeError } from '../server/store.js';
 import { providerForModel } from '../shared/execution-accounts.js';
 import { randomUUID } from 'node:crypto';
+
+test('Codex device login errors explain the failed step without exposing CLI diagnostics', () => {
+  const forbidden = codexLoginFailure('Error logging in: device code request failed with status 403 Forbidden\nprivate-details', false);
+  assert.match(forbidden, /HTTP 403.*код не выдан.*администратора.*HTTPS-прокси/);
+  assert.ok(!forbidden.includes('private-details'));
+  assert.match(codexLoginFailure('error sending request for url', false), /не смог связаться/);
+  assert.match(codexLoginFailure('device code expired', true), /Срок действия кода истёк/);
+  assert.match(codexLoginFailure('unknown', true), /не подтвердил вход/);
+  assert.match(codexLoginFailure('unknown', false), /Не удалось получить/);
+});
+
+test('the executor proxy starts from Compose, saves per installation and supports direct connections after restart', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'bridge-proxy-'));
+  const env = { HTTPS_PROXY: 'http://user:secret@proxy.local:3128' };
+  const store = new ExecutionAccountStore(root, env);
+  try {
+    assert.equal((await store.list()).proxyUrl, 'http://proxy.local:3128');
+    await assert.rejects(store.setProxy('https://user:secret@proxy.local'), /адрес/);
+    await store.setProxy('http://new.local:8123/');
+    assert.equal(env.HTTPS_PROXY, 'http://new.local:8123');
+    await store.remove('default');
+    const restarted = new ExecutionAccountStore(root, { HTTPS_PROXY: '' });
+    assert.equal((await restarted.list()).proxyUrl, 'http://new.local:8123');
+    await restarted.setProxy('');
+    assert.equal((await new ExecutionAccountStore(root, { HTTPS_PROXY: 'http://old.local' }).list()).proxyUrl, '');
+  } finally { store.close(); await rm(root, { recursive: true, force: true }); }
+});
 
 test('execution accounts preserve legacy auth, isolate tokens and retain the active selection', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'bridge-accounts-'));

@@ -23,6 +23,7 @@ export function ExecutionAccountsPanel({ request, busy, changed }: { request: Re
   const [data, setData] = useState<ExecutionAccounts>();
   const [authorizationCodes, setAuthorizationCodes] = useState<Record<string, string>>({});
   const [accountKey, setAccountKey] = useState('');
+  const [proxyDraft, setProxyDraft] = useState<string>();
   const [wizard, setWizard] = useState<Wizard | null>(null);
   const [working, setWorking] = useState(false), [error, setError] = useState('');
   const waiting = data?.accounts.some(account => account.login?.state === 'waiting') ?? false;
@@ -61,6 +62,11 @@ export function ExecutionAccountsPanel({ request, busy, changed }: { request: Re
     setWorking(true); setError('');
     try { await work(); await load(); } catch (e) { setError((e as Error).message); } finally { setWorking(false); }
   }
+  async function startLogin(id: string) {
+    const login = await request<NonNullable<ExecutionAccount['login']>>(endpoint + '/' + id + '/login', { method: 'POST', body: '{}' });
+    setData(current => current && ({ ...current, accounts: current.accounts.map(account => account.id === id ? { ...account, login } : account) }));
+    setWizard(current => current?.id === id ? { ...current, submitted: true } : current);
+  }
   const wizardAccount = wizard?.id ? data?.accounts.find(item => item.id === wizard.id) : undefined;
   const scope = wizard?.scope ?? wizardAccount?.scope ?? 'GIGACHAT_API_PERS';
   return <section className="setting-section execution-accounts">
@@ -70,6 +76,18 @@ export function ExecutionAccountsPanel({ request, busy, changed }: { request: Re
     </div>
     <p className="help">Сотрудникам видны модели всех активных аккаунтов — они работают вместе. Неактивные аккаунты скрыты от сотрудников; в этом списке видны всегда.</p>
     {!data && !error && <p role="status">Загрузка…</p>}
+    {data?.proxyUrl !== undefined && <div className="setting-section">
+      <label htmlFor="execution-https-proxy">HTTPS-прокси</label>
+      <input id="execution-https-proxy" type="url" maxLength={2048} value={proxyDraft ?? data.proxyUrl}
+        placeholder="http://host:port" disabled={working} onChange={event => setProxyDraft(event.target.value)} />
+      <p className="help">Один адрес для всех агентов этой установки, использующих Codex. Пустое поле включает прямое соединение.</p>
+      <div className="settings-actions"><button type="button" className="secondary"
+        disabled={busy || working || proxyDraft === undefined || proxyDraft.trim() === data.proxyUrl}
+        onClick={() => void action(async () => {
+          await request('/api/admin/execution/proxy', { method: 'POST', body: JSON.stringify({ proxyUrl: proxyDraft?.trim() ?? '' }) });
+          setProxyDraft(undefined);
+        })}>Сохранить прокси</button></div>
+    </div>}
     <ul className="settings-records">{data?.accounts.map(account => <li key={account.id}>
       <div><strong>{accountName(account)}</strong><small>{providerLabel(account.provider)} · {account.email ?? (account.signedIn ? 'Вход выполнен' : 'Требуется вход')}</small>
         {account.login?.state === 'error' && <small role="alert">{account.login.error}</small>}
@@ -84,10 +102,10 @@ export function ExecutionAccountsPanel({ request, busy, changed }: { request: Re
             })} />
           {account.active ? 'Активен' : 'Неактивен'}
         </label>
-        <button type="button" className="secondary" disabled={busy || working || account.login?.state === 'waiting'}
-          onClick={() => { setAuthorizationCodes(old => ({ ...old, [account.id]: '' })); setAccountKey('');
-            setWizard({ id: account.id, provider: account.provider, name: accountName(account) }); }}>
-          {usesKey(account.provider) ? <KeyRound size={15} aria-hidden="true" /> : <LogIn size={15} aria-hidden="true" />}<span>{usesKey(account.provider) ? 'Ключ' : 'Вход'}</span></button>
+        <button type="button" className="secondary" disabled={working || (busy && account.login?.state !== 'waiting')}
+          onClick={() => { setError(''); setAuthorizationCodes(old => ({ ...old, [account.id]: '' })); setAccountKey('');
+            setWizard({ id: account.id, provider: account.provider, name: accountName(account), submitted: account.login?.state === 'waiting' }); }}>
+          {usesKey(account.provider) ? <KeyRound size={15} aria-hidden="true" /> : <LogIn size={15} aria-hidden="true" />}<span>{usesKey(account.provider) ? 'Ключ' : account.login?.state === 'waiting' ? 'Продолжить вход' : 'Вход'}</span></button>
         <button type="button" className="workspace-icon" aria-label={'Удалить подключение «' + accountName(account) + '»'} title="Удалить подключение"
           disabled={busy || working} onClick={() => {
             if (!window.confirm('Удалить подключение «' + accountName(account) + '» и сохранённый вход? Чаты и файлы проектов сохранятся.')) return;
@@ -97,10 +115,11 @@ export function ExecutionAccountsPanel({ request, busy, changed }: { request: Re
     </li>)}</ul>
     <div className="settings-actions">
       <button type="button" className="secondary" disabled={busy || working || (data?.accounts.length ?? 0) >= 20}
-        onClick={() => { setAuthorizationCodes({}); setAccountKey(''); setWizard({ provider: 'codex', name: '' }); }}><Plus size={15} />Добавить аккаунт</button>
+        onClick={() => { setError(''); setAuthorizationCodes({}); setAccountKey(''); setWizard({ provider: 'codex', name: '' }); }}><Plus size={15} />Добавить аккаунт</button>
     </div>
-    {error && <p className="inline-error" role="alert">{error}</p>}
+    {error && !wizard && <p className="inline-error" role="alert">{error}</p>}
     {wizard && <WorkspaceDialog title={wizard.id ? 'Подключение: ' + wizard.name : 'Новый аккаунт исполнителя'} className="account-wizard" close={() => { setAccountKey(''); setWizard(null); }}>
+      {error && <p className="inline-error" role="alert">{error}</p>}
       {!wizard.id && <div className="setting-section">
         <label htmlFor="account-wizard-type">Тип исполнителя</label>
         <Select id="account-wizard-type" className="settings-select" value={wizard.provider} onChange={value => setWizard({ ...wizard, provider: value as ExecutionProvider })} options={createOptions} />
@@ -109,12 +128,15 @@ export function ExecutionAccountsPanel({ request, busy, changed }: { request: Re
         <div className="settings-actions">
           <button type="button" className="primary" disabled={working || !wizard.name.trim()} onClick={() => void action(async () => {
             const account = await request<ExecutionAccount>(endpoint, { method: 'POST', body: JSON.stringify({ name: wizard.name.trim(), provider: wizard.provider }) });
-            setWizard({ id: account.id, provider: account.provider, name: account.name });
-          })}>Далее</button>
+            setData(current => ({ ...current, accounts: [...(current?.accounts ?? []), { ...account, active: false, signedIn: false }] }));
+            setWizard(current => current && { id: account.id, provider: account.provider, name: account.name });
+            if (account.provider === 'codex') await startLogin(account.id);
+          })}>{wizard.provider === 'codex' ? 'Получить код' : 'Далее'}</button>
           <button type="button" className="secondary" onClick={() => setWizard(null)}>Отмена</button>
         </div>
       </div>}
       {wizard.id && wizardAccount && <div className="setting-section">
+        {wizardAccount.login?.state === 'error' && <p className="inline-error" role="alert">{wizardAccount.login.error}</p>}
         {usesKey(wizardAccount.provider)
           ? <div className="execution-device-code">
               <label htmlFor={'account-key-' + wizardAccount.id}>{wizardAccount.provider === 'gigachat' ? 'Authorization Key проекта GigaChat API' : 'API-ключ GLM Coding Plan'}{wizardAccount.signedIn ? ' · замените сохранённый ключ' : ''}</label>
@@ -137,8 +159,8 @@ export function ExecutionAccountsPanel({ request, busy, changed }: { request: Re
           : <>
               {wizardAccount.login?.state === 'waiting'
                 ? <div className="execution-device-code">
-                    <p><a href={wizardAccount.login.url} target="_blank" rel="noreferrer">{wizardAccount.provider !== 'codex' ? 'Войти через Google' : 'Войти в ChatGPT'}</a></p>
-                    {wizardAccount.login.code && <><code>{wizardAccount.login.code}</code><small>Откройте ссылку в нужном аккаунте и введите код.</small></>}
+                    {wizardAccount.login.url ? <p><a href={wizardAccount.login.url} target="_blank" rel="noreferrer">{wizardAccount.provider !== 'codex' ? 'Войти через Google' : 'Войти в ChatGPT'}</a></p> : <p role="status">Исполнитель запрашивает данные для входа…</p>}
+                    {wizardAccount.login.code && <><code>{wizardAccount.login.code}</code><p>Откройте «Войти в ChatGPT», введите этот код на странице OpenAI и подтвердите вход. Затем вернитесь сюда.</p></>}
                     {wizardAccount.login.needsCode && <div>
                       <label htmlFor={'google-code-' + wizardAccount.id}>Код со страницы Google</label>
                       <input type="password" autoComplete="off" id={'google-code-' + wizardAccount.id} value={authorizationCodes[wizardAccount.id] ?? ''} onChange={e => setAuthorizationCodes(old => ({ ...old, [wizardAccount.id]: e.target.value }))} />
@@ -151,13 +173,12 @@ export function ExecutionAccountsPanel({ request, busy, changed }: { request: Re
                     </div>}
                   </div>
                 : <div className="settings-actions">
-                    <button type="button" className="primary" disabled={working} onClick={() => void action(async () => {
-                      await request(endpoint + '/' + wizardAccount.id + '/login', { method: 'POST', body: '{}' });
-                      setWizard(current => current?.id === wizardAccount.id ? { ...current, submitted: true } : current);
-                    })}>{wizardAccount.signedIn ? 'Войти заново' : 'Начать вход'}</button>
+                    <button type="button" className="primary" disabled={working} onClick={() => void action(() => startLogin(wizardAccount.id))}>{wizardAccount.provider === 'codex' ? (wizardAccount.login?.state === 'error' ? 'Запросить новый код' : 'Получить код') : wizardAccount.signedIn ? 'Войти заново' : 'Начать вход'}</button>
                     <button type="button" className="secondary" onClick={() => setWizard(null)} disabled={working}>Закрыть</button>
                   </div>}
-              <p className="help">{wizardAccount.signedIn ? 'После успешного входа аккаунт активируется автоматически.' : 'Вход выполняется по ссылке и одноразовом коду.'}</p>
+              {wizardAccount.login?.state !== 'error' && (wizardAccount.provider === 'codex'
+                ? <p className="help" role="status">{wizardAccount.login?.state === 'complete' && wizard.submitted ? 'Вход подтверждён. Обновляем аккаунт…' : working && !wizard.submitted ? 'Запрашиваем одноразовый код у OpenAI…' : wizardAccount.login?.state === 'waiting' ? 'Ожидаем подтверждения входа.' : 'Одноразовый код появится в этом окне.'}</p>
+                : <p className="help">Вход выполняется по ссылке и одноразовому коду.</p>)}
             </>}
       </div>}
     </WorkspaceDialog>}
