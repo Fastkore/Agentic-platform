@@ -7,7 +7,7 @@ import { Select } from './Select';
 import { PermissionSwitch } from './PermissionSwitch';
 import type { Request } from './library-upload';
 import { folderLine, LibraryFolderCard } from './LibraryFolderCard';
-import { CreateLibraryForm, LibraryCreateButtons, libraryTabs, LibraryKindIcon, type LibraryKind, outputModes, profileLabels } from './LibraryPanel';
+import { CreateLibraryForm, LibraryCreateButtons, LibrarySearch, libraryTabs, LibraryKindIcon, type LibraryKind, outputModes, profileLabels } from './LibraryPanel';
 import './specialists.css';
 import './library.css';
 
@@ -75,8 +75,7 @@ export function ProjectLibraryPanel({ project, request, section, isAdmin, initia
           if (created.external) { setTab('external'); setExpanded(undefined); setSearch(''); }
           else setExpanded(created.id);
         })} />}
-        <input type="search" aria-label="Поиск по папкам библиотеки" placeholder="Поиск по папкам библиотеки…" value={search}
-          onChange={event => setSearch(event.target.value)} />
+        <LibrarySearch value={search} onChange={setSearch} />
         {connections.length || available.length ? <ul className="settings-records project-library-connections">{connections.map(c => {
           const folder = foldersById.get(c.folderId);
           const assigned = view.cells.filter(cell => cell.folderId === c.folderId && cell.granted).map(cell => view.profiles.find(p => p.id === cell.profileId)?.name).filter(Boolean);

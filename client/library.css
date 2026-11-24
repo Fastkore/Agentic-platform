@@ -155,6 +155,9 @@
 .library-tabs .lucide-folder { color: var(--success); }
 .library-tabs .lucide-cloud { color: var(--accent-strong); }
 .library-folders > .settings-records { margin-block-start: 8px; }
+.library-search { position: relative; }
+.library-search > svg { position: absolute; inset-inline-start: 12px; top: 50%; transform: translateY(-50%); color: var(--text-muted); pointer-events: none; }
+.workspace-dialog .library-search > input[type="search"] { width: 100%; margin: 0; padding-inline-start: 36px; }
 .library-icon-ordinary, .library-icon-external { display: inline-flex; flex: none; }
 .library-icon-ordinary { color: var(--success); }
 .library-icon-external { color: var(--accent-strong); }

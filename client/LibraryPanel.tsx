@@ -42,6 +42,13 @@ export function FolderForm({ draft, setDraft, isAdmin, disabled }: {
 }
 
 export type LibraryKind = 's3' | 'external';
+export function LibrarySearch({ value, onChange }: { value: string; onChange: (value: string) => void }) {
+  return <div className="library-search">
+    <PlatformIcon name="search" />
+    <input type="search" aria-label="Поиск библиотеки" placeholder="Поиск библиотеки"
+      value={value} onChange={event => onChange(event.target.value)} />
+  </div>;
+}
 const kinds = ['s3', 'external'] as const;
 export function LibraryKindIcon({ external }: { external: boolean }) {
   return <span className={external ? 'library-icon-external' : 'library-icon-ordinary'}><PlatformIcon name={external ? 'cloud' : 'folder'} /></span>;
@@ -243,8 +250,7 @@ export function LibraryPanel({ request, isAdmin }: { request: Request; isAdmin: 
         if (created.external) { setTab('external'); setFolderSearch(''); }
         else setSelected(created.id);
       }, creating === 'external' ? 'Создана внешняя библиотека.' : 'Папка создана. Загрузите в неё материалы.')} />}
-      {tabFolders && tabFolders.length > 0 && <input type="search" aria-label="Поиск по папкам библиотеки" placeholder="Поиск по папкам библиотеки…"
-        value={folderSearch} onChange={event => setFolderSearch(event.target.value)} />}
+      {tabFolders && tabFolders.length > 0 && <LibrarySearch value={folderSearch} onChange={setFolderSearch} />}
       {visibleFolders?.length ? <ul className="settings-records">{visibleFolders.map(f => <li key={f.id}>
         <div>
           <strong><LibraryKindIcon external={!!f.external} />{f.name}</strong>
