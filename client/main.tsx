@@ -61,7 +61,7 @@ const settingsSections = {
   employeeInstructions: { label: 'Инструкции сотрудников', icon: FileText },
   roles: { label: 'Роли', icon: ShieldCheck },
   profiles: { label: 'Агенты', icon: Bot },
-  library: { label: 'Библиотека', icon: Database },
+  library: { label: 'Библиотеки', icon: Database },
   agent: { label: 'Общие инструкции', icon: FileText },
   knowledgeFastkore: { label: 'База знаний о Fastkore', icon: FileText },
   knowledgeCompany: { label: 'База знаний о компании', icon: Folder },

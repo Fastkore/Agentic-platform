@@ -165,7 +165,7 @@ export function LibraryPanel({ request, isAdmin }: { request: Request; isAdmin: 
 
   if (folder) return <div className="library-settings">
     <header className="library-heading">
-      <h2 id="settings-section-title">Библиотека · {folder.name}</h2>
+      <h2 id="settings-section-title">Библиотеки · {folder.name}</h2>
       <button type="button" className="specialist-back" onClick={() => { setSelected(undefined); setEditing(undefined); setNotice(''); }}><ChevronLeft size={16} aria-hidden="true" />Все папки</button>
     </header>
     {error && <p className="inline-error" role="alert">{error}</p>}
@@ -214,7 +214,7 @@ export function LibraryPanel({ request, isAdmin }: { request: Request; isAdmin: 
   </div>;
 
   return <div className="library-settings">
-    <h2 id="settings-section-title">Библиотека</h2>
+    <h2 id="settings-section-title">Библиотеки</h2>
     {error && <p className="inline-error" role="alert">{error}</p>}
     {notice && <p className="help" role="status">{notice}</p>}
     <section className="library-folders" aria-label="Папки библиотеки">
