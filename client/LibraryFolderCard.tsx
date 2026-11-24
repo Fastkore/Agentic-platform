@@ -98,7 +98,7 @@ export function LibraryFolderCard({ request, folder, isAdmin, reload }: { reques
         {folder.external.checkedAt && ' · проверено ' + date(folder.external.checkedAt)}</p>
       {folder.external.error && <p className="inline-error" role="alert">{folder.external.error}</p>}
       {preparing && <p className="help" role="status">Идёт синхронизация и подготовка к поиску…</p>}
-      <div className="settings-actions">
+      <div className="settings-actions library-sync-actions">
         {canManage && <button type="button" className="secondary" disabled={pending || preparing} onClick={() => void act(() => post(base + '/external/sync'))}>Синхронизировать</button>}
         {isAdmin && <button type="button" className="secondary" onClick={() => { setReconnecting(!reconnecting); setSelection(undefined); }}> {reconnecting ? 'Отмена' : 'Восстановить связь'}</button>}
       </div>

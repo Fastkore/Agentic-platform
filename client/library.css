@@ -8,6 +8,7 @@
 .library-card-body, .library-form, .library-upload { display: grid; gap: 10px; }
 .library-card-body { margin: 12px 0 0 27px; }
 .library-card-actions { margin: 12px 0 0 27px; }
+.library-sync-actions:not(:empty) { margin-block-start: 8px; }
 .library-form > strong { font-size: 14px; font-weight: 650; }
 .library-form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
 .library-form-grid > div, .library-field-row { display: grid; gap: 6px; min-width: 0; }
