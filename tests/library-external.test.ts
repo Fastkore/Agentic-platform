@@ -53,6 +53,8 @@ test('private Drive library without S3: OAuth, picker, index updates, revocation
   process.env.BRIDGE_LIBRARY_GOOGLE_CLIENT_ID = 'client';
   process.env.BRIDGE_LIBRARY_GOOGLE_CLIENT_SECRET = 'test-secret';
   let revoked = false, removed = false, version = 1, downloads = 0;
+  const downloadStarted = Promise.withResolvers<AbortSignal>();
+  let blockDownload = false;
   let content = 'first reference', filename = 'guide.txt';
   const fetchMock = t.mock.method(globalThis,'fetch',async (input: string, init?: RequestInit) => {
     const url = new URL(input);
@@ -62,7 +64,15 @@ test('private Drive library without S3: OAuth, picker, index updates, revocation
     }
     assert.equal(url.host,'www.googleapis.com'); assert.equal(init?.method ?? 'GET','GET');
     if (revoked) return new Response(null,{status:403});
-    if (url.searchParams.get('alt') === 'media') { downloads++; return new Response(content); }
+    if (url.searchParams.get('alt') === 'media') {
+      downloads++;
+      if (blockDownload) {
+        const signal = init!.signal!;
+        downloadStarted.resolve(signal);
+        return new Promise<Response>((_, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true }));
+      }
+      return new Response(content);
+    }
     const dir = { id: 'docs', name: 'Документы', mimeType: 'application/vnd.google-apps.folder' };
     if (url.pathname.endsWith('/docs')) return Response.json(dir);
     if (url.searchParams.get('q')?.includes("'root'")) return Response.json({ files: [dir] });
@@ -107,11 +117,37 @@ test('private Drive library without S3: OAuth, picker, index updates, revocation
   revoked = false; removed = true;
   await registry.external.sync(folder.id);
   assert.equal(registry.currentState(folder.id)?.total_files,0);
+  removed = false; version++; content = 'new text to index';
+  await registry.external.sync(folder.id);
+  const startedIndex = Promise.withResolvers<AbortSignal>();
+  const cache = registry.objectStore('library/external_' + folder.id);
+  const stream = t.mock.method(cache, 'stream', (_key: string, signal: AbortSignal) => {
+    startedIndex.resolve(signal);
+    return new Promise((_, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true }));
+  });
+  const indexing = indexer.runOnce();
+  const indexSignal = await startedIndex.promise;
   const before = fetchMock.mock.callCount();
   registry.deleteFolder(admin,folder.id,folder.revision);
   await registry.collectGarbage({graceMs:0});
   assert.equal(registry.external.has(folder.id),false);
+  assert.ok(indexSignal.aborted);
+  await indexing;
+  stream.mock.restore();
+  assert.equal(registry.db.prepare('SELECT count(*) n FROM index_jobs').get()?.n,0);
   assert.equal(fetchMock.mock.callCount(),before);
+
+  const other = registry.createFolder(admin,{name:'Disconnect during download', external});
+  blockDownload = true;
+  const sync = registry.external.sync(other.id);
+  const signal = await downloadStarted.promise;
+  assert.throws(() => registry.deleteFolder(admin,other.id,other.revision + 1), /изменена/);
+  assert.equal(signal.aborted,false);
+  registry.deleteFolder(admin,other.id,other.revision);
+  assert.ok(signal.aborted);
+  await assert.rejects(sync);
+  await registry.external.sync(other.id);
+  assert.equal(registry.db.prepare('SELECT count(*) n FROM states WHERE folder_id=?').get(other.id)?.n,0);
 });
 
 test('Dropbox pages use cursors, download the indexed revision and only call read endpoints', async t => {

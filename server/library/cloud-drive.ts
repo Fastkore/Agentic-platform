@@ -30,15 +30,17 @@ const exportsByMime: Record<string, [string, string]> = {
 const invalid = () => new BridgeError('Диск вернул неполные данные. Повторите синхронизацию.', 502);
 async function cloudRequest(url: string, init: RequestInit = {}, downloadHost?: (host: string) => boolean, redirects = 0): Promise<Response> {
   let res: Response;
-  try { res = await fetch(url, { ...init, redirect: downloadHost ? 'manual' : 'error', signal: AbortSignal.timeout(45_000) }); }
-  catch { throw new BridgeError('Не удалось связаться с внешним диском.', 503); }
+  const timeout = AbortSignal.timeout(45_000);
+  const signal = init.signal ? AbortSignal.any([init.signal, timeout]) : timeout;
+  try { res = await fetch(url, { ...init, redirect: downloadHost ? 'manual' : 'error', signal }); }
+  catch { init.signal?.throwIfAborted(); throw new BridgeError('Не удалось связаться с внешним диском.', 503); }
   if (downloadHost && [301,302,303,307,308].includes(res.status)) {
     await res.body?.cancel();
     const location = res.headers.get('location');
     if (!location || redirects >= 5) throw invalid();
     const next = new URL(location,url);
     if (next.protocol !== 'https:' || next.username || next.password || next.port || !downloadHost(next.hostname)) throw invalid();
-    return cloudRequest(next.href, next.origin === new URL(url).origin ? init : {}, downloadHost, redirects + 1);
+    return cloudRequest(next.href, next.origin === new URL(url).origin ? init : { signal: init.signal }, downloadHost, redirects + 1);
   }
   if (!res.ok) {
     await res.body?.cancel();
@@ -47,7 +49,11 @@ async function cloudRequest(url: string, init: RequestInit = {}, downloadHost?: 
   return res;
 }
 export class CloudDrive {
-  constructor(readonly provider: ExternalProvider, private token: string) {}
+  constructor(readonly provider: ExternalProvider, private token: string, private signal?: AbortSignal) {}
+  private request(url: string, init: RequestInit, downloadHost?: (host: string) => boolean) {
+    this.signal?.throwIfAborted();
+    return cloudRequest(url, { ...init, signal: this.signal }, downloadHost);
+  }
   private get headers() { return { Authorization: (this.provider === 'yandex' ? 'OAuth ' : 'Bearer ') + this.token }; }
   root() { return this.provider === 'google' ? 'root' : this.provider === 'yandex' ? 'disk:/' : ''; }
   private google(folder: string) {
@@ -57,12 +63,12 @@ export class CloudDrive {
   /** A folder disappearing (or being replaced at the same path) must never look like an empty listing. */
   async folderIdentity(folder: string) {
     if (this.provider === 'google') {
-      const row = await (await cloudRequest(this.google(folder) + '?fields=id,mimeType,trashed&supportsAllDrives=true', { headers: this.headers })).json() as {id: string; mimeType: string; trashed: boolean};
+      const row = await (await this.request(this.google(folder) + '?fields=id,mimeType,trashed&supportsAllDrives=true', { headers: this.headers })).json() as {id: string; mimeType: string; trashed: boolean};
       if (row.trashed || row.mimeType !== 'application/vnd.google-apps.folder' || !row.id) throw invalid();
       return String(row.id);
     }
     if (this.provider === 'yandex') {
-      const row = await (await cloudRequest(disk + '?' + new URLSearchParams({ path: folder, fields: 'type,resource_id' }), { headers: this.headers })).json() as {type: string; resource_id: string};
+      const row = await (await this.request(disk + '?' + new URLSearchParams({ path: folder, fields: 'type,resource_id' }), { headers: this.headers })).json() as {type: string; resource_id: string};
       if (row.type !== 'dir' || !row.resource_id) throw invalid();
       return String(row.resource_id);
     }
@@ -78,7 +84,7 @@ export class CloudDrive {
         this.google(folder);
         const params = new URLSearchParams({ q: "'" + folder + "' in parents and trashed=false", fields: 'nextPageToken,incompleteSearch,files(id,name,mimeType,size,version,webViewLink,capabilities(canDownload))', pageSize: '1000', supportsAllDrives: 'true', includeItemsFromAllDrives: 'true' });
         if (cursor) params.set('pageToken', cursor);
-        const page = await (await cloudRequest(googleDrive + '?' + params, { headers: this.headers })).json() as GooglePage;
+        const page = await (await this.request(googleDrive + '?' + params, { headers: this.headers })).json() as GooglePage;
         if (page.incompleteSearch || !Array.isArray(page.files)) throw invalid();
         for (const f of page.files) {
           const dir = f.mimeType === 'application/vnd.google-apps.folder', exp = exportsByMime[f.mimeType];
@@ -88,7 +94,7 @@ export class CloudDrive {
         cursor = page.nextPageToken ?? '';
       } else if (this.provider === 'dropbox') {
         const url = 'https://api.dropboxapi.com/2/files/list_folder' + (cursor ? '/continue' : '');
-        const page = await (await cloudRequest(url, { method: 'POST', headers: { ...this.headers, 'Content-Type': 'application/json' },
+        const page = await (await this.request(url, { method: 'POST', headers: { ...this.headers, 'Content-Type': 'application/json' },
           body: JSON.stringify(cursor ? { cursor } : { path: folder, recursive: false, include_non_downloadable_files: false }) })).json() as DropboxPage;
         if (!Array.isArray(page.entries) || (page.has_more && !page.cursor)) throw invalid();
         for (const f of page.entries) {
@@ -99,7 +105,7 @@ export class CloudDrive {
       } else {
         const offset = Number(cursor || 0);
         const params = new URLSearchParams({ path: folder, limit: '1000', offset: String(offset), sort: 'name' });
-        const page = await (await cloudRequest(disk + '?' + params, { headers: this.headers })).json() as DiskPage;
+        const page = await (await this.request(disk + '?' + params, { headers: this.headers })).json() as DiskPage;
         const entries = page._embedded?.items;
         if (page.type !== 'dir' || !Array.isArray(entries) || !Number.isSafeInteger(page._embedded.total)) throw invalid();
         for (const f of entries) yield { id: f.path, identity: f.resource_id, name: f.name, dir: f.type === 'dir', revision: String(f.revision ?? f.sha256 ?? ''), size: f.size,
@@ -113,15 +119,15 @@ export class CloudDrive {
     let res: Response;
     if (this.provider === 'google') {
       const url = this.google(file.id) + (file.exportMime ? '/export?mimeType=' + encodeURIComponent(file.exportMime) : '?alt=media&supportsAllDrives=true');
-      res = await cloudRequest(url, { headers: this.headers }, host => /(^|\.)(googleapis\.com|googleusercontent\.com)$/.test(host));
+      res = await this.request(url, { headers: this.headers }, host => /(^|\.)(googleapis\.com|googleusercontent\.com)$/.test(host));
     } else if (this.provider === 'dropbox') {
-      res = await cloudRequest('https://content.dropboxapi.com/2/files/download', { method: 'POST', headers: { ...this.headers, 'Dropbox-API-Arg': JSON.stringify({ path: 'rev:' + file.revision }) } });
+      res = await this.request('https://content.dropboxapi.com/2/files/download', { method: 'POST', headers: { ...this.headers, 'Dropbox-API-Arg': JSON.stringify({ path: 'rev:' + file.revision }) } });
     } else {
-      const { href } = await (await cloudRequest(disk + '/download?' + new URLSearchParams({ path: file.id }), { headers: this.headers })).json() as {href: string};
+      const { href } = await (await this.request(disk + '/download?' + new URLSearchParams({ path: file.id }), { headers: this.headers })).json() as {href: string};
       const url = new URL(href);
       const downloadHost = (host: string) => /(^|\.)(yandex\.(net|ru|com)|yandexcloud\.net)$/.test(host);
       if (url.protocol !== 'https:' || url.username || url.password || url.port || !downloadHost(url.hostname)) throw invalid();
-      res = await cloudRequest(url.href, {}, downloadHost); // Signed download URL must never receive the account token.
+      res = await this.request(url.href, {}, downloadHost); // Signed download URL must never receive the account token.
     }
     const chunks: Buffer[] = []; let size = 0;
     const reader = res.body?.getReader();

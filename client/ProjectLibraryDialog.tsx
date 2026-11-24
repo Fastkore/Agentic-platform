@@ -7,7 +7,7 @@ import { Select } from './Select';
 import { PermissionSwitch } from './PermissionSwitch';
 import { formatFileCount, type Request } from './library-upload';
 import { folderLine, LibraryFolderCard, useLibraryRefresh } from './LibraryFolderCard';
-import { CreateLibraryForm, LibraryCreateButtons, LibrarySearch, libraryTabCounts, libraryTabs, LibraryKindIcon, type LibraryKind, outputModes, profileLabels } from './LibraryPanel';
+import { CreateLibraryForm, LibraryCreateButtons, LibraryRemovalDialog, LibrarySearch, libraryTabCounts, libraryTabs, LibraryKindIcon, type LibraryKind, outputModes, profileLabels } from './LibraryPanel';
 import './specialists.css';
 import './library.css';
 
@@ -20,6 +20,7 @@ export function ProjectLibraryPanel({ project, request, section, isAdmin, initia
   const base = '/api/projects/' + encodeURIComponent(project.id) + '/library';
   const [view, setView] = useState<ProjectLibraryView>();
   const [folders, setFolders] = useState<LibraryFolderSummary[]>([]);
+  const [removing, setRemoving] = useState<LibraryConnection>();
   const [expanded, setExpanded] = useState<string>();
   const [search, setSearch] = useState('');
   const tabId = useId();
@@ -104,9 +105,7 @@ export function ProjectLibraryPanel({ project, request, section, isAdmin, initia
             {c.canManage && <div className="settings-actions library-card-actions">
               <Select className="settings-select" label="Режим выдачи" value={c.outputPolicy} options={options(outputModes)} disabled={pending} fitContent
                 onChange={outputPolicy => void update(c, { outputPolicy })} />
-              <button type="button" className="secondary" disabled={pending} onClick={() => {
-                if (confirm(`Отключить «${c.folderName}» от проекта? Папка останется в библиотеке для других проектов.`)) void act(() => request(`${base}/${c.folderId}?revision=${c.revision}`, { method: 'DELETE' }));
-              }}>Убрать из проекта</button>
+              <button type="button" className="secondary" disabled={pending} onClick={() => setRemoving(c)}>Убрать из проекта</button>
             </div>}
             </div>}
           </li>;
@@ -151,5 +150,10 @@ export function ProjectLibraryPanel({ project, request, section, isAdmin, initia
         })()}
       </>}
     </div>}
+    {removing && <LibraryRemovalDialog title="Убрать из проекта" name={removing.folderName}
+      description="Библиотека останется доступна другим проектам." cancel={() => setRemoving(undefined)} confirm={() => {
+        setRemoving(undefined);
+        void act(() => request(`${base}/${removing.folderId}?revision=${removing.revision}`, { method: 'DELETE' }));
+      }} />}
   </div>;
 }

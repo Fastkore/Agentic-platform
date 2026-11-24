@@ -41,6 +41,18 @@ export function FolderForm({ draft, setDraft, isAdmin, disabled }: {
   </div>;
 }
 
+export function LibraryRemovalDialog({ title, name, description, cancel, confirm }: {
+  title: string; name: string; description: string; cancel: () => void; confirm: () => void;
+}) {
+  return <WorkspaceDialog title={title + ' «' + name + '»?'} className="workspace-chat-rename" closeOnBackdrop={false} close={cancel}>
+    <p>{description}</p>
+    <div className="settings-dialog-actions">
+      <button type="button" className="secondary" data-dialog-focus onClick={cancel}>Отмена</button>
+      <button type="button" className="secondary project-delete" onClick={confirm}>{title}</button>
+    </div>
+  </WorkspaceDialog>;
+}
+
 export type LibraryKind = 's3' | 'external';
 export function LibrarySearch({ value, onChange }: { value: string; onChange: (value: string) => void }) {
   return <div className="library-search">
@@ -135,6 +147,7 @@ export function LibraryPanel({ request, isAdmin }: { request: Request; isAdmin: 
   const [folders, setFolders] = useState<LibraryFolderSummary[]>();
   const [storage, setStorage] = useState<StorageStatus>();
   const [selected, setSelected] = useState<string>();
+  const [confirmRemoval, setConfirmRemoval] = useState(false);
   const [folderSearch, setFolderSearch] = useState('');
   const [projectSearch, setProjectSearch] = useState('');
   const tabId = useId();
@@ -224,15 +237,20 @@ export function LibraryPanel({ request, isAdmin }: { request: Request; isAdmin: 
         <div className="settings-actions">
           <button type="submit" className="primary" disabled={pending || !editing || !editDraft.name.trim()}>Сохранить</button>
           <button type="button" className="secondary" disabled={pending || !editing} onClick={() => setEditing(undefined)}>Отмена</button>
-          {folder.canDelete && <button type="button" className="secondary library-danger" disabled={pending} onClick={() => {
-            const where = folder.projects.length ? `\nПапка исчезнет из проектов: ${folder.projects.map(p => p.name ?? p.id).join(', ')}.` : '';
-            if (confirm(folder.external ? `Отключить библиотеку «${folder.name}»? Оригиналы останутся на диске.${where}` : `Удалить папку «${folder.name}» со всеми файлами?${where}\nДействие нельзя отменить.`)) void act(async () => {
-              await request(`/api/library/${folder.id}?revision=${folder.revision}`, { method: 'DELETE' });
-              setSelected(undefined);
-            }, 'Папка удалена.');
-          }}><Trash2 size={16} aria-hidden="true" />{folder.external ? 'Отключить библиотеку' : 'Удалить папку'}</button>}
+          {folder.canDelete && <button type="button" className="secondary library-danger" disabled={pending}
+            onClick={() => setConfirmRemoval(true)}><Trash2 size={16} aria-hidden="true" />{folder.external ? 'Отключить библиотеку' : 'Удалить папку'}</button>}
         </div>
       </form>
+      {confirmRemoval && <LibraryRemovalDialog title={folder.external ? 'Отключить библиотеку' : 'Удалить папку'} name={folder.name}
+        description={(folder.external ? 'Синхронизация и подготовка к поиску остановятся. Оригиналы останутся на диске.' : 'Папка и её файлы будут удалены без возможности восстановления.')
+          + (folder.projects.length ? ' Папка исчезнет из проектов: ' + folder.projects.map(p => p.name ?? p.id).join(', ') + '.' : '')}
+        cancel={() => setConfirmRemoval(false)} confirm={() => {
+          setConfirmRemoval(false);
+          void act(async () => {
+            await request(`/api/library/${folder.id}?revision=${folder.revision}`, { method: 'DELETE' });
+            setSelected(undefined);
+          }, folder.external ? 'Библиотека отключена.' : 'Папка удалена.');
+        }} />}
     </section>}
   </div>;
 

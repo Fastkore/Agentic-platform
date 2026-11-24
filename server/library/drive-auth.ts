@@ -21,12 +21,12 @@ function redirectUri(provider: ExternalProvider, keys?: AppKeys) {
   if (!process.env.BRIDGE_PUBLIC_ORIGIN) throw new BridgeError('Публичный адрес платформы не задан.', 503);
   return new URL('/library-oauth.html', process.env.BRIDGE_PUBLIC_ORIGIN).href;
 }
-async function exchange(provider: ExternalProvider, { id, secret }: DriveKeys, body: Record<string, string>, previous?: string): Promise<Tokens> {
+async function exchange(provider: ExternalProvider, { id, secret }: DriveKeys, body: Record<string, string>, previous?: string, signal?: AbortSignal): Promise<Tokens> {
   let response: Response;
   try {
-    response = await fetch(providers[provider].token, { method: 'POST', redirect: 'error', signal: AbortSignal.timeout(20000),
+    response = await fetch(providers[provider].token, { method: 'POST', redirect: 'error', signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(20000)]) : AbortSignal.timeout(20000),
       body: new URLSearchParams({ client_id: id, client_secret: secret, ...body }) });
-  } catch { throw new BridgeError('Сервис авторизации временно недоступен.', 503); }
+  } catch { signal?.throwIfAborted(); throw new BridgeError('Сервис авторизации временно недоступен.', 503); }
   if (!response.ok) throw new BridgeError('Сервис отклонил авторизацию. Подключите аккаунт повторно.', 403);
   const result = await response.json() as { access_token?: string; refresh_token?: string; expires_in?: number };
   if (typeof result.access_token !== 'string' || !result.access_token) throw expired();
@@ -43,14 +43,15 @@ export class DriveAuth {
     if (!keys) throw new BridgeError('Введите ключи приложения в мастере подключения.', 409);
     return keys;
   }
-  async open(provider: ExternalProvider, sealed: string, save: (sealed: string) => void) {
+  async open(provider: ExternalProvider, sealed: string, save: (sealed: string) => void, signal?: AbortSignal) {
     let tokens = this.settings.unseal<Tokens>(sealed);
     if (tokens.expires < Date.now() + 60_000) {
       if (!tokens.refresh) throw expired();
-      tokens = await exchange(provider, this.requireKeys(provider), { grant_type: 'refresh_token', refresh_token: tokens.refresh }, tokens.refresh);
+      tokens = await exchange(provider, this.requireKeys(provider), { grant_type: 'refresh_token', refresh_token: tokens.refresh }, tokens.refresh, signal);
+      signal?.throwIfAborted();
       save(this.settings.seal(tokens));
     }
-    return new CloudDrive(provider, tokens.access);
+    return new CloudDrive(provider, tokens.access, signal);
   }
   status(provider: ExternalProvider) {
     const keys = this.keys(provider);

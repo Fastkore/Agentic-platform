@@ -167,6 +167,7 @@ export class LibraryIndexer {
     const state = this.registry.stateRow(stateId);
     if (!state || state.status !== 'preparing') { this.db.prepare('DELETE FROM index_jobs WHERE state_id=?').run(stateId); return; }
     // One file per distinct content; contents processed earlier (also in other folders) are skipped by pendingFiles.
+    const signal = this.registry.external.has(state.folder_id) ? this.registry.external.signal(state.folder_id) : undefined;
     const seen = new Set<string>();
     const files = this.registry.pendingFiles(stateId).filter(f => { const key = contentKey(f.sha256, f.size); if (seen.has(key)) return false; seen.add(key); return true; });
     this.batch = [];
@@ -180,9 +181,13 @@ export class LibraryIndexer {
       for (const file of files) {
         this.owned(stateId);
         if (this.registry.stateRow(stateId)?.status !== 'preparing') return;
-        const result = await this.processFile(file);
+        const result = await this.processFile(file, signal);
+        signal?.throwIfAborted();
+        const previousBatch = this.batch;
         this.queueResult(file, result, true);
-        if (this.batch.length >= 4000 || Date.now() - lastFlush > 2000) { flush(); lastFlush = Date.now(); }
+        // Link already written chunks and derived objects before this drive can be disconnected.
+        const needsCommit = signal && (result.textBlobId || previousBatch !== this.batch);
+        if (needsCommit || this.batch.length >= 4000 || Date.now() - lastFlush > 2000) { flush(); lastFlush = Date.now(); }
       }
       flush();
     } finally { this.batch = []; }
@@ -207,7 +212,10 @@ export class LibraryIndexer {
     if (this.upgradesDone) return false;
     const file = this.registry.outdatedFile();
     if (!file) { this.upgradesDone = true; return false; }
-    const result = await this.processFile(file);
+    const state = this.registry.stateRow(file.state_id);
+    const signal = state && this.registry.external.has(state.folder_id) ? this.registry.external.signal(state.folder_id) : undefined;
+    const result = await this.processFile(file, signal).catch(error => { if (!signal?.aborted) throw error; });
+    if (!result || signal?.aborted) return true;
     this.batch = [];
     try {
       this.queueResult(file, result, false);
@@ -231,7 +239,7 @@ export class LibraryIndexer {
       if (previous) this.registry.refreshCoverage(key);
     });
   }
-  private async processFile(file: StateFileRow): Promise<Processed> {
+  private async processFile(file: StateFileRow, signal?: AbortSignal): Promise<Processed> {
     const kind = classify(file.path);
     if (kind.kind === 'binary') return { state: 'unsupported_format', mediaType: 'application/octet-stream', note: 'Двоичный формат' };
     if (kind.kind === 'unsupported') return { state: 'unsupported_format', note: 'Формат документа пока не поддерживается' };
@@ -239,10 +247,11 @@ export class LibraryIndexer {
     const store = this.registry.objectStore(blob.object_key);
     if (kind.kind === 'xlsx' || kind.kind === 'pdf' || kind.kind === 'docx') {
       if (file.size > 64 * 1024 * 1024) return { state: 'unsupported_format', note: 'Документ превышает 64 МиБ для извлечения' };
-      const data = (await this.readObject(store, blob.object_key))!;
+      const data = (await this.readObject(store, blob.object_key, signal))!;
       let text: string;
-      try { text = await this.extract(kind.kind, data); }
+      try { text = await this.extract(kind.kind, data, signal); }
       catch (error) {
+        signal?.throwIfAborted();
         return error instanceof Error && error.message === 'timeout'
           ? { state: 'timeout', note: `Извлечение текста превысило ${Math.ceil(this.extractionTimeoutMs / 1000)} с; повторите обработку.` }
           : { state: 'failed', note: 'Не удалось извлечь текст документа' };
@@ -252,36 +261,40 @@ export class LibraryIndexer {
         return { state: 'ocr_required', mediaType, note: 'В PDF нет текстового слоя. Требуется распознавание.' };
       }
       const derived = Buffer.from(text, 'utf8');
-      const processed = await this.processText({ data: derived, mode: 'derived', indexTextBytes: this.registry.limits.indexTextBytes });
+      const processed = await this.processText({ data: derived, mode: 'derived', indexTextBytes: this.registry.limits.indexTextBytes }, signal);
       if (!('chunks' in processed)) return processed;
-      const textBlobId = await this.storeDerived(derived, blob.object_key);
+      const textBlobId = await this.storeDerived(derived, blob.object_key, signal);
       return { state: 'indexed', mediaType, encoding: 'utf-8', lines: processed.lines, language: kind.language, textBlobId, rows: processed };
     }
     // Binary content without a known extension is recognised from the first bytes without downloading the rest.
-    const data = await this.readObject(store, blob.object_key, head => detectEncoding(head) === 'binary');
+    const data = await this.readObject(store, blob.object_key, signal, head => detectEncoding(head) === 'binary');
     if (!data) return { state: 'unsupported_format', note: 'Файл содержит двоичные данные' };
-    const processed = await this.processText({ data, mode: 'object', indexTextBytes: this.registry.limits.indexTextBytes });
+    const processed = await this.processText({ data, mode: 'object', indexTextBytes: this.registry.limits.indexTextBytes }, signal);
     if (!('chunks' in processed)) return processed;
     if (processed.state !== 'indexed' && processed.state !== 'limited') return { state: processed.state, encoding: processed.encoding, note: processed.note };
-    const textBlobId = processed.derived ? await this.storeDerived(Buffer.from(processed.derived), blob.object_key) : undefined;
+    const textBlobId = processed.derived ? await this.storeDerived(Buffer.from(processed.derived), blob.object_key, signal) : undefined;
     return { state: processed.state, encoding: processed.encoding, mediaType: processed.mediaType, lines: processed.lines, language: kind.language, textBlobId, note: processed.note, rows: processed };
   }
   /** Runs text processing in the index worker under the per-file time and memory budget. */
-  private async processText(input: TextIndexInput): Promise<TextIndexResult | { state: string; note: string }> {
+  private async processText(input: TextIndexInput, signal?: AbortSignal): Promise<TextIndexResult | { state: string; note: string }> {
+    signal?.throwIfAborted();
+    const abort = () => { void this.textWorker.close(); };
+    signal?.addEventListener('abort', abort, { once: true });
     try { return await this.textWorker.run(input); }
     catch (error) {
+      signal?.throwIfAborted();
       if (error instanceof BridgeError) throw error;
       if (error instanceof IndexTimeout) return { state: 'timeout', note: `Обработка файла превысила ${Math.ceil(this.fileTimeoutMs / 1000)} с и прервана; повторите обработку.` };
       return { state: 'failed', note: 'Обработка файла прервана: превышен предел памяти или сбой обработчика.' };
-    }
+    } finally { signal?.removeEventListener('abort', abort); }
   }
   /**
    * Reads a whole object. The response stream is always destroyed, also on early exit: an unconsumed S3 body keeps its pooled
    * connection, and enough of them exhaust the client's socket pool so that every further request waits.
    * `rejectHead` stops after the first 8 KiB (returns undefined) when the prefix shows the content is not worth reading.
    */
-  private async readObject(store: ReturnType<LibraryRegistry['store']>, key: string, rejectHead?: (head: Buffer) => boolean) {
-    const stream = await store.stream(key);
+  private async readObject(store: ReturnType<LibraryRegistry['store']>, key: string, signal?: AbortSignal, rejectHead?: (head: Buffer) => boolean) {
+    const stream = await store.stream(key, signal);
     try {
       const parts: Buffer[] = []; let size = 0, checked = !rejectHead;
       for await (const part of stream) {
@@ -294,20 +307,31 @@ export class LibraryIndexer {
     } finally { stream.destroy(); }
   }
   /** Extracted text is stored once per content, outside any folder. */
-  private async storeDerived(data: Buffer, originalKey: string) {
+  private async storeDerived(data: Buffer, originalKey: string, signal?: AbortSignal) {
+    signal?.throwIfAborted();
     const id = 'd_' + randomUUID().replaceAll('-', '');
     const key = blobKey(originalKey.startsWith('library/external_') ? 'external_derived' : 'derived', id);
     this.db.prepare("INSERT INTO blobs (id, folder_id, object_key, sha256, size, kind, state, created_at) VALUES (?,NULL,?,?,?,'derived','pending',?)")
       .run(id, key, createHash('sha256').update(data).digest('hex'), data.length, Date.now());
-    await this.registry.objectStore(key).put(key, data);
+    try {
+      await this.registry.objectStore(key).put(key, data);
+      signal?.throwIfAborted();
+    } catch (e) {
+      this.db.prepare("UPDATE blobs SET state='orphan', orphaned_at=? WHERE id=?").run(Date.now(), id);
+      throw e;
+    }
     this.db.prepare("UPDATE blobs SET state='verified' WHERE id=?").run(id);
     return id;
   }
-  private extract(kind: 'xlsx' | 'pdf' | 'docx', input: Buffer) {
+  private extract(kind: 'xlsx' | 'pdf' | 'docx', input: Buffer, signal?: AbortSignal) {
+    signal?.throwIfAborted();
     const script = new URL(import.meta.url.endsWith('.ts') ? './extract-worker.ts' : './extract-worker.js', import.meta.url);
     const worker = new Worker(script, { workerData: { kind, input }, resourceLimits: { maxOldGenerationSizeMb: 512, maxYoungGenerationSizeMb: 48, stackSizeMb: 4 } });
     return new Promise<string>((resolve, reject) => {
       const timer = setTimeout(() => { void worker.terminate(); reject(new Error('timeout')); }, this.extractionTimeoutMs);
+      const abort = () => { clearTimeout(timer); void worker.terminate(); reject(signal?.reason); };
+      signal?.addEventListener('abort', abort, { once: true });
+      worker.once('exit', () => signal?.removeEventListener('abort', abort));
       worker.once('message', text => { clearTimeout(timer); void worker.terminate(); resolve(String(text)); });
       worker.once('error', error => { clearTimeout(timer); void worker.terminate(); reject(error); });
       worker.once('exit', code => { clearTimeout(timer); if (code) reject(new Error('exit ' + code)); });

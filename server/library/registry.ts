@@ -420,11 +420,14 @@ export class LibraryRegistry {
       this.db.prepare('DELETE FROM grants WHERE folder_id=?').run(id);
       this.db.prepare('DELETE FROM connections WHERE folder_id=?').run(id);
       this.db.prepare('DELETE FROM folder_managers WHERE folder_id=?').run(id);
+      this.db.prepare('DELETE FROM index_jobs WHERE state_id IN (SELECT id FROM states WHERE folder_id=?)').run(id);
       this.db.prepare("UPDATE states SET status='superseded' WHERE folder_id=? AND status IN ('ready','failed','preparing')").run(id);
       this.db.prepare("UPDATE folders SET deleted_at=?, current_state=NULL, name=name || ' [удалена ' || id || ']', revision=revision+1 WHERE id=?").run(new Date(at).toISOString(), id);
       return { ok: true, projects };
     }, value => [{ actorId: actor.id, action: 'library.folder.delete', targetId: id, details: { objectIds: { projects: value.projects.join(',') } } }]);
-    void this.collectGarbage({ graceMs: 0 }).catch(() => {});
+    const sync = this.external.cancel(id);
+    const collect = () => this.collectGarbage({ graceMs: 0 });
+    void (sync ? sync.then(collect, collect) : collect()).catch(() => {});
     return { ...result, projects: result.projects.filter(projectId => this.canSeeProject(actor, projectId)) };
   }
 

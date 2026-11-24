@@ -184,9 +184,9 @@ export class FilesystemLibraryBlobStore implements LibraryBlobStore {
   }
   async abortMultipart(_key: string, uploadId: string) { await rm(this.partDir(uploadId), { recursive: true, force: true }); }
   async head(key: string) { try { return { size: (await stat(this.file(key))).size }; } catch { return undefined; } }
-  async stream(key: string, _signal?: AbortSignal, start?: number) {
+  async stream(key: string, signal?: AbortSignal, start?: number) {
     const handle = await open(this.file(key)).catch(() => { throw new BridgeError('Объект библиотеки не найден.', 404); });
-    return handle.createReadStream({ start: start ?? 0 });
+    return handle.createReadStream({ start: start ?? 0, signal });
   }
   async delete(key: string) { await unlink(this.file(key)).catch((e: NodeJS.ErrnoException) => { if (e.code !== 'ENOENT') throw e; }); }
   async *list(prefix: string) {

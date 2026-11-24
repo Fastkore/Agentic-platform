@@ -15,7 +15,18 @@ export class ExternalLibraries {
   readonly auth: DriveAuth;
   private running = new Map<string, Promise<void>>();
   private opening = new Map<string, Promise<CloudDrive>>();
+  private lifetimes = new Map<string, AbortController>();
   private stopped = false;
+  signal(id: string) {
+    let controller = this.lifetimes.get(id);
+    if (!controller) { controller = new AbortController(); this.lifetimes.set(id, controller); }
+    return controller.signal;
+  }
+  cancel(id: string) {
+    this.lifetimes.get(id)?.abort();
+    this.lifetimes.delete(id);
+    return this.running.get(id);
+  }
   constructor(private registry: LibraryRegistry) { this.auth = new DriveAuth(registry.settings); }
   private get db() { return this.registry.db; }
   has(id: string) { return !!this.db.prepare('SELECT 1 FROM external_sources WHERE folder_id=?').get(id); }
@@ -42,7 +53,7 @@ export class ExternalLibraries {
     if (existing) return existing;
     const task = this.auth.open(source.provider, source.credentials, sealed => {
       this.db.prepare('UPDATE external_sources SET credentials=? WHERE folder_id=? AND credentials=?').run(sealed, id, source.credentials);
-    }).finally(() => this.opening.delete(id));
+    }, this.signal(id)).finally(() => this.opening.delete(id));
     this.opening.set(id, task);
     return task;
   }
@@ -98,7 +109,11 @@ export class ExternalLibraries {
       await this.sync(String(row.folder_id)).catch(() => {});
     }
   }
-  async stop() { this.stopped = true; await Promise.allSettled(this.running.values()); }
+  async stop() {
+    this.stopped = true;
+    for (const id of this.lifetimes.keys()) this.cancel(id);
+    await Promise.allSettled([...this.running.values(), ...this.opening.values()]);
+  }
   sync(id: string) {
     if (this.stopped) return Promise.resolve();
     const existing = this.running.get(id);
@@ -149,6 +164,7 @@ export class ExternalLibraries {
         } else {
           if ((file.size ?? 0) > limit) throw new BridgeError('Превышен лимит размера: ' + file.path, 413);
           const data = await drive.download(file, limit);
+          this.checkActive(id);
           if (file.size !== undefined && file.size !== data.length) throw changed();
           const sample = data.subarray(0, 256 * 1024);
           if (!sample.includes(0) && suspiciousSecret(sample.toString('utf8')).length) {
@@ -164,6 +180,7 @@ export class ExternalLibraries {
         if (entry.size > limit) throw new BridgeError('Превышен лимит размера: ' + file.path, 413);
         prepared.push(entry); total += entry.size;
       }
+      this.checkActive(id);
       if (staged.length && (await this.inventory(drive, source, folder)).signature !== signature) throw changed();
       this.registry.tx(() => {
         this.checkActive(id);
