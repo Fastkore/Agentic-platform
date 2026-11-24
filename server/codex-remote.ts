@@ -2,16 +2,17 @@ import { request as httpRequest, type IncomingMessage } from 'node:http';
 import { createInterface } from 'node:readline';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type { CliInfo, CodexLimits, ModelCatalog } from '../shared/types.js';
+import { ExecutionAccountStopped } from './codex.js';
 import type { CodexEvent, CodexRequest, CodexResult, CodexRunner, RegisterSteering, SteerResult } from './codex.js';
 import { randomUUID } from 'node:crypto';
 import type { CodexToolDefinition, CodexToolResult } from './codex-tools.js';
 import { BridgeError } from './store.js';
 import type { ExecutionAccounts, ExecutionProvider, GigaChatScope } from '../shared/execution-accounts.js';
 
-export type WorkerRun = Pick<CodexRequest, 'prompt' | 'imageUrls' | 'imageQuestion' | 'developerInstructions' | 'sessionId' | 'ephemeral' | 'consultation' | 'consultationKey' | 'model' | 'reasoningEffort' | 'workDirectoryId' | 'executionConcurrency'> & { toolDefinitions?: CodexToolDefinition[]; steeringKey?: string };
+export type WorkerRun = Pick<CodexRequest, 'expectedAccountId' | 'prompt' | 'imageUrls' | 'imageQuestion' | 'developerInstructions' | 'sessionId' | 'ephemeral' | 'consultation' | 'consultationKey' | 'model' | 'reasoningEffort' | 'workDirectoryId' | 'executionConcurrency'> & { toolDefinitions?: CodexToolDefinition[]; steeringKey?: string };
 export type WorkerSteer = { key: string; text: string };
 export type WorkerToolResult = CodexToolResult & { id: string };
-export type WorkerMessage = { event: CodexEvent } | { result: CodexResult } | { error: string }
+export type WorkerMessage = { accountStopped: true } | { event: CodexEvent } | { result: CodexResult } | { error: string }
   | { toolCall: { id: string; name: string; args: unknown } };
 
 export class RemoteCodexRunner implements CodexRunner {
@@ -29,12 +30,12 @@ export class RemoteCodexRunner implements CodexRunner {
         signal: signal ? AbortSignal.any([timeout, signal]) : timeout,
       }, res => {
         if (res.statusCode === 200) resolve(res);
-        else if (path === '/proxy' || /^\/accounts\/[a-f0-9-]+\/key$/.test(path)) {
+        else if (path === '/proxy' || path.startsWith('/accounts/')) {
           let text = '';
           res.setEncoding('utf8').on('data', chunk => { text = (text + chunk).slice(0, 4000); });
           res.on('error', () => reject(new BridgeError('Не удалось связаться с исполнителем модели.', 503)));
           res.on('end', () => {
-            let message = path === '/proxy' ? 'Не удалось сохранить прокси.' : 'Исполнитель отклонил ключ.';
+            let message = path === '/proxy' ? 'Не удалось сохранить прокси.' : 'Исполнитель отклонил изменение аккаунта.';
             try { const body = JSON.parse(text); if (typeof body.error === 'string') message = body.error; } catch { /* Use the default message. */ }
             reject(new BridgeError(message, res.statusCode ?? 502));
           });
@@ -82,14 +83,19 @@ export class RemoteCodexRunner implements CodexRunner {
   async run(r: CodexRequest, onEvent: (event: CodexEvent) => Promise<void>, signal: AbortSignal, registerSteering?: RegisterSteering) {
     const { prompt, imageUrls, imageQuestion, developerInstructions, sessionId, ephemeral, consultation, model, reasoningEffort, workDirectoryId, executionConcurrency, tools } = r;
     const steeringKey = registerSteering && !consultation ? randomUUID() : undefined;
-    const res = await this.request('/run', { prompt, imageUrls, imageQuestion, developerInstructions, sessionId, ephemeral, consultation, steeringKey,
+    const res = await this.request('/run', { expectedAccountId: r.expectedAccountId, prompt, imageUrls, imageQuestion, developerInstructions, sessionId, ephemeral, consultation, steeringKey,
       consultationKey: consultation ? this.consultationContext.getStore() : undefined, model, reasoningEffort, workDirectoryId, executionConcurrency, toolDefinitions: tools?.definitions }, signal);
+    const disconnected = new AbortController();
+    const toolSignal = AbortSignal.any([signal, disconnected.signal]);
+    res.once('end', () => disconnected.abort());
+    res.once('close', () => disconnected.abort());
     const stream = createInterface({ input: res, crlfDelay: Infinity });
     try {
       for await (const line of stream) {
         signal.throwIfAborted();
         if (line.length > 4_000_000) throw new BridgeError('Событие исполнителя слишком большое.', 502);
         const message = JSON.parse(line) as WorkerMessage;
+        if ('accountStopped' in message) throw new ExecutionAccountStopped();
         if ('event' in message) {
           if (message.event.kind === 'steer-ready' && steeringKey) {
             registerSteering?.(async text => {
@@ -108,9 +114,10 @@ export class RemoteCodexRunner implements CodexRunner {
           const { id, name, args } = message.toolCall;
           let result = { success: false, text: 'Инструмент недоступен.' };
           if (tools) {
-            try { result = await this.consultationContext.run(id, () => tools.call(name, args, signal)); } catch { /* Reply without disclosing the backend exception. */ }
+            try { result = await this.consultationContext.run(id, () => tools.call(name, args, toolSignal)); } catch { /* Reply without disclosing the backend exception. */ }
           }
           signal.throwIfAborted();
+          if (disconnected.signal.aborted) continue;
           const reply = await this.request('/tool-result', { id, ...result }, signal);
           reply.resume();
         }

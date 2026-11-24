@@ -14,7 +14,10 @@ export interface CodexEvent { kind: 'session' | 'message' | 'message-delta' | 'm
 export type SteerResult = 'accepted' | 'rejected' | 'unknown';
 export type SteerTurn = (text: string) => Promise<SteerResult>;
 export type RegisterSteering = (steer: SteerTurn | undefined) => void;
-export interface CodexRequest { executionConcurrency?: number; cliPath: string; workspace: string; prompt: string; imageUrls?: string[]; imageQuestion?: string; developerInstructions?: string; tools?: CodexTools; sessionId?: string; allowWrite: boolean; workDirectoryId?: string; ephemeral?: boolean; consultation?: boolean; consultationKey?: string; model?: string; reasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max' }
+export class ExecutionAccountStopped extends Error {
+  constructor() { super('Задание остановлено администратором при отключении аккаунта исполнителя.'); }
+}
+export interface CodexRequest { expectedAccountId?: string; executionConcurrency?: number; cliPath: string; workspace: string; prompt: string; imageUrls?: string[]; imageQuestion?: string; developerInstructions?: string; tools?: CodexTools; sessionId?: string; allowWrite: boolean; workDirectoryId?: string; ephemeral?: boolean; consultation?: boolean; consultationKey?: string; model?: string; reasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max' }
 export interface CodexResult { sessionId?: string; response: string; usage?: Usage }
 export interface CodexRunner { readonly isolated?: boolean; inspect(cliPath: string, signal?: AbortSignal, model?: string): Promise<CliInfo>; listModels?(cliPath: string): Promise<ModelCatalog>; readLimits?(cliPath: string, model?: string): Promise<CodexLimits | null>; run(request: CodexRequest, onEvent: (event: CodexEvent) => Promise<void>, signal: AbortSignal, registerSteering?: RegisterSteering): Promise<CodexResult> }
 type RateWindow = { usedPercent?: number; windowDurationMins?: number | null; resetsAt?: number | null };

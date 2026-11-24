@@ -93,28 +93,28 @@ export function ExecutionAccountsPanel({ request, busy, changed }: { request: Re
         {account.login?.state === 'error' && <small role="alert">{account.login.error}</small>}
       </div>
       <div className="settings-actions">
-        <label className={'check-setting account-active-status' + (account.active ? ' active' : ' inactive')} title={account.active ? 'Модели видны сотрудникам' : 'Модели скрыты от сотрудников'}>
-          <input type="checkbox" checked={account.active} disabled={busy || working || !account.signedIn}
+        <label className={'check-setting account-active-status' + (account.active ? ' active' : ' inactive')} title={account.active ? 'При отключении задания этого аккаунта будут остановлены. Сохранённый вход можно использовать снова.' : 'Модели скрыты от сотрудников'}>
+          <input type="checkbox" checked={account.active} disabled={working || (!account.active && !account.signedIn)}
             aria-label={'Активен · ' + accountName(account)}
             onChange={event => void action(async () => {
-              await request(endpoint + '/' + account.id + '/' + (event.target.checked ? 'activate' : 'deactivate'), { method: 'POST', body: '{}' });
+              setData(await request<ExecutionAccounts>(endpoint + '/' + account.id + '/' + (event.target.checked ? 'activate' : 'deactivate'), { method: 'POST', body: '{}' }));
               await changed();
             })} />
           {account.active ? 'Активен' : 'Неактивен'}
         </label>
-        <button type="button" className="secondary" disabled={working || (busy && account.login?.state !== 'waiting')}
+        <button type="button" className="secondary" disabled={working}
           onClick={() => { setError(''); setAuthorizationCodes(old => ({ ...old, [account.id]: '' })); setAccountKey('');
             setWizard({ id: account.id, provider: account.provider, name: accountName(account), submitted: account.login?.state === 'waiting' }); }}>
           {usesKey(account.provider) ? <KeyRound size={15} aria-hidden="true" /> : <LogIn size={15} aria-hidden="true" />}<span>{usesKey(account.provider) ? 'Ключ' : account.login?.state === 'waiting' ? 'Продолжить вход' : 'Вход'}</span></button>
         <button type="button" className="workspace-icon" aria-label={'Удалить подключение «' + accountName(account) + '»'} title="Удалить подключение"
-          disabled={busy || working} onClick={() => {
-            if (!window.confirm('Удалить подключение «' + accountName(account) + '» и сохранённый вход? Чаты и файлы проектов сохранятся.')) return;
-            void action(async () => { await request(endpoint + '/' + account.id, { method: 'DELETE' }); await changed(); });
+          disabled={working} onClick={() => {
+            if (!window.confirm('Удалить подключение «' + accountName(account) + '» и сохранённый вход? Выполняющиеся задания этого аккаунта будут остановлены.')) return;
+            void action(async () => { setData(await request<ExecutionAccounts>(endpoint + '/' + account.id, { method: 'DELETE' })); await changed(); });
           }}><Trash2 size={16} /></button>
       </div>
     </li>)}</ul>
     <div className="settings-actions">
-      <button type="button" className="secondary" disabled={busy || working || (data?.accounts.length ?? 0) >= 20}
+      <button type="button" className="secondary" disabled={working || (data?.accounts.length ?? 0) >= 20}
         onClick={() => { setError(''); setAuthorizationCodes({}); setAccountKey(''); setWizard({ provider: 'codex', name: '' }); }}><Plus size={15} />Добавить аккаунт</button>
     </div>
     {error && !wizard && <p className="inline-error" role="alert">{error}</p>}

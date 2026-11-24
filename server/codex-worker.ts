@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { chmod, lstat, realpath, unlink } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { CodexClient, type CodexRunner, type SteerTurn } from './codex.js';
+import { CodexClient, ExecutionAccountStopped, type CodexRunner, type SteerTurn } from './codex.js';
 import type { WorkerMessage, WorkerRun, WorkerSteer, WorkerToolResult } from './codex-remote.js';
 import type { CodexToolResult } from './codex-tools.js';
 import { BridgeError } from './store.js';
@@ -33,6 +33,7 @@ const runSchema = {
     developerInstructions: { type: 'string', minLength: 1, maxLength: 64_000 },
     sessionId: { type: 'string', pattern: '^[0-9a-fA-F-]{36}$' },
     model: { type: 'string', pattern: '^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,127}$' },
+    expectedAccountId: { type: 'string', maxLength: 100 },
     ephemeral: { type: 'boolean' },
     consultation: { type: 'boolean' },
     consultationKey: { type: 'string', pattern: '^[0-9a-f-]{36}$' },
@@ -51,12 +52,12 @@ const runSchema = {
 export function createCodexWorker(codex: CodexRunner = new CodexClient([], 'worker'), jobsRoot = process.env.BRIDGE_CODEX_JOB_FILES,
   accounts?: ExecutionAccountStore) {
   const app = Fastify({ logger: false, bodyLimit: workerBodyLimit, ajv: { customOptions: { removeAdditional: false, coerceTypes: false } } });
-  const active = new Set<AbortController>();
+  const active = new Map<AbortController, { accountId?: string; done: Promise<void> }>();
   let activeJobs = 0;
   const activeSessions = new Set<string>();
   let lastLimit = defaultExecutionConcurrency();
   const consultations = new Map<string, { signal: AbortSignal; controller: AbortController; running: boolean }>();
-  let changingAccount = false;
+  let accountChange: { id?: string; all?: boolean } | undefined;
   const runner = async (model?: string) => accounts ? accounts.runner((await accounts.select(model)).account.id) : codex;
   const pendingTools = new Map<string, { resolve: (result: CodexToolResult) => void; maxResponseChars: number }>();
   const steeringTurns = new Map<string, SteerTurn>();
@@ -79,7 +80,7 @@ export function createCodexWorker(codex: CodexRunner = new CodexClient([], 'work
   };
   app.setErrorHandler((error, _req, reply) => {
     const status = error instanceof BridgeError ? error.statusCode : (error as { validation?: unknown }).validation ? 400 : 502;
-    return reply.code(status).send({ error: error instanceof BridgeError && (_req.url === '/proxy' || /^\/accounts\/[a-f0-9-]+\/key$/.test(_req.url))
+    return reply.code(status).send({ error: error instanceof BridgeError && (_req.url === '/proxy' || _req.url.startsWith('/accounts/'))
       ? error.message : 'Исполнитель модели не выполнил запрос.' });
   });
   app.get('/health', async () => ({ ok: true, active: activeJobs, concurrency: lastLimit }));
@@ -115,27 +116,34 @@ export function createCodexWorker(codex: CodexRunner = new CodexClient([], 'work
     return { limits: limitsForModel(limits && { ...limits, provider: selection.account.provider }, selection.model) };
   });
   app.get('/accounts', async () => { if (!accounts) throw new BridgeError('Управление аккаунтами недоступно.', 503); return accounts.list(); });
-  async function changeAccount<T>(work: () => Promise<T>) {
-    if (!accounts || active.size || changingAccount) throw new BridgeError('Дождитесь завершения задания.', 409);
-    changingAccount = true;
-    try { return await work(); } finally { changingAccount = false; }
+  async function changeAccount<T>(work: () => Promise<T>, options: { id?: string; stop?: boolean; all?: boolean } = {}) {
+    if (!accounts) throw new BridgeError('Управление аккаунтами недоступно.', 503);
+    if (accountChange) throw new BridgeError('Выполняется другое изменение настроек аккаунта.', 409);
+    const affected = [...active].filter(([, run]) => options.all || options.id !== undefined && run.accountId === options.id);
+    if (affected.length && !options.stop) throw new BridgeError('Аккаунт выполняет задание.', 409);
+    accountChange = options;
+    try {
+      for (const [controller] of affected) controller.abort(new ExecutionAccountStopped());
+      await Promise.all(affected.map(([, run]) => run.done));
+      return await work();
+    } finally { accountChange = undefined; }
   }
   app.post<{ Body: { name: string; provider?: ExecutionProvider } }>('/accounts', { schema: { body: {
     type: 'object', additionalProperties: false, required: ['name'], properties: { name: { type: 'string', minLength: 1, maxLength: 100 }, provider: { enum: executionProviders } },
   } } }, request => changeAccount(() => accounts!.create(request.body.name, request.body.provider)));
-  app.post<{ Params: { id: string } }>('/accounts/:id/login', request => changeAccount(() => accounts!.login(request.params.id)));
+  app.post<{ Params: { id: string } }>('/accounts/:id/login', request => changeAccount(() => accounts!.login(request.params.id), { id: request.params.id }));
   app.post<{ Body: { proxyUrl: string } }>('/proxy', { schema: { body: {
     type: 'object', additionalProperties: false, required: ['proxyUrl'], properties: { proxyUrl: { type: 'string', maxLength: 2048 } },
-  } } }, request => changeAccount(() => accounts!.setProxy(request.body.proxyUrl)));
-  app.post<{ Params: { id: string } }>('/accounts/:id/activate', request => changeAccount(() => accounts!.activate(request.params.id)));
-  app.post<{ Params: { id: string } }>('/accounts/:id/deactivate', request => changeAccount(() => accounts!.deactivate(request.params.id)));
-  app.post<{ Params: { id: string } }>('/accounts/:id/remove', request => changeAccount(() => accounts!.remove(request.params.id)));
+  } } }, request => changeAccount(() => accounts!.setProxy(request.body.proxyUrl), { all: true }));
+  app.post<{ Params: { id: string } }>('/accounts/:id/activate', request => changeAccount(() => accounts!.activate(request.params.id), { id: request.params.id }));
+  app.post<{ Params: { id: string } }>('/accounts/:id/deactivate', request => changeAccount(() => accounts!.deactivate(request.params.id), { id: request.params.id, stop: true }));
+  app.post<{ Params: { id: string } }>('/accounts/:id/remove', request => changeAccount(() => accounts!.remove(request.params.id), { id: request.params.id, stop: true }));
   app.post<{ Params: { id: string }; Body: { code: string } }>('/accounts/:id/code', { schema: { body: {
     type: 'object', additionalProperties: false, required: ['code'], properties: { code: { type: 'string', minLength: 1, maxLength: 2048 } },
-  } } }, request => changeAccount(async () => accounts!.authorizationCode(request.params.id, request.body.code)));
+  } } }, request => changeAccount(async () => accounts!.authorizationCode(request.params.id, request.body.code), { id: request.params.id }));
   app.post<{ Params: { id: string }; Body: { key: string; scope?: GigaChatScope } }>('/accounts/:id/key', { schema: { body: {
     type: 'object', additionalProperties: false, required: ['key'], properties: { key: { type: 'string', minLength: 1, maxLength: 2048 }, scope: { enum: gigaChatScopes } },
-  } } }, request => changeAccount(() => accounts!.setKey(request.params.id, request.body.key, request.body.scope)));
+  } } }, request => changeAccount(() => accounts!.setKey(request.params.id, request.body.key, request.body.scope), { id: request.params.id }));
   app.post<{ Body: WorkerToolResult }>('/tool-result', { bodyLimit: 6 * maxFastkoreCliResponseChars + 1024, schema: { body: {
     type: 'object', additionalProperties: false, required: ['id', 'success', 'text'],
     properties: { id: { type: 'string', maxLength: 36 }, success: { type: 'boolean' }, text: { type: 'string', maxLength: maxFastkoreCliResponseChars } },
@@ -162,20 +170,24 @@ export function createCodexWorker(codex: CodexRunner = new CodexClient([], 'work
     lastLimit = limit;
     const consultation = request.body.consultation === true;
     const selection = accounts ? await accounts.select(request.body.model).catch((error: Error) => ({ error })) : undefined;
-    const lane = selection && !('error' in selection) ? selection.account.provider : 'codex';
+    const selected = selection && !('error' in selection) ? selection : undefined;
+    const accountId = selected?.account.id;
+    const lane = selected?.account.provider ?? 'codex';
     const session = request.body.sessionId?.toLowerCase();
     const parent = consultation && request.body.consultationKey ? consultations.get(request.body.consultationKey) : undefined;
     if (consultation) {
       if (!parent || parent.signal.aborted || parent.running || !active.has(parent.controller) ||
         !request.body.ephemeral || request.body.sessionId || request.body.workDirectoryId ||
         request.body.toolDefinitions?.some(tool => tool.name === 'consult_specialist')) throw new BridgeError('Консультация недоступна.', 409);
-    } else if (activeJobs >= limit || changingAccount || (session && activeSessions.has(session))) {
+    } else if (activeJobs >= limit || (session && activeSessions.has(session))) {
       // Sent directly: a pre-hijack throw would lose the specific reason to the generic handler.
       return reply.code(409).send({ error: 'Исполнитель занят. Дождитесь завершения задания.' });
     }
     const controller = new AbortController();
     if (parent) parent.running = true;
-    active.add(controller);
+    let finished!: () => void;
+    const done = new Promise<void>(resolve => { finished = resolve; });
+    active.set(controller, { accountId, done });
     // A consultation borrows its waiting parent's slot and cannot be nested.
     if (!parent) activeJobs++;
     if (session) activeSessions.add(session);
@@ -190,9 +202,14 @@ export function createCodexWorker(codex: CodexRunner = new CodexClient([], 'work
       if (!raw.write(JSON.stringify(message) + '\n')) await once(raw, 'drain', { signal: runSignal });
     }
     try {
-      await requireLogin(runSignal, request.body.model);
-      const { toolDefinitions, workDirectoryId, steeringKey, executionConcurrency: _executionConcurrency, ...body } = request.body;
-      const selected = selection && !('error' in selection) ? selection : undefined;
+      const { toolDefinitions, workDirectoryId, steeringKey, expectedAccountId, executionConcurrency: _executionConcurrency, ...body } = request.body;
+      if (expectedAccountId && accountId !== expectedAccountId || accountId && !accounts!.isActive(accountId)) throw new ExecutionAccountStopped();
+      if (accountChange?.all || accountId && accountChange?.id === accountId) throw new BridgeError('Настройки аккаунта меняются. Повторите запрос.', 503);
+      if (selection && 'error' in selection) throw selection.error;
+      const executor = selected ? accounts!.runner(selected.account.id) : codex;
+      const info = await executor.inspect(cli, runSignal);
+      if (!executionConnected(info)) throw new BridgeError(info.status, 503);
+      runSignal.throwIfAborted();
       if (selected) body.model = selected.model;
       if (body.imageUrls?.length && !supportsChatImages(lane)) throw new BridgeError(chatImagesUnsupportedProvider, 503);
       provider = lane === 'antigravity' ? 'Antigravity CLI' : lane === 'gemini' ? 'Gemini CLI' : lane === 'glm' ? 'GLM (Z.ai)' : lane === 'gigachat' ? 'GigaChat' : 'Codex';
@@ -204,7 +221,7 @@ export function createCodexWorker(codex: CodexRunner = new CodexClient([], 'work
           throw new BridgeError('Рабочая папка задания недоступна.', 503);
         }
       }
-      const executor = selected ? accounts!.runner(selected.account.id) : codex;
+      runSignal.throwIfAborted();
       const job = { ...body, workDirectoryId, cliPath: cli, workspace: directory, allowWrite: !!workDirectoryId };
       const nativeOffice = job.allowWrite && (lane === 'codex' || lane === 'glm' || lane === 'gigachat');
       const nativeFiles = job.allowWrite && lane === 'gigachat';
@@ -239,7 +256,9 @@ export function createCodexWorker(codex: CodexRunner = new CodexClient([], 'work
       } : undefined);
       await write({ result });
     } catch (error) {
-      if (!runSignal.aborted) {
+      if (error instanceof ExecutionAccountStopped || runSignal.reason instanceof ExecutionAccountStopped) {
+        if (!raw.destroyed) raw.write(JSON.stringify({ accountStopped: true } satisfies WorkerMessage) + '\n');
+      } else if (!runSignal.aborted) {
         await write({ error: error instanceof BridgeError && error.statusCode === 503 ? error.message : `${provider} не смог выполнить запрос. Проверьте подключение и лимиты.` }).catch(() => {});
       }
     } finally {
@@ -249,9 +268,10 @@ export function createCodexWorker(codex: CodexRunner = new CodexClient([], 'work
       if (!parent) activeJobs--;
       if (session) activeSessions.delete(session);
       raw.end();
+      finished();
     }
   });
-  app.addHook('preClose', async () => { for (const controller of active) controller.abort(); });
+  app.addHook('preClose', async () => { for (const controller of active.keys()) controller.abort(); });
   app.addHook('onClose', async () => { accounts?.close(); });
   return app;
 }

@@ -82,6 +82,7 @@ export class ExecutionAccountStore {
   }
   // The most recently activated account is the primary: it serves auto-resolved runs.
   get active() { return this.state.active.at(-1) ?? ''; }
+  isActive(id: string) { return this.state.active.includes(id); }
   private get activeSet() { return new Set(this.state.active); }
   private gigaChat(id: string) {
     let client = this.gigaChatClients.get(id);
@@ -198,21 +199,24 @@ export class ExecutionAccountStore {
     await this.save({ ...this.state, active: this.state.active.length ? this.state.active : [account.id], accounts: [...this.state.accounts, account] });
     return account;
   }
-  async remove(id: string) {
-    const home = this.home(id);
+  private async cancelLogin(id: string, reason: string) {
     const login = this.logins.get(id);
     if (login?.status.state === 'waiting') {
       login.status.state = 'error';
-      login.status.error = 'Подключение удалено.';
+      login.status.error = reason;
       const stopped = new Promise<void>(resolve => login.child.once('close', () => resolve()));
       this.stopLogin(login.child);
       await stopped;
     }
+  }
+  async remove(id: string) {
+    const home = this.home(id);
+    await this.cancelLogin(id, 'Подключение удалено.');
     const remaining = (await this.list()).accounts.filter(account => account.id !== id);
     // Drop the account from the active set; if it was the last one, promote the first
     // connected remainder so users do not silently lose their executor.
     const activeSet = new Set(this.state.active.filter(item => item !== id));
-    if (!activeSet.size) { const next = (remaining.find(account => account.signedIn) ?? remaining[0])?.id; if (next) activeSet.add(next); }
+    if (this.isActive(id) && !activeSet.size) { const next = (remaining.find(account => account.signedIn) ?? remaining[0])?.id; if (next) activeSet.add(next); }
     // The legacy profile shares its root with ALL other accounts. Remove only its credential file.
     const target = id === 'default' ? path.join(home, 'auth.json') : home;
     const staged = target + '.removed-' + randomUUID();
@@ -236,6 +240,7 @@ export class ExecutionAccountStore {
   }
   async deactivate(id: string) {
     this.find(id);
+    await this.cancelLogin(id, 'Аккаунт отключён администратором.');
     await this.save({ ...this.state, active: this.state.active.filter(item => item !== id) });
     return this.list();
   }

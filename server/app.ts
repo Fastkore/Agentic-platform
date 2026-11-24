@@ -898,29 +898,32 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
     return result;
   });
   app.delete<{ Params: { id: string } }>('/api/admin/execution/accounts/:id', async request => {
-    const result = await accountAccess(request, true).accountAction('remove', request.params.id);
+    const worker = accountAccess(request);
+    const result = await worker.accountAction('remove', request.params.id);
+    workspace.stopExecutionAccount(request.params.id);
     workspace.resetExecutionConnection();
     await workspace.pruneDefaultModel(result?.accounts);
     return result;
   });
   app.post<{ Body: { name: string; provider?: ExecutionProvider } }>('/api/admin/execution/accounts', {
     schema: { body: object({ name: string(100), provider: { enum: executionProviders } }, ['name']) },
-  }, request => accountAccess(request, true).accountAction('create', undefined, request.body.name, request.body.provider));
+  }, request => accountAccess(request).accountAction('create', undefined, request.body.name, request.body.provider));
   for (const action of ['login', 'activate', 'deactivate'] as const) {
     app.post<{ Params: { id: string } }>('/api/admin/execution/accounts/:id/' + action, async request => {
-      const worker = accountAccess(request, true);
+      const worker = accountAccess(request);
       const result = await worker.accountAction(action, request.params.id);
+      if (action === 'deactivate') workspace.stopExecutionAccount(request.params.id);
       workspace.resetExecutionConnection();
       return result;
     });
   }
   app.post<{ Params: { id: string }; Body: { code: string } }>('/api/admin/execution/accounts/:id/code', {
     schema: { body: object({ code: string(2048) }, ['code']) },
-  }, request => accountAccess(request, true).accountAction('code', request.params.id, request.body.code));
+  }, request => accountAccess(request).accountAction('code', request.params.id, request.body.code));
   app.post<{ Params: { id: string }; Body: { key: string; scope?: GigaChatScope } }>('/api/admin/execution/accounts/:id/key', {
     schema: { body: object({ key: string(2048), scope: { enum: gigaChatScopes } }, ['key']) },
   }, async request => {
-    const result = await accountAccess(request, true).accountAction('key', request.params.id, request.body.key, undefined, request.body.scope);
+    const result = await accountAccess(request).accountAction('key', request.params.id, request.body.key, undefined, request.body.scope);
     workspace.resetExecutionConnection();
     return result;
   });

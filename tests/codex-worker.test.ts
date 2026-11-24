@@ -342,6 +342,68 @@ test('parallel specialist consultations keep their parent cancellation and tool 
   }
 });
 
+test('an administrator can stop, reactivate, remove and reconnect Antigravity while another account is busy', async () => {
+  const { writeFile } = await import('node:fs/promises');
+  const { ExecutionAccountStore } = await import('../server/execution-accounts.js');
+  const { ExecutionAccountStopped } = await import('../server/codex.js');
+  const root = await mkdtemp(path.join(tmpdir(), 'bridge-force-account-'));
+  const accounts = new ExecutionAccountStore(root);
+  const agy = await accounts.create('Antigravity', 'antigravity');
+  await writeFile(path.join(accounts.home(agy.id), '.antigravity-connected.json'), JSON.stringify({ session: 'fixture' }));
+  await writeFile(path.join(root, 'auth.json'), JSON.stringify({ tokens: { access_token: 'fixture' } }));
+  await accounts.activate(agy.id);
+  const originalHome = accounts.home(agy.id);
+  const otherEntered = Promise.withResolvers<void>(), finishOther = Promise.withResolvers<void>();
+  accounts.runner = id => ({
+    inspect: async () => ({ path: '', version: 'test', authentication: id === agy.id ? 'google' : 'chatgpt', status: '' }),
+    run: async (request, _event, signal) => {
+      if (id === 'default') {
+        otherEntered.resolve();
+        await finishOther.promise;
+        signal.throwIfAborted();
+        return { response: 'other completed' };
+      }
+      const result = await request.tools!.call('knowledge', {}, signal);
+      signal.throwIfAborted();
+      return { response: result.text };
+    },
+  });
+  const socket = process.platform === 'win32' ? '\\\\.\\pipe\\account-' + randomUUID() : path.join(root, 'worker.sock');
+  const worker = createCodexWorker(undefined, undefined, accounts), remote = new RemoteCodexRunner(socket);
+  const signal = AbortSignal.timeout(15000);
+  const base = { cliPath: '', workspace: root, allowWrite: false, prompt: 'Test', executionConcurrency: 2 };
+  try {
+    await worker.listen({ path: socket });
+    const other = remote.run({ ...base, model: 'codex/test' }, async () => {}, signal);
+    await otherEntered.promise;
+    for (const action of ['deactivate', 'remove'] as const) {
+      const toolEntered = Promise.withResolvers<void>();
+      let toolAborted = false;
+      const run = remote.run({ ...base, model: 'antigravity/test', tools: {
+        definitions: [{ type: 'function', name: 'knowledge', description: 'test', inputSchema: { type: 'object' } }],
+        call: async (_name, _args, stop) => {
+          toolEntered.resolve();
+          await new Promise<void>(resolve => stop.addEventListener('abort', () => { toolAborted = true; resolve(); }, { once: true }));
+          return { success: false, text: '' };
+        },
+      } }, async () => {}, signal);
+      const cancelled = assert.rejects(run, ExecutionAccountStopped);
+      await toolEntered.promise;
+      assert.equal((await remote.accountAction(action, agy.id)).accounts.some((a: { id: string; active: boolean }) => a.id === agy.id && a.active), false);
+      await cancelled;
+      assert.equal(toolAborted, true);
+      if (action === 'deactivate') {
+        assert.equal((await accounts.list()).accounts.find(a => a.id === agy.id)?.signedIn, true);
+        await remote.accountAction('activate', agy.id);
+      }
+    }
+    const replacement = await remote.accountAction('create', undefined, 'Antigravity', 'antigravity');
+    assert.notEqual(accounts.home(replacement.id), originalHome);
+    finishOther.resolve();
+    assert.equal((await other).response, 'other completed');
+  } finally { finishOther.resolve(); await worker.close(); await rm(root, { recursive: true, force: true }); }
+});
+
 test('freeing one of two GLM slots does not lose the other controller', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'bridge-glm-slots-'));
   const { writeFile } = await import('node:fs/promises');

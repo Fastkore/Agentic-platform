@@ -12,7 +12,7 @@ import { agentContext } from './agent-context.js';
 import { DEFAULT_AGENT_INSTRUCTIONS } from '../shared/agent-instructions.js';
 import type { CodexTools } from './codex-tools.js';
 import { Store, BridgeError, redact } from './store.js';
-import { type CodexRunner, type SteerTurn, discoverCli } from './codex.js';
+import { ExecutionAccountStopped, type CodexRunner, type SteerTurn, discoverCli } from './codex.js';
 import { attachmentName, buildContext, documentPreview, projectFilePath, publicProjectFile } from './documents.js';
 import { FileStorage } from './file-storage.js';
 import { chatImagesUnsupportedProvider, isChatImage, readChatImages, supportsChatImages, validateChatImages } from './chat-images.js';
@@ -180,7 +180,7 @@ export class Workspace {
   prepareInternetTools?: (other: CodexTools | undefined, credentialId: string, authorize: () => void) => CodexTools | undefined;
   cli: CliInfo | null = null;
   // Runs execute in parallel lanes: one concurrent run per executor provider, keyed by run id.
-  private active = new Map<string, { run: Run; cancel: AbortController; task: Promise<void> }>();
+  private active = new Map<string, { run: Run; accountId?: string; cancel: AbortController; task: Promise<void> }>();
   private readonly steering = new Map<string, SteerTurn>();
   private readonly steeredInstructionEdits = new Set<string>();
   private readonly sendingClarifications = new Map<string, Promise<unknown>>();
@@ -1208,7 +1208,7 @@ export class Workspace {
     authorize();
     return result;
   }
-  private async execute(entry: { run: Run; cancel: AbortController; task: Promise<void> }) {
+  private async execute(entry: { run: Run; accountId?: string; cancel: AbortController; task: Promise<void> }) {
     const { run, cancel } = entry;
     const job = this.store.state.jobs!.find(j => j.runId === run.id);
     let revocation: ReturnType<typeof setInterval> | undefined;
@@ -1226,11 +1226,12 @@ export class Workspace {
       const { cliPath, info } = await this.requireChatGPT(signal, run.model).finally(() => { timing.connectionMs = elapsedMs(connectionStarted); });
       signal.throwIfAborted(); this.checkJob(job, run);
       const executionAccountId = info.accountId;
+      entry.accountId = executionAccountId?.split(':')[0];
       if (job.kind === 'subscription') {
         // Never give this probe the directory containing credentials and the application database.
         const { mkdtemp } = await import('node:fs/promises'), { tmpdir } = await import('node:os');
         const directory = await mkdtemp(path.join(tmpdir(), 'bridge-probe-'));
-        const result = await this.codex.run({ cliPath, workspace: directory, prompt: 'Ответь одним словом: OK. Не используй инструменты и не читай файлы.',
+        const result = await this.codex.run({ expectedAccountId: entry.accountId, cliPath, workspace: directory, prompt: 'Ответь одним словом: OK. Не используй инструменты и не читай файлы.',
           developerInstructions: this.store.state.settings.agentInstructions ?? DEFAULT_AGENT_INSTRUCTIONS, allowWrite: false, ephemeral: true, executionConcurrency: this.executionConcurrency, model: run.model }, async () => {}, signal);
         run.response = info.provider === 'antigravity' ? 'Antigravity CLI: пробный запрос выполнен.' : info.provider === 'gemini' ? 'Gemini CLI: пробный запрос выполнен.' : 'ChatGPT: пробный запрос выполнен. Остаток лимита проверяйте в аккаунте ChatGPT.'; run.usage = result.usage;
       } else {
@@ -1238,9 +1239,10 @@ export class Workspace {
       }
       this.checkJob(job, run); signal.throwIfAborted(); run.status = 'complete'; run.progress = 'Задание завершено';
     } catch (error) {
+      if (error instanceof ExecutionAccountStopped) cancel.abort(error);
       run.status = cancel.signal.aborted ? 'cancelled' : 'error';
       run.response = undefined;
-      run.error = revoked ? 'Доступ к заданию отозван.' : cancel.signal.aborted ? undefined : redact((error as Error).message);
+      run.error = revoked ? 'Доступ к заданию отозван.' : cancel.signal.reason instanceof ExecutionAccountStopped ? cancel.signal.reason.message : cancel.signal.aborted ? undefined : redact((error as Error).message);
       run.progress = revoked ? 'Доступ отозван' : cancel.signal.aborted ? 'Задание остановлено' : 'Ошибка выполнения';
       if (run.projectId && run.chatId) {
         const chat = this.chat(run.projectId, run.chatId);
@@ -1586,7 +1588,7 @@ export class Workspace {
       const executorTiming = timeExecutor(timing);
       executorStarted = true;
       const imageQuestion = imageUrls?.length && provider === 'glm' ? job.text : undefined;
-      const result = await this.codex.run({ cliPath, workspace: project.directory, prompt, imageUrls, imageQuestion, developerInstructions, tools: cad?.withTools(tools) ?? tools, sessionId: chat.sessionId,
+      const result = await this.codex.run({ expectedAccountId: executionAccountId?.split(':')[0], cliPath, workspace: project.directory, prompt, imageUrls, imageQuestion, developerInstructions, tools: cad?.withTools(tools) ?? tools, sessionId: chat.sessionId,
         executionConcurrency: this.executionConcurrency, workDirectoryId: workerWrites ? run.id : undefined, allowWrite: this.isolatedCodex ? workerWrites : writable,
         model: run.model, reasoningEffort: run.reasoningEffort ?? this.store.state.settings.reasoningEffort ?? 'high' }, async event => {
         executorTiming.event(event);
@@ -1779,6 +1781,9 @@ export class Workspace {
       const credential = job?.authorId && this.projectCredential(job.authorId, job.credentialId);
       if (credential && credential.source === 'fastkore' && !erpFileWriteAllowed(this.store.state, credential)) entry.cancel.abort();
     }
+  }
+  stopExecutionAccount(id: string) {
+    for (const entry of this.active.values()) if (entry.accountId === id) entry.cancel.abort(new ExecutionAccountStopped());
   }
   async cancel(id: string) {
     const run = this.getRun(id);

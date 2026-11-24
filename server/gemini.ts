@@ -8,7 +8,7 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { createInterface } from 'node:readline';
-import type { CodexEvent, CodexRequest, CodexResult, CodexRunner } from './codex.js';
+import { killTree, type CodexEvent, type CodexRequest, type CodexResult, type CodexRunner } from './codex.js';
 import type { CliInfo, ModelCatalog } from '../shared/types.js';
 import { BridgeError, redact } from './store.js';
 import { readGoogleLimits } from './google-limits.js';
@@ -137,7 +137,7 @@ export class GeminiClient implements CodexRunner {
     const child = spawn(this.executable, [...this.prefix, ...args], {
       cwd, env: { PATH: process.env.PATH, HOME: this.home, GEMINI_CLI_HOME: this.home,
         HTTPS_PROXY: process.env.HTTPS_PROXY, NO_BROWSER: 'true' },
-      windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'],
+      detached: process.platform !== 'win32', windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'],
     });
     let stderr = '', response = '', sessionId: string | undefined, completed = false, failure = false, errorText = '';
     let usage: CodexResult['usage'];
@@ -145,8 +145,10 @@ export class GeminiClient implements CodexRunner {
     const closed = new Promise<number | null>((resolve, reject) => { child.once('error', reject); child.once('close', resolve); });
     void closed.catch(() => {});
     child.stderr.on('data', chunk => { stderr = redact((stderr + chunk.toString()).slice(-5000)); });
-    const stop = () => child.kill('SIGKILL');
+    let stopping: Promise<void> | undefined;
+    const stop = () => { stopping ??= killTree(child); };
     signal.addEventListener('abort', stop, { once: true });
+    if (signal.aborted) stop();
     const timer = setTimeout(stop, 15 * 60000);
     child.stdin.on('error', () => {});
     const prompt = [request.developerInstructions, request.prompt].filter(Boolean).join('\n\n');
@@ -197,6 +199,8 @@ export class GeminiClient implements CodexRunner {
       clearTimeout(timer); signal.removeEventListener('abort', stop); stop();
       jobToolStop.abort();
       server.closeAllConnections(); server.close();
+      await stopping;
+      await closed.catch(() => {});
       await jobToolQueue;
       await rm(settings, { force: true });
       await rm(temporary, { recursive: true, force: true });
