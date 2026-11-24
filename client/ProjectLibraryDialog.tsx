@@ -88,6 +88,7 @@ export function ProjectLibraryPanel({ project, request, section, isAdmin, initia
             <div className="project-library-row">
               <label><input type="checkbox" checked={c.enabled} disabled={pending || !c.canManage}
                 onChange={event => void update(c, { enabled: event.currentTarget.checked })} /><LibraryKindIcon external={!!folder?.external} />{c.folderName}</label>
+              {c.enabled && !assigned.length && <small className="library-warning" title="Назначьте папку чату проекта или специалистам на вкладке «Доступ»">Не назначена агентам</small>}
               <button type="button" className="workspace-icon" aria-label={'Подробности папки «' + c.folderName + '»'} title="Подробности"
                 aria-expanded={open} onClick={() => setExpanded(open ? undefined : c.folderId)}>
                 {open ? <ChevronDown size={15} aria-hidden="true" /> : <ChevronRight size={15} aria-hidden="true" />}

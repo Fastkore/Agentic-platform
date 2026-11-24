@@ -188,8 +188,8 @@ export function libraryRoutes(app: FastifyInstance, deps: LibraryRouteDeps) {
   const projectParams = obj({ projectId: anyId }, ['projectId']);
   const connectionParams = obj({ projectId: anyId, folderId: id('lib_') }, ['projectId', 'folderId']);
   app.get<{ Params: { projectId: string } }>(project, { schema: { params: projectParams } }, async request => policy.view(actor(request), request.params.projectId));
-  app.post<{ Params: { projectId: string }; Body: { folderId: string; outputPolicy?: OutputPolicy } }>(project, { schema: { params: projectParams, body: obj({
-    folderId: id('lib_'), outputPolicy }, ['folderId']) } }, async (request, reply) => reply.code(201).send(policy.connect(actor(request), request.params.projectId, request.body)));
+  app.post<{ Params: { projectId: string }; Body: { folderId: string; outputPolicy?: OutputPolicy; autoGrantProjectChat?: boolean } }>(project, { schema: { params: projectParams, body: obj({
+    folderId: id('lib_'), outputPolicy, autoGrantProjectChat: { type: 'boolean' } }, ['folderId']) } }, async (request, reply) => reply.code(201).send(policy.connect(actor(request), request.params.projectId, request.body)));
   app.patch<{ Params: { projectId: string; folderId: string }; Body: { revision: number; enabled?: boolean; outputPolicy?: OutputPolicy } }>(project + '/:folderId',
     { schema: { params: connectionParams, body: obj({ revision, enabled: { type: 'boolean' }, outputPolicy }, ['revision']) } },
     async request => policy.updateConnection(actor(request), request.params.projectId, request.params.folderId, request.body));

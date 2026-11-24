@@ -55,6 +55,23 @@ test('CLI storage migrates a legacy backup and ignores unpublished snapshots aft
     assert.notEqual(path.join(versions, published, 'files', 'source'), incomplete);
     await new CliWorkspace(root, identity).restore(next);
     assert.equal(await readFile(path.join(next, 'cli', 'source', 'record.txt'), 'utf8'), 'updated copy');
+
+    // Unchanged turns do not rewrite published revisions, and empty workspaces do not create unnecessary revisions.
+    const unchangedJob = path.join(root, 'unchanged');
+    await mkdir(unchangedJob);
+    const unchangedWorkspace = new CliWorkspace(root, identity);
+    await unchangedWorkspace.restore(unchangedJob);
+    await unchangedWorkspace.save(unchangedJob);
+    assert.deepEqual(await readdir(versions), [published]);
+
+    const emptyJob = path.join(root, 'empty-job');
+    await mkdir(emptyJob);
+    const emptyIdentity = ['installation', 'carol', 'project', 'chat'];
+    const emptySaved = path.join(root, 'cli-workspaces', createHash('sha256').update(JSON.stringify(emptyIdentity)).digest('hex'));
+    const emptyWorkspace = new CliWorkspace(root, emptyIdentity);
+    await emptyWorkspace.restore(emptyJob);
+    await emptyWorkspace.save(emptyJob);
+    await assert.rejects(readdir(emptySaved + '.revisions'), { code: 'ENOENT' });
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 

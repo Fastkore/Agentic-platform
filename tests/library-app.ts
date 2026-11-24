@@ -81,11 +81,15 @@ export async function grantedFolder(f: Awaited<ReturnType<typeof fixture>>, file
     classification: options.classification ?? 'shared', outputPolicy: options.outputPolicy ?? 'explanation_only' });
   assert.equal(created.statusCode, 201, created.body);
   const folder = created.json() as { id: string };
-  const connected = await f.req('POST', `/api/projects/${projectId}/library`, f.admin, { folderId: folder.id });
+  const targetProfile = options.profileId ?? 'universal';
+  const connected = await f.req('POST', `/api/projects/${projectId}/library`, f.admin, {
+    folderId: folder.id,
+    autoGrantProjectChat: targetProfile === 'universal',
+  });
   assert.equal(connected.statusCode, 201, connected.body);
   await f.upload(folder.id, files);
   const connection = async () => (await f.req('GET', `/api/projects/${projectId}/library`, f.admin)).json().connections.find((c: { folderId: string }) => c.folderId === folder.id);
-  const granted = await f.req('PUT', `/api/projects/${projectId}/library/${folder.id}/grants`, f.admin, { profileId: options.profileId ?? 'universal', enabled: true, revision: (await connection()).revision });
+  const granted = await f.req('PUT', `/api/projects/${projectId}/library/${folder.id}/grants`, f.admin, { profileId: targetProfile, enabled: true, revision: (await connection()).revision });
   assert.equal(granted.statusCode, 200, granted.body);
   return { folder, connection };
 }

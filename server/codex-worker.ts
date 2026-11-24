@@ -32,6 +32,7 @@ const runSchema = {
     imageQuestion: { type: 'string', maxLength: 60_000 },
     developerInstructions: { type: 'string', minLength: 1, maxLength: 64_000 },
     sessionId: { type: 'string', pattern: '^[0-9a-fA-F-]{36}$' },
+    sessionSlot: { type: 'string', pattern: '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' },
     model: { type: 'string', pattern: '^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,127}$' },
     expectedAccountId: { type: 'string', maxLength: 100 },
     ephemeral: { type: 'boolean' },
@@ -61,16 +62,42 @@ export function createCodexWorker(codex: CodexRunner = new CodexClient([], 'work
   const runner = async (model?: string) => accounts ? accounts.runner((await accounts.select(model)).account.id) : codex;
   const pendingTools = new Map<string, { resolve: (result: CodexToolResult) => void; maxResponseChars: number }>();
   const steeringTurns = new Map<string, SteerTurn>();
+  const inspectCache = new Map<string, { expires: number; info: Awaited<ReturnType<CodexRunner['inspect']>> }>();
+  const inspectAccount = async (accountId: string, executor: CodexRunner, signal?: AbortSignal) => {
+    const executionKey = await accounts!.executionKey(accountId);
+    const cached = inspectCache.get(executionKey);
+    if (cached && cached.expires > Date.now()) return { info: cached.info, executionKey };
+    const info = await executor.inspect(cli, signal);
+    if (executionConnected(info)) {
+      if (inspectCache.size >= 32) {
+        for (const [key, entry] of inspectCache) if (entry.expires <= Date.now()) inspectCache.delete(key);
+      }
+      inspectCache.set(executionKey, { info, expires: Date.now() + 3_000 });
+    } else {
+      inspectCache.delete(executionKey);
+    }
+    return { info, executionKey };
+  };
   const inspect = async (signal?: AbortSignal, model?: string) => {
     const selection = accounts && await accounts.select(model).catch((error: Error) => ({ error }));
     if (selection && 'error' in selection) return { path: '', version: '', authentication: 'signed-out' as const,
       status: selection.error.message, catalogRevision: accounts?.catalogRevision };
-    const info = await (selection ? accounts!.runner(selection.account.id) : codex).inspect(cli, signal);
+    if (selection && accounts) {
+      const { info, executionKey } = await inspectAccount(selection.account.id, accounts.runner(selection.account.id), signal);
+      return {
+        path: '', version: info.version, authentication: info.authentication,
+        status: info.status,
+        accountId: executionKey,
+        provider: selection.account.provider,
+        catalogRevision: accounts.catalogRevision,
+      };
+    }
+    const info = await codex.inspect(cli, signal);
     return {
       path: '', version: info.version, authentication: info.authentication,
       status: info.status,
-      accountId: selection && await accounts!.executionKey(selection.account.id),
-      provider: selection?.account.provider,
+      accountId: undefined,
+      provider: undefined,
       catalogRevision: accounts?.catalogRevision,
     };
   };
@@ -122,11 +149,15 @@ export function createCodexWorker(codex: CodexRunner = new CodexClient([], 'work
     const affected = [...active].filter(([, run]) => options.all || options.id !== undefined && run.accountId === options.id);
     if (affected.length && !options.stop) throw new BridgeError('Аккаунт выполняет задание.', 409);
     accountChange = options;
+    inspectCache.clear();
     try {
       for (const [controller] of affected) controller.abort(new ExecutionAccountStopped());
       await Promise.all(affected.map(([, run]) => run.done));
       return await work();
-    } finally { accountChange = undefined; }
+    } finally {
+      inspectCache.clear();
+      accountChange = undefined;
+    }
   }
   app.post<{ Body: { name: string; provider?: ExecutionProvider } }>('/accounts', { schema: { body: {
     type: 'object', additionalProperties: false, required: ['name'], properties: { name: { type: 'string', minLength: 1, maxLength: 100 }, provider: { enum: executionProviders } },
@@ -177,7 +208,7 @@ export function createCodexWorker(codex: CodexRunner = new CodexClient([], 'work
     const parent = consultation && request.body.consultationKey ? consultations.get(request.body.consultationKey) : undefined;
     if (consultation) {
       if (!parent || parent.signal.aborted || parent.running || !active.has(parent.controller) ||
-        !request.body.ephemeral || request.body.sessionId || request.body.workDirectoryId ||
+        !request.body.ephemeral || request.body.sessionId || request.body.sessionSlot || request.body.workDirectoryId ||
         request.body.toolDefinitions?.some(tool => tool.name === 'consult_specialist')) throw new BridgeError('Консультация недоступна.', 409);
     } else if (activeJobs >= limit || (session && activeSessions.has(session))) {
       // Sent directly: a pre-hijack throw would lose the specific reason to the generic handler.
@@ -207,7 +238,9 @@ export function createCodexWorker(codex: CodexRunner = new CodexClient([], 'work
       if (accountChange?.all || accountId && accountChange?.id === accountId) throw new BridgeError('Настройки аккаунта меняются. Повторите запрос.', 503);
       if (selection && 'error' in selection) throw selection.error;
       const executor = selected ? accounts!.runner(selected.account.id) : codex;
-      const info = await executor.inspect(cli, runSignal);
+      const info = selected && accounts
+        ? (await inspectAccount(selected.account.id, executor, runSignal)).info
+        : await executor.inspect(cli, runSignal);
       if (!executionConnected(info)) throw new BridgeError(info.status, 503);
       runSignal.throwIfAborted();
       if (selected) body.model = selected.model;

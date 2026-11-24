@@ -75,7 +75,8 @@ export const defaultExclusions = [
   '*.tsbuildinfo', '*.js.map', '*.mjs.map', '*.cjs.map', '*.css.map', '*.suo', '*.csproj.user', '*.vbproj.user',
   '*.tmp', '*.temp', '~$*', '*.swp', 'Thumbs.db', '.DS_Store',
   '.env', '.env.*', '*.pfx', '*.p12', '*.pem', '*.key', 'id_rsa*', 'id_ed25519*', '*.kdbx',
-  '*.bak', '*.backup', '*.zip', '*.7z', '*.rar', '*.tar', '*.gz',
+  '*.png', '*.jpg', '*.jpeg', '*.gif', '*.bmp', '*.ico', '*.webp', '*.woff', '*.woff2', '*.ttf', '*.otf', '*.eot',
+  '*.fkpx', '*.br', '*.dump', '*.bak', '*.backup', '*.zip', '*.7z', '*.rar', '*.tar', '*.gz',
 ];
 
 export type PathProblem = 'empty' | 'absolute' | 'drive' | 'dot' | 'empty_segment' | 'control' | 'backslash' | 'encoded_separator' | 'too_long' | 'too_deep' | 'reserved' | 'not_normalized';

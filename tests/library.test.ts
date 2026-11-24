@@ -208,7 +208,7 @@ test('a file over the processing budget gets "timeout", the rest is processed, t
 
 test('encodings: UTF-16 with BOM, invalid UTF-8, binary, scanned PDF and unsupported formats get honest per-file statuses', async () => {
   const f = await libraryFixture();
-  const folder = f.registry.createFolder(admin, { name: 'Mixed' });
+  const folder = f.registry.createFolder(admin, { name: 'Mixed', profile: 'documents' });
   const utf16 = Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from('Цена = 42\r\nИтог\r\n', 'utf16le')]);
   await upload(f, folder.id, {
     'u16.txt': utf16, 'bom.cs': Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from('class Bom {}\n')]),

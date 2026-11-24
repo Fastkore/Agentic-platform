@@ -1244,7 +1244,11 @@ function App() {
           return <button type="button" key={file.id} title={'Скачать ' + file.name} onClick={download}><FileText size={16} />{file.name}</button>;
         })}</div>}
         {['error', 'cancelled', 'interrupted'].includes(message.status) && <div className="message-note">{message.status === 'error' ? 'Ошибка задания' : message.status === 'cancelled' ? 'Задание остановлено' : message.role === 'user' ? 'Доставка уточнения не подтверждена' : 'Задание прервано'}</div>}
-        {message.consultedSpecialists?.length ? <div className="message-specialists">Консультировали · {message.consultedSpecialists.join(', ')}</div> : null}
+        {message.consultedSpecialists?.length
+          ? <div className="message-specialists">Консультировали · {message.consultedSpecialists.join(', ')}</div>
+          : message.role === 'assistant' && message.specialistName
+            ? <div className="message-specialists">Ответил · {message.specialistName}</div>
+            : null}
         {message.instructionSave && <p className="instruction-save-status" data-saved={message.instructionSave !== 'not-saved'}>
           {message.instructionSave === 'saved' ? 'Сохранено в «Мои инструкции»' : message.instructionSave === 'already-saved'
             ? 'Уже есть в «Моих инструкциях»' : 'Инструкция не сохранена'}

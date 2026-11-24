@@ -84,18 +84,55 @@ function modelCatalog(ids: unknown[]): ModelCatalog {
   })) };
 }
 
-function functionSchema(input: unknown): Record<string, unknown> {
-  const schema = input && typeof input === 'object' && !Array.isArray(input) ? input as Record<string, unknown> : {};
+const validSchemaTypes = new Set(['object', 'array', 'string', 'number', 'integer', 'boolean']);
+
+export function functionSchema(input: unknown): Record<string, unknown> {
+  const raw = input && typeof input === 'object' && !Array.isArray(input) ? input as Record<string, unknown> : {};
+  const variants = Array.isArray(raw.anyOf) ? raw.anyOf : Array.isArray(raw.oneOf) ? raw.oneOf : undefined;
+  const variant = !raw.properties && !raw.items && variants
+    ? variants.find((item): item is Record<string, unknown> => !!item && typeof item === 'object' && !Array.isArray(item) && (item as Record<string, unknown>).type !== 'null')
+    : undefined;
+  const schema = variant ? { ...variant, ...(typeof raw.description === 'string' && !variant.description ? { description: raw.description } : {}) } : raw;
   const properties = schema.properties && typeof schema.properties === 'object' && !Array.isArray(schema.properties)
     ? schema.properties as Record<string, Record<string, unknown>> : undefined;
   const items = schema.items && typeof schema.items === 'object' && !Array.isArray(schema.items)
     ? schema.items as Record<string, unknown> : undefined;
-  const first = Array.isArray(schema.enum) ? schema.enum.find(value => value != null) : undefined;
+  const rawEnum = Array.isArray(schema.enum) ? schema.enum
+    : 'const' in schema && schema.const !== null && schema.const !== undefined ? [schema.const] : undefined;
+  const enumValues = rawEnum?.filter((value): value is string | number | boolean =>
+    typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean');
+  const first = enumValues?.[0];
   const primitive = typeof first === 'string' || typeof first === 'boolean' || typeof first === 'number' ? typeof first : undefined;
-  // The v1 API requires an explicit type even for enum properties.
-  return { ...schema, type: schema.type ?? (properties ? 'object' : items ? 'array' : primitive ?? 'string'),
-    ...(properties ? { properties: Object.fromEntries(Object.entries(properties).map(([name, value]) => [name, functionSchema(value)])) } : {}),
-    ...(items ? { items: functionSchema(items) } : {}) };
+  const explicitType = Array.isArray(schema.type)
+    ? schema.type.find((t): t is string => typeof t === 'string' && validSchemaTypes.has(t))
+    : typeof schema.type === 'string' && validSchemaTypes.has(schema.type) ? schema.type : undefined;
+  // The v1 API requires a single explicit type and rejects unsupported JSON Schema keywords with HTTP 422.
+  const type = explicitType ?? (properties ? 'object' : items ? 'array' : primitive ?? 'string');
+  const description = typeof schema.description === 'string' && schema.description.trim() ? schema.description : undefined;
+  if (type === 'object') {
+    const mapped = properties ? Object.fromEntries(Object.entries(properties).map(([name, value]) => [name, functionSchema(value)])) : {};
+    const required = Array.isArray(schema.required)
+      ? schema.required.filter((key): key is string => typeof key === 'string' && Object.hasOwn(mapped, key))
+      : [];
+    return {
+      type: 'object',
+      ...(description ? { description } : {}),
+      properties: mapped,
+      ...(required.length ? { required } : {}),
+    };
+  }
+  if (type === 'array') {
+    return {
+      type: 'array',
+      ...(description ? { description } : {}),
+      items: items ? functionSchema(items) : { type: 'string' },
+    };
+  }
+  return {
+    type,
+    ...(description ? { description } : {}),
+    ...(enumValues?.length ? { enum: enumValues } : {}),
+  };
 }
 
 export class GigaChatClient implements CodexRunner {

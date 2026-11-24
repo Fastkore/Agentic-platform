@@ -115,7 +115,7 @@ test('explanation only: code blocks, encoded copies and listings are not publish
       return { text: message.text as string, visuals: message.visuals, call: f.calls.at(-1)! };
     };
     const explained = await ask('Как считается наценка?');
-    assert.equal(explained.call.workDirectoryId, undefined, 'no output files for explanation-only analysis');
+    assert.ok(explained.call.workDirectoryId, 'shared explanation-only folders keep normal workspace file output');
     assert.match(explained.text, /35%/);
     for (const attempt of ['BLOCK', 'BASE64', 'LINES', 'QUOTE', 'VISUAL']) {
       const blocked = await ask(attempt);
@@ -134,20 +134,42 @@ test('explanation only: code blocks, encoded copies and listings are not publish
   } finally { await f.app.close(); }
 });
 
-test('closed folders are stored but not offered to the agent in this delivery; folders are not open to specialists by default', async () => {
+test('connecting a shared folder grants project chat by default while specialists and restricted folders require explicit assignment', async () => {
   const f = await fixture(async request => request.tools?.definitions.some(d => d.name === 'library_list') ? 'С библиотекой' : 'Без библиотеки');
   try {
-    const created = (await f.req('POST', '/api/library', f.admin, { name: 'Не назначенная', profile: 'documents' })).json();
+    const original = f.workspace.corporate.data.profiles.find(profile => profile.id === 'estimator')!;
+    await f.workspace.corporate.saveProfile({ role: 'admin', id: 'test-admin', disabled: false, name: 'Test', username: 'test' }, { ...original, enabled: true });
+    const created = (await f.req('POST', '/api/library', f.admin, { name: 'Общая папка', profile: 'documents' })).json();
     assert.equal((await f.req('POST', `/api/projects/${f.project.id}/library`, f.admin, { folderId: created.id })).statusCode, 201);
     await f.upload(created.id, { 'a.txt': 'a\n' });
     const chat = (await f.req('POST', `/api/projects/${f.project.id}/chats`, f.token, {})).json();
     const route = `/api/projects/${f.project.id}/chats/${chat.id}/messages`;
-    const last = async () => (await f.req('GET', `/api/projects/${f.project.id}/chats/${chat.id}`, f.token)).json().messages.at(-1).text as string;
-    await f.req('POST', route, f.token, { text: 'Вопрос' }); await idle(f.workspace);
-    assert.equal(await last(), 'Без библиотеки', 'a connected folder is not assigned to specialists automatically');
-    await grantedFolder(f, { 'secret.txt': 'closed\n' }, { classification: 'restricted' });
+    const last = async (chatId = chat.id) => (await f.req('GET', `/api/projects/${f.project.id}/chats/${chatId}`, f.token)).json().messages.at(-1).text as string;
+    await f.req('POST', route, f.token, { text: 'Вопрос в общий чат' }); await idle(f.workspace);
+    assert.equal(await last(), 'С библиотекой', 'shared folder is ready in project chat right after connecting');
+
+    const specialistChat = (await f.req('POST', `/api/projects/${f.project.id}/chats`, f.token, { agentProfileId: 'estimator' })).json();
+    await f.req('POST', `/api/projects/${f.project.id}/chats/${specialistChat.id}/messages`, f.token, { text: 'Вопрос специалисту' }); await idle(f.workspace);
+    assert.equal(await last(specialistChat.id), 'Без библиотеки', 'specialist profiles still require explicit folder assignment');
+
+    // Revoking universal on the shared folder leaves only restricted folder test below.
+    const view0 = (await f.req('GET', `/api/projects/${f.project.id}/library`, f.admin)).json();
+    const sharedConn = view0.connections.find((c: { folderId: string }) => c.folderId === created.id);
+    assert.equal((await f.req('PUT', `/api/projects/${f.project.id}/library/${created.id}/grants`, f.admin,
+      { profileId: 'universal', enabled: false, revision: sharedConn.revision })).statusCode, 200);
+
+    const closedFolder = (await f.req('POST', '/api/library', f.admin, { name: 'Закрытая', classification: 'restricted' })).json();
+    assert.equal((await f.req('POST', `/api/projects/${f.project.id}/library`, f.admin, { folderId: closedFolder.id })).statusCode, 201);
+    await f.upload(closedFolder.id, { 'secret.txt': 'closed\n' });
+    const ungrantedView = (await f.req('GET', `/api/projects/${f.project.id}/library`, f.admin)).json();
+    const ungrantedCell = ungrantedView.cells.find((c: { folderId: string; profileId: string }) => c.folderId === closedFolder.id && c.profileId === 'universal');
+    assert.equal(ungrantedCell.granted, false, 'restricted folders are never auto-granted on connect');
+
+    const closedConn = ungrantedView.connections.find((c: { folderId: string }) => c.folderId === closedFolder.id);
+    assert.equal((await f.req('PUT', `/api/projects/${f.project.id}/library/${closedFolder.id}/grants`, f.admin,
+      { profileId: 'universal', enabled: true, revision: closedConn.revision })).statusCode, 200);
     const view = (await f.req('GET', `/api/projects/${f.project.id}/library`, f.admin)).json();
-    const restricted = view.connections.find((c: { classification: string }) => c.classification === 'restricted');
+    const restricted = view.connections.find((c: { folderId: string }) => c.folderId === closedFolder.id);
     const cell = view.cells.find((c: { folderId: string; profileId: string }) => c.folderId === restricted.folderId && c.profileId === 'universal');
     assert.equal(cell.granted, true);
     assert.equal(cell.allowed, false);
@@ -231,10 +253,8 @@ test('the project routes a quote to an estimator with its own library grant and 
       return 'Стоимость позиции SH-12 составляет 12 000 рублей.';
     }
     assert.ok(!tools.definitions.some(tool => tool.name === 'library_read'));
-    if (request.prompt.includes('Консультация по выбору сотрудника')) {
-      assert.match(request.prompt, /12 000 рублей/);
-      return 'КП: 12 000 рублей.';
-    }
+    const env = json(request.prompt.split('\n')[1]);
+    assert.deepEqual(env.доступные_консультанты, [{ id: 'estimator', название: 'Оценщик', назначение: 'Расчёт стоимости по прайсу проекта' }]);
     const catalog = await tools.call('consult_specialist', {}, signal);
     assert.deepEqual(json(catalog.text), [{ id: 'estimator', name: 'Оценщик', description: 'Расчёт стоимости по прайсу проекта' }]);
     const result = await tools.call('consult_specialist', { specialistId: 'estimator', task: 'Проверь цену SH-12' }, signal);
@@ -253,29 +273,37 @@ test('the project routes a quote to an estimator with its own library grant and 
       assert.equal(created.statusCode, 201, created.body);
       assert.equal(created.json().agentProfileId, agentProfileId);
       const chat = route + '/' + created.json().id;
+      const callsBefore = f.calls.length;
       const sent = await f.req('POST', chat + '/messages', f.token, { text: 'Подготовь КП на SH-12', requiredSpecialistId });
       assert.equal(sent.statusCode, 202, sent.body);
       await idle(f.workspace);
       assert.equal(f.workspace.getRun(sent.json().id).status, 'complete', f.workspace.getRun(sent.json().id).error);
-      const log = (await f.req('GET', '/api/library/audit', f.admin)).json().filter(event => event.details?.runId === sent.json().id);
-      const search = log.find(event => event.action === 'library.tool.search')?.details.objectIds;
-      const read = log.find(event => event.action === 'library.tool.read')?.details.objectIds;
+      const log = (await f.req('GET', '/api/library/audit', f.admin)).json().filter((event: { details?: { runId?: string } }) => event.details?.runId === sent.json().id);
+      const search = log.find((event: { action: string }) => event.action === 'library.tool.search')?.details.objectIds;
+      const read = log.find((event: { action: string }) => event.action === 'library.tool.read')?.details.objectIds;
       assert.deepEqual(search, { profileId: 'estimator', mode: 'exact', matches: '1',
         queryDigest: createHash('sha256').update('SH-12').digest('hex') });
       assert.equal(read.profileId, 'estimator');
       assert.equal(read.startLine, '2');
       assert.equal(read.requestedLines, '1');
       assert.equal(read.returnedLines, '1');
-      return (await f.req('GET', chat, f.token)).json().messages.at(-1);
+      return { message: (await f.req('GET', chat, f.token)).json().messages.at(-1), llmCalls: f.calls.length - callsBefore };
     }
-    for (const required of [undefined, 'estimator']) {
-      const answer = await ask(undefined, required);
-      assert.match(answer.text, /12 000 рублей/);
-      assert.deepEqual(answer.consultedSpecialists, ['Оценщик']);
-    }
+    const consulted = await ask(undefined, undefined);
+    assert.match(consulted.message.text, /12 000 рублей/);
+    assert.deepEqual(consulted.message.consultedSpecialists, ['Оценщик']);
+    assert.equal(consulted.llmCalls, 2, 'delegated consultation runs lead agent + specialist');
+
+    const selected = await ask(undefined, 'estimator');
+    assert.match(selected.message.text, /12 000 рублей/);
+    assert.equal(selected.message.specialistName, 'Оценщик');
+    assert.equal(selected.message.consultedSpecialists, undefined);
+    assert.equal(selected.llmCalls, 1, 'explicit @specialist selection executes directly in a single LLM pass');
+
     const direct = await ask('estimator');
-    assert.match(direct.text, /12 000 рублей/);
-    assert.equal(direct.consultedSpecialists, undefined);
+    assert.match(direct.message.text, /12 000 рублей/);
+    assert.equal(direct.message.consultedSpecialists, undefined);
+    assert.equal(direct.llmCalls, 1);
     const denied = await f.req('POST', route, f.token, { agentProfileId: 'accountant' });
     assert.equal(denied.statusCode, 403);
     const projectChat = await f.req('POST', route, f.token, {});

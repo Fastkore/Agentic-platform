@@ -5,7 +5,7 @@ import path from 'node:path';
 import { FilesystemLibraryBlobStore, type LibraryBlobStore } from '../server/library/blob-store.js';
 import { LibraryIndexer } from '../server/library/indexer.js';
 import { LibraryRegistry, libraryLimitsFromEnv, type LibraryActor, type LibraryLimits } from '../server/library/registry.js';
-import { defaultExclusions } from '../shared/library.js';
+import { profileExclusions } from '../shared/library.js';
 
 export const sha = (data: Buffer | string) => createHash('sha256').update(data).digest('hex');
 export const admin: LibraryActor = { id: 'boss', admin: true };
@@ -23,8 +23,9 @@ export async function libraryFixture(options: { limits?: Partial<LibraryLimits>;
 /** Sends the file list of an operation; returns the summary after the last page. */
 export function startOperation(registry: LibraryRegistry, actor: LibraryActor, folderId: string, files: Files, options: { mode?: 'replace' | 'add'; idempotencyKey?: string; pageSize?: number } = {}) {
   const entries = Object.entries(files).map(([p, data]) => { const buffer = Buffer.isBuffer(data) ? data : Buffer.from(data); return { path: p, size: buffer.length, sha256: sha(buffer), buffer }; });
+  const profile = registry.folderRow(folderId)?.profile ?? 'code';
   const operation = registry.createOperation(actor, folderId, { idempotencyKey: options.idempotencyKey ?? randomUUID().replaceAll('-', ''), mode: options.mode ?? 'replace',
-    totalFiles: entries.length, totalBytes: entries.reduce((s, e) => s + e.size, 0), exclusions: defaultExclusions });
+    totalFiles: entries.length, totalBytes: entries.reduce((s, e) => s + e.size, 0), exclusions: profileExclusions(profile) });
   const pageSize = options.pageSize ?? 1000;
   let summary = operation;
   for (let page = 0; page * pageSize < entries.length; page++) {

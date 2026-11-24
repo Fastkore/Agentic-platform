@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { Readable } from 'node:stream';
 import test from 'node:test';
-import { GigaChatClient } from '../server/gigachat.js';
+import { functionSchema, GigaChatClient } from '../server/gigachat.js';
 
 function response(statusCode: number, body: string, contentType = 'application/json') {
   return Object.assign(Readable.from([Buffer.from(body)]), { statusCode, headers: { 'content-type': contentType } }) as IncomingMessage;
@@ -65,7 +65,32 @@ test('GigaChat streams a tool chain and refreshes HTTP 401 without executing a f
     assert.deepEqual(calls, ['library_search', 'fastkore_read']);
     assert.deepEqual(deltas, [result.response]);
     assert.equal(result.response, 'fixture final result');
-    assert.equal(grants, 2);
-    assert.equal(requests, 4);
+      assert.equal(grants, 2);
+      assert.equal(requests, 4);
   } finally { await rm(home, { recursive: true, force: true }); }
+});
+
+test('GigaChat functionSchema strips unsupported JSON Schema keywords and normalizes nullable unions', () => {
+  const cleaned = functionSchema({
+    $schema: 'https://json-schema.org/draft/2020-12/schema',
+    type: 'object',
+    additionalProperties: false,
+    required: ['guid', 'missing'],
+    properties: {
+      guid: { type: ['string', 'null'], format: 'uuid', minLength: 36, maxLength: 36, description: 'ID заказа' },
+      limit: { anyOf: [{ type: 'integer', minimum: 1, maximum: 100 }, { type: 'null' }], description: 'Лимит' },
+      kind: { const: 'function' },
+      tags: { type: 'array', maxItems: 10, uniqueItems: true, items: { type: 'string', pattern: '^[a-z]+$' } },
+    },
+  });
+  assert.deepEqual(cleaned, {
+    type: 'object',
+    properties: {
+      guid: { type: 'string', description: 'ID заказа' },
+      limit: { type: 'integer', description: 'Лимит' },
+      kind: { type: 'string', enum: ['function'] },
+      tags: { type: 'array', items: { type: 'string' } },
+    },
+    required: ['guid'],
+  });
 });

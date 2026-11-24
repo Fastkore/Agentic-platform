@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import type { LibraryCell, LibraryConnection, OutputPolicy, ProjectLibraryView } from '../../shared/library.js';
+import { projectChatGrantId } from '../corporate.js';
 import { BridgeError } from '../store.js';
 import { notFound, type FolderRow, type LibraryActor, type LibraryRegistry } from './registry.js';
 
@@ -58,11 +59,13 @@ export class LibraryPolicy {
     if (!row || !this.manageable(actor, folderId)) { this.registry.deny(actor, folderId, 'connect', 'connection'); throw notFound(); }
     return row;
   }
-  /** Connects a folder; specialists get no access until explicitly assigned. */
-  connect(actor: LibraryActor, projectId: string, input: { folderId: string; outputPolicy?: OutputPolicy }) {
+  /** Connects a folder; shared folders grant project chat access by default while specialists require explicit assignment. */
+  connect(actor: LibraryActor, projectId: string, input: { folderId: string; outputPolicy?: OutputPolicy; autoGrantProjectChat?: boolean }) {
     this.requireProject(actor, projectId);
     const folder = this.registry.folderRow(input.folderId);
     if (!folder || !this.manageable(actor, input.folderId)) { this.registry.deny(actor, input.folderId, 'connect', 'connect'); throw notFound(); }
+    const grantChat = input.autoGrantProjectChat !== false && folder.classification === 'shared'
+      && this.directory.connectedProfiles(projectId).some(p => p.id === projectChatGrantId);
     return this.registry.tx(() => {
       try {
         this.db.prepare('INSERT INTO connections VALUES (?,?,1,?,1,?)').run(projectId, input.folderId, input.outputPolicy ?? folder.output_policy, new Date().toISOString());
@@ -70,8 +73,18 @@ export class LibraryPolicy {
         if (String((error as Error).message).includes('UNIQUE') || String((error as Error).message).includes('PRIMARY')) throw new BridgeError('Папка уже подключена к проекту.', 409);
         throw error;
       }
+      if (grantChat) {
+        this.db.prepare('INSERT OR IGNORE INTO grants VALUES (?,?,?,NULL,NULL)').run(projectId, projectChatGrantId, input.folderId);
+      }
       return this.publicConnection(actor, this.connection(projectId, input.folderId)!, folder);
-    }, () => [{ actorId: actor.id, action: 'library.connect', targetId: input.folderId, details: { objectIds: { projectId } } }]);
+    }, () => {
+      const connectIds: Record<string, string> = { projectId };
+      const grantIds: Record<string, string> = { projectId, profileId: projectChatGrantId };
+      return [
+        { actorId: actor.id, action: 'library.connect', targetId: input.folderId, details: { objectIds: connectIds } },
+        ...(grantChat ? [{ actorId: actor.id, action: 'library.grant.enable', targetId: input.folderId, details: { objectIds: grantIds } }] : []),
+      ];
+    });
   }
   updateConnection(actor: LibraryActor, projectId: string, folderId: string, input: { revision: number; enabled?: boolean; outputPolicy?: OutputPolicy }) {
     this.requireConnection(actor, projectId, folderId);

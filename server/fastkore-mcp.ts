@@ -8,8 +8,19 @@ import { elapsedMs } from './run-timing.js';
 
 type Binding = NonNullable<ReturnType<FastkoreSso['delegationBinding']>>;
 type Token = { value: string; expiresAt: number };
-type Session = { credential: Credential; delegation: ErpDelegation; revision: string; token?: Token; refresh?: Promise<Token>; catalogProblem?: string };
 type Tool = { upstream: string; definition: CodexToolDefinition };
+type Catalog = { url: string; tools: Map<string, Tool>; sessionId?: string; protocol?: string; expiresAt: number };
+type Session = {
+  credential: Credential;
+  delegation: ErpDelegation;
+  revision: string;
+  nextId: number;
+  token?: Token;
+  refresh?: Promise<Token>;
+  catalog?: Catalog;
+  catalogPending?: Promise<Catalog>;
+  catalogProblem?: string;
+};
 type RpcTiming = { mcpTokenMs?: number; mcpHttpMs?: number };
 type CallDiagnostic = Pick<NonNullable<AuditEvent['details']>, 'status' | 'mcpFailure' | 'mcpErrorCode'>;
 type ReadAudit = RpcTiming & CallDiagnostic & { tool: string; parameters: Record<string, unknown>; success: boolean; elapsedMs: number };
@@ -98,12 +109,21 @@ export class FastkoreMcp {
       void this.invalidate(credential.id, stored.expiresAt <= Date.now() ? 'expired' : 'binding_changed');
       return 'reauth';
     }
-    if (!binding) return 'unavailable';
+    if (!binding) {
+      const session = this.sessions.get(credential.id);
+      if (session) session.catalog = undefined;
+      return 'unavailable';
+    }
     if (!this.sessions.has(credential.id) && !this.sso.openDelegation(credential, binding.revision)) {
       void this.invalidate(credential.id, 'grant_unreadable');
       return 'reauth';
     }
-    return binding.mcpUrl ? 'ready' : 'unavailable';
+    if (!binding.mcpUrl) {
+      const session = this.sessions.get(credential.id);
+      if (session) session.catalog = undefined;
+      return 'unavailable';
+    }
+    return 'ready';
   }
 
   reconnectReason(credential: Credential) {
@@ -174,34 +194,38 @@ export class FastkoreMcp {
       }
       const delegation = this.sso.openDelegation(credential, binding.revision);
       if (!delegation) return { problem: delegationLossMessage('grant_unreadable') };
-      this.sessions.set(credential.id, { credential, delegation, revision: binding.revision });
+      this.sessions.set(credential.id, { credential, delegation, revision: binding.revision, nextId: 0 });
     }
     const state = this.sessions.get(credential.id)!;
     const url = binding.mcpUrl;
     const check = () => {
       authorize();
       const current = this.sso.delegationBinding(credential);
-      if (current?.mcpEnabled === false) throw new BridgeError('MCP отключён в настройках установки ERP.', 403);
+      if (current?.mcpEnabled === false) {
+        state.catalog = undefined;
+        throw new BridgeError('MCP отключён в настройках установки ERP.', 403);
+      }
       if (this.sessions.get(credential.id) !== state || state.delegation.expiresAt <= Date.now()
-        || current?.revision !== state.revision || current.mcpUrl !== url) throw new BridgeError(reauth, 403);
+        || current?.revision !== state.revision || current.mcpUrl !== url) {
+        state.catalog = undefined;
+        throw new BridgeError(reauth, 403);
+      }
     };
-    let sessionId: string | undefined;
-    let protocol: string | undefined;
-    let id = 0;
-    const rpc = async (method: string, params: Record<string, unknown>, signal: AbortSignal, timing?: RpcTiming, diagnostic?: CallDiagnostic) => {
-      check(); signal.throwIfAborted();
+    const rpc = async (method: string, params: Record<string, unknown>, rpcSignal: AbortSignal,
+      connection: { sessionId?: string; protocol?: string }, timing?: RpcTiming, diagnostic?: CallDiagnostic) => {
+      check(); rpcSignal.throwIfAborted();
       const tokenStarted = performance.now();
       const token = await this.token(state, binding).finally(() => { if (timing) timing.mcpTokenMs = elapsedMs(tokenStarted); });
-      check(); signal.throwIfAborted();
+      check(); rpcSignal.throwIfAborted();
       const notification = method === 'notifications/initialized';
       if (method === 'tools/call' && readOnly() && !readTools.has(String(params.name))) {
         throw new BridgeError(erpReadOnlyMessage, 403);
       }
-      const requestId = ++id;
+      const requestId = ++state.nextId;
       const httpStarted = performance.now();
       const response = await postMcp(url, token.value, binding.mcpCa,
         { jsonrpc: '2.0', ...(notification ? {} : { id: requestId }), method, params },
-        { ...(sessionId ? { 'Mcp-Session-Id': sessionId } : {}), ...(protocol ? { 'MCP-Protocol-Version': protocol } : {}) }, signal, diagnostic)
+        { ...(connection.sessionId ? { 'Mcp-Session-Id': connection.sessionId } : {}), ...(connection.protocol ? { 'MCP-Protocol-Version': connection.protocol } : {}) }, rpcSignal, diagnostic)
         .finally(() => { if (timing) timing.mcpHttpMs = elapsedMs(httpStarted); });
       if (response.status === 401 && state.token === token) state.token = undefined;
       check();
@@ -219,40 +243,62 @@ export class FastkoreMcp {
         }
       }
       if (response.status < 200 || response.status >= 300) return { status: response.status };
-      if (method === 'initialize') sessionId = response.sessionId;
+      if (method === 'initialize') connection.sessionId = response.sessionId;
       if (notification) return { status: response.status };
       if (value?.jsonrpc !== '2.0' || value.id !== requestId || value.error || !record(value.result)) throw new BridgeError(unavailable, 502);
       return { status: response.status, result: value.result };
     };
     try {
-      const init = { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'Agent Platform', version: '1' } };
-      let initialized = await rpc('initialize', init, signal);
-      if (initialized.status === 401) initialized = await rpc('initialize', init, signal);
-      if (initialized.status === 401) throw new BridgeError('Сервер MCP отклонил новый токен сотрудника. Попросите администратора проверить настройки доступа MCP в Fastkore.', 424);
-      if (!['2025-06-18', '2025-03-26', '2025-11-25'].includes(initialized.result?.protocolVersion)) throw new BridgeError('Сервер MCP не подтвердил поддерживаемую версию протокола. Попросите администратора проверить совместимость сервера с платформой.', 502);
-      if (process.env.NODE_ENV === 'production') console.info(JSON.stringify({ event: 'fastkore.mcp.initialized', status: initialized.status }));
-      protocol = initialized.result!.protocolVersion;
-      const notified = await rpc('notifications/initialized', {}, signal);
-      if (notified.status >= 300) throw new BridgeError(unavailable, 502);
-      const tools = new Map<string, Tool>();
-      let cursor: string | undefined;
-      for (let page = 0; page < 8; page++) {
-        const { result } = await rpc('tools/list', cursor ? { cursor } : {}, signal);
-        if (!Array.isArray(result?.tools)) throw new BridgeError(unavailable, 502);
-        for (const value of result.tools) {
-          if (typeof value?.name !== 'string' || !/^[a-zA-Z0-9_-]{1,55}$/.test(value.name) || !record(value.inputSchema)) continue;
-          const name = 'fastkore_' + value.name;
-          const description = typeof value.description === 'string' && value.description.trim() ? value.description : value.name;
-          tools.set(name, { upstream: value.name, definition: { type: 'function', name, description: redact(description).slice(0, 4000), inputSchema: value.inputSchema } });
+      check(); signal.throwIfAborted();
+      let catalog = state.catalog && state.catalog.url === url && state.catalog.expiresAt > Date.now() ? state.catalog : undefined;
+      if (!catalog) {
+        if (!state.catalogPending) {
+          state.catalogPending = (async () => {
+            const connection: { sessionId?: string; protocol?: string } = {};
+            const init = { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'Agent Platform', version: '1' } };
+            let initialized = await rpc('initialize', init, signal, connection);
+            if (initialized.status === 401) initialized = await rpc('initialize', init, signal, connection);
+            if (initialized.status === 401) throw new BridgeError('Сервер MCP отклонил новый токен сотрудника. Попросите администратора проверить настройки доступа MCP в Fastkore.', 424);
+            if (!['2025-06-18', '2025-03-26', '2025-11-25'].includes(initialized.result?.protocolVersion)) throw new BridgeError('Сервер MCP не подтвердил поддерживаемую версию протокола. Попросите администратора проверить совместимость сервера с платформой.', 502);
+            if (process.env.NODE_ENV === 'production') console.info(JSON.stringify({ event: 'fastkore.mcp.initialized', status: initialized.status }));
+            connection.protocol = initialized.result!.protocolVersion;
+            const notified = await rpc('notifications/initialized', {}, signal, connection);
+            if (notified.status >= 300) throw new BridgeError(unavailable, 502);
+            const tools = new Map<string, Tool>();
+            let cursor: string | undefined;
+            for (let page = 0; page < 8; page++) {
+              const { result } = await rpc('tools/list', cursor ? { cursor } : {}, signal, connection);
+              if (!Array.isArray(result?.tools)) throw new BridgeError(unavailable, 502);
+              for (const value of result.tools) {
+                if (typeof value?.name !== 'string' || !/^[a-zA-Z0-9_-]{1,55}$/.test(value.name) || !record(value.inputSchema)) continue;
+                const name = 'fastkore_' + value.name;
+                const description = typeof value.description === 'string' && value.description.trim() ? value.description : value.name;
+                tools.set(name, { upstream: value.name, definition: { type: 'function', name, description: redact(description).slice(0, 4000), inputSchema: value.inputSchema } });
+              }
+              if (tools.size > 200) throw new BridgeError(unavailable, 502);
+              const next = result.nextCursor;
+              if (!next) break;
+              if (typeof next !== 'string' || next === cursor || next.length > 512 || page === 7) throw new BridgeError(unavailable, 502);
+              cursor = next;
+            }
+            if (!tools.size) throw new BridgeError('ERP вернула пустой каталог MCP. Попросите администратора проверить доступные сотруднику операции в Fastkore.', 424);
+            const loaded: Catalog = {
+              url,
+              tools,
+              sessionId: connection.sessionId,
+              protocol: connection.protocol,
+              expiresAt: Math.min(Date.now() + 5 * 60_000, state.delegation.expiresAt),
+            };
+            state.catalog = loaded;
+            state.catalogProblem = undefined;
+            return loaded;
+          })().finally(() => { state.catalogPending = undefined; });
         }
-        if (tools.size > 200) throw new BridgeError(unavailable, 502);
-        const next = result.nextCursor;
-        if (!next) break;
-        if (typeof next !== 'string' || next === cursor || next.length > 512 || page === 7) throw new BridgeError(unavailable, 502);
-        cursor = next;
+        catalog = await state.catalogPending;
+        check(); signal.throwIfAborted();
       }
-      if (!tools.size) throw new BridgeError('ERP вернула пустой каталог MCP. Попросите администратора проверить доступные сотруднику операции в Fastkore.', 424);
-      state.catalogProblem = undefined;
+      const { tools } = catalog;
+      const connection = { sessionId: catalog.sessionId, protocol: catalog.protocol };
       const restrictWrites = readOnly();
       return { tools: {
         definitions: [...tools.values()].filter(tool => !restrictWrites || readTools.has(tool.upstream)).map(tool => tool.definition),
@@ -264,7 +310,10 @@ export class FastkoreMcp {
           const diagnostic: CallDiagnostic = {};
           let success = false;
           try {
-            const result = await rpc('tools/call', { name: tool.upstream, arguments: supplied }, callSignal, timing, diagnostic);
+            const result = await rpc('tools/call', { name: tool.upstream, arguments: supplied }, callSignal, connection, timing, diagnostic);
+            if (result.status === 404 || result.status === 410) {
+              if (state.catalog === catalog) state.catalog = undefined;
+            }
             if (result.status === 401) {
               diagnostic.mcpFailure = 'http';
               return { success: false, text: 'Fastkore отклонил токен. Повторный вызов не отправлен. Проверьте состояние операции чтением.' };

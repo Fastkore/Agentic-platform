@@ -27,6 +27,7 @@ const ticketPattern = /^fkct1\.[A-Za-z0-9._-]{1,4096}$(?![\s\S])/;
 
 export class FastkoreCli {
   private readonly transportLimitBytes: number;
+  private cachedCa?: { pem: string; fingerprint256: string };
   constructor(private readonly socketPath: string) {
     const stdoutLimit = Number(process.env.BRIDGE_FASTKORE_CLI_STDOUT_MAX_BYTES ?? 8 * 1024 * 1024);
     if (!Number.isSafeInteger(stdoutLimit) || stdoutLimit < 1 || stdoutLimit > 16 * 1024 * 1024) {
@@ -81,7 +82,11 @@ export class FastkoreCli {
   async checkTrust(binding: { origin: string; ca?: string }, signal: AbortSignal) {
     if (!binding.ca) throw new BridgeError('Для Fastkore CLI требуется подтверждённый CA установки ERP.', 424);
     const authority = new URL(binding.origin).host;
-    const caFingerprint = new X509Certificate(binding.ca).fingerprint256;
+    let caFingerprint = this.cachedCa?.pem === binding.ca ? this.cachedCa.fingerprint256 : undefined;
+    if (!caFingerprint) {
+      caFingerprint = new X509Certificate(binding.ca).fingerprint256;
+      this.cachedCa = { pem: binding.ca, fingerprint256: caFingerprint };
+    }
     // Verify the runner's fixed address and CA before sending a ticket.
     const trust = await this.exchange('/trust', undefined, AbortSignal.any([signal, AbortSignal.timeout(2000)])) as
       { authority?: string; caFingerprint?: string; contextPaging?: boolean; batchGet?: boolean; contextVersions?: Record<string, number[]> } | null;

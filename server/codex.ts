@@ -17,7 +17,7 @@ export type RegisterSteering = (steer: SteerTurn | undefined) => void;
 export class ExecutionAccountStopped extends Error {
   constructor() { super('Задание остановлено администратором при отключении аккаунта исполнителя.'); }
 }
-export interface CodexRequest { expectedAccountId?: string; executionConcurrency?: number; cliPath: string; workspace: string; prompt: string; imageUrls?: string[]; imageQuestion?: string; developerInstructions?: string; tools?: CodexTools; sessionId?: string; allowWrite: boolean; workDirectoryId?: string; ephemeral?: boolean; consultation?: boolean; consultationKey?: string; model?: string; reasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max' }
+export interface CodexRequest { expectedAccountId?: string; executionConcurrency?: number; cliPath: string; workspace: string; prompt: string; imageUrls?: string[]; imageQuestion?: string; developerInstructions?: string; tools?: CodexTools; sessionId?: string; sessionSlot?: string; allowWrite: boolean; workDirectoryId?: string; ephemeral?: boolean; consultation?: boolean; consultationKey?: string; model?: string; reasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max' }
 export interface CodexResult { sessionId?: string; response: string; usage?: Usage }
 export interface CodexRunner { readonly isolated?: boolean; inspect(cliPath: string, signal?: AbortSignal, model?: string): Promise<CliInfo>; listModels?(cliPath: string): Promise<ModelCatalog>; readLimits?(cliPath: string, model?: string): Promise<CodexLimits | null>; run(request: CodexRequest, onEvent: (event: CodexEvent) => Promise<void>, signal: AbortSignal, registerSteering?: RegisterSteering): Promise<CodexResult> }
 type RateWindow = { usedPercent?: number; windowDurationMins?: number | null; resetsAt?: number | null };
@@ -105,6 +105,7 @@ export async function killTree(child: ChildProcess) {
   });
 }
 export class CodexClient implements CodexRunner {
+  private static readonly versionCache = new Map<string, string>();
   // Prefix is injected by process integration tests only. No HTTP route can change it.
   constructor(private readonly testPrefix: string[] = [], private readonly mode: 'local' | 'worker' = 'local', private readonly codexHome?: string,
     private readonly provider = 'openai', private readonly acceptsImages = provider === 'openai') {}
@@ -130,10 +131,26 @@ export class CodexClient implements CodexRunner {
     try { const captured = await result; signal?.throwIfAborted(); return captured; } finally { clearTimeout(timer); signal?.removeEventListener('abort', abort); }
   }
   async inspect(cliPath: string, signal?: AbortSignal): Promise<CliInfo> {
-    const version = await this.capture(cliPath, ['--version'], signal);
-    if (version.code !== 0) throw new BridgeError('Не удалось проверить версию Codex CLI.');
+    let versionText: string | undefined;
+    let versionKey: string | undefined;
+    if (!this.testPrefix.length && existsSync(cliPath)) {
+      const info = await stat(cliPath).catch(() => undefined);
+      if (info?.isFile()) {
+        versionKey = `${cliPath}:${info.size}:${info.mtimeMs}`;
+        versionText = CodexClient.versionCache.get(versionKey);
+      }
+    }
+    if (versionText === undefined) {
+      const version = await this.capture(cliPath, ['--version'], signal);
+      if (version.code !== 0) throw new BridgeError('Не удалось проверить версию Codex CLI.');
+      versionText = version.text.trim();
+      if (versionKey) {
+        if (CodexClient.versionCache.size >= 32) CodexClient.versionCache.clear();
+        CodexClient.versionCache.set(versionKey, versionText);
+      }
+    }
     const status = await this.capture(cliPath, ['login', 'status'], signal);
-    return { path: cliPath, version: version.text.trim(), authentication: authentication(status.text, status.code), status: status.text.trim() };
+    return { path: cliPath, version: versionText, authentication: authentication(status.text, status.code), status: status.text.trim() };
   }
   private appServer(cliPath: string, experimental = false, timeout = 25_000, config: string[] = []) {
     const child = this.start(cliPath, ['-c', `model_provider="${this.provider}"`, ...config, 'app-server', '--listen', 'stdio://']);

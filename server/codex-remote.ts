@@ -9,7 +9,7 @@ import type { CodexToolDefinition, CodexToolResult } from './codex-tools.js';
 import { BridgeError } from './store.js';
 import type { ExecutionAccounts, ExecutionProvider, GigaChatScope } from '../shared/execution-accounts.js';
 
-export type WorkerRun = Pick<CodexRequest, 'expectedAccountId' | 'prompt' | 'imageUrls' | 'imageQuestion' | 'developerInstructions' | 'sessionId' | 'ephemeral' | 'consultation' | 'consultationKey' | 'model' | 'reasoningEffort' | 'workDirectoryId' | 'executionConcurrency'> & { toolDefinitions?: CodexToolDefinition[]; steeringKey?: string };
+export type WorkerRun = Pick<CodexRequest, 'expectedAccountId' | 'prompt' | 'imageUrls' | 'imageQuestion' | 'developerInstructions' | 'sessionId' | 'sessionSlot' | 'ephemeral' | 'consultation' | 'consultationKey' | 'model' | 'reasoningEffort' | 'workDirectoryId' | 'executionConcurrency'> & { toolDefinitions?: CodexToolDefinition[]; steeringKey?: string };
 export type WorkerSteer = { key: string; text: string };
 export type WorkerToolResult = CodexToolResult & { id: string };
 export type WorkerMessage = { accountStopped: true } | { event: CodexEvent } | { result: CodexResult } | { error: string }
@@ -81,9 +81,9 @@ export class RemoteCodexRunner implements CodexRunner {
     return JSON.parse(body);
   }
   async run(r: CodexRequest, onEvent: (event: CodexEvent) => Promise<void>, signal: AbortSignal, registerSteering?: RegisterSteering) {
-    const { prompt, imageUrls, imageQuestion, developerInstructions, sessionId, ephemeral, consultation, model, reasoningEffort, workDirectoryId, executionConcurrency, tools } = r;
+    const { prompt, imageUrls, imageQuestion, developerInstructions, sessionId, sessionSlot, ephemeral, consultation, model, reasoningEffort, workDirectoryId, executionConcurrency, tools } = r;
     const steeringKey = registerSteering && !consultation ? randomUUID() : undefined;
-    const res = await this.request('/run', { expectedAccountId: r.expectedAccountId, prompt, imageUrls, imageQuestion, developerInstructions, sessionId, ephemeral, consultation, steeringKey,
+    const res = await this.request('/run', { expectedAccountId: r.expectedAccountId, prompt, imageUrls, imageQuestion, developerInstructions, sessionId, sessionSlot, ephemeral, consultation, steeringKey,
       consultationKey: consultation ? this.consultationContext.getStore() : undefined, model, reasoningEffort, workDirectoryId, executionConcurrency, toolDefinitions: tools?.definitions }, signal);
     const disconnected = new AbortController();
     const toolSignal = AbortSignal.any([signal, disconnected.signal]);

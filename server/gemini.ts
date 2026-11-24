@@ -26,6 +26,7 @@ export function geminiFailure(text: string) {
 
 export class GeminiClient implements CodexRunner {
   readonly isolated = true;
+  private readonly sessionDirs = new Map<string, string>();
   constructor(private readonly home: string, private readonly executable = '/usr/local/bin/gemini', private readonly prefix: string[] = [],
     private readonly antigravity = false) {}
   async inspect(): Promise<CliInfo> {
@@ -66,7 +67,12 @@ export class GeminiClient implements CodexRunner {
     signal.throwIfAborted();
     if (!this.antigravity && request.model && !request.model.startsWith('gemini-')) throw new BridgeError('Выберите модель Gemini в настройках диалога.', 409);
     const temporary = await mkdtemp(path.join(tmpdir(), 'bridge-gemini-'));
-    const cwd = request.consultation ? path.join(temporary, 'runtime') : path.join(this.home, 'runtime');
+    const transient = Boolean(request.consultation || request.ephemeral);
+    const remembered = !transient && request.sessionId ? this.sessionDirs.get(request.sessionId) : undefined;
+    const ephemeralSlot = !transient && !request.sessionSlot && !remembered ? randomUUID() : undefined;
+    const cwd = transient
+      ? path.join(temporary, 'runtime')
+      : path.join(this.home, 'runtime', request.sessionSlot ?? remembered ?? ephemeralSlot!);
     await mkdir(cwd, { recursive: true, mode: 0o700 });
     const token = randomBytes(32).toString('hex');
     const jobToolStop = new AbortController();
@@ -195,6 +201,12 @@ export class GeminiClient implements CodexRunner {
       if (code !== 0 || !completed || failure) throw new BridgeError(this.antigravity ? geminiFailure(stderr + errorText).replaceAll('Gemini CLI', 'Antigravity CLI') : geminiFailure(stderr + errorText), 503);
       if (response) await onEvent({ kind: streamed ? 'message-replace' : 'message', text: response });
       if (usage) await onEvent({ kind: 'usage', usage });
+      if (!transient && sessionId) {
+        if (this.sessionDirs.size >= 512 && !this.sessionDirs.has(sessionId)) {
+          this.sessionDirs.delete(this.sessionDirs.keys().next().value!);
+        }
+        this.sessionDirs.set(sessionId, cwd);
+      }
       return { sessionId, response, usage };
     } finally {
       clearTimeout(timer); signal.removeEventListener('abort', stop); stop();
@@ -204,6 +216,7 @@ export class GeminiClient implements CodexRunner {
       await closed.catch(() => {});
       await jobToolQueue;
       await rm(settings, { force: true });
+      if (ephemeralSlot && (!sessionId || !completed || failure)) await rm(cwd, { recursive: true, force: true });
       await rm(temporary, { recursive: true, force: true });
     }
   }
