@@ -19,7 +19,7 @@ import { openFastkoreBrowser, openFastkoreTarget, parseHostScreenshotCapability,
 import { Settings as SettingsIcon } from 'lucide-react';
 import { Select, type SelectHandle } from './Select';
 import { ExecutionAccountsPanel } from './ExecutionAccountsPanel';
-import { executionConnected, providerForModel } from '../shared/execution-accounts';
+import { executionConnected, hasAdjustableEffort, providerForModel } from '../shared/execution-accounts';
 import { SidebarResizeHandle } from './SidebarResizeHandle';
 import { ComposerInput } from './ComposerInput';
 import { ChatAccessPopover } from './ChatAccessPopover';
@@ -1785,11 +1785,11 @@ function App() {
                   {modelsLoading ? <LoaderCircle className="spin" size={16} /> : <RefreshCw size={16} />}
                 </button>
               </div>
-              <div className="settings-model-row">
+              {hasAdjustableEffort(serverModel) && <div className="settings-model-row">
                 <label htmlFor="server-reasoning">Рассуждение по умолчанию</label>
                 <Select id="server-reasoning" className="settings-select" value={status?.settings.reasoningEffort ?? 'high'} options={reasoningOptions}
                   disabled={pending} onChange={value => void saveSettings({ reasoningEffort: value as Settings['reasoningEffort'] })} />
-              </div>
+              </div>}
               {modelError && <p role="status">{modelError}</p>}
             </section>
             {status?.settings.executionConcurrency && <ExecutionConcurrencySettings value={status.settings.executionConcurrency}

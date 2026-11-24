@@ -242,6 +242,7 @@ test('Antigravity transports MCP, streamed results, session IDs and usage with n
 import {readFileSync} from 'node:fs';
 const args=process.argv.slice(2);
 if(args[0]==='models'){console.log('gemini-test-high   Gemini Test (High)');process.exit(0);}
+if(args.includes('--effort') || args[args.indexOf('--model')+1]!=='gemini-test-high')throw Error('Use the effort variant from the selected model');
 const policy=JSON.parse(args[args.indexOf('--settings')+1]);
 if(!policy.permissions.deny.includes('command(*)')||!policy.permissions.deny.includes('read_file(*)'))throw Error('Missing limits');
 if(!args.includes('--input-format')||!args.includes('--conversation')||!args.includes('${id}'))throw Error('Missing session');
@@ -263,7 +264,7 @@ console.log(JSON.stringify({event:'result',result:{status:'SUCCESS',response:'Г
     const models = await runner.listModels();
     assert.deepEqual(models.models.map(model => model.id), ['antigravity-auto', 'gemini-test-high']);
     const result = await runner.run({ cliPath: '', workspace: root, allowWrite: false, sessionId: id,
-      developerInstructions: 'Rules', prompt: 'Question', model: 'gemini-test-high', tools: {
+      developerInstructions: 'Rules', prompt: 'Question', model: 'gemini-test-high', reasoningEffort: 'medium', tools: {
         definitions: [{ type: 'function', name: 'knowledge', description: '', inputSchema: { type: 'object' } }],
         call: async () => ({ success: true, text: 'ERP allowed' }),
       } }, async () => {}, AbortSignal.timeout(5000));

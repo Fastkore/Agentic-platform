@@ -23,3 +23,8 @@ export const providerForModel = (model?: string): ExecutionProvider | undefined 
     : model.startsWith('glm/') || model.startsWith('glm-') ? 'glm'
     : model.startsWith('gigachat/') || /^gigachat(?:$|[-:])/i.test(model) ? 'gigachat'
     : 'codex';
+
+export function hasAdjustableEffort(model?: string) {
+  const provider = providerForModel(model);
+  return provider !== 'antigravity' && provider !== 'gemini' && provider !== 'gigachat';
+}

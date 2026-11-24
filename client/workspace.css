@@ -437,10 +437,8 @@
 .chat-model-popover { position: absolute; z-index: 9; right: 0; bottom: calc(100% + 7px); width: min(306px, calc(100vw - 42px)); border: 1px solid var(--border); border-radius: 20px; background: var(--elevated); box-shadow: 0 8px 28px #0003; }
 .effort-popover { padding: 10px 14px 14px; }
 .effort-heading { position: relative; display: flex; justify-content: center; margin-bottom: 13px; }
-.effort-heading[data-adjustable="false"] { margin-bottom: 0; }
 .effort-model { display: grid; justify-items: center; gap: 2px; max-width: calc(100% - 65px); padding: 4px 12px; border-radius: 7px; background: var(--selected); }
 .effort-model strong { color: var(--accent-strong); font-size: 15px; font-weight: 600; }
-.chat-model-trigger .effort-unavailable, .effort-model .effort-unavailable { color: var(--text-muted); }
 .effort-model span { display: flex; align-items: center; gap: 3px; min-width: 0; max-width: 100%; color: var(--text-muted); font-size: 12px; overflow-wrap: anywhere; }
 .effort-reset { position: absolute; right: -3px; top: 0; }
 .effort-track { position: relative; height: 30px; border-radius: 999px; background: linear-gradient(to right, var(--accent) var(--effort-fill), var(--selected) var(--effort-fill)); }

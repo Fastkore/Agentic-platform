@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { BarChart3, Bot, Calculator, ChevronDown, ChevronLeft, Database, FileText, Folder, Layers3, MessageCircle, Paperclip, Pencil, Plus, RefreshCw, Search, Settings2, X } from 'lucide-react';
 import { agentToolIds, agentTools } from '../shared/agent-tools';
 import { specialistFileLimits, specialistIcons, type AgentProfile, type Dataset, type ModelCatalog, type SpecialistIcon } from '../shared/types';
+import { hasAdjustableEffort } from '../shared/execution-accounts';
 import { isAutomaticModel } from '../shared/model-selection';
 import { Checks } from './CorporatePanel';
 import { Select } from './Select';
@@ -305,10 +306,10 @@ export function SpecialistsPanel({ request, globalInstructions, initialProfileId
           </div>
           {modelsLoading && <p className="help" role="status">Загрузка моделей…</p>}
           {modelError && <p className="inline-error" role="alert">{modelError}</p>}
-          <label htmlFor="profile-effort">Уровень рассуждения</label><Select id="profile-effort" className="settings-select" value={profile.reasoningEffort}
+          {hasAdjustableEffort(profile.model) && <><label htmlFor="profile-effort">Уровень рассуждения</label><Select id="profile-effort" className="settings-select" value={profile.reasoningEffort}
             onChange={reasoningEffort => update({ reasoningEffort: reasoningEffort as AgentProfile['reasoningEffort'] })}
-            options={[{ value: 'low', label: 'Низкий' }, { value: 'medium', label: 'Средний' }, { value: 'high', label: 'Высокий' }, { value: 'xhigh', label: 'Очень высокий' }]} />
-      <p className="help">Выбор модели и уровня рассуждения в чате имеет приоритет.</p>
+            options={[{ value: 'low', label: 'Низкий' }, { value: 'medium', label: 'Средний' }, { value: 'high', label: 'Высокий' }, { value: 'xhigh', label: 'Очень высокий' }]} /></>}
+      <p className="help">Настройки модели в чате имеют приоритет.</p>
       </section>
       </div>
 

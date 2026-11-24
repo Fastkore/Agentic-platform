@@ -1,6 +1,6 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import { Check, ChevronDown, ChevronRight, RotateCcw } from 'lucide-react';
-import { providerForModel } from '../shared/execution-accounts';
+import { hasAdjustableEffort } from '../shared/execution-accounts';
 import type { ReasoningEffort } from '../shared/types';
 import type { SelectOption } from './Select';
 
@@ -13,7 +13,7 @@ export function ChatModelControls({ effort, levels, model, models, disabled, onE
   effort: ReasoningEffort; levels: typeof reasoningOptions; model: string; models: SelectOption[]; disabled: boolean;
   onEffort: (effort: ReasoningEffort) => void; onModel: (model: string) => void;
 }) {
-  const [step, setStep] = useState<'effort' | 'model' | null>(null);
+  const [requestedStep, setStep] = useState<'effort' | 'model' | null>(null);
   const [preview, setPreview] = useState<number>();
   const root = useRef<HTMLDivElement>(null);
   const trigger = useRef<HTMLButtonElement>(null);
@@ -21,15 +21,14 @@ export function ChatModelControls({ effort, levels, model, models, disabled, onE
   const modelMenu = useRef<HTMLDivElement>(null);
   const dragging = useRef(false);
   const id = useId();
-  const provider = providerForModel(model);
-  const adjustsEffort = provider !== 'gigachat' && provider !== 'gemini';
+  const adjustsEffort = hasAdjustableEffort(model);
+  const step = requestedStep === 'effort' && !adjustsEffort ? 'model' : requestedStep;
   const actual = Math.max(0, levels.findIndex(item => item.value === effort));
   const index = preview ?? actual;
   const level = levels[index] ?? levels[actual];
-  const fixedEffortLabel = 'Не задаётся';
   const modelName = models.find(item => item.value === model)?.label ?? (model || 'Выбрать модель');
-  const effortLabel = adjustsEffort ? levels[actual].label : fixedEffortLabel;
-  const selectionLabel = model ? modelName + ' · Глубина рассуждения: ' + effortLabel : modelName;
+  const effortLabel = levels[actual].label;
+  const selectionLabel = model && adjustsEffort ? modelName + ' · Глубина рассуждения: ' + effortLabel : modelName;
   const open = !!step;
 
   useEffect(() => {
@@ -56,39 +55,42 @@ export function ChatModelControls({ effort, levels, model, models, disabled, onE
   }} onKeyDown={event => {
     if (event.key !== 'Escape' || !step) return;
     event.preventDefault(); event.stopPropagation();
-    if (step === 'model') { setStep('effort'); requestAnimationFrame(() => modelButton.current?.focus()); }
+    if (step === 'model' && adjustsEffort) { setStep('effort'); requestAnimationFrame(() => modelButton.current?.focus()); }
     else { setStep(null); setPreview(undefined); trigger.current?.focus(); }
   }}>
     <button ref={trigger} type="button" className="workspace-select chat-model-trigger" aria-expanded={open}
       aria-controls={open ? id : undefined} aria-label={selectionLabel}
       title={model ? selectionLabel + ' (' + model + ')' : modelName} disabled={disabled}
-      onClick={() => setStep(step ? null : 'effort')}>
+      onClick={() => setStep(step ? null : adjustsEffort ? 'effort' : 'model')}>
       <span className="chat-model-selection"><span className="chat-model-name">{modelName}</span>
-        {model && <span className="chat-model-effort">{effortLabel}</span>}</span>
+        {model && adjustsEffort && <span className="chat-model-effort">{effortLabel}</span>}</span>
       <ChevronDown size={13} aria-hidden="true" />
     </button>
     {step === 'effort' && <div id={id} className="chat-model-popover effort-popover" aria-label="Настройки ответа">
-      <div className="effort-heading" data-adjustable={adjustsEffort}>
+      <div className="effort-heading">
         <button ref={modelButton} type="button" className="effort-model" disabled={disabled || !models.length} onClick={() => setStep('model')}>
-          <strong className={adjustsEffort ? undefined : 'effort-unavailable'}>{adjustsEffort ? level.label : fixedEffortLabel}</strong><span title={modelName}>{modelName}<ChevronRight size={12} aria-hidden="true" /></span>
+          <strong>{level.label}</strong><span title={modelName}>{modelName}<ChevronRight size={12} aria-hidden="true" /></span>
         </button>
-        {adjustsEffort && <button type="button" className="workspace-icon effort-reset" aria-label="Сбросить до высокого" title="Сбросить до высокого"
-          disabled={disabled || effort === 'high'} onClick={() => chooseLevel(levels.findIndex(item => item.value === 'high'))}><RotateCcw size={16} /></button>}
+        <button type="button" className="workspace-icon effort-reset" aria-label="Сбросить до высокого" title="Сбросить до высокого"
+          disabled={disabled || effort === 'high'} onClick={() => chooseLevel(levels.findIndex(item => item.value === 'high'))}><RotateCcw size={16} /></button>
       </div>
-      {adjustsEffort && <div className="effort-track" style={{ '--effort-fill': `${100 * index / Math.max(1, levels.length - 1)}%` } as React.CSSProperties}>
+      <div className="effort-track" style={{ '--effort-fill': `${100 * index / Math.max(1, levels.length - 1)}%` } as React.CSSProperties}>
         <div className="effort-marks" aria-hidden="true">{levels.map(item => <span key={item.value} />)}</div>
         <input type="range" min={0} max={levels.length - 1} step={1} value={index} disabled={disabled}
           aria-label="Глубина рассуждения" aria-valuetext={level.label} onPointerDown={() => { dragging.current = true; }}
           onPointerUp={event => { dragging.current = false; chooseLevel(Number(event.currentTarget.value)); }}
           onPointerCancel={() => { dragging.current = false; setPreview(undefined); }}
           onChange={event => { const next = Number(event.currentTarget.value); if (dragging.current) setPreview(next); else chooseLevel(next); }} />
-      </div>}
+      </div>
     </div>}
     {step === 'model' && <div ref={modelMenu} id={id} className="chat-model-popover model-list-popover" role="group" aria-label="Выбрать модель">
       <p>Выбрать модель</p>
       {models.map(item => <button type="button" key={item.value} data-selected={item.value === model} aria-pressed={item.value === model}
         title={item.detailTitle} disabled={item.disabled || disabled} onClick={() => {
-          setStep('effort'); requestAnimationFrame(() => { if (modelButton.current && !modelButton.current.disabled) modelButton.current.focus(); });
+          const showEffort = adjustsEffort && hasAdjustableEffort(item.value);
+          setStep(showEffort ? 'effort' : null);
+          setPreview(undefined);
+          requestAnimationFrame(() => (showEffort ? modelButton : trigger).current?.focus());
           if (item.value !== model) onModel(item.value);
         }}>
         <span>{item.label}</span>{item.detail && item.detail !== '—' && <small>{item.detail}</small>}
