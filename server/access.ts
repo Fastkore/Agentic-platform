@@ -348,12 +348,23 @@ export class Access {
   run(user: User, id: string, credential?: Credential) {
     const run = this.workspace.getRun(id); if (run.projectId && run.chatId) this.chat(user, run.projectId, run.chatId, credential); else this.admin(user); return run;
   }
+  userNameLookup() {
+    const authorNames = new Map<string | undefined, string>();
+    return (id: string | undefined) => {
+      const cached = authorNames.get(id);
+      if (cached !== undefined) return cached;
+      const name = this.data.users.find(user => user.id === id)?.name ?? 'Пользователь';
+      authorNames.set(id, name);
+      return name;
+    };
+  }
   viewChat(chat: Chat, session?: Credential): ChatView {
     const { specialistSessions, knowledgeRevision, fastkoreBinding, fastkoreHistory, titleCustomized, cliWorkspaceProjectId, sessionProvider, historyReplayPending, legacyHistory, ...view } = chat;
+    const authorName = this.userNameLookup();
     const messages = chat.messages.map(({ historyScope, requestScope, ...message }) => {
       if (message.role === 'assistant') return message;
       const authorId = message.authorId ?? chat.ownerId;
-      return { ...message, authorId, authorName: this.data.users.find(user => user.id === authorId)?.name ?? 'Пользователь' };
+      return { ...message, authorId, authorName: authorName(authorId) };
     });
     let fastkoreNavigation: ChatView['fastkoreNavigation'];
     if (fastkoreBinding && session?.source === 'fastkore' && (session.userId === chat.ownerId || chat.visibility === 'project') &&
@@ -362,12 +373,13 @@ export class Access {
       if (entityUri) fastkoreNavigation = { installationId, entityUri };
       else if (tileId) fastkoreNavigation = { installationId, tileId, tileName: tileName ?? fastkoreBinding.contextName };
     }
-    return { ...view, storedFiles: view.storedFiles?.filter(file => file.ownerId === session?.userId ||
-      this.data.users.some(user => user.id === session?.userId && user.role === 'admin')),
-      linkedToFastkore: fastkoreBinding ? true : undefined, fastkoreNavigation, ownerName: this.data.users.find(u => u.id === chat.ownerId)?.name ?? 'Пользователь', messages };
+    const canSeeAllFiles = view.storedFiles?.length && this.data.users.some(user => user.id === session?.userId && user.role === 'admin');
+    return { ...view, storedFiles: view.storedFiles?.filter(file => file.ownerId === session?.userId || canSeeAllFiles),
+      linkedToFastkore: fastkoreBinding ? true : undefined, fastkoreNavigation, ownerName: authorName(chat.ownerId), messages };
   }
-  chatSummary({ id, title, updatedAt, messages, ownerId, visibility, fastkoreBinding }: Chat): ChatSummary {
-    return { id, title, updatedAt, messageCount: messages.length, ownerId, ownerName: this.data.users.find(user => user.id === ownerId)?.name ?? 'Пользователь', visibility, linkedToFastkore: fastkoreBinding ? true : undefined };
+  chatSummary({ id, title, updatedAt, messages, ownerId, visibility, fastkoreBinding }: Chat,
+    ownerName = this.data.users.find(user => user.id === ownerId)?.name ?? 'Пользователь'): ChatSummary {
+    return { id, title, updatedAt, messageCount: messages.length, ownerId, ownerName, visibility, linkedToFastkore: fastkoreBinding ? true : undefined };
   }
   users(user: User, includeDeleted = false): TeamUser[] {
     this.admin(user);

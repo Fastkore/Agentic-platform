@@ -71,6 +71,81 @@ test('migration keeps session IDs, assigns private legacy chats to boss and reti
   } finally { await f.app.close(); }
 });
 
+test('chat revalidation respects the current viewer and detects changes without a new chat timestamp', async () => {
+  const f = await fixture();
+  try {
+    const employee = await f.employee('reader');
+    await f.setProjectRoles(employee.projectRoles);
+    const chat = f.legacy;
+    chat.visibility = 'project';
+    chat.storedFiles = [{ id: 'private-file', ownerId: f.adminId, name: 'draft.txt', size: 12 }];
+    chat.messages.push({ id: 'answer', role: 'assistant', status: 'running', text: 'Начало', attachments: [], createdAt: chat.updatedAt });
+    const url = `/api/projects/${f.project.id}/chats/${chat.id}`;
+    const read = (etag: string) => f.app.inject({ url, headers: {
+      host: 'agents.example.test', 'x-forwarded-proto': 'https', cookie: employee.token, 'if-none-match': etag,
+    } });
+    const adminView = await f.req('GET', url, f.admin);
+    assert.equal(adminView.json().storedFiles.length, 1);
+    const first = await read(String(adminView.headers.etag));
+    assert.equal(first.statusCode, 200);
+    assert.deepEqual(first.json().storedFiles, []);
+    const tag = first.headers.etag;
+    assert.equal(typeof tag, 'string');
+    const same = await read(String(tag));
+    assert.equal(same.statusCode, 304);
+    assert.equal(same.body, '');
+    assert.equal(same.headers['cache-control'], 'no-store');
+    chat.messages[0].text += ' ответа';
+    const changed = await read(String(tag));
+    assert.equal(changed.statusCode, 200);
+    assert.equal(changed.json().messages[0].text, 'Начало ответа');
+    assert.notEqual(changed.headers.etag, tag);
+    chat.visibility = 'private';
+    assert.equal((await read(String(changed.headers.etag))).statusCode, 404);
+  } finally { await f.app.close(); }
+});
+
+test('sidebar revalidation updates projects, chats and agents and rechecks access on every poll', async () => {
+  const f = await fixture();
+  try {
+    const employee = await f.employee('reader');
+    await f.setProjectRoles(employee.projectRoles);
+    const project = '/api/projects/' + f.project.id;
+    const tags = new Map<string, string>();
+    const poll = async (url: string) => {
+      const tag = tags.get(url);
+      const response = await f.app.inject({ url, headers: {
+        host: 'agents.example.test', 'x-forwarded-proto': 'https', cookie: employee.token,
+        ...(tag ? { 'if-none-match': tag } : {}),
+      } });
+      if (response.statusCode === 200) {
+        assert.equal(typeof response.headers.etag, 'string');
+        tags.set(url, String(response.headers.etag));
+      }
+      return response;
+    };
+    for (const url of ['/api/projects', '/api/chats/without-project', '/api/agents', project + '/agents', project + '/chats']) {
+      assert.equal((await poll(url)).statusCode, 200);
+      const unchanged = await poll(url);
+      assert.equal(unchanged.statusCode, 304);
+      assert.equal(unchanged.body, '');
+    }
+    assert.equal((await f.req('PATCH', project, f.admin, { name: 'Новое название' })).statusCode, 200);
+    assert.equal((await poll('/api/projects')).json()[0].name, 'Новое название');
+    const created = await f.req('POST', project + '/chats', employee.token, { title: 'Новый чат' });
+    assert.equal(created.statusCode, 201);
+    assert.equal((await poll(project + '/chats')).json()[0].id, created.json().id);
+    assert.equal((await poll('/api/projects')).json()[0].chatCount, 1);
+    const agent = f.workspace.corporate.data.profiles.find(profile => profile.id === 'universal')!;
+    agent.name = 'Обновлённый агент';
+    assert.equal((await poll(project + '/agents')).json().find((item: { id: string }) => item.id === agent.id).name, agent.name);
+    await f.setProjectRoles([]);
+    assert.deepEqual((await poll('/api/projects')).json(), []);
+    assert.equal((await poll(project + '/chats')).statusCode, 404);
+    assert.equal((await poll(project + '/agents')).statusCode, 404);
+  } finally { await f.app.close(); }
+});
+
 test('the first Fastkore system administrator takes the existing local setup account once', async () => {
   const f = await fixture();
   try {

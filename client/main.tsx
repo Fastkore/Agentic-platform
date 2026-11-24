@@ -1,7 +1,5 @@
 import React, { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
 import { Archive, ArrowUp, BarChart3, Bot, Box, Camera, Check, ChevronDown, ChevronRight, ClipboardList, Copy, Database, Download, EllipsisVertical, Eraser, FileText, Folder, History, Link2, LoaderCircle, LockKeyhole, LogOut, Menu, Moon, Network, PanelLeftClose, PanelLeftOpen, Pencil, Pin, Plus, RefreshCw, Search, Settings2, ShieldCheck, Square, SquarePen, Sun, Terminal, Trash2, Users, X } from 'lucide-react';
 import { maxProjectInstructions, interfaceScales, sharedChatWaitMessage, unassignedChatsLabel, type AgentSummary, type Attachment, type Chat, type ChatView, type ChatSummary, type CodexLimits, type FastkoreAuthentication, type FastkoreNavigationTarget, type FileStorageStatus, type InterfaceScale, type ModelCatalog, type ProjectSummary, type RelatedChatSummary, type Run, type Settings, type Status, type UnassignedChatSummary, type User } from '../shared/types';
 import './style.css';
@@ -14,7 +12,7 @@ import { ChatArchiveDialog } from './ChatArchiveDialog';
 import { ChatVisuals } from './ChatVisuals';
 import { shortUserName } from './user-name';
 import { chatTooltip, dateTooltip, shortDate } from './chat-date';
-import { hideAttachedOutputLinks } from './chat-markdown';
+import { ChatMarkdown } from './ChatMarkdown';
 import { openFastkoreBrowser, openFastkoreTarget, parseHostScreenshotCapability, parseHostScreenshotResult, parseHostTheme, webViewHost, type Theme } from './fastkore';
 import { Settings as SettingsIcon } from 'lucide-react';
 import { Select, type SelectHandle } from './Select';
@@ -98,19 +96,27 @@ async function fetchApi(url: string, init: RequestInit) {
     throw new ApiError('Не удалось связаться с сервером.', 0, true);
   }
 }
-async function api<T>(url: string, init: RequestInit = {}, responseType: 'json' | 'blob' = 'json'): Promise<T> {
+type JsonSnapshot<T> = { entry?: { url: string; epoch: number; etag: string; value: T } };
+async function api<T>(url: string, { revalidate, ...init }: RequestInit & { revalidate?: JsonSnapshot<T> } = {}, responseType: 'json' | 'blob' = 'json'): Promise<T> {
   const epoch = authEpoch;
   const headers = new Headers(init.headers);
+  const cached = revalidate?.entry;
+  const matching = cached?.url === url && cached.epoch === epoch ? cached : undefined;
+  if (matching) headers.set('If-None-Match', matching.etag);
   if (browserSession && !['GET', 'HEAD'].includes(init.method ?? 'GET')) headers.set('X-CSRF-Token', csrfToken);
   if (!browserSession && accessKey) headers.set('Authorization', `Bearer ${accessKey}`);
   if (init.body && !(init.body instanceof FormData) && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json');
   try {
     const response = await fetchApi(url, { ...init, headers });
     const blob = response.ok && responseType === 'blob';
-    const result = await (blob ? response.blob() : readApiJson(response));
+    const result = response.status === 304 && matching ? matching.value : await (blob ? response.blob() : readApiJson(response));
     if (epoch !== authEpoch) throw new DOMException('Сеанс изменился.', 'AbortError');
     if (!blob && browserSession && sessionUserId && result?.user?.id && result.user.id !== sessionUserId) {
       throw new ApiError('Пользователь Fastkore изменился. Откройте помощника заново.', 401);
+    }
+    if (revalidate && response.ok) {
+      const etag = response.headers.get('ETag');
+      revalidate.entry = etag ? { url, epoch, etag, value: result as T } : undefined;
     }
     return result as T;
   } catch (error) {
@@ -602,10 +608,19 @@ function App() {
     if (!loggedIn || !user || setupRequired) { setReconnecting(false); return; }
     let disposed = false, timer: ReturnType<typeof setTimeout>;
     let consecutiveFailures = 0;
+    const projectSnapshot: JsonSnapshot<ProjectSummary[]> = {};
+    const unassignedSnapshot: JsonSnapshot<UnassignedChatSummary[]> = {};
+    const agentSnapshot: JsonSnapshot<AgentSummary[]> = {};
+    const chatListSnapshot: JsonSnapshot<ChatSummary[]> = {};
+    const chatSnapshot: JsonSnapshot<ChatView> = {};
     async function refresh() {
       try {
         const projectAtStart = selected.current.projectId;
-        const [state, list, unassigned] = await Promise.all([api<Status>('/api/status'), api<ProjectSummary[]>('/api/projects'), api<UnassignedChatSummary[]>(unassignedChatsUrl)]);
+        const [state, list, unassigned] = await Promise.all([
+          api<Status>('/api/status'),
+          api<ProjectSummary[]>('/api/projects', { revalidate: projectSnapshot }),
+          api<UnassignedChatSummary[]>(unassignedChatsUrl, { revalidate: unassignedSnapshot }),
+        ]);
         if (disposed) return;
         setStatus(state); setUser(state.user); setUnassignedChats(unassigned);
         const activeProjectExists = list.some(p => p.id === selected.current.projectId);
@@ -619,20 +634,22 @@ function App() {
         }
         const p = selected.current.projectId;
         if (!p || list.some(project => project.id === p)) {
-          const allowedAgents = await api<AgentSummary[]>(agentsUrl(p));
+          const allowedAgents = await api<AgentSummary[]>(agentsUrl(p), { revalidate: agentSnapshot });
           if (disposed || selected.current.projectId !== p) return;
-          setAgentCatalog({ projectId: p, list: allowedAgents });
+          setAgentCatalog(old => old?.projectId === p && old.list === allowedAgents ? old : { projectId: p, list: allowedAgents });
         }
         const previousChat = selected.current.chatId;
         if (p && list.some(project => project.id === p)) {
-          const conversations = await api<ChatSummary[]>(`/api/projects/${p}/chats`); if (disposed || selected.current.projectId !== p) return;
+          const conversations = await api<ChatSummary[]>(`/api/projects/${p}/chats`, { revalidate: chatListSnapshot });
+          if (disposed || selected.current.projectId !== p) return;
           if (selected.current.chatId !== previousChat) return;
-          setChatLists(old => ({ ...old, [p]: conversations }));
+          setChatLists(old => old[p] === conversations ? old : { ...old, [p]: conversations });
           const fallback = currentErpContext.current.active ? undefined : conversations.find(item => !item.linkedToFastkore);
           if ((previousChat || fallback) && !conversations.some(c => c.id === previousChat)) navigateTo(p, fallback?.id ?? '');
           const c = selected.current.chatId;
           if (c && conversations.some(item => item.id === c)) {
-            const detail = await api<Chat>(`/api/projects/${p}/chats/${c}`); if (!disposed && selected.current.projectId === p && selected.current.chatId === c) setChat(detail);
+            const detail = await api<ChatView>(`/api/projects/${p}/chats/${c}`, { revalidate: chatSnapshot });
+            if (!disposed && selected.current.projectId === p && selected.current.chatId === c) setChat(detail);
           }
         }
         if (!disposed) { consecutiveFailures = 0; setReconnecting(false); }
@@ -1097,11 +1114,11 @@ function App() {
   const navigationChats = (group: string): UnassignedChatSummary[] => group === unassignedGroupId
     ? unassignedChats : (chatLists[group] ?? []).map(item => ({ ...item, projectId: group }));
   const query = searchQuery.trim().toLocaleLowerCase('ru-RU');
-  const searchable = navigationGroups.flatMap(project => {
+  const searchable = panel === 'search' ? navigationGroups.flatMap(project => {
     const matchesProject = project.name.toLocaleLowerCase('ru-RU').includes(query);
     const matchingChats = navigationChats(project.id).filter(item => matchesProject || item.title.toLocaleLowerCase('ru-RU').includes(query));
     return matchesProject || matchingChats.length ? [{ project, matchingChats }] : [];
-  });
+  }) : [];
   const draftEditable = !chatId || canEdit;
   const canCreate = !!selectedProject && !!newAgent && !pending;
   const canDictate = status?.dictationEnabled && messageAgent?.available && (chatId ? canEdit : canStartChat);
@@ -1204,12 +1221,8 @@ function App() {
   const renderHistory = (conversation: Chat, project: string) => <>
       {conversation.messages.filter(message => message.status !== 'running' || message.text.trim() || message.attachments.length)
         .map(message => <article key={message.id} className={'conversation-message is-' + message.role}>
-        {message.role === 'assistant' ? message.text && <div className="markdown"><ReactMarkdown remarkPlugins={[remarkGfm]}
-          rehypePlugins={inFastkore && message.status === 'complete' && message.attachments.length
-            ? [[hideAttachedOutputLinks, { origin: location.origin, files: message.attachments }]] : undefined} components={{
-          img: ({ alt }) => <span>[Изображение: {alt}]</span>,
-          a: ({ href, children }) => <a href={href} target="_blank" rel="noreferrer">{children}</a>,
-        }}>{message.text}</ReactMarkdown></div> :
+        {message.role === 'assistant' ? message.text && <ChatMarkdown text={message.text} origin={location.origin}
+          files={inFastkore && message.status === 'complete' && message.attachments.length ? message.attachments : undefined} /> :
           <div className="question-bubble">
             {conversation.visibility !== 'project' && message.authorId && message.authorId !== user.id && <small title={dateTooltip(message.createdAt, message.authorName ?? conversation.ownerName)}>{shortUserName(message.authorName ?? conversation.ownerName)}</small>}
             {message.specialistName && <small title="Рекомендованный агент">@{message.specialistName}</small>}
@@ -1447,7 +1460,7 @@ function App() {
         {navigationGroups.map(project => {
           const unassignedGroup = project.id === unassignedGroupId;
           const open = openProjects[project.id] ?? (unassignedGroup || project.id === projectId);
-          const list = navigationChats(project.id);
+          const list = open ? navigationChats(project.id) : [];
           const pinned = list.filter(item => item.pinned);
           const recent = list.filter(item => !item.pinned);
           const visible = [...pinned, ...(showAll[project.id] ? recent : recent.slice(0, 5))];
