@@ -150,7 +150,9 @@ export class GeminiClient implements CodexRunner {
     if (signal.aborted) stop();
     const timer = setTimeout(stop, 15 * 60000);
     child.stdin.on('error', () => {});
-    const prompt = [request.developerInstructions, request.prompt].filter(Boolean).join('\n\n');
+    // Large tool results may be moved to disk. Re-read a smaller range through the authorized tool.
+    const recallNote = this.antigravity ? 'Инструмент read_file заблокирован платформой. Если большой результат сохранён во временный файл, повтори обращение к источнику с меньшим объёмом: library_read с startLine и lineCount, library_search с уточнённым запросом или инструмент ERP для конкретного объекта и нужных полей.' : '';
+    const prompt = [request.developerInstructions, recallNote, request.prompt].filter(Boolean).join('\n\n');
     child.stdin.end(this.antigravity ? JSON.stringify({ event: 'user', message: { content: prompt } }) + '\n' : prompt);
     try {
       for await (const line of createInterface({ input: child.stdout })) {
