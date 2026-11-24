@@ -183,7 +183,7 @@ export function ExternalLibraryPicker({ provider, request, onSelect, selectionCo
     {busy && !authUrl && <p className="help" role="status">{connection ? 'Загружаем папки…' : 'Подключаем аккаунт…'}</p>}
     {error && <p className="inline-error" role="alert">{error}</p>}
     {connection && <>
-      <strong>{chosen ? 'Папка для библиотеки выбрана' : 'Откройте нужную папку и нажмите «Выбрать»'}</strong>
+      <strong>{chosen ? 'Папка для библиотеки выбрана' : 'Откройте папку для библиотеки'}</strong>
       <p className="help">{[name, ...trail.map(folder => folder.name)].join(' / ')}</p>
       {chosen ? <>
         <p className="help" role="status">Агенты с доступом к библиотеке смогут искать и читать файлы в папке «{current?.name}» и её подпапках.</p>
@@ -198,10 +198,11 @@ export function ExternalLibraryPicker({ provider, request, onSelect, selectionCo
             <span>{folder.name}</span><ChevronRight size={15} aria-hidden="true" />
           </button>
         </li>)}</ul>}
-        {!busy && !error && !folders.length && <p className="help">{current ? 'Вложенных папок нет. Вы можете выбрать эту папку.' : 'Нет доступных папок. Создайте папку на диске и обновите список.'}</p>}
+        {!busy && !error && !folders.length && <p className="help">{current ? 'Вложенных папок нет.' : 'Нет доступных папок. Создайте папку на диске и обновите список.'}</p>}
+        {current && selectionConfirmed !== undefined && <p className="help">На следующем шаге можно изменить название библиотеки.</p>}
         <div className="settings-actions">
           {current && <>
-            <button type="button" className="primary" disabled={busy} onClick={chooseFolder}>Выбрать «{current.name}»</button>
+            <button type="button" className="primary" disabled={busy} onClick={chooseFolder}>Далее</button>
             <button type="button" className="secondary" disabled={busy}
               onClick={() => void browse(connection, trail.slice(0, -1), controller.current?.signal)}>На уровень выше</button>
           </>}
