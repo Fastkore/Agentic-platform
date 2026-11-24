@@ -67,7 +67,11 @@
 .library-heading .specialist-back { margin: 0; }
 .library-settings :is(.library-card-body, .library-card-actions) { margin-inline-start: 0; }
 .library-settings .settings-records strong { display: inline-flex; align-items: center; gap: 6px; }
-.library-folders-heading { margin-bottom: 10px; padding-bottom: 8px; border-bottom: 1px solid var(--border); }
+.library-folders-heading {
+  margin-bottom: 10px; padding-bottom: 8px; border-bottom: 1px solid var(--border);
+  /* The settings scrollport clips the extended divider at both edges. */
+  border-image: linear-gradient(var(--border), var(--border)) 0 0 1 / 0 0 1px / 0 100vw;
+}
 .library-folders-heading > .library-tabs { padding-bottom: 0; border-bottom: 0; }
 .library-folders-heading .secondary { flex: none; white-space: nowrap; }
 .library-storage { display: grid; gap: 6px; padding-top: 8px; border-top: 1px solid var(--border); }
