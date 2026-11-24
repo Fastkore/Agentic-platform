@@ -54,6 +54,10 @@ export function LibraryKindIcon({ external }: { external: boolean }) {
   return <span className={external ? 'library-icon-external' : 'library-icon-ordinary'}><PlatformIcon name={external ? 'cloud' : 'folder'} /></span>;
 }
 export const libraryTabs = [['s3', 'Обычные', Folder], ['external', 'Внешние', Cloud]] as const;
+export function libraryTabCounts(folders: LibraryFolderSummary[]) {
+  const external = folders.filter(folder => folder.external).length;
+  return { s3: folders.length - external, external };
+}
 const adminLibraryTabs = [...libraryTabs, ['storage', 'MinIO / S3', HardDrive]] as const;
 export function LibraryCreateButtons({ kind, select, disabled }: { kind?: LibraryKind; select: (kind?: LibraryKind) => void; disabled: boolean }) {
   return <span className="library-create-actions">{kinds.map(value =>
@@ -238,6 +242,7 @@ export function LibraryPanel({ request, isAdmin }: { request: Request; isAdmin: 
     {notice && <p className="help" role="status">{notice}</p>}
     <div className="library-folders-heading">
       <SettingsTabStrip sections={isAdmin ? adminLibraryTabs : libraryTabs} value={tab} id={tabId} label="Библиотеки"
+        counts={folders && libraryTabCounts(folders)}
         className="library-tabs" panelId={key => tabId + key + '-panel'} disabled={pending}
         select={key => { setTab(key); setCreating(undefined); setFolderSearch(''); setNotice(''); }} />
       {isAdmin && tab !== 'storage' && <LibraryCreateButtons kind={creating} select={value => {

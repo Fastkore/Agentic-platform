@@ -2,7 +2,7 @@ import { useId, useState, type ReactNode } from 'react';
 import { Activity, Cpu, FolderOpen, Settings2, type LucideIcon } from 'lucide-react';
 import './specialists.css';
 
-export function SettingsTabStrip<T extends string>({ sections, value, select, id, label, panelId, className = '', disabled }: {
+export function SettingsTabStrip<T extends string>({ sections, value, select, id, label, panelId, className = '', disabled, counts }: {
   sections: readonly (readonly [T, string, LucideIcon])[];
   value: T;
   select: (value: T) => void;
@@ -11,6 +11,7 @@ export function SettingsTabStrip<T extends string>({ sections, value, select, id
   panelId: (value: T) => string;
   className?: string;
   disabled?: boolean;
+  counts?: Partial<Record<T, number>>;
 }) {
   return <div className={`specialist-tabs ${className}`} role="tablist" aria-label={label} onKeyDown={event => {
     if (disabled) return;
@@ -23,7 +24,10 @@ export function SettingsTabStrip<T extends string>({ sections, value, select, id
     event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="tab"]')[next]?.focus();
   }}>
     {sections.map(([key, title, Icon]) => <button key={key} id={id + key} type="button" role="tab" aria-selected={key === value}
-      aria-controls={panelId(key)} tabIndex={key === value ? 0 : -1} disabled={disabled} onClick={() => select(key)}><Icon size={17} aria-hidden="true" />{title}</button>)}
+      aria-controls={panelId(key)} tabIndex={key === value ? 0 : -1} disabled={disabled} onClick={() => select(key)}>
+      <Icon size={17} aria-hidden="true" />{title}
+      {counts?.[key] !== undefined && <span className="settings-tab-count">{counts[key]}</span>}
+    </button>)}
   </div>;
 }
 

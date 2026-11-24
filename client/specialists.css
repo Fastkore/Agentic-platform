@@ -59,6 +59,13 @@
 .specialist-tabs > button[aria-selected="true"] { color: var(--accent-strong); background: var(--accent-soft); }
 .specialist-tabs > button:not([aria-selected="true"]):hover { background: var(--hover); }
 .specialist-tabs > button > svg { flex: none; }
+.settings-tab-count {
+  display: inline-grid; place-items: center; flex: none; box-sizing: border-box;
+  min-width: 20px; height: 20px; padding-inline: 4px; border: 1px solid var(--control-border);
+  border-radius: 999px; background: var(--surface); color: var(--text-secondary);
+  font-size: 11px; font-weight: 600; line-height: 1; font-variant-numeric: tabular-nums;
+}
+.specialist-tabs > button[aria-selected="true"] .settings-tab-count { color: var(--accent-strong); border-color: var(--accent); }
 .specialist-tabpanel { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; padding: 14px 6px 10px 0; overscroll-behavior: contain; }
 .specialist-tabpanel[hidden] { display: none; }
 .specialist-tabpanel > .specialist-card + .specialist-card { margin-top: 14px; }

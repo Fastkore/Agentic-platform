@@ -7,7 +7,7 @@ import { Select } from './Select';
 import { PermissionSwitch } from './PermissionSwitch';
 import { formatFileCount, type Request } from './library-upload';
 import { folderLine, LibraryFolderCard, useLibraryRefresh } from './LibraryFolderCard';
-import { CreateLibraryForm, LibraryCreateButtons, LibrarySearch, libraryTabs, LibraryKindIcon, type LibraryKind, outputModes, profileLabels } from './LibraryPanel';
+import { CreateLibraryForm, LibraryCreateButtons, LibrarySearch, libraryTabCounts, libraryTabs, LibraryKindIcon, type LibraryKind, outputModes, profileLabels } from './LibraryPanel';
 import './specialists.css';
 import './library.css';
 
@@ -51,12 +51,14 @@ export function ProjectLibraryPanel({ project, request, section, isAdmin, initia
   const matches = (name: string) => name.toLocaleLowerCase('ru').includes(search.trim().toLocaleLowerCase('ru'));
 
   const foldersById = new Map(folders.map(f => [f.id, f]));
+  const listedIds = view && new Set([...view.connections.map(c => c.folderId), ...view.available.map(f => f.id)]);
   const inTab = (id: string) => !!foldersById.get(id)?.external === (tab === 'external');
   const connections = view?.connections.filter(c => inTab(c.folderId) && matches(c.folderName)) ?? [];
   const available = view?.available.filter(f => inTab(f.id) && matches(f.name)) ?? [];
   return <div className="project-library-settings">
     <div className="project-agents-intro">
       {section === 'folders' ? <SettingsTabStrip sections={libraryTabs} value={tab} id={tabId} label="Библиотеки проекта"
+        counts={listedIds && libraryTabCounts(folders.filter(f => listedIds.has(f.id)))}
         className="library-tabs" panelId={key => tabId + key + '-panel'} disabled={pending}
         select={key => { setTab(key); setCreating(undefined); setSearch(''); }} /> : <strong>Доступ агентов к папкам</strong>}
       <span className="project-specialist-actions">
