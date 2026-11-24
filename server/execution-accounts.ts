@@ -14,12 +14,25 @@ import type { ModelCatalog } from '../shared/types.js';
 type RecordAccount = Pick<ExecutionAccount, 'id' | 'name' | 'provider'>;
 // Several accounts may stay active at once: users see the models of every active account,
 // inactive ones stay hidden. `active` in accounts.json is a list; a legacy string is upgraded on load.
-type Manifest = { active: string[]; accounts: RecordAccount[] };
+type Manifest = { active: string[]; accounts: RecordAccount[]; proxyUrl?: string };
+const codexNetworkHelp = 'Попросите администратора проверить доступ к auth.openai.com и поле «HTTPS-прокси» в настройках «Сервер и AI → Подключения к AI». Затем запросите новый код.';
+const codexCodeExpired = 'Срок действия кода истёк. Запросите новый код и введите его на странице OpenAI.';
+export function codexLoginFailure(output: string, hadCode: boolean) {
+  if (/device code request failed with status 403\b/i.test(output)) {
+    return 'OpenAI отклонил запрос с сервера платформы (HTTP 403). Одноразовый код не выдан. ' + codexNetworkHelp;
+  }
+  if (hadCode && /expired|timed? out/i.test(output)) return codexCodeExpired;
+  if (/error sending request|connection refused|connection reset|dns error|timed? out|proxy connect/i.test(output)) {
+    return 'Сервер платформы не смог связаться с OpenAI. ' + codexNetworkHelp;
+  }
+  return hadCode ? 'OpenAI не подтвердил вход. Проверьте, разрешён ли вход по коду устройства в настройках ChatGPT, и запросите новый код.'
+    : 'Не удалось получить одноразовый код OpenAI. Повторите запрос. Если ошибка повторится, обратитесь к администратору платформы.';
+}
 function normalizeManifest(parsed: Partial<Manifest> & { active?: string[] | string }): Manifest {
   const active = Array.isArray(parsed.active) ? parsed.active.filter(item => typeof item === 'string')
     : typeof parsed.active === 'string' ? [parsed.active] : ['default'];
   // An explicitly empty account list stays empty; the default account seeds only fresh stores.
-  return { active: [...new Set(active)], accounts: parsed.accounts ?? [{ id: 'default', name: 'Основной Codex', provider: 'codex' }] };
+  return { active: [...new Set(active)], accounts: parsed.accounts ?? [{ id: 'default', name: 'Основной Codex', provider: 'codex' }], proxyUrl: parsed.proxyUrl };
 }
 export class ExecutionAccountStore {
   private state: Manifest;
@@ -35,10 +48,28 @@ export class ExecutionAccountStore {
       else child.kill('SIGKILL');
     } catch { child.kill('SIGKILL'); }
   }
-  constructor(readonly root: string) {
+  constructor(readonly root: string, private readonly environment = process.env) {
     mkdirSync(root, { recursive: true, mode: 0o700 });
     this.file = path.join(root, 'accounts.json');
     this.state = existsSync(this.file) ? normalizeManifest(JSON.parse(readFileSync(this.file, 'utf8'))) : normalizeManifest({});
+    if (this.state.proxyUrl !== undefined) this.environment.HTTPS_PROXY = this.state.proxyUrl;
+  }
+  private get proxyUrl() {
+    // Older Compose settings may include credentials. Only the address belongs in the admin form.
+    try { return new URL(this.environment.HTTPS_PROXY ?? '').origin; } catch { return ''; }
+  }
+  async setProxy(value: string) {
+    let proxyUrl = '';
+    if (value.trim()) {
+      const url = URL.canParse(value.trim()) ? new URL(value.trim()) : undefined;
+      if (!url || !['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.pathname !== '/' || url.search || url.hash) {
+        throw new BridgeError('Введите адрес HTTP- или HTTPS-прокси без логина, пароля и пути.');
+      }
+      proxyUrl = url.origin;
+    }
+    await this.save({ ...this.state, proxyUrl });
+    this.environment.HTTPS_PROXY = proxyUrl;
+    return { proxyUrl };
   }
   private find(id: string) {
     const account = this.state.accounts.find(item => item.id === id);
@@ -127,7 +158,7 @@ export class ExecutionAccountStore {
   }
   async list(): Promise<ExecutionAccounts> {
     const selected = this.activeSet;
-    return { accounts: await Promise.all(this.state.accounts.map(async account => {
+    return { proxyUrl: this.proxyUrl, accounts: await Promise.all(this.state.accounts.map(async account => {
       let email: string | undefined, scope: GigaChatScope | undefined, signedIn = false;
       try {
         if (account.provider === 'antigravity') {
@@ -188,7 +219,7 @@ export class ExecutionAccountStore {
     let moved = false;
     try { await rename(target, staged); moved = true; }
     catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
-    try { await this.save({ active: [...activeSet], accounts: remaining.map(({ id, name, provider }) => ({ id, name, provider })) }); }
+    try { await this.save({ ...this.state, active: [...activeSet], accounts: remaining.map(({ id, name, provider }) => ({ id, name, provider })) }); }
     catch (error) { if (moved) await rename(staged, target); throw error; }
     this.logins.delete(id);
     this.gigaChatClients.delete(id);
@@ -236,7 +267,7 @@ export class ExecutionAccountStore {
     });
     const state: NonNullable<ExecutionAccount['login']> = { state: 'waiting' };
     const lifetime = setTimeout(() => {
-      state.state = 'error'; state.error = 'Срок ожидания входа истёк. Запросите новую ссылку.';
+      state.state = 'error'; state.error = google ? 'Срок ожидания входа истёк. Запросите новую ссылку.' : codexCodeExpired;
       this.stopLogin(child);
     }, google ? 6 * 60000 : 16 * 60000).unref();
     child.once('close', () => clearTimeout(lifetime));
@@ -244,14 +275,18 @@ export class ExecutionAccountStore {
     return await new Promise<typeof state>(resolve => {
       let output = '', returned = false, selectedGoogle = false;
       const finish = () => { if (!returned) { returned = true; clearTimeout(timer); resolve(state); } };
-      const timer = setTimeout(() => { this.stopLogin(child); state.state = 'error'; state.error = 'Не удалось начать вход. Повторите попытку.'; finish(); }, 30000);
+      const timer = setTimeout(() => {
+        state.state = 'error';
+        state.error = google ? 'Не удалось начать вход. Повторите попытку.' : 'Сервер платформы не получил код OpenAI за 30 секунд. ' + codexNetworkHelp;
+        this.stopLogin(child); finish();
+      }, 30000);
       const consume = (chunk: Buffer) => {
         output = (output + chunk.toString('utf8')).replace(/\x1b\[[0-9;?<>]*[a-zA-Z]/g, '').slice(-64000);
         if (account.provider === 'antigravity' && !selectedGoogle && output.includes('Select login method:')) {
           selectedGoogle = true; child.stdin?.write('\r');
         }
-        const code = output.match(/\b[A-Z0-9]{4}-[A-Z0-9]{4,5}\b/)?.[0];
-        if (code && output.includes('https://auth.openai.com/codex/device')) {
+        const code = output.match(/^[ \t]*([A-Z0-9]{4}-[A-Z0-9]{4,5})[ \t]*\r?\n/m)?.[1];
+        if (!google && code && output.includes('https://auth.openai.com/codex/device')) {
           state.url = 'https://auth.openai.com/codex/device'; state.code = code; finish();
         }
         const googleUrl = output.match(/https:\/\/accounts\.google\.com\/[^\s\x1b\x07]+/)?.[0];
@@ -263,10 +298,13 @@ export class ExecutionAccountStore {
       child.once('error', () => { state.state = 'error'; state.error = 'Не удалось запустить вход исполнителя.'; finish(); });
       child.once('close', code => {
         if (state.state === 'complete') { finish(); return; }
-        state.state = code === 0 ? 'complete' : 'error';
-        if (state.state === 'complete') this.modelRevision = randomUUID();
-        if (code !== 0) state.error = 'Вход не завершён. Запросите новый код.';
+        if (state.state === 'waiting') {
+          state.state = code === 0 ? 'complete' : 'error';
+          if (state.state === 'complete') this.modelRevision = randomUUID();
+          else state.error = google ? 'Вход не завершён. Запросите новый код.' : codexLoginFailure(output, !!state.code);
+        }
         delete state.code;
+        delete state.url;
         finish();
       });
     });
