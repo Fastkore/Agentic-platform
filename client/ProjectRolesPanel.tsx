@@ -57,19 +57,19 @@ export function ProjectRolesPanel({ projectId, request, onSaved, pendingChanged 
     {error && <p className="inline-error" role="alert">{error}</p>}
     {!settings && !error && <p role="status">Загрузка…</p>}
     {settings && <form onSubmit={event => { event.preventDefault(); if (changed) void save(); }}>
-      {settings.available.length ? <div className="member-list" role="group" aria-label="Роли с доступом к проекту">
+      {settings.available.length ? <ul className="settings-records project-role-options" aria-label="Роли с доступом к проекту">
         {settings.available.map(role => {
           const key = roleKey(role);
-          return <label key={key}>
+          return <li key={key}><label>
             <input type="checkbox" disabled={pending} checked={selected.includes(key)} onChange={event => {
               const checked = event.currentTarget.checked;
               setSaved(false);
               setSelected(current => checked ? [...current, key] : current.filter(item => item !== key));
             }} />
             <span>{role.name}<small>{role.installationName}</small></span>
-          </label>;
+          </label></li>;
         })}
-      </div> : <p className="help">Роли появятся после входа сотрудников из Fastkore.</p>}
+      </ul> : <p className="help">Роли появятся после входа сотрудников из Fastkore.</p>}
       <div className="settings-dialog-actions">
         {saved && <span role="status">Роли проекта сохранены.</span>}
         <button type="submit" className="primary" disabled={!changed || pending}>Сохранить роли</button>

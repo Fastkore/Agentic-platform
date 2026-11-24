@@ -694,6 +694,7 @@
 .chat-access-settings > .help { margin-top: 12px; }
 .project-instructions-form { display: grid; gap: 10px; }
 .project-instructions-form textarea, .workspace-project-form textarea { width: 100%; resize: vertical; }
+.project-instructions-form textarea { box-sizing: border-box; padding: 10px 12px; }
 .project-instructions-text { white-space: pre-wrap; overflow-wrap: anywhere; }
 .chat-files-dialog { width: min(720px, calc(100vw - 24px)); }
 .chat-stored-files { display: grid; gap: 8px; margin-top: 14px; }
@@ -883,6 +884,12 @@
 .settings-records { margin: 0; padding: 0; list-style: none; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); }
 .settings-records > li { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 12px 15px; }
 .settings-records > li + li { border-top: 1px solid var(--border); }
+.settings-records.project-role-options > li { padding: 0; }
+.project-role-options > li > label {
+  display: flex; align-items: center; gap: 10px; width: 100%; margin: 0; padding: 6px 10px; cursor: pointer;
+}
+.project-role-options input[type="checkbox"] { flex: none; margin: 0; }
+.project-role-options label > span { min-width: 0; overflow-wrap: anywhere; }
 .settings-records > li > div { min-width: 0; overflow-wrap: anywhere; }
 .settings-records strong { font-weight: 600; }
 .settings-records small, .settings-records time { color: var(--text-muted); font-size: 12px; }
@@ -1003,9 +1010,9 @@
   border: 1px solid var(--control-border); border-radius: 9px; background: var(--control);
   box-shadow: inset 0 1px 0 #ffffff06; color: var(--text);
 }
-.workspace-dialog .secondary { min-height: 38px; padding: 8px 14px; font-weight: 550; }
+.workspace-dialog :is(.primary, .secondary) { min-height: 38px; padding: 8px 14px; border-radius: 9px; font-weight: 550; }
 .workspace-dialog .secondary:hover:not(:disabled) { background: var(--nav-raised); border-color: var(--focus-border); }
-.workspace-dialog .primary { border-radius: 9px; min-height: 38px; }
+.workspace-dialog .primary { border: 1px solid transparent; }
 .workspace-chat-rename { padding-bottom: 14px; }
 .chat-share-dialog > p { overflow-wrap: anywhere; }
 .workspace-chat-rename > header { padding-block: 7px; }

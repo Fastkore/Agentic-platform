@@ -134,7 +134,7 @@ export function ProjectLibraryPanel({ project, request, section, isAdmin, initia
               </td>;
             })}
           </tr>)}</tbody>
-        </table></div> : <p className="help">Сначала подключите папки в разделе «Библиотека».</p>}
+        </table></div> : <p className="help">Сначала подключите папки на вкладке «Библиотеки».</p>}
         {detail && (() => {
           const c = view.connections.find(x => x.folderId === detail.folderId);
           const p = view.profiles.find(x => x.id === detail.profileId);

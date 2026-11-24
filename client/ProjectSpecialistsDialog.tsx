@@ -8,7 +8,7 @@ import { ProjectChatsPanel } from './ProjectChatsPanel';
 import { SettingsTabStrip } from './SettingsTabs';
 
 const ProjectLibraryPanel = lazy(() => import('./ProjectLibraryDialog').then(module => ({ default: module.ProjectLibraryPanel })));
-const sections = [['specialists', 'Агенты', Bot], ['instructions', 'Инструкция', FileText], ['library', 'Библиотека', Database], ['access', 'Доступ к материалам', ShieldCheck], ['roles', 'Роли', Users], ['chats', 'Чаты', MessageSquare]] as const;
+const sections = [['specialists', 'Агенты', Bot], ['instructions', 'Инструкция', FileText], ['library', 'Библиотеки', Database], ['access', 'Доступ к материалам', ShieldCheck], ['roles', 'Роли', Users], ['chats', 'Чаты', MessageSquare]] as const;
 type Section = typeof sections[number][0];
 
 export function ProjectSettingsDialog({ project, request, close, openSpecialist, rename, saveInstructions, remove, isAdmin, rolesChanged, renderChat, chatError }: {
