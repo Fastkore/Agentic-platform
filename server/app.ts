@@ -34,7 +34,7 @@ import { executionConcurrencySchema } from './execution-concurrency.js';
 import type { AgentProfile, Credential, Dataset, FastkoreAuthentication, FastkoreInstallation, FastkoreKeyIssue, FastkoreRolePermissions, FileStorageProvider, ProjectAgentPolicy, ProjectAgentSettings, Settings, User, WorkRole } from '../shared/types.js';
 import type { AuditEvent, ProjectRolePolicy, ProjectRoleSettings, RelatedChatSummary, Run, UnassignedChatSummary, UserRecord } from '../shared/types.js';
 import { agentToolIds } from '../shared/agent-tools.js';
-import { operationIds } from './corporate.js';
+import { operationIds, projectChatGrantId } from './corporate.js';
 import { FastkoreSso, loadSsoKey, cookieToken, csrfFor, validCsrf, setSessionCookie, setStartCookie, startCookie, normalizeTheme, uuid, type InstallationPatch, type PairingClient, type Theme, type TicketValidator } from './fastkore.js';
 
 export function addresses(port: number, lan: boolean) {
@@ -944,6 +944,9 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
     const catalog = isSettingsAdmin(p) ? projectRoleOptions(workspace.store.state) : undefined;
     return workspace.store.state.projects.filter(project => canAccessProject(p.user, project, p.credential)).map(project => ({
       id: project.id, name: project.name, instructions: project.instructions, directory: project.directory,
+      chatCapabilities: { ...workspace.corporate.projectChat(project),
+        closedAnalysis: process.env.BRIDGE_LIBRARY_CLOSED_ANALYSIS === 'verified' &&
+          workspace.library.policy.runScope(p.user.id, project.id, projectChatGrantId, p.credential.id).entries.some(entry => entry.classification === 'restricted') },
       canRename: canRenameProject(workspace.store.state, p.user, project, p.credential),
       chatCount: project.chats.filter(chat => !chat.archivedAt && access.canChat(p.user, chat) && chatIdentityMatches(p, chat)).length,
       roles: catalog?.filter(role => project.rolePolicy?.roles.some(selected => selected.installationId === role.installationId && selected.roleId === role.roleId)),
@@ -1253,7 +1256,7 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
       return user(request);
     })));
   app.get<{ Params: ChatParams }>(chatPath + '/messages', async request => requestChat(request).messages);
-  app.post<{ Params: ChatParams; Body: { text: string; attachmentIds?: string[]; clientRequestId?: string; model?: string; fastkoreContext?: unknown; recommendedSpecialistId?: string } }>(chatPath + '/messages', { schema: { body: object({ text: string(60_000), attachmentIds: { type: 'array', items: string(100), maxItems: 8, uniqueItems: true }, clientRequestId: string(100), model: modelSchema, fastkoreContext: { type: 'object' }, recommendedSpecialistId: identifier }, ['text']) } }, async (request, reply) => {
+  app.post<{ Params: ChatParams; Body: { text: string; attachmentIds?: string[]; clientRequestId?: string; model?: string; fastkoreContext?: unknown; recommendedSpecialistId?: string; requiredSpecialistId?: string } }>(chatPath + '/messages', { schema: { body: object({ text: string(60_000), attachmentIds: { type: 'array', items: string(100), maxItems: 8, uniqueItems: true }, clientRequestId: string(100), model: modelSchema, fastkoreContext: { type: 'object' }, recommendedSpecialistId: identifier, requiredSpecialistId: identifier }, ['text']) } }, async (request, reply) => {
     const check = () => {
       const u = user(request); requestChat(request, request.body.model === undefined ? 'post' : true);
       if (workspace.project(request.params.projectId).deletedAt) throw new BridgeError('Сначала выберите проект для чата.', 409);
@@ -1281,7 +1284,7 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
     }
     const snapshot = parsed ?? undefined;
     if (snapshot && snapshot.view !== 'none') delete snapshot.entity_uri;
-    const run = await workspace.send(request.params.projectId, request.params.chatId, text, request.body.attachmentIds ?? [], request.body.clientRequestId ? `${user(request).id}:${request.body.clientRequestId}` : undefined, request.body.model, check, { id: user(request).id, name: user(request).name, credentialId: principal(request).credential.id }, snapshot, request.body.recommendedSpecialistId);
+    const run = await workspace.send(request.params.projectId, request.params.chatId, text, request.body.attachmentIds ?? [], request.body.clientRequestId ? `${user(request).id}:${request.body.clientRequestId}` : undefined, request.body.model, check, { id: user(request).id, name: user(request).name, credentialId: principal(request).credential.id }, snapshot, request.body.recommendedSpecialistId, request.body.requiredSpecialistId);
     return reply.code(202).header('Location', `/api/runs/${run.id}`).send(run);
   });
   app.post<{ Params: { projectId: string } }>('/api/projects/:projectId/attachments', async (request, reply) => {

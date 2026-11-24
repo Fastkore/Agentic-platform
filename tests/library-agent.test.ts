@@ -103,7 +103,7 @@ test('explanation only: code blocks, encoded copies and listings are not publish
   }, { workerFiles: true });
   try {
     await f.workspace.settings({ allowWrite: true });
-    f.workspace.corporate.data.profiles.find(p => p.id === 'universal')!.allowWrite = true;
+    f.project.chatAllowWrite = true;
     const { folder, connection } = await grantedFolder(f, { 'Pricing.cs': code });
     const ask = async (text: string) => {
       const chat = (await f.req('POST', `/api/projects/${f.project.id}/chats`, f.token, {})).json();
@@ -204,5 +204,63 @@ test('HTTP protocol: one operation per folder (409), "Библиотека ак�
     assert.equal((await f.req('GET', `/api/library/${folder.id}`, f.admin)).statusCode, 404);
     // Retired routes and the former local upload utility give no access.
     for (const url of ['/api/admin/sources', `/api/projects/${f.project.id}/sources`, `/api/projects/${f.project.id}/files`]) assert.equal((await f.req('GET', url, f.admin)).statusCode, 404, url);
+  } finally { await f.app.close(); }
+});
+test('the project routes a quote to an estimator with its own library grant and also supports explicit selection', async () => {
+  const f = await fixture(async (request, signal) => {
+    const tools = request.tools!;
+    if (json(request.prompt.split('\n')[1]).агент === 'Оценщик') {
+      const list = await tools.call('library_list', {}, signal);
+      assert.equal(list.success, true, list.text);
+      const [folder] = json(list.text).folders;
+      const found = await tools.call('library_search', { query: 'SH-12' }, signal);
+      assert.equal(found.success, true, found.text);
+      const [match] = json(found.text).matches;
+      const file = await tools.call('library_read', { folder: folder.folder, path: match.path }, signal);
+      assert.match(file.text, /12000/);
+      assert.equal((await tools.call('knowledge', { section: 'fastkore', action: 'index' }, signal)).success, true);
+      return 'Стоимость позиции SH-12 составляет 12 000 рублей.';
+    }
+    assert.ok(!tools.definitions.some(tool => tool.name === 'library_read'));
+    if (request.prompt.includes('Консультация по выбору сотрудника')) {
+      assert.match(request.prompt, /12 000 рублей/);
+      return 'КП: 12 000 рублей.';
+    }
+    const catalog = await tools.call('consult_specialist', {}, signal);
+    assert.deepEqual(json(catalog.text), [{ id: 'estimator', name: 'Оценщик', description: 'Расчёт стоимости по прайсу проекта' }]);
+    const result = await tools.call('consult_specialist', { specialistId: 'estimator', task: 'Проверь цену SH-12' }, signal);
+    assert.equal(result.success, true);
+    return result.text;
+  });
+  try {
+    const original = f.workspace.corporate.data.profiles.find(profile => profile.id === 'estimator')!;
+    await f.workspace.corporate.saveProfile({ role: 'admin', id: 'test-admin', disabled: false, name: 'Test', username: 'test' },
+      { ...original, enabled: true, description: 'Расчёт стоимости по прайсу проекта' });
+    await grantedFolder(f, { 'price.csv': 'sku,price\nSH-12,12000\n' }, { profileId: 'estimator', profile: 'documents' });
+    const route = `/api/projects/${f.project.id}/chats`;
+    async function ask(agentProfileId?: string, requiredSpecialistId?: string) {
+      const created = await f.req('POST', route, f.token, { agentProfileId });
+      assert.equal(created.statusCode, 201, created.body);
+      assert.equal(created.json().agentProfileId, agentProfileId);
+      const chat = route + '/' + created.json().id;
+      const sent = await f.req('POST', chat + '/messages', f.token, { text: 'Подготовь КП на SH-12', requiredSpecialistId });
+      assert.equal(sent.statusCode, 202, sent.body);
+      await idle(f.workspace);
+      assert.equal(f.workspace.getRun(sent.json().id).status, 'complete', f.workspace.getRun(sent.json().id).error);
+      return (await f.req('GET', chat, f.token)).json().messages.at(-1);
+    }
+    for (const required of [undefined, 'estimator']) {
+      const answer = await ask(undefined, required);
+      assert.match(answer.text, /12 000 рублей/);
+      assert.deepEqual(answer.consultedSpecialists, ['Оценщик']);
+    }
+    const direct = await ask('estimator');
+    assert.match(direct.text, /12 000 рублей/);
+    assert.equal(direct.consultedSpecialists, undefined);
+    const denied = await f.req('POST', route, f.token, { agentProfileId: 'accountant' });
+    assert.equal(denied.statusCode, 403);
+    const projectChat = await f.req('POST', route, f.token, {});
+    assert.equal((await f.req('POST', route + '/' + projectChat.json().id + '/messages', f.token,
+      { text: 'Подготовь КП', requiredSpecialistId: 'accountant' })).statusCode, 403);
   } finally { await f.app.close(); }
 });

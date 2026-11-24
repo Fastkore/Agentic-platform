@@ -21,7 +21,7 @@ export function CorporatePanel({ request, section }: { request: Request; section
   function change(next: Record<string, unknown>) { setEditing(old => old ? { ...old, ...next } : old); }
   function create() {
     setError(''); setNotice('');
-    setEditing(section === 'roles' ? { id: '', name: '', enabled: true, profileIds: ['universal'], operationIds: ['chat'], readDatasetIds: [], instructions: '', revision: 0 }
+    setEditing(section === 'roles' ? { id: '', name: '', enabled: true, profileIds: [], operationIds: ['chat'], readDatasetIds: [], instructions: '', revision: 0 }
       : { id: '', name: '', directory: '', projectIds: [], classification: 'restricted', revision: 0 });
   }
   async function save(e: React.FormEvent) {

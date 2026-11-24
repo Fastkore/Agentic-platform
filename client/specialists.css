@@ -26,11 +26,9 @@
 .specialist-name:hover { color: var(--accent-strong); }
 .specialist-summary > p { margin: 4px 0 0; color: var(--text-secondary); line-height: 1.4; overflow-wrap: anywhere; }
 .specialist-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 5px 12px; margin-top: 8px; color: var(--text-muted); font-size: 12px; }
-.specialist-status, .specialist-tool-summary { display: inline-flex; align-items: center; gap: 6px; }
+.specialist-status { display: inline-flex; align-items: center; gap: 6px; }
 .specialist-status::before { content: ''; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
 .specialist-status[data-enabled="true"] { color: var(--accent-strong); }
-.specialist-tool-summary { max-width: 100%; overflow-wrap: anywhere; }
-.specialist-tool-summary svg { flex: none; }
 .specialist-summary .specialist-unavailable { color: var(--text-muted); font-size: 12px; }
 .specialist-row-actions { display: flex; align-items: center; gap: 12px; flex: none; }
 .specialist-row-actions .specialist-configure { display: inline-flex; align-items: center; gap: 7px; min-height: 34px; padding: 6px 9px; font-size: 12px; }
@@ -93,46 +91,6 @@
 .specialist-icon-select .settings-select { min-height: 32px; min-width: 108px; }
 .specialist-instructions { display: flex; flex-direction: column; }
 .specialist-instructions textarea { flex: 1; min-height: 140px; resize: vertical; }
-.specialist-tool-list { display: grid; gap: 6px; margin-top: 9px; }
-.specialist-tool-list label {
-  display: flex; gap: 12px; align-items: center; padding: 8px 9px; margin: 0; border: 1px solid var(--border);
-  border-radius: 8px; background: var(--control); cursor: pointer;
-}
-.workspace-settings .specialist-tool-list input[type="checkbox"] {
-  appearance: none;
-  display: grid;
-  place-items: center;
-  flex: none;
-  margin: 0;
-  padding: 0;
-  border: 1px solid var(--text-muted);
-  border-radius: 3px;
-  background: var(--control);
-  cursor: inherit;
-}
-.workspace-settings .specialist-tool-list input[type="checkbox"]:checked {
-  border-color: var(--accent);
-  background: var(--accent);
-}
-.workspace-settings .specialist-tool-list input[type="checkbox"]:checked::after {
-  content: "";
-  width: 5px;
-  height: 9px;
-  border: solid #fff;
-  border-width: 0 2px 2px 0;
-  transform: translateY(-1px) rotate(45deg);
-}
-.workspace-settings .specialist-tool-list input[type="checkbox"]:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 3px;
-}
-@media (forced-colors: active) {
-  .workspace-settings .specialist-tool-list input[type="checkbox"] { appearance: auto; }
-  .workspace-settings .specialist-tool-list input[type="checkbox"]:checked::after { content: none; }
-}
-.specialist-tool-list svg { flex: none; color: var(--text-muted); }
-.specialist-tool-list strong { display: block; color: var(--text); font-weight: 600; }
-.specialist-tool-list small { display: block; margin-top: 2px; color: var(--text-muted); line-height: 1.35; }
 .specialist-file-header { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .specialist-file-header h3 { margin: 0; }
 .specialist-file-header input[hidden] { display: none; }

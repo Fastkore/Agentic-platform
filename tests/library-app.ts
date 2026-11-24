@@ -73,9 +73,9 @@ export async function fixture(respond?: Respond, options: { workerFiles?: boolea
 export async function idle(workspace: Workspace) { const deadline = Date.now() + 8000; while (workspace.busy) { if (Date.now() > deadline) throw Error('timeout'); await new Promise(r => setTimeout(r, 10)); } }
 export const json = (text: string) => JSON.parse(text);
 
-/** Creates a folder, connects it to the project, uploads files and assigns it to the base assistant. */
+/** Creates a folder, connects it to the project, uploads files and grants access. */
 export async function grantedFolder(f: Awaited<ReturnType<typeof fixture>>, files: Record<string, string>, options: { name?: string; classification?: 'shared' | 'restricted';
-  outputPolicy?: 'explanation_only' | 'excerpts_allowed'; projectId?: string; profile?: 'code' | 'documents' } = {}) {
+  outputPolicy?: 'explanation_only' | 'excerpts_allowed'; projectId?: string; profile?: 'code' | 'documents'; profileId?: string } = {}) {
   const projectId = options.projectId ?? f.project.id;
   const created = await f.req('POST', '/api/library', f.admin, { name: options.name ?? 'Папка ' + Math.random().toString(36).slice(2, 7), profile: options.profile ?? 'code',
     classification: options.classification ?? 'shared', outputPolicy: options.outputPolicy ?? 'explanation_only' });
@@ -85,7 +85,7 @@ export async function grantedFolder(f: Awaited<ReturnType<typeof fixture>>, file
   assert.equal(connected.statusCode, 201, connected.body);
   await f.upload(folder.id, files);
   const connection = async () => (await f.req('GET', `/api/projects/${projectId}/library`, f.admin)).json().connections.find((c: { folderId: string }) => c.folderId === folder.id);
-  const granted = await f.req('PUT', `/api/projects/${projectId}/library/${folder.id}/grants`, f.admin, { profileId: 'universal', enabled: true, revision: (await connection()).revision });
+  const granted = await f.req('PUT', `/api/projects/${projectId}/library/${folder.id}/grants`, f.admin, { profileId: options.profileId ?? 'universal', enabled: true, revision: (await connection()).revision });
   assert.equal(granted.statusCode, 200, granted.body);
   return { folder, connection };
 }

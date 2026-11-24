@@ -47,7 +47,7 @@ test('new projects connect only enabled agents that opt in, and existing project
   try {
     const { id: _id, revision: _revision, autoConnect: _autoConnect, ...base } = f.workspace.corporate.data.profiles[0];
     const save = async (id: string, values: object) => {
-      const result = await f.req('PUT', '/api/admin/profiles/' + id, f.admin, { ...base, name: id, ...values });
+      const result = await f.req('PUT', '/api/admin/profiles/' + id, f.admin, { ...base, name: id, enabled: true, ...values });
       assert.equal(result.statusCode, 200, result.body);
       return result.json();
     };
@@ -65,20 +65,18 @@ test('new projects connect only enabled agents that opt in, and existing project
       return result.json().policy.connections.map((connection: { profileId: string }) => connection.profileId);
     };
     const project = await create({ name: 'Новый проект' });
-    assert.deepEqual(await connections(project), ['universal', 'automatic_agent']);
+    assert.deepEqual(await connections(project), ['automatic_agent']);
     const initialAgents = await f.req('GET', '/api/projects/' + project + '/agents', f.admin);
-    assert.deepEqual(initialAgents.json().map((agent: AgentProfile) => agent.id), ['universal', 'automatic_agent']);
+    assert.deepEqual(initialAgents.json().map((agent: AgentProfile) => agent.id), ['automatic_agent']);
     automatic = await save('automatic_agent', { revision: automatic.revision, description: 'Уточнённое описание' });
     assert.equal(automatic.autoConnect, true);
     await save('automatic_agent', { revision: automatic.revision, autoConnect: false });
     const directory = path.join(f.root, 'new-directory');
     await mkdir(directory);
     const attached = await create({ name: 'Проект из папки', directory });
-    assert.deepEqual(await connections(attached), ['universal']);
-    assert.deepEqual(await connections(project), ['universal', 'automatic_agent']);
-    assert.deepEqual(await connections(f.project.id), ['universal', 'manual_agent', 'automatic_agent']);
-    const universal = f.workspace.corporate.data.profiles[0];
-    await save('universal', { revision: universal.revision, autoConnect: false });
+    assert.deepEqual(await connections(attached), []);
+    assert.deepEqual(await connections(project), ['automatic_agent']);
+    assert.deepEqual(await connections(f.project.id), ['manual_agent', 'automatic_agent']);
     assert.deepEqual(await connections(await create({ name: 'Без агентов' })), []);
   } finally { await f.app.close(); }
 });
@@ -89,14 +87,14 @@ test('a Fastkore project member can start and run a linked chat without an inter
     const member = await f.enter('Проверка доступа');
     assert.equal(member.user.roleId, 'sso_pending');
     const project = '/api/projects/' + f.project.id;
-    const policy = { revision: 0, connections: [{ profileId: 'universal', toolIds: [], fileIds: null }] };
+    const policy = { revision: 0, connections: [] };
     assert.equal((await f.req('PUT', project + '/agent-settings', f.admin, policy)).statusCode, 200);
     assert.equal((await f.req('GET', project + '/agents', member.cookie)).statusCode, 404);
     assert.equal((await f.setProjectRoles(f.project.id, member.projectRoles)).statusCode, 200);
-    assert.deepEqual((await f.req('GET', project + '/agents', member.cookie)).json().map((p: AgentProfile) => p.id), ['universal']);
+    assert.deepEqual((await f.req('GET', project + '/agents', member.cookie)).json().map((p: AgentProfile) => p.id), []);
     const context = { type: 'fastkore.context', version: 1, view: 'list', entity_set_id: randomUUID(),
       entity_ids: [], scope_reproducible: true, filter_status: 'none' };
-    const opened = await f.req('POST', '/api/fastkore/chats', member.cookie, { projectId: f.project.id, context, agentProfileId: 'universal' });
+    const opened = await f.req('POST', '/api/fastkore/chats', member.cookie, { projectId: f.project.id, context });
     assert.equal(opened.statusCode, 201, opened.body);
     const messages = project + '/chats/' + opened.json().chat.id + '/messages';
     const sent = await f.req('POST', messages, member.cookie, { text: 'Проверь заказы', fastkoreContext: context });
@@ -104,7 +102,35 @@ test('a Fastkore project member can start and run a linked chat without an inter
     await idle(f.workspace);
     assert.equal(f.workspace.getRun(sent.json().id).status, 'complete');
     assert.equal((await f.req('PUT', project + '/agent-settings', f.admin, { revision: 1, connections: [] })).statusCode, 200);
-    assert.equal((await f.req('POST', messages, member.cookie, { text: 'Ещё раз', fastkoreContext: context })).statusCode, 403);
+    const again = await f.req('POST', messages, member.cookie, { text: 'Ещё раз', fastkoreContext: context });
+    assert.equal(again.statusCode, 202, again.body);
+    await idle(f.workspace);
+    assert.equal(f.workspace.getRun(again.json().id).status, 'complete');
+  } finally { await f.app.close(); }
+});
+
+test('the retired assistant becomes a project chat and preserves its history and file permissions', async () => {
+  const f = await fixture();
+  try {
+    const state = structuredClone(f.store.state);
+    const project = state.projects.find(item => item.id === f.project.id)!;
+    const legacy = { ...state.corporate!.profiles[0], id: 'universal', enabled: true, allowWrite: true };
+    state.corporate!.profiles.unshift(legacy);
+    project.agentPolicy = { revision: 7, connections: [{ profileId: legacy.id, toolIds: ['chat-files'], fileIds: null }] };
+    const original = await f.workspace.addChat(f.project.id);
+    const old = { ...original, agentProfileId: legacy.id, sessionId: randomUUID(), messages: [
+      { id: randomUUID(), role: 'user' as const, text: 'Старый вопрос', status: 'complete' as const, createdAt: original.updatedAt, attachments: [] },
+    ] };
+    project.chats.push(old);
+    initializeCorporate(state);
+    assert.ok(!state.corporate!.profiles.some(profile => profile.id === legacy.id));
+    assert.deepEqual(project.agentPolicy, { revision: 7, connections: [] });
+    assert.deepEqual(project.chatTools, ['chat-files', 'fastkore']);
+    assert.equal(project.chatAllowWrite, true);
+    assert.equal(old.sessionId, undefined);
+    assert.equal(old.agentProfileId, undefined);
+    assert.equal(old.historyReplayPending, true);
+    assert.equal(old.messages[0].text, 'Старый вопрос');
   } finally { await f.app.close(); }
 });
 
@@ -309,18 +335,17 @@ test('Fastkore navigation uses the saved chat target and does not expose it outs
   } finally { await f.app.close(); }
 });
 
-test('chat consultants persist and exclude the base assistant', async () => {
+test('chat consultants persist without a built-in agent', async () => {
   const f = await fixture();
   try {
-    const base = f.workspace.corporate.data.profiles.find(profile => profile.id === 'universal')!;
-    assert.equal(base.name, 'Помощник Фасткор');
-    const specialist = { ...base, id: 'reviewer', name: 'Рецензент' };
+    const base = f.workspace.corporate.data.profiles[0];
+    const specialist = { ...base, id: 'reviewer', name: 'Рецензент', enabled: true };
     f.workspace.corporate.data.profiles.push(specialist);
     const chats = `/api/projects/${f.project.id}/chats`;
     const created = await f.req('POST', chats, f.admin, { title: 'Консультация' });
     assert.equal(created.statusCode, 201, created.body);
     const chat = `${chats}/${created.json().id}`;
-    assert.equal((await f.req('PATCH', chat + '/specialists', f.admin, { consultantIds: [base.id] })).statusCode, 403);
+    assert.equal((await f.req('PATCH', chat + '/specialists', f.admin, { consultantIds: ['universal'] })).statusCode, 403);
     const saved = await f.req('PATCH', chat + '/specialists', f.admin, { consultantIds: [specialist.id] });
     assert.equal(saved.statusCode, 200, saved.body);
     assert.deepEqual((await f.req('GET', chat, f.admin)).json().consultantIds, [specialist.id]);
@@ -810,7 +835,7 @@ test('legacy estimate profiles become instructed chat specialists without expand
     assert.equal(custom.instructions, 'Используй внутренний прайс.');
     assert.deepEqual(estimateRole.operationIds, ['chat']);
     assert.deepEqual(estimateRole.profileIds, ['estimator', custom.id]);
-    assert.deepEqual(chatRole.profileIds, ['universal']);
+    assert.deepEqual(chatRole.profileIds, []);
     const revisions = [estimator.revision, estimateRole.revision, chatRole.revision];
     initializeCorporate(state);
     assert.deepEqual([estimator.revision, estimateRole.revision, chatRole.revision], revisions);
@@ -821,7 +846,7 @@ test('legacy estimate profiles become instructed chat specialists without expand
 test('project chat access follows project agents independently of the global role catalog', async () => {
   const f = await fixture(); try {
     assert.equal((await f.req('GET', '/api/admin/profiles', f.token)).statusCode, 403);
-    assert.deepEqual((await f.req('GET', '/api/agents', f.token)).json().map((a: any) => a.id), ['universal']);
+    assert.deepEqual((await f.req('GET', '/api/agents', f.token)).json().map((a: any) => a.id), []);
     const estimator = f.workspace.corporate.data.profiles.find(p => p.id === 'estimator')!;
     const { id, ...input } = estimator;
     assert.equal((await f.req('PUT', '/api/admin/profiles/estimator', f.admin, { ...input, enabled: true })).statusCode, 200);
@@ -857,7 +882,7 @@ test('rules reach Codex; changing role instructions starts a fresh session and r
     assert.equal((await f.req('GET', '/api/status', f.token)).json().settings.agentInstructions, undefined);
     assert.equal((await f.req('PATCH', '/api/settings', f.token, { agentInstructions: 'Сотрудник меняет правила' })).statusCode, 403);
     assert.equal((await f.req('PATCH', '/api/settings', f.admin, { agentInstructions: 'Общий запрет: не расширяй выборку.' })).statusCode, 200);
-    const role = { name: 'Менеджер', enabled: true, profileIds: ['universal'], operationIds: ['chat'], readDatasetIds: [], instructions: 'Проверяй единицы измерения' };
+    const role = { name: 'Менеджер', enabled: true, profileIds: [], operationIds: ['chat'], readDatasetIds: [], instructions: 'Проверяй единицы измерения' };
     await f.req('PUT', '/api/admin/roles/manager', f.admin, role); await f.req('PATCH', '/api/users/' + f.employee.id, f.admin, { roleId: 'manager' });
     const chat = (await f.req('POST', `/api/projects/${f.project.id}/chats`, f.token, {})).json(), route = `/api/projects/${f.project.id}/chats/${chat.id}/messages`;
     await f.req('POST', route, f.token, { text: 'Первый' }); await idle(f.workspace);
@@ -933,8 +958,8 @@ test('Codex can consult a different specialist from the user recommendation', as
   });
   try {
     const { id, revision, ...base } = f.workspace.corporate.data.profiles[0];
-    const editor = { ...base, name: 'Редактор', description: 'Исправляет текст.', instructions: 'Исправляй опечатки.', toolIds: [] };
-    const reviewer = { ...base, name: 'Рецензент', description: 'Проверяет факты.', instructions: 'Проверяй факты.', toolIds: [],
+    const editor = { ...base, enabled: true, name: 'Редактор', description: 'Исправляет текст.', instructions: 'Исправляй опечатки.', toolIds: [] };
+    const reviewer = { ...base, enabled: true, name: 'Рецензент', description: 'Проверяет факты.', instructions: 'Проверяй факты.', toolIds: [],
       icon: 'search', instructionFiles: [{ name: 'review.md', text: 'Сверяй даты.' }] };
     assert.equal((await f.req('PUT', '/api/admin/profiles/editor', f.admin, { ...editor, description: ' ' })).statusCode, 400);
     assert.equal((await f.req('PUT', '/api/admin/profiles/editor', f.admin, editor)).statusCode, 200);
@@ -951,7 +976,7 @@ test('Codex can consult a different specialist from the user recommendation', as
     const attachment = await f.workspace.addAttachment(f.project.id, 'draft.txt', Buffer.from('private attachment'), () => f.employee.id);
     const sent = await f.req('POST', route, f.token, { ...question, attachmentIds: [attachment.id] });
     assert.equal(sent.statusCode, 202, sent.body);
-    assert.equal(sent.json().agentProfileId, id);
+    assert.equal(sent.json().agentProfileId, undefined);
     assert.equal((await f.req('POST', route, f.token, { ...question, recommendedSpecialistId: 'reviewer', attachmentIds: [attachment.id] })).statusCode, 409);
     await idle(f.workspace);
     assert.equal(f.workspace.getRun(sent.json().id).status, 'complete');
@@ -983,7 +1008,7 @@ test('Codex can consult a different specialist from the user recommendation', as
     assert.equal(detail.messages[1].usage.outputTokens, 31);
     assert.equal(detail.messages[2].specialistName, undefined);
     assert.deepEqual(detail.messages[3].consultedSpecialists, ['Рецензент']);
-    const policy = { revision: 0, connections: [{ profileId: id, toolIds: ['chat-files'], fileIds: null }] };
+    const policy = { revision: 0, connections: [] };
     assert.equal((await f.req('PUT', project + '/agent-settings', f.admin, policy)).statusCode, 200);
     assert.equal((await f.req('POST', route, f.token, { ...question, clientRequestId: 'specialist-2' })).statusCode, 403);
   } finally { await f.app.close(); }
@@ -1032,7 +1057,7 @@ test('former project files move into the library once, keep per-file access and 
   const projectPath = '/api/projects/' + f.project.id;
   try {
     const { id, ...profile } = f.workspace.corporate.data.profiles[0];
-    assert.equal((await f.req('PUT', '/api/admin/profiles/' + id, f.admin, { ...profile, toolIds: ['project-files', 'chat-files'] })).statusCode, 200);
+    assert.equal((await f.req('PUT', '/api/admin/profiles/' + id, f.admin, { ...profile, enabled: true, toolIds: ['project-files', 'chat-files'] })).statusCode, 200);
     const allowed = await f.workspace.addProjectFile(f.project.id, 'allowed.txt', Buffer.from('Allowed reference\n'), () => 'admin');
     await f.workspace.addProjectFile(f.project.id, 'denied.txt', Buffer.from('Denied reference\n'), () => 'admin');
     const other = await f.workspace.createProject('Другой проект', () => f.projectRoles);
@@ -1057,7 +1082,7 @@ test('former project files move into the library once, keep per-file access and 
     const member = await f.enter('Участник проекта без внутренней роли');
     assert.equal(member.user.roleId, 'sso_pending');
     assert.equal((await f.setProjectRoles(f.project.id, [...f.projectRoles, ...member.projectRoles])).statusCode, 200);
-    const chat = (await f.req('POST', projectPath + '/chats', member.cookie, {})).json();
+    const chat = (await f.req('POST', projectPath + '/chats', member.cookie, { agentProfileId: id })).json();
     assert.equal((await f.req('POST', projectPath + '/chats/' + chat.id + '/messages', member.cookie, { text: 'Прочитай материалы проекта' })).statusCode, 202);
     await idle(f.workspace);
     const tools = f.calls.at(-1)!.tools!;
@@ -1085,7 +1110,7 @@ test('project connections enforce access revocation while Fastkore follows the E
   try {
     const { id, ...profile } = f.workspace.corporate.data.profiles[0];
     const updated = await f.req('PUT', '/api/admin/profiles/' + id, f.admin, {
-      ...profile, instructions: 'Указывай источники.', toolIds: ['project-files'],
+      ...profile, enabled: true, instructions: 'Указывай источники.', toolIds: ['project-files'],
     });
     assert.equal(updated.statusCode, 200, updated.body);
     const allowed = await f.workspace.addProjectFile(f.project.id, 'allowed.txt', Buffer.from('Allowed source'), () => 'admin');
@@ -1108,7 +1133,7 @@ test('project connections enforce access revocation while Fastkore follows the E
 
     let erpPrepares = 0;
     f.workspace.prepareFastkoreTools = async () => { erpPrepares++; return {}; };
-    const chat = (await f.req('POST', projectPath + '/chats', f.token, {})).json();
+    const chat = (await f.req('POST', projectPath + '/chats', f.token, { agentProfileId: id })).json();
     const messages = projectPath + '/chats/' + chat.id + '/messages';
     assert.equal((await f.req('POST', messages, f.token, { text: 'Вложение', attachmentIds: [attachment.id] })).statusCode, 403);
     const sent = await f.req('POST', messages, f.token, { text: 'Прочитай материалы', fastkoreContext: {
@@ -1129,8 +1154,8 @@ test('project connections enforce access revocation while Fastkore follows the E
     assert.equal(f.workspace.getRun(running.id).status, 'cancelled');
     assert.deepEqual((await f.req('GET', projectPath + '/agents', f.token)).json(), []);
     assert.equal((await f.req('POST', messages, f.token, { text: 'Продолжить' })).statusCode, 403);
-    assert.equal((await f.req('POST', projectPath + '/chats', f.token, {})).statusCode, 403);
-    assert.deepEqual((await f.req('GET', '/api/projects/' + other.id + '/agents', f.token)).json()[0].toolIds, ['fastkore']);
+    assert.equal((await f.req('POST', projectPath + '/chats', f.token, { agentProfileId: id })).statusCode, 403);
+    assert.deepEqual((await f.req('GET', '/api/projects/' + other.id + '/agents', f.token)).json(), []);
     assert.equal((await f.req('POST', '/api/projects/' + other.id + '/chats', f.token, {})).statusCode, 201);
     assert.equal((await f.req('GET', projectPath + '/chats/' + chat.id, f.token)).statusCode, 200);
   } finally { await f.app.close(); }

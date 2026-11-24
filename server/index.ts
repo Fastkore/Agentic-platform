@@ -29,11 +29,11 @@ let cleaned = false;
 const cleanup = async () => { if (!cleaned) { cleaned = true; await unlink(lock).catch(() => {}); } };
 try {
   const store = new Store(root);
-  await store.save();
   const socket = process.env.BRIDGE_CODEX_SOCKET;
   if (process.env.BRIDGE_EXECUTION === 'isolated' && (!socket || !path.isAbsolute(socket))) throw new Error('Для BRIDGE_EXECUTION=isolated нужен абсолютный BRIDGE_CODEX_SOCKET.');
   const workspace = new Workspace(store, socket ? new RemoteCodexRunner(socket) : new CodexClient(),
     new FileStorage(process.env), process.env.BRIDGE_CODEX_JOB_FILES);
+  await store.save();
   const app = await createApp(workspace, { port, lan, clientRoot: path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../client') });
   let stopping = false;
   const stop = async () => { if (stopping) return; stopping = true; await workspace.shutdown(); await app.close(); await cleanup(); };

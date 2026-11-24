@@ -120,7 +120,7 @@ test('file writing is controlled by ERP roles even with legacy server and agent 
     f.setValidator(async () => ({ ...identity(f.id, f.userId), user: { id: f.userId, display_name: 'Руководитель', roles: [role] } }));
     const session = await f.login();
     assert.equal(f.store.state.settings.allowWrite, false);
-    assert.equal(f.store.state.corporate!.profiles.find(item => item.id === 'universal')!.allowWrite, false);
+    assert.equal(f.workspace.corporate.projectChat(f.project).allowWrite, false);
     const status = () => f.asCookie(session, 'GET', '/api/status');
     assert.equal((await status()).json().toolPermissions.fileWrite, true);
     const revoked = t.mock.method(f.workspace, 'revokeFileWrites');

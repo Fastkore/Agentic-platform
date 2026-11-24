@@ -92,7 +92,8 @@ export class ProjectLibrary {
         this.registry.recordAudit({ actorId: userId, action: 'library.publish.blocked', targetId: log.runId, details: { runId: log.runId, objectIds: { reason: problems.join(',') } } });
         return { allowed: false, text: 'Ответ не опубликован: он содержал ' + problems.join(', ') + ', а режим выдачи библиотеки этого не разрешает. Попросите объяснение своими словами со ссылками на файлы.' };
       }
-      this.registry.recordAudit({ actorId: userId, action: 'library.publish', targetId: log.runId, details: { runId: log.runId, objectIds: { reads: String(log.calls) } } });
+      this.registry.recordAudit({ actorId: userId, action: 'library.publish', targetId: log.runId,
+        details: { runId: log.runId, objectIds: { profileId: scope.profileId, reads: String(log.calls) } } });
       return { allowed: true, text: answer };
     } finally { log.purge(); }
   }

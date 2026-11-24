@@ -44,8 +44,8 @@ export function ComposerInput({ input, draft, placeholder, editable, pickerEnabl
   const [active, setActive] = useState(0);
   const [placement, setPlacement] = useState<CSSProperties>();
   const expanded = pickerEnabled && !!mention;
-  const query = mention?.query.toLocaleLowerCase() ?? '';
-  const matches = expanded ? agents.filter(agent => [agent.name, agent.id].some(value => value.toLocaleLowerCase().includes(query))) : [];
+  const query = mention?.query.toLocaleLowerCase('ru').replaceAll('ё', 'е') ?? '';
+  const matches = expanded ? agents.filter(agent => agent.name.toLocaleLowerCase('ru').replaceAll('ё', 'е').includes(query)) : [];
   const activeIndex = Math.min(active, matches.length - 1);
   const specialist = agents.find(agent => agent.id === specialistId);
 
@@ -162,7 +162,7 @@ export function ComposerInput({ input, draft, placeholder, editable, pickerEnabl
   const shell = input.current?.closest('.workspace-shell');
   return <>
     {specialistId && <div className="composer-specialist">
-      <span role="status" title="Консультант, предложенный для этого вопроса"><AtSign size={14} aria-hidden="true" />Консультация · {specialist?.name ?? 'Агент недоступен'}</span>
+      <span role="status" title="Агент получит этот вопрос для консультации"><AtSign size={14} aria-hidden="true" />Консультация · {specialist?.name ?? 'Агент недоступен'}</span>
       <button type="button" className="workspace-icon" aria-label="Убрать агента" title="Убрать агента"
         disabled={!editable} onClick={() => { onSpecialist(); input.current?.focus(); }}><X size={14} /></button>
     </div>}
@@ -177,7 +177,7 @@ export function ComposerInput({ input, draft, placeholder, editable, pickerEnabl
       }}
       onClick={() => setMention(null)} onBlur={() => setMention(null)} onKeyDown={handleKeys} onPaste={onPaste} />
     {controls(agents.length ? <button type="button" className="workspace-icon composer-mention-button"
-      aria-label="Предложить консультанта для вопроса" title="Предложить консультанта для вопроса · @" aria-expanded={expanded}
+      aria-label="Выбрать консультанта для вопроса" title="Выбрать консультанта для вопроса · @" aria-expanded={expanded}
       aria-controls={expanded ? listId : undefined} disabled={!pickerEnabled || !agents.length}
       onPointerDown={event => event.preventDefault()} onClick={togglePicker}><AtSign size={17} /></button> : null)}
     {expanded && shell && placement && createPortal(<div ref={menu} className="workspace-select-menu composer-mention-menu"

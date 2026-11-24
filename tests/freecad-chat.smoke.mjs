@@ -26,13 +26,13 @@ token = (await json('POST','/api/auth/setup', {
   username:'cad-demo', name:'CAD demo', password,
 })).token;
 await json('PATCH','/api/settings',{allowWrite:true,reasoningEffort:'low'});
-const profile = (await json('GET','/api/admin/profiles')).find(p => p.id === 'universal');
+const profile = (await json('GET','/api/admin/profiles')).find(p => p.id === 'estimator');
 delete profile.unavailableReason;
 delete profile.id;
-await json('PUT','/api/admin/profiles/universal',{...profile,allowWrite:true});
+await json('PUT','/api/admin/profiles/cad_demo',{...profile,name:'Проектировщик',description:'Моделирование деталей',enabled:true,autoConnect:true,allowWrite:true});
 const project = await json('POST','/api/projects',{name:'FreeCAD pilot'});
 const base = '/api/projects/' + project.id + '/chats';
-const chat = await json('POST',base,{title:'Шарнирная тяга',model:process.env.FREECAD_TEST_MODEL || undefined});
+const chat = await json('POST',base,{title:'Шарнирная тяга',agentProfileId:'cad_demo',model:process.env.FREECAD_TEST_MODEL || undefined});
 const route = base + '/' + chat.id;
 await mkdir('/results',{recursive:true});
 for (const [distance,text] of [[86,'Собери шарнирную тягу с двумя вилками и болтами М12. Межосевое расстояние 86 мм. Дай FCStd и GLB.'],

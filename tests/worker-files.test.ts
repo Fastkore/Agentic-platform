@@ -213,9 +213,8 @@ test('the isolated worker reads uploaded bytes, returns downloadable files, and 
     const headers = { authorization: 'Bearer ' + token };
     const enabled = await app.inject({ method: 'PATCH', url: '/api/settings', headers, payload: { allowWrite: true } });
     assert.equal(enabled.statusCode, 200, enabled.body);
-    const profile = workspace.corporate.data.profiles[0];
-    await workspace.corporate.saveProfile(user, { ...profile, allowWrite: true });
     const project = await workspace.addProject(projectFolder);
+    project.chatAllowWrite = true;
     const chat = await workspace.addChat(project.id, 'Файлы', undefined, user.id);
     const attachment = await workspace.addAttachment(project.id, 'input.txt', Buffer.from('source'), () => user.id);
     const url = `/api/projects/${project.id}/chats/${chat.id}`;

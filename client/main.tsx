@@ -49,7 +49,6 @@ const LibraryPanel = lazy(() => import('./LibraryPanel').then(module => ({ defau
 
 let accessKey = sessionStorage.getItem('bridge-key') ?? '';
 const agentsUrl = (projectId: string) => projectId ? '/api/projects/' + encodeURIComponent(projectId) + '/agents' : '/api/agents';
-const defaultChatAgent = (agents: AgentSummary[]) => agents.find(agent => agent.available && agent.id === 'universal') ?? agents.find(agent => agent.available);
 const unassignedChatsUrl = '/api/chats/without-project';
 const unassignedGroupId = 'without-project';
 const settingsSections = {
@@ -61,7 +60,7 @@ const settingsSections = {
   profiles: { label: 'Агенты', icon: Bot },
   library: { label: 'Библиотеки', icon: Database },
   agent: { label: 'Общие инструкции', icon: FileText },
-  knowledgeFastkore: { label: 'База знаний о Fastkore', icon: FileText },
+  knowledgeFastkore: { label: 'Справка по Fastkore', icon: FileText },
   knowledgeCompany: { label: 'База знаний о компании', icon: Folder },
   audit: { label: 'Журнал доступа', icon: ClipboardList },
   usage: { label: 'Использование', icon: BarChart3 },
@@ -220,7 +219,6 @@ function App() {
   const [agentCatalog, setAgentCatalog] = useState<{ projectId: string; list: AgentSummary[] }>();
   const agents = agentCatalog?.projectId === projectId ? agentCatalog.list : [];
   const availableAgents = agents.filter(agent => agent.available);
-  const newAgent = defaultChatAgent(agents)?.id ?? '';
   const [catalog, setCatalog] = useState<ModelCatalog | null>(null), [modelsLoading, setModelsLoading] = useState(false), [modelError, setModelError] = useState('');
   const modelLoads = useRef(0);
   const [cliPath, setCliPath] = useState(''), [diagnostics, setDiagnostics] = useState(''), [subscription, setSubscription] = useState<Run | null>(null);
@@ -317,18 +315,20 @@ function App() {
       : status.cli?.authentication === 'signed-out' ? 'Требуется вход в аккаунт на исполнителе.' : 'Исполнитель модели недоступен.'
     : '';
   const canCreateProject = status?.canCreateProject ?? (isAdmin && authSource === 'local');
-  const currentAgent = chat ? agents.find(agent => agent.id === (chat.agentProfileId ?? 'universal')) : undefined;
-  const messageAgent = chatId ? currentAgent : availableAgents.find(agent => agent.id === newAgent);
-  const otherSpecialists = availableAgents.filter(agent => agent.id !== 'universal' && agent.id !== messageAgent?.id);
+  const currentAgent = chat?.agentProfileId ? agents.find(agent => agent.id === chat.agentProfileId) : undefined;
+  const projectChat = selectedProject?.chatCapabilities;
+  const projectChatAvailable = projectChat?.available === true;
+  const messageAgent = chat?.agentProfileId ? currentAgent : projectChat && { ...projectChat, id: '', name: 'Чат проекта', model: '' };
+  const otherSpecialists = availableAgents.filter(agent => agent.id !== currentAgent?.id);
   const chatConsultants = otherSpecialists.filter(agent => chat?.consultantIds?.includes(agent.id));
   const availableConsultants = otherSpecialists.filter(agent => !chatConsultants.includes(agent));
-  const unavailableConsultant = agents.find(agent => agent.id !== 'universal' && agent.id !== messageAgent?.id && !agent.available && agent.unavailableReason);
+  const unavailableConsultant = agents.find(agent => agent.id !== currentAgent?.id && !agent.available && agent.unavailableReason);
   const canAttach = canEdit && messageAgent?.available === true && messageAgent.toolIds.includes('chat-files');
   const canAttachToDraft = chatId ? canAttach : !projectId || messageAgent?.toolIds.includes('chat-files') === true;
   const canPickFiles = canAttachToDraft && (!projectId || messageAgent?.available === true) && !pending;
   const showScreenshot = inFastkore && !!erpAuth && readySession === erpAuth && hostSupportsScreenshot;
   const canReadFastkore = !!projectId && messageAgent?.toolIds.includes('fastkore') === true;
-  const canStartChat = !chatId && !!newAgent && !!selectedProject;
+  const canStartChat = !chatId && projectChatAvailable;
   const canPromptForProject = !!status && !chatId && !projectId && !(relatedLoading && currentErpContext.current.active);
   const canSend = !!status && screenshotSlot !== draftSlot && !(relatedLoading && currentErpContext.current.active) && !status.executionDisabled && !codexUnavailable && (!attachments.length || canAttachToDraft)
     && !!messageAgent?.available && (!specialistId || otherSpecialists.some(agent => agent.id === specialistId)) && (chatId ? canEdit : canStartChat);
@@ -746,12 +746,8 @@ function App() {
     return () => { alive = false; };
   }, [loggedIn, !!user, setupRequired, user?.roleId, panel, projectId, !!selectedProject]);
   async function createChat(project: string, context?: FastkoreContext, fresh = false, profileId?: string) {
-    const choices = agentCatalog?.projectId === project ? agentCatalog.list : await api<AgentSummary[]>(agentsUrl(project));
-    const agent = profileId ? choices.find(item => item.id === profileId && item.available) : defaultChatAgent(choices);
-    if (profileId && !agent) throw new Error('Выбранный агент недоступен в этом проекте.');
-    if (!agent) throw new Error('В этом проекте вам пока не доступен ни один агент.');
-    const result = context ? await post<{ projectId: string; chat: Chat }>('/api/fastkore/chats', { projectId: project, context, fresh, agentProfileId: agent.id })
-      : { projectId: project, chat: await post<Chat>(`/api/projects/${project}/chats`, { agentProfileId: agent.id }) };
+    const result = context ? await post<{ projectId: string; chat: Chat }>('/api/fastkore/chats', { projectId: project, context, fresh, agentProfileId: profileId })
+      : { projectId: project, chat: await post<Chat>(`/api/projects/${project}/chats`, { agentProfileId: profileId }) };
     const { id, title, updatedAt, ownerId, ownerName, visibility, messages, linkedToFastkore } = result.chat;
     const summary: ChatSummary = { id, title, updatedAt, ownerId, ownerName, visibility, linkedToFastkore, messageCount: messages.length };
     const p = result.projectId;
@@ -767,7 +763,7 @@ function App() {
     const navigation = contextNavigation.current;
     const context = linked ? currentErpContext.current.snapshot : undefined;
     const key = context && currentErpContext.current.key;
-    if (!project || pending || relatedLoading && linked || (project === projectId && !newAgent)) return;
+    if (!project || pending || relatedLoading && linked || (!profileId && project === projectId && !projectChatAvailable)) return;
     await action(async () => {
       const { chat: created, projectId: p } = await createChat(project, context, true, profileId);
       if (contextNavigation.current !== navigation || key && currentErpContext.current.key !== key) return;
@@ -996,7 +992,7 @@ function App() {
           setFiles(old => ({ ...old, [attachmentSlot]: (old[attachmentSlot] ?? []).map(item => item.id === id
             ? { ...item, local: { ...local, uploaded: uploadedRef } } : item) }));
         }
-        const message = { text, attachmentIds, fastkoreContext: snapshot, recommendedSpecialistId: specialistId };
+        const message = { text, attachmentIds, fastkoreContext: snapshot, requiredSpecialistId: specialistId };
         const content = JSON.stringify(message);
         const previous = sendAttempt.current;
         const id = previous?.chatId === conversation && previous.content === content ? previous.requestId : requestId();
@@ -1123,7 +1119,7 @@ function App() {
     return matchesProject || matchingChats.length ? [{ project, matchingChats }] : [];
   }) : [];
   const draftEditable = !chatId || canEdit;
-  const canCreate = !!selectedProject && !!newAgent && !pending;
+  const canCreate = projectChatAvailable && !pending;
   const canDictate = status?.dictationEnabled && messageAgent?.available && (chatId ? canEdit : canStartChat);
   const canUseChatTools = !!status && !status.executionDisabled && !codexUnavailable && messageAgent?.available && (chatId ? canEdit : canStartChat);
   const writePermission = status?.isolatedCodex && authSource === 'fastkore'
@@ -1228,7 +1224,7 @@ function App() {
           files={inFastkore && message.status === 'complete' && message.attachments.length ? message.attachments : undefined} /> :
           <div className="question-bubble">
             {conversation.visibility !== 'project' && message.authorId && message.authorId !== user.id && <small title={dateTooltip(message.createdAt, message.authorName ?? conversation.ownerName)}>{shortUserName(message.authorName ?? conversation.ownerName)}</small>}
-            {message.specialistName && <small title="Предложен для консультации">@{message.specialistName}</small>}
+            {message.specialistName && <small title="Консультант для этого запроса">@{message.specialistName}</small>}
             {message.text}
           </div>}
         {message.status === 'complete' && !!message.visuals?.length && <ChatVisuals visuals={message.visuals} />}
@@ -1264,7 +1260,7 @@ function App() {
       </article>)}
   </>;
   const createProjectOption = '+project';
-  const showChatConsultants = !!chat && (canEdit && canEditChatDetails || chatConsultants.length > 0);
+  const showChatConsultants = !!chat && (canEdit && canEditChatDetails && (otherSpecialists.length > 0 || !!unavailableConsultant) || chatConsultants.length > 0);
   function rememberComposerFocus(event: React.MouseEvent) {
     const field = input.current;
     focusedComposer.current = event.button === 0 && field === document.activeElement &&
@@ -1300,8 +1296,8 @@ function App() {
     {canPromptForProject && projectRequested ? <p className="composer-status" role="alert">
       {projects.length || canCreateProject ? 'Выберите проект, чтобы отправить сообщение.' : 'Нет доступных проектов. Попросите администратора дать доступ к проекту.'}
     </p> : !projectId && status && !canCreateProject && !projects.length && <p className="composer-status">Для отправки администратор должен дать вам доступ к проекту.</p>}
-    {agentCatalog?.projectId === projectId && chat && canEdit && !currentAgent?.available && <p className="composer-status">{currentAgent?.unavailableReason ?? 'Агент этого чата вам сейчас недоступен.'}</p>}
-    {projectId && agentCatalog?.projectId === projectId && !chatId && status && !availableAgents.length && <p className="composer-status">В выбранном проекте нет доступного агента для чата.</p>}
+    {agentCatalog?.projectId === projectId && chat?.agentProfileId && canEdit && !currentAgent?.available && <p className="composer-status">{currentAgent?.unavailableReason ?? 'Агент этого чата вам сейчас недоступен.'}</p>}
+    {!chat?.agentProfileId && projectChat?.unavailableReason && <p className="composer-status">{projectChat.unavailableReason}</p>}
     {chatQueuedRuns.map(run => <div className="bridge-progress queued-message" key={run.id}>
       <span>{run.steeringTo ? 'Отправляется…' : 'В очереди'}</span>
       {run.queuedText && <span className="queued-message-text" title={run.queuedText}>{run.queuedText}</span>}
@@ -1322,7 +1318,7 @@ function App() {
         : <span className="sr-only">Ответ готовится</span>}</span>
       {(isAdmin || canPostToChat && (chat?.visibility !== 'project' || run.ownerId === user.id)) && <button onClick={() => void action(async () => { await post('/api/runs/' + run.id + '/cancel'); })}><Square size={12} />Остановить</button>}
     </div>)}
-    {(!hasMessages || withoutProject || messageAgent || showChatConsultants) && <div className="composer-project">
+    {(!hasMessages || withoutProject || currentAgent || availableAgents.length > 0 || showChatConsultants) && <div className="composer-project">
       {(!hasMessages || withoutProject) && <div className="composer-project-picker">
         <Folder size={17} aria-hidden="true" />
         <Select ref={projectPicker} label="Проект" placeholder="Выберите проект" value={withoutProject ? '' : projectId}
@@ -1338,8 +1334,8 @@ function App() {
             ...(canCreateProject ? [{ value: createProjectOption, label: '+ Создать проект' }] : []),
           ]} />
       </div>}
-      {messageAgent && selectedProject && <span className="chat-lead"><Bot size={15} aria-hidden="true" />Чат ведёт {messageAgent.name}</span>}
-      {selectedProject && availableAgents.length > 1 && <Select label="Начать отдельный чат в проекте с агентом" placeholder="Начать отдельный чат"
+      {currentAgent && <span className="chat-lead"><Bot size={15} aria-hidden="true" />Чат ведёт {currentAgent.name}</span>}
+      {selectedProject && availableAgents.length > 0 && <Select label="Начать отдельный чат в проекте с агентом" placeholder="Начать отдельный чат"
         title="Начать отдельный чат в этом проекте" value="" disabled={pending}
         onChange={id => void newChat(projectId, false, id)}
         options={availableAgents.map(agent => ({ value: agent.id, label: agent.name }))} />}
@@ -1422,7 +1418,6 @@ function App() {
               const query = new URLSearchParams();
               if (projectId) query.set('projectId', projectId);
               if (chatId) query.set('chatId', chatId);
-              else query.set('agentProfileId', newAgent);
               return (await api<{ text: string }>('/api/dictation?' + query, { method: 'POST', body: data, signal })).text;
             }} onText={(text, shouldSend) => {
               const previous = input.current?.value ?? draft;
@@ -1472,7 +1467,7 @@ function App() {
           const recent = list.filter(item => !item.pinned);
           const visible = [...pinned, ...(showAll[project.id] ? recent : recent.slice(0, 5))];
           const canManageProject = canManageProjects && !unassignedGroup;
-          const newChatDisabled = pending || (project.id === projectId && !newAgent);
+          const newChatDisabled = pending || (project.id === projectId && !projectChatAvailable);
           const projectRow = <button className="workspace-row project-row" onClick={() => toggleProject(project.id)} aria-expanded={open}
             aria-controls={'chats-' + project.id} title={project.name}>
             <Folder size={14} /><span>{project.name}</span>{open ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
@@ -1596,7 +1591,7 @@ function App() {
           {canReset && <button type="button" className="workspace-icon" title="Очистить чат" aria-label="Очистить чат"
             disabled={pending || chatBusy} onClick={() => { setError(''); setPanel('reset-chat'); }}><Eraser size={17} /></button>}
           {!sharedContextHistory && <button type="button" className="workspace-icon" title="Создать новый чат по этому контексту" aria-label="Создать новый чат по этому контексту"
-            disabled={pending || relatedLoading || !newAgent || (!projectId && !canCreateProject)} onClick={() => void newChat(projectId, true)}><SquarePen size={17} /></button>}
+            disabled={pending || relatedLoading || !projectChatAvailable || (!projectId && !canCreateProject)} onClick={() => void newChat(projectId, true)}><SquarePen size={17} /></button>}
         </div>}
         <select className="workspace-scale" aria-label="Масштаб интерфейса" title="Масштаб интерфейса"
           value={interfaceScale} disabled={savingScale} onChange={event => void changeInterfaceScale(Number(event.currentTarget.value) as InterfaceScale)}>
@@ -1687,7 +1682,7 @@ function App() {
           <time dateTime={item.updatedAt}>{shortDate(item.updatedAt)}</time></button>)}
         {!relatedChats?.list.length && !error && <p className="help">По этой карточке или списку пока нет чатов.</p>}
       </div>}
-      {projectId && (!sharedContextHistory || !relatedChats?.list.some(item => item.contextMatches !== false)) && <div className="archive-actions related-dialog-actions"><button type="button" className="secondary" disabled={pending || relatedLoading || !newAgent}
+      {projectId && (!sharedContextHistory || !relatedChats?.list.some(item => item.contextMatches !== false)) && <div className="archive-actions related-dialog-actions"><button type="button" className="secondary" disabled={pending || relatedLoading || !projectChatAvailable}
         onClick={() => void newChat(projectId, true)}><SquarePen size={16} />Создать новый чат</button></div>}
     </WorkspaceDialog>}
     {panel === 'search' && <WorkspaceDialog title="Поиск" className="workspace-search" close={closePanel}>

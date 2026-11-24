@@ -7,12 +7,14 @@ import type { AgentProfile, AgentSummary, Corporate, Dataset, Project, ProjectAg
 import { BridgeError, Store } from './store.js';
 
 export const operationIds = ['chat', 'technology', 'accounting'] as const;
-const baseAssistantName = 'Помощник Фасткор';
+// The existing library grant key belongs to the project chat after the profile is retired.
+export const projectChatGrantId = 'universal';
 const estimatorInstructions = 'Готовь расчёты стоимости и черновики коммерческих предложений по согласованным данным и материалам проекта. ' +
   'Указывай исходные данные, допущения и итог. Если данных недостаточно, задай уточняющий вопрос.';
-function baseAssistant(): AgentProfile {
-  return { id: 'universal', name: baseAssistantName, description: 'Обсуждение файлов и вопросов проекта', instructions: '', enabled: true,
-    model: '', reasoningEffort: 'high', operationIds: ['chat'], datasetIds: [], skillIds: [], allowWrite: false, revision: 1 };
+function projectChatProfile(project?: Project): AgentProfile {
+  return { id: projectChatGrantId, name: 'Чат проекта', description: '', instructions: '', enabled: true,
+    toolIds: project?.chatTools,
+    model: '', reasoningEffort: 'high', operationIds: ['chat'], datasetIds: [], skillIds: [], allowWrite: project?.chatAllowWrite === true, revision: 1 };
 }
 function migrateEstimateOperation(corporate: Corporate) {
   const retired = 'estimate';
@@ -40,23 +42,45 @@ function migrateEstimateOperation(corporate: Corporate) {
 }
 export function initializeCorporate(state: State): Corporate {
   if (!state.corporate) state.corporate = {
-    roles: [{ id: 'employee', name: 'Сотрудник', enabled: true, profileIds: ['universal'], operationIds: ['chat'], readDatasetIds: [], instructions: '', revision: 1 }],
+    roles: [{ id: 'employee', name: 'Сотрудник', enabled: true, profileIds: [], operationIds: ['chat'], readDatasetIds: [], instructions: '', revision: 1 }],
     profiles: [
-      baseAssistant(),
-      { ...baseAssistant(), id: 'estimator', name: 'Оценщик', description: 'Подготовка расчёта и коммерческого предложения', instructions: estimatorInstructions, enabled: false },
+      { ...projectChatProfile(), id: 'estimator', name: 'Оценщик', description: 'Подготовка расчёта и коммерческого предложения', instructions: estimatorInstructions, enabled: false },
       ...[['technologist', 'Технолог', 'Подготовка технологии изготовления', 'technology'], ['accountant', 'Бухгалтер', 'Работа с согласованными бухгалтерскими операциями', 'accounting']].map(([id, name, description, operation]): AgentProfile => ({ id, name, description, instructions: '', enabled: false, model: '', reasoningEffort: 'high', operationIds: [operation], datasetIds: [], skillIds: [], allowWrite: false, revision: 1 }))
     ], datasets: []
   };
   migrateEstimateOperation(state.corporate);
-  const base = state.corporate.profiles.find(profile => profile.id === 'universal');
-  if (base) Object.assign(base, { name: baseAssistantName, enabled: true });
-  else state.corporate.profiles.unshift(baseAssistant());
+  const retired = state.corporate.profiles.find(profile => profile.id === projectChatGrantId);
+  state.corporate.profiles = state.corporate.profiles.filter(profile => profile !== retired);
+  for (const role of state.corporate.roles) role.profileIds = role.profileIds.filter(id => id !== projectChatGrantId);
   for (const profile of state.corporate.profiles) {
     delete (profile as AgentProfile & { outputMode?: unknown }).outputMode;
-    profile.autoConnect ??= profile.id === 'universal';
+    profile.autoConnect ??= false;
   }
   for (const user of state.security?.users ?? []) user.roleId ??= 'employee';
-  for (const project of state.projects) for (const chat of project.chats) chat.agentProfileId ??= 'universal';
+  for (const project of state.projects) {
+    const previous = project.agentPolicy?.connections.find(connection => connection.profileId === projectChatGrantId);
+    if (previous) {
+      project.chatTools = agentToolIds.filter(id => id === 'fastkore' || (retired?.toolIds ?? agentToolIds).includes(id) && previous.toolIds.includes(id));
+      project.agentPolicy!.connections = project.agentPolicy!.connections.filter(connection => connection !== previous);
+    } else if (!project.agentPolicy && retired?.toolIds) {
+      project.chatTools = agentToolIds.filter(id => id === 'fastkore' || retired.toolIds!.includes(id));
+    }
+    if (retired && (previous || !project.agentPolicy)) {
+      if (retired.allowWrite) project.chatAllowWrite = true;
+      if (((retired.toolIds ?? ['project-files']) as string[]).includes('project-files') &&
+        (!project.agentPolicy || (previous?.toolIds as string[] | undefined)?.includes('project-files'))) {
+        project.legacyChatFileIds = previous?.fileIds ?? null;
+      }
+    } else if (retired && project.agentPolicy) {
+      project.revokeRetiredChatGrants = true;
+    }
+    for (const chat of project.chats) if (chat.agentProfileId === projectChatGrantId) {
+      delete chat.agentProfileId;
+      // The previous model session may contain the retired profile's instructions and sources.
+      delete chat.sessionId;
+      chat.historyReplayPending = true;
+    }
+  }
   return state.corporate;
 }
 /** Business permissions are checked outside prompts and shared by UI and API. */
@@ -77,7 +101,17 @@ export class CorporateAccess {
     const role = this.role(user);
     return profile.enabled && (user.role === 'admin' || !!role && role.profileIds.includes(profile.id) && profile.operationIds.some(id => role.operationIds.includes(id)));
   }
-  profile(user: User | undefined, id = 'universal', project?: Project): AgentProfile {
+  profile(user: User | undefined, id?: string, project?: Project): AgentProfile {
+    const projectChat = !id || id === projectChatGrantId;
+    if (projectChat) {
+      if (user?.disabled || !project && user && user.role !== 'admin' && !this.role(user)?.operationIds.includes('chat')) {
+        throw new BridgeError('Чат недоступен.', 403);
+      }
+      const profile = projectChatProfile(project);
+      const reason = this.unavailable(profile, project);
+      if (reason) throw new BridgeError(reason, 409);
+      return profile;
+    }
     const profile = this.data.profiles.find(p => p.id === id);
     if (!profile || user?.disabled || !project && user && !this.canUseOutsideProject(user, profile)) throw new BridgeError('Профиль недоступен.', 403);
     if (!profile.enabled) throw new BridgeError('Профиль выключен.', 403);
@@ -92,7 +126,7 @@ export class CorporateAccess {
     if (profile.operationIds.some(id => id !== 'chat')) return 'Профилю назначены операции, которые пока недоступны в чате.';
     if (profile.datasetIds.length) return 'Запуск профиля с назначенными библиотеками пока недоступен.';
     if (profile.skillIds.length) return 'Профиль ожидает установки и проверки утверждённых Skills в среде исполнения.';
-    if (!this.isolated && (project?.agentPolicy || profile.toolIds !== undefined)) return 'Для применения разрешений на инструменты нужен отдельный исполнитель Codex.';
+    if (!this.isolated && (profile.id !== projectChatGrantId && project?.agentPolicy || profile.toolIds !== undefined)) return 'Для применения разрешений на инструменты нужен отдельный исполнитель Codex.';
     return undefined;
   }
   connection(profile: AgentProfile, project?: Project) {
@@ -104,6 +138,7 @@ export class CorporateAccess {
   }
   tools(profile: AgentProfile, project?: Project) {
     const tools = profile.toolIds ?? agentToolIds;
+    if (profile.id === projectChatGrantId) return agentToolIds.filter(id => tools.includes(id));
     const policy = project?.agentPolicy;
     const connection = this.connection(profile, project);
     return agentToolIds.filter(id => id === 'fastkore' || tools.includes(id) && (!policy || connection?.toolIds.includes(id)));
@@ -112,15 +147,20 @@ export class CorporateAccess {
     if (user.disabled) return [];
     const profiles = project ? this.connectedProfiles(project) : this.data.profiles.filter(profile => this.canUseOutsideProject(user, profile));
     return profiles
-      .map(profile => {
-        const unavailableReason = this.unavailable(profile, project);
-        return { id: profile.id, name: profile.name, description: profile.description, model: profile.model, allowWrite: profile.allowWrite,
-          toolIds: this.tools(profile, project), available: !unavailableReason, unavailableReason };
-      });
+      .map(profile => this.summary(profile, project));
+  }
+  summary(profile: AgentProfile, project?: Project): AgentSummary {
+    const unavailableReason = this.unavailable(profile, project);
+    return { id: profile.id, name: profile.name, description: profile.description, model: profile.model, allowWrite: profile.allowWrite,
+      toolIds: this.tools(profile, project), available: !unavailableReason, unavailableReason };
+  }
+  projectChat(project: Project) {
+    const { available, unavailableReason, toolIds, allowWrite } = this.summary(projectChatProfile(project), project);
+    return { available, unavailableReason, toolIds, allowWrite };
   }
   specialists(user: User | undefined, project: Project, mainProfileId: string) {
     if (!user || user.disabled) return [];
-    return this.connectedProfiles(project).filter(profile => profile.id !== 'universal' && profile.id !== mainProfileId && !this.unavailable(profile, project));
+    return this.connectedProfiles(project).filter(profile => profile.id !== mainProfileId && !this.unavailable(profile, project));
   }
   defaultProjectPolicy(mode: 'new' | 'legacy'): ProjectAgentPolicy {
     const legacy = mode === 'legacy';
@@ -177,7 +217,7 @@ export class CorporateAccess {
   }
   async saveProfile(actor: User, input: Omit<AgentProfile, 'revision'> & { revision?: number }) {
     this.admin(actor);
-    if (input.id === 'universal') input = { ...input, name: baseAssistantName, enabled: true };
+    if (input.id === projectChatGrantId) throw new BridgeError('Этот идентификатор зарезервирован для чата проекта.');
     if (input.operationIds.some(id => !operationIds.includes(id as typeof operationIds[number])) || input.datasetIds.some(id => !this.data.datasets.some(d => d.id === id))) throw new BridgeError('Выберите существующие операции и источники.');
     if (input.model && !/^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,127}$/.test(input.model)) throw new BridgeError('Некорректная модель.');
     const old = this.data.profiles.find(p => p.id === input.id); if (old && old.revision !== input.revision) throw new BridgeError('Профиль изменён. Обновите настройки.', 409);
@@ -190,7 +230,7 @@ export class CorporateAccess {
       throw new BridgeError('Добавьте до пяти разных файлов .md или .txt общим объёмом до 6 000 символов.');
     }
     const value: AgentProfile = { ...input, name: input.name.trim(), description: input.description.trim(), revision: (old?.revision ?? 0) + 1,
-      autoConnect: input.autoConnect ?? old?.autoConnect ?? (input.id === 'universal'),
+      autoConnect: input.autoConnect ?? old?.autoConnect ?? false,
       toolIds: input.toolIds ?? old?.toolIds, icon: input.icon ?? old?.icon, instructionFiles };
     if (!value.name || !value.operationIds.length) throw new BridgeError('Укажите название и хотя бы одну операцию.');
     if (!value.description && old?.description !== '') throw new BridgeError('Кратко опишите, для каких задач подходит агент.');

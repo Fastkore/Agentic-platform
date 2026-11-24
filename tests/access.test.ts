@@ -136,7 +136,8 @@ test('sidebar revalidation updates projects, chats and agents and rechecks acces
     assert.equal(created.statusCode, 201);
     assert.equal((await poll(project + '/chats')).json()[0].id, created.json().id);
     assert.equal((await poll('/api/projects')).json()[0].chatCount, 1);
-    const agent = f.workspace.corporate.data.profiles.find(profile => profile.id === 'universal')!;
+    const agent = f.workspace.corporate.data.profiles.find(profile => profile.id === 'estimator')!;
+    agent.enabled = true;
     agent.name = 'Обновлённый агент';
     assert.equal((await poll(project + '/agents')).json().find((item: { id: string }) => item.id === agent.id).name, agent.name);
     await f.setProjectRoles([]);

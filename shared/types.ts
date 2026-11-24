@@ -50,7 +50,7 @@ export interface ProjectRolePolicy { revision: number; roles: ProjectRole[] }
 export interface ProjectRoleLabel extends ProjectRole { name: string; installationName: string }
 export interface ProjectRoleSettings extends ProjectRolePolicy { available: ProjectRoleLabel[] }
 export const maxProjectInstructions = 2000;
-export interface Project { id: string; name: string; instructions?: string; directory: string; chats: Chat[]; attachments: Attachment[]; rolePolicy?: ProjectRolePolicy; agentPolicy?: ProjectAgentPolicy; deletedAt?: string }
+export interface Project { id: string; name: string; instructions?: string; directory: string; chats: Chat[]; attachments: Attachment[]; rolePolicy?: ProjectRolePolicy; agentPolicy?: ProjectAgentPolicy; chatTools?: AgentToolId[]; chatAllowWrite?: boolean; legacyChatFileIds?: string[] | null; revokeRetiredChatGrants?: true; deletedAt?: string }
 export type RunToolKind = 'cli' | 'mcp' | 'internet' | 'knowledge' | 'specialist' | 'other';
 export interface RunTiming {
   queueMs: number;
@@ -74,7 +74,7 @@ export interface RunToolContext { operation?: string; scope?: 'current' | 'erp';
 export interface Run { reasoningEffort?: ReasoningEffort; id: string; projectId?: string; chatId?: string; status: RunStatus; progress: string; tool?: string; toolContext?: RunToolContext; canSteer?: boolean; steeringTo?: string; createdAt: string; startedAt?: string; completedAt?: string; response?: string; error?: string; usage?: Usage; timing?: RunTiming; usageOnly?: true; clientRequestId?: string; requestHash?: string; model?: string; executionProvider?: CliInfo['provider']; ownerId?: string; agentProfileId?: string; profileRevision?: number }
 export interface QueuedRun extends Run { queuedText?: string; queuedFiles?: number }
 /** Trusted queue input. Never return this record from HTTP handlers. */
-export interface Job { runId: string; kind: 'chat' | 'subscription'; text: string; attachmentIds: string[]; authorId?: string; credentialId?: string; scope?: string; fastkoreContext?: FastkoreContext; recommendedSpecialistId?: string; specialistName?: string; specialistScope?: string; fileWrite?: boolean }
+export interface Job { runId: string; kind: 'chat' | 'subscription'; text: string; attachmentIds: string[]; authorId?: string; credentialId?: string; scope?: string; fastkoreContext?: FastkoreContext; recommendedSpecialistId?: string; requiredSpecialistId?: string; specialistName?: string; specialistScope?: string; fileWrite?: boolean }
 export interface User { id: string; username: string; name: string; role: 'admin' | 'employee'; roleId?: string; disabled: boolean }
 export const interfaceScales = [60, 70, 80, 90, 100, 110] as const;
 export type InterfaceScale = typeof interfaceScales[number];
@@ -132,7 +132,7 @@ export interface StoredFastkoreInstallation extends Omit<FastkoreInstallation, '
 }
 export interface State { schemaVersion: 1; settings: Settings; projects: Project[]; runs: Run[]; jobs?: Job[]; externalIdentities?: ExternalIdentity[]; sso?: { installations?: StoredFastkoreInstallation[]; roles?: FastkoreRoleRecord[]; roleSnapshots?: FastkoreRoleSnapshot[]; rolePermissions?: (FastkoreRolePermissions & { installationId: string; roleId: string })[] }; security?: Security; corporate?: Corporate }
 export interface CliInfo { provider?: ExecutionProvider; accountId?: string; catalogRevision?: string; path: string; version: string; authentication: 'chatgpt' | 'google' | 'glm' | 'gigachat' | 'api-key' | 'signed-out' | 'unknown'; status: string }
-export interface ProjectSummary { id: string; name: string; instructions?: string; directory: string; chatCount: number; roles?: ProjectRoleLabel[]; canRename?: boolean }
+export interface ProjectSummary { id: string; name: string; instructions?: string; directory: string; chatCount: number; roles?: ProjectRoleLabel[]; canRename?: boolean; chatCapabilities?: Omit<AgentSummary, 'id' | 'name' | 'description' | 'model'> }
 export interface ChatSummary { id: string; title: string; updatedAt: string; messageCount: number; ownerId?: string; ownerName?: string; visibility?: 'private' | 'project'; linkedToFastkore?: true; pinned?: boolean }
 export const unassignedChatsLabel = 'Без проекта';
 export const sharedChatWaitMessage = 'Другой участник ждёт ответа в этом чате. Вы сможете написать, когда его запросы завершатся.';

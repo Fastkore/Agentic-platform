@@ -1,10 +1,8 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
-import { BarChart3, Bot, Calculator, ChevronDown, ChevronLeft, Database, FileText, Folder, Layers3, MessageCircle, Paperclip, Pencil, Plus, RefreshCw, Search, Settings2, X } from 'lucide-react';
-import { agentToolIds, agentTools } from '../shared/agent-tools';
-import { specialistFileLimits, specialistIcons, type AgentProfile, type Dataset, type ModelCatalog, type SpecialistIcon } from '../shared/types';
+import { BarChart3, Bot, Calculator, ChevronDown, ChevronLeft, Database, FileText, Folder, MessageCircle, Paperclip, Pencil, Plus, RefreshCw, Search, Settings2, X } from 'lucide-react';
+import { specialistFileLimits, specialistIcons, type AgentProfile, type ModelCatalog, type SpecialistIcon } from '../shared/types';
 import { hasAdjustableEffort } from '../shared/execution-accounts';
 import { isAutomaticModel } from '../shared/model-selection';
-import { Checks } from './CorporatePanel';
 import { Select } from './Select';
 import { PermissionSwitch as Toggle } from './PermissionSwitch';
 import './specialists.css';
@@ -13,13 +11,11 @@ type Request = <T>(url: string, init?: RequestInit) => Promise<T>;
 type Profile = AgentProfile & { unavailableReason?: string };
 const icons = { bot: Bot, message: MessageCircle, calculator: Calculator, settings: Settings2, database: Database, chart: BarChart3, file: FileText, search: Search };
 const iconLabels: Record<SpecialistIcon, string> = { bot: 'Помощник', message: 'Диалог', calculator: 'Расчёты', settings: 'Настройки', database: 'Данные', chart: 'Аналитика', file: 'Документы', search: 'Поиск' };
-const builtInIcons: Partial<Record<string, SpecialistIcon>> = { universal: 'message', estimator: 'calculator', technologist: 'settings', accountant: 'database' };
-const toolIcons = { 'chat-files': Paperclip };
-const newProfile: AgentProfile = { id: '', name: '', description: '', instructions: '', enabled: false, autoConnect: false, model: '', reasoningEffort: 'high', operationIds: ['chat'], datasetIds: [], skillIds: [], allowWrite: false, revision: 0, toolIds: [] };
+const builtInIcons: Partial<Record<string, SpecialistIcon>> = { estimator: 'calculator', technologist: 'settings', accountant: 'database' };
+const newProfile: AgentProfile = { id: '', name: '', description: '', instructions: '', enabled: false, autoConnect: false, model: '', reasoningEffort: 'high', operationIds: ['chat'], datasetIds: [], skillIds: [], allowWrite: false, revision: 0 };
 const editorTabs = [
   { id: 'general', label: 'Основное', icon: Bot },
   { id: 'instructions', label: 'Инструкции', icon: FileText },
-  { id: 'tools', label: 'Инструменты', icon: Layers3 },
   { id: 'model', label: 'Модель', icon: Settings2 },
 ] as const;
 type EditorTab = typeof editorTabs[number]['id'];
@@ -37,7 +33,6 @@ export function SpecialistsPanel({ request, globalInstructions, initialProfileId
   initialProfileId?: string;
 }) {
   const [profiles, setProfiles] = useState<Profile[]>();
-  const [datasets, setDatasets] = useState<Dataset[]>([]);
   const [editing, setEditing] = useState<Profile>();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -56,13 +51,9 @@ export function SpecialistsPanel({ request, globalInstructions, initialProfileId
 
   useEffect(() => {
     const controller = new AbortController();
-    void Promise.all([
-      request<Profile[]>('/api/admin/profiles', { signal: controller.signal }),
-      request<Dataset[]>('/api/admin/datasets', { signal: controller.signal }),
-    ]).then(([list, sources]) => {
+    void request<Profile[]>('/api/admin/profiles', { signal: controller.signal }).then(list => {
       if (controller.signal.aborted) return;
       setProfiles(list);
-      setDatasets(sources);
       if (initialProfileId) {
         const profile = list.find(item => item.id === initialProfileId);
         if (profile) setEditing({ ...profile });
@@ -90,16 +81,19 @@ export function SpecialistsPanel({ request, globalInstructions, initialProfileId
   const visible = (profiles ?? []).filter(profile => {
     const search = query.trim().toLocaleLowerCase('ru');
     return (filter === 'all' || profile.enabled === (filter === 'enabled')) &&
-      [profile.name, profile.description, profile.id].some(value => value.toLocaleLowerCase('ru').includes(search));
+      profile.name.toLocaleLowerCase('ru').replaceAll('ё', 'е').includes(search.replaceAll('ё', 'е'));
   });
   visible.sort((left, right) => {
-    if (left.id === 'universal' || right.id === 'universal') return Number(right.id === 'universal') - Number(left.id === 'universal');
     if (sort === 'name') return left.name.localeCompare(right.name, 'ru');
     if (sort === 'enabled') return Number(right.enabled) - Number(left.enabled);
     return 0;
   });
 
-  function edit(profile?: Profile) { setError(''); setTab('general'); setEditing(profile ? { ...profile } : undefined); }
+  function edit(profile?: Profile) {
+    setError('');
+    setTab('general');
+    setEditing(profile ? { ...profile, id: profile.id || 'agent-' + Array.from(crypto.getRandomValues(new Uint32Array(4)), value => value.toString(16).padStart(8, '0')).join('') } : undefined);
+  }
   function update(next: Partial<AgentProfile>) { setEditing(profile => profile ? { ...profile, ...next } : profile); }
 
   async function save(profile: Profile, close: boolean) {
@@ -172,14 +166,13 @@ export function SpecialistsPanel({ request, globalInstructions, initialProfileId
         <button type="button" className="specialist-name" onClick={() => edit(profile)} disabled={busy}>{profile.name}</button>
         {profile.description && <p>{profile.description}</p>}
         <div className="specialist-meta">
-          <span className="specialist-status" data-enabled={profile.enabled}>{profile.id === 'universal' ? 'Встроенный · по умолчанию в чате' : profile.enabled ? 'Включён' : 'Выключен'}</span>
-          <span className="specialist-tool-summary"><Layers3 size={15} aria-hidden="true" />{agentTools.filter(tool => tool.id !== 'fastkore' && (profile.toolIds ?? agentToolIds).includes(tool.id)).map(tool => tool.name).join(', ') || 'Без файловых инструментов'}</span>
+          <span className="specialist-status" data-enabled={profile.enabled}>{profile.enabled ? 'Включён' : 'Выключен'}</span>
         </div>
         {profile.enabled && profile.unavailableReason && <p className="specialist-unavailable">{profile.unavailableReason}</p>}
       </div>
       <div className="specialist-row-actions">
-        {profile.id !== 'universal' && <Toggle name={'Включить агента «' + profile.name + '»'} checked={profile.enabled} disabled={busy}
-          onChange={enabled => void save({ ...profile, enabled }, false)} />}
+        <Toggle name={'Включить агента «' + profile.name + '»'} checked={profile.enabled} disabled={busy}
+          onChange={enabled => void save({ ...profile, enabled }, false)} />
         <button type="button" className="secondary specialist-configure" onClick={() => edit(profile)} disabled={busy}
           aria-label={'Настроить агента «' + profile.name + '»'}><Pencil size={15} /><span>Настроить</span></button>
       </div>
@@ -188,7 +181,6 @@ export function SpecialistsPanel({ request, globalInstructions, initialProfileId
 
   const profile = editing;
   const files = profile.instructionFiles ?? [];
-  const selectedTools = profile.toolIds ?? agentToolIds;
   const availableModels = models?.models.filter(model => !isAutomaticModel(model.id)) ?? [];
   const modelOptions = [
     { value: '', label: 'Модель диалога' },
@@ -227,20 +219,17 @@ export function SpecialistsPanel({ request, globalInstructions, initialProfileId
       <section className="specialist-card">
         <h3>Основная информация</h3>
         <div className="specialist-columns">
-          <div><label htmlFor="config-name">Название</label><input id="config-name" maxLength={100} required readOnly={profile.id === 'universal'} value={profile.name} onChange={event => update({ name: event.target.value })} /></div>
+          <div><label htmlFor="config-name">Название</label><input id="config-name" maxLength={100} required value={profile.name} onChange={event => update({ name: event.target.value })} /></div>
           <div><label htmlFor="profile-description">Когда подключать агента</label>
             <input id="profile-description" maxLength={1000} required value={profile.description} aria-describedby="profile-description-help"
               placeholder="Например, для проверки расчётов" onChange={event => update({ description: event.target.value })} />
-            <p id="profile-description-help" className="help">{profile.id === 'universal' ? 'Ведёт новые чаты в проектах, где подключён.' : 'Основной агент использует это описание при выборе консультанта.'}</p>
+            <p id="profile-description-help" className="help">Чат проекта использует это описание при выборе консультанта.</p>
           </div>
-          {!profile.revision && <div><label htmlFor="config-id">Идентификатор латиницей</label>
-            <input id="config-id" pattern="[a-z][a-z0-9_\-]{1,63}" value={profile.id} required onChange={event => update({ id: event.target.value })} />
-          </div>}
         </div>
         <div className="specialist-basics">
-          {profile.id === 'universal' ? <span>Встроенный агент</span> : <label className="specialist-enabled">
+          <label className="specialist-enabled">
             <Toggle name="Агент включён" checked={profile.enabled} onChange={enabled => update({ enabled })} />
-            {profile.enabled ? 'Агент включён' : 'Агент выключен'}</label>}
+            {profile.enabled ? 'Агент включён' : 'Агент выключен'}</label>
           <div className="specialist-icon-select"><label htmlFor="specialist-icon">Иконка</label>
             <Select id="specialist-icon" className="settings-select" value={profileIcon(profile)} onChange={icon => update({ icon: icon as SpecialistIcon })}
               options={specialistIcons.map(value => ({ value, label: iconLabels[value] }))} />
@@ -274,30 +263,6 @@ export function SpecialistsPanel({ request, globalInstructions, initialProfileId
         <summary><ChevronDown size={17} aria-hidden="true" />Общие инструкции</summary>
         <pre>{globalInstructions}</pre>
       </details>
-      <section className="specialist-card">
-          <label htmlFor="profile-skills">Идентификаторы утверждённых Skills через запятую</label>
-          <input id="profile-skills" value={profile.skillIds.join(', ')} onChange={event => update({ skillIds: event.target.value.split(',').map(value => value.trim()).filter(Boolean) })} />
-      </section>
-      </div>
-
-      <div role="tabpanel" id="specialist-panel-tools" aria-labelledby="specialist-tab-tools" className="specialist-tabpanel" hidden={tab !== 'tools'} tabIndex={0}>
-        <section className="specialist-card">
-          <h3><Layers3 size={19} aria-hidden="true" />Инструменты агента</h3>
-          <p className="help">Доступ к источникам уточняется в настройках проекта.</p>
-          <div className="specialist-tool-list">
-            {agentTools.filter(tool => tool.id !== 'fastkore').map(tool => {
-              const Tool = toolIcons[tool.id];
-              return <label key={tool.id}>
-                <input type="checkbox" checked={selectedTools.includes(tool.id)}
-                  onChange={event => update({ toolIds: event.target.checked ? [...selectedTools, tool.id] : selectedTools.filter(id => id !== tool.id) })} />
-                <Tool size={20} aria-hidden="true" /><span><strong>{tool.name}</strong><small>{tool.description}</small></span>
-              </label>;
-            })}
-          </div>
-        </section>
-        <section className="specialist-card">
-          <Checks label="Библиотеки агента" values={profile.datasetIds} options={datasets} change={datasetIds => update({ datasetIds })} />
-        </section>
       </div>
 
       <div role="tabpanel" id="specialist-panel-model" aria-labelledby="specialist-tab-model" className="specialist-tabpanel" hidden={tab !== 'model'} tabIndex={0}>
