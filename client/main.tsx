@@ -1497,8 +1497,8 @@ function App() {
                     {(running || unread) && <span className="chat-row-state" aria-hidden="true">
                       {running ? <LoaderCircle size={13} className="spin" /> : <span className="chat-row-unread-dot" />}
                     </span>}
-                    {item.pinned && <Pin size={13} className="chat-row-pin" aria-label="Закреплённый чат" />}
                     <span>{item.title}</span>
+                    {item.pinned && <Pin size={13} className="chat-row-pin" aria-label="Закреплённый чат" />}
                     <span className="chat-row-time"><time dateTime={item.updatedAt}>{shortDate(item.updatedAt)}</time></span>
                   </button>
                   <div className="chat-row-actions">

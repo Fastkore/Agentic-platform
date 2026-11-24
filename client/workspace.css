@@ -203,8 +203,9 @@
   box-shadow: 0 8px 24px #0005;
 }
 .project-actions-menu button { gap: 8px; }
-.project-chat-list .chat-row { padding-inline: 40px 9px; }
-.project-chat-divider { margin: 5px 9px 5px 40px; border: 0; border-top: 1px solid var(--nav-border); }
+.project-chat-list { --chat-title-inset: 28px; /* Project row padding + folder icon + gap. */ }
+.project-chat-list .chat-row { padding-inline: var(--chat-title-inset) 9px; }
+.project-chat-divider { margin: 5px 9px 5px var(--chat-title-inset); border: 0; border-top: 1px solid var(--nav-border); }
 .chat-row { position: relative; gap: 8px; }
 .chat-row > span { flex: 1; }
 .chat-row time { flex: 0 0 auto; color: var(--nav-muted); }
@@ -227,7 +228,7 @@
   .chat-row-container .chat-row-actions { opacity: 1; pointer-events: auto; }
 }
 .chat-row-pin { color: var(--accent-strong); }
-.show-chats { min-height: 32px; padding-left: 35px; color: var(--text-muted); }
+.show-chats { min-height: 32px; padding-inline-start: var(--chat-title-inset); color: var(--text-muted); }
 .workspace-account { position: relative; margin-top: auto; padding: 6px 10px 10px; flex: 0 0 auto; }
 .workspace-account details, .limits-control { position: relative; }
 .account-row { min-height: 44px; gap: 10px; font-weight: 600; list-style: none; }
