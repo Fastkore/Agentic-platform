@@ -5,6 +5,7 @@ import { externalLabels, type ExternalProvider, type ExternalSelection } from '.
 import { LibraryStorageSetup, type StorageStatus } from './LibraryStorageSetup';
 import { ExternalLibraryPicker } from './ExternalLibraryPicker';
 import { PermissionSwitch } from './PermissionSwitch';
+import { WorkspaceDialog } from './WorkspaceDialog';
 import { Select } from './Select';
 import { formatBytes, type Request } from './library-upload';
 import { folderLine, LibraryFolderCard } from './LibraryFolderCard';
@@ -45,8 +46,8 @@ export function LibraryCreateButtons({ kind, select, disabled }: { kind?: Librar
       onClick={() => select(kind === value ? undefined : value)}><Plus size={16} aria-hidden="true" />{value === 's3' ? 'Обычная библиотека' : 'Внешняя библиотека'}</button>
   )}</span>;
 }
-export function CreateLibraryForm({ kind, request, pending, submit, cancel, project, storageChanged }: {
-  kind: LibraryKind; request: Request; pending: boolean; submit: (draft: FolderDraft & { external?: ExternalSelection }) => void; cancel: () => void; project?: boolean; storageChanged?: () => void;
+export function CreateLibraryForm({ kind, request, pending, submit, cancel, project, storageChanged, error }: {
+  kind: LibraryKind; request: Request; pending: boolean; submit: (draft: FolderDraft & { external?: ExternalSelection }) => void; cancel: () => void; project?: boolean; storageChanged?: () => void; error?: string;
 }) {
   const [draft, setDraft] = useState(emptyFolderDraft);
   const [provider, setProvider] = useState<ExternalProvider>('dropbox');
@@ -65,14 +66,14 @@ export function CreateLibraryForm({ kind, request, pending, submit, cancel, proj
   const suggestedName = useRef('');
   const showDetails = kind === 's3' ? !!storage?.configured : !!selection;
   const ready = !!draft.name.trim() && showDetails;
-  return <form className="agent-card library-form" onSubmit={e => { e.preventDefault(); if (ready && !pending) submit({ ...draft, external: kind === 'external' ? selection : undefined }); }}>
-    <strong>{kind === 's3' ? 'Обычная библиотека' : 'Внешняя библиотека'}</strong>
+  const form = <form className={kind === 'external' ? 'library-form' : 'agent-card library-form'} onSubmit={e => { e.preventDefault(); if (ready && !pending) submit({ ...draft, external: kind === 'external' ? selection : undefined }); }}>
+    {kind === 's3' && <strong>Обычная библиотека</strong>}
     <fieldset disabled={pending} className="library-source-fields">
       {kind === 'external' ? <>
         <label htmlFor="library-provider">Внешний диск</label>
         <Select id="library-provider" className="settings-select" options={options(externalLabels)} value={provider}
           onChange={value => { setProvider(value as ExternalProvider); setSelection(undefined); }} />
-        <ExternalLibraryPicker key={provider} provider={provider} request={request} onSelect={(next, name) => {
+        <ExternalLibraryPicker key={provider} selectionConfirmed={!!selection} provider={provider} request={request} onSelect={(next, name) => {
           setSelection(next);
           if (name) {
             const previous = suggestedName.current, suggestion = name.slice(0,120);
@@ -90,9 +91,15 @@ export function CreateLibraryForm({ kind, request, pending, submit, cancel, proj
       <FolderForm draft={draft} setDraft={setDraft} isAdmin disabled={pending} />
     </>}
     {showDetails && project && <p className="help">Библиотека подключится к этому проекту. Доступ агентам можно назначить на вкладке прав.</p>}
-    <div className="settings-actions">{showDetails && <button type="submit" className="primary" disabled={pending || !ready}>{project ? 'Создать и подключить' : 'Создать'}</button>}
-      <button type="button" className="secondary" disabled={pending} onClick={cancel}>Отмена</button></div>
+    {kind === 'external' && error && <p className="inline-error" role="alert">{error}</p>}
+    {(showDetails || kind === 's3') && <div className="settings-actions">{showDetails && <button type="submit" className="primary" disabled={pending || !ready}>{project ? 'Создать и подключить' : 'Создать'}</button>}
+      {kind === 's3'
+        ? <button type="button" className="secondary" disabled={pending} onClick={cancel}>Отмена</button>
+        : <button type="button" className="secondary" disabled={pending} onClick={() => setSelection(undefined)}>Изменить выбор</button>}</div>}
   </form>;
+  return kind === 'external'
+    ? <WorkspaceDialog title="Внешняя библиотека" className="external-library-dialog" close={() => { if (!pending) cancel(); }}>{form}</WorkspaceDialog>
+    : form;
 }
 
 /** Settings → Library: all folders the user may manage, storage status and the projects each folder is connected to. */
@@ -204,9 +211,9 @@ export function LibraryPanel({ request, isAdmin }: { request: Request; isAdmin: 
     <section className="library-folders" aria-label="Папки библиотеки">
       <div className="library-folders-heading">
         <strong>Папки библиотеки</strong>
-        {isAdmin && <LibraryCreateButtons kind={creating} select={setCreating} disabled={pending} />}
+        {isAdmin && <LibraryCreateButtons kind={creating} select={value => { setError(''); setCreating(value); }} disabled={pending} />}
       </div>
-      {creating && <CreateLibraryForm key={creating} kind={creating} storageChanged={reload} request={request} pending={pending} cancel={() => setCreating(undefined)} submit={draft => void act(async () => {
+      {creating && <CreateLibraryForm key={creating} kind={creating} error={error} storageChanged={reload} request={request} pending={pending} cancel={() => setCreating(undefined)} submit={draft => void act(async () => {
         const created = await request<LibraryFolderSummary>('/api/library', { method: 'POST', body: JSON.stringify(draft) });
         setCreating(undefined); setSelected(created.id);
       }, draft.external ? 'Создана внешняя библиотека.' : 'Папка создана. Загрузите в неё материалы.')} />}

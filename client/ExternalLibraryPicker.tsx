@@ -10,15 +10,16 @@ const guides = {
   yandex: { url: 'https://oauth.yandex.ru/', id: 'ClientID', secret: 'Client secret', location: 'Карточка приложения', redirect: 'Redirect URI',
     steps: ['Создайте приложение Яндекс OAuth и выберите платформу «Веб-сервисы».', 'Добавьте разрешение на чтение Диска (cloud_api:disk.read).'] },
 };
-export function ExternalLibraryPicker({ provider, request, onSelect }: {
-  provider: ExternalProvider; request: Request; onSelect: (selection?: ExternalSelection, folderName?: string) => void;
+export function ExternalLibraryPicker({ provider, request, onSelect, selectionConfirmed }: {
+  selectionConfirmed?: boolean; provider: ExternalProvider; request: Request; onSelect: (selection?: ExternalSelection, folderName?: string) => void;
 }) {
   const [busy, setBusy] = useState(false), [error, setError] = useState('');
   const [connection, setConnection] = useState(''), [authUrl, setAuthUrl] = useState('');
   const [folders, setFolders] = useState<ExternalFolder[]>([]), [trail, setTrail] = useState<ExternalFolder[]>([]);
   const [availability, setAvailability] = useState<'checking' | 'ready' | 'missing' | 'failed'>('checking');
   const [check, setCheck] = useState(0);
-  const [chosen, setChosen] = useState(false);
+  const [localChoice, setChosen] = useState(false);
+  const chosen = selectionConfirmed ?? localChoice;
   const [step, setStep] = useState<'start' | 'register' | 'keys'>('start');
   const [redirect, setRedirect] = useState('');
   const [clientId, setClientId] = useState('');
@@ -102,7 +103,10 @@ export function ExternalLibraryPicker({ provider, request, onSelect }: {
   if (availability === 'missing' && !authUrl && !busy) return <div className="library-form">
     {step === 'start' && <>
       <p className="help">При первом подключении понадобятся два ключа из кабинета {name}. Мастер покажет, где их взять.</p>
-      <button type="button" className="primary" onClick={() => setStep('register')}>Подключить {name}</button>
+      <div className="settings-actions">
+        <button type="button" className="primary" onClick={() => setStep('register')}>Подключить {name}</button>
+        <button type="button" className="secondary" onClick={() => setStep('keys')}>У меня есть ключи</button>
+      </div>
     </>}
     {step === 'register' && <>
       <strong>Шаг 1. Зарегистрируйте приложение в {name}</strong>
@@ -122,11 +126,11 @@ export function ExternalLibraryPicker({ provider, request, onSelect }: {
       <p className="help">В кабинете {name} откройте «{guide.location}». Скопируйте два значения из карточки приложения.</p>
       <label>{guide.id}<input autoComplete="off" spellCheck={false} value={clientId} onChange={e => setClientId(e.target.value)} maxLength={2048} /></label>
       <label>{guide.secret}<input autoComplete="new-password" type="password" value={secret} onChange={e => setSecret(e.target.value)} maxLength={2048} /></label>
+      <p className="help">Подтвердите чтение файлов в окне сервиса. После входа ключи сохранятся для этой платформы.</p>
       <div className="settings-actions">
         <button type="button" className="primary" disabled={!clientId.trim() || !secret.trim()} onClick={() => void connect()}>{signIn}</button>
         <button type="button" className="secondary" onClick={() => { setStep('register'); setError(''); }}>Назад</button>
       </div>
-      <p className="help">Подтвердите чтение файлов в окне сервиса. После входа ключи сохранятся для этой платформы.</p>
     </>}
     {error && <p role="alert" className="inline-error">{error}</p>}
   </div>;
@@ -144,7 +148,7 @@ export function ExternalLibraryPicker({ provider, request, onSelect }: {
         <a href={authUrl} target="_blank" rel="noopener noreferrer">Открыть окно входа</a>
         <button type="button" className="secondary" onClick={() => {
           controller.current?.abort(); setAuthUrl(''); setBusy(false);
-        }}>Отменить вход</button>
+        }}>Назад</button>
       </div>
     </>}
     {busy && !authUrl && <p className="help" role="status">{connection ? 'Загружаем папки…' : 'Подключаем аккаунт…'}</p>}
@@ -154,24 +158,27 @@ export function ExternalLibraryPicker({ provider, request, onSelect }: {
       <p className="help">{[name, ...trail.map(folder => folder.name)].join(' / ')}</p>
       {chosen ? <>
         <p className="help" role="status">Агенты с доступом к библиотеке смогут искать и читать файлы в папке «{current?.name}» и её подпапках.</p>
-        <button type="button" className="secondary" onClick={() => { setChosen(false); onSelect(undefined); }}>Изменить выбор</button>
-      </> : <>
-        {current && <div className="settings-actions">
-          <button type="button" className="primary" disabled={busy} onClick={chooseFolder}>Выбрать «{current.name}»</button>
-          <button type="button" className="secondary" disabled={busy}
-            onClick={() => void browse(connection, trail.slice(0, -1), controller.current?.signal)}>На уровень выше</button>
+        {selectionConfirmed === undefined && <div className="settings-actions">
+          <button type="button" className="secondary" onClick={() => { setChosen(false); onSelect(undefined); }}>Изменить выбор</button>
+          <button type="button" className="secondary" onClick={() => void connect()}>Сменить аккаунт</button>
         </div>}
-        {error && <button type="button" className="secondary" disabled={busy}
-          onClick={() => void browse(connection, trail, controller.current?.signal)}>Обновить список папок</button>}
+      </> : <>
         {folders.length > 0 && <ul className="settings-records">{folders.map(folder => <li key={folder.id}>
           <button type="button" className="library-dir" disabled={busy} aria-label={'Открыть папку «' + folder.name + '»'}
             onClick={() => void browse(connection, [...trail, folder], controller.current?.signal)}>{folder.name}</button>
         </li>)}</ul>}
         {!busy && !error && !folders.length && <p className="help">{current ? 'Вложенных папок нет. Вы можете выбрать эту папку.' : 'Нет доступных папок. Создайте папку на диске и обновите список.'}</p>}
-        {!busy && !error && !folders.length && !current && <button className="secondary" type="button"
-          onClick={() => void browse(connection, [], controller.current?.signal)}>Обновить список папок</button>}
+        <div className="settings-actions">
+          {current && <>
+            <button type="button" className="primary" disabled={busy} onClick={chooseFolder}>Выбрать «{current.name}»</button>
+            <button type="button" className="secondary" disabled={busy}
+              onClick={() => void browse(connection, trail.slice(0, -1), controller.current?.signal)}>На уровень выше</button>
+          </>}
+          {(error || (!busy && !folders.length && !current)) && <button type="button" className="secondary" disabled={busy}
+            onClick={() => void browse(connection, trail, controller.current?.signal)}>Обновить список папок</button>}
+          <button type="button" className="secondary" disabled={busy} onClick={() => void connect()}>Сменить аккаунт</button>
+        </div>
       </>}
-      <button type="button" className="secondary" disabled={busy} onClick={() => void connect()}>Сменить аккаунт</button>
     </>}
   </div>;
 }

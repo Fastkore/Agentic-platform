@@ -51,7 +51,7 @@ export function ProjectLibraryPanel({ project, request, section, isAdmin, initia
       <strong>{section === 'folders' ? 'Папки библиотеки' : 'Доступ агентов к папкам'}</strong>
       <span className="project-specialist-actions">
         <button type="button" className="workspace-icon" title="Обновить" aria-label="Обновить" disabled={pending} onClick={() => void load()}><RefreshCw size={16} /></button>
-        {section === 'folders' && isAdmin && <LibraryCreateButtons kind={creating} select={setCreating} disabled={pending} />}
+        {section === 'folders' && isAdmin && <LibraryCreateButtons kind={creating} select={value => { setError(''); setCreating(value); }} disabled={pending} />}
       </span>
     </div>
     {error && <p className="inline-error" role="alert">{error}</p>}
@@ -59,7 +59,7 @@ export function ProjectLibraryPanel({ project, request, section, isAdmin, initia
     {view && <div className="library-panel">
 
       {section === 'folders' && <>
-        {creating && <CreateLibraryForm key={creating} kind={creating} request={request} pending={pending} project cancel={() => setCreating(undefined)} submit={draft => void act(async () => {
+        {creating && <CreateLibraryForm key={creating} kind={creating} error={error} request={request} pending={pending} project cancel={() => setCreating(undefined)} submit={draft => void act(async () => {
           const created = await request<LibraryFolderSummary>('/api/library', { method: 'POST', body: JSON.stringify(draft) });
           setCreating(undefined);
           await request(base, { method: 'POST', body: JSON.stringify({ folderId: created.id }) });

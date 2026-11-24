@@ -130,3 +130,8 @@
 .library-source-fields label:has(input:not([type="checkbox"])), .library-setup label:has(select) { display: grid; gap: 4px; }
 .library-source-fields ol { margin: 0; padding-inline-start: 1.5em; }
 .library-source-fields li + li { margin-top: .35em; }
+
+.workspace-dialog.external-library-dialog { width: min(620px, calc(100vw - 24px)); }
+.external-library-dialog .settings-actions { display: flex; flex-flow: row nowrap; align-items: center; gap: 8px; }
+.external-library-dialog .settings-actions > :is(button, a) { min-width: 0; max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
+.external-library-dialog .library-form > :is(.primary, .secondary) { justify-self: start; max-width: 100%; }
