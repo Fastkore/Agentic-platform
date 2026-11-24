@@ -53,6 +53,15 @@ export class DriveAuth {
     }
     return new CloudDrive(provider, tokens.access);
   }
+  configured(provider: ExternalProvider): boolean {
+    try {
+      settings(provider);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   begin(owner: string, provider: ExternalProvider) {
     const { id, redirect } = settings(provider);
     for (const [key, draft] of this.drafts) if (draft.expires <= Date.now()) this.drafts.delete(key);

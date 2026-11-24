@@ -166,6 +166,15 @@ test('external HTTP connection uses regular project grants and checks remote acc
     return Response.json({entries,has_more:false});
   });
   const base = '/api/library/external';
+  const statusUrl = base + '/status/dropbox';
+  assert.equal((await f.req('GET',statusUrl,f.token)).statusCode,403);
+  assert.deepEqual((await f.req('GET',statusUrl,f.admin)).json(),{configured:true});
+  delete process.env.BRIDGE_LIBRARY_DROPBOX_CLIENT_SECRET;
+  try {
+    assert.deepEqual((await f.req('GET',statusUrl,f.admin)).json(),{configured:false});
+  } finally {
+    process.env.BRIDGE_LIBRARY_DROPBOX_CLIENT_SECRET = 'secret';
+  }
   assert.equal((await f.req('POST',base+'/authorize',f.token,{provider:'dropbox'})).statusCode,403);
   const started = (await f.req('POST',base+'/authorize',f.admin,{provider:'dropbox'})).json();
   assert.ok(started.url.startsWith(providers.dropbox.authorize));

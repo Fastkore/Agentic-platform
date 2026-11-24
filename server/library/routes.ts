@@ -40,6 +40,12 @@ export function libraryRoutes(app: FastifyInstance, deps: LibraryRouteDeps) {
     return { ok: true, kind: registry.storage.store.kind };
   });
   const selection = obj({ connection: anyId, folder: { type: 'string', minLength: 1, maxLength: 4096 } }, ['connection', 'folder']);
+  app.get<{ Params: { provider: ExternalProvider } }>(base + '/external/status/:provider', {
+    schema: { params: obj({ provider: { enum: externalProviders } }, ['provider']) },
+  }, async request => {
+    admin(request);
+    return { configured: registry.external.auth.configured(request.params.provider) };
+  });
   app.post<{ Body: { provider: ExternalProvider } }>(base + '/external/authorize', { schema: { body: obj({ provider: { enum: externalProviders } }, ['provider']) } },
     async request => registry.external.auth.begin(admin(request).id, request.body.provider));
   app.post<{ Body: { state: string; code: string } }>(base + '/external/authorize/finish', { schema: { body: obj({ state: anyId, code: { type: 'string', minLength: 1, maxLength: 4096 } }, ['state','code']) } },
