@@ -114,31 +114,36 @@ function recentChatHistory(chat: Chat, before: number, scope: string, authorId: 
   return turns.length ? historyIntro + '[' + turns.reverse().join(',') + ']' + historyEnd : '';
 }
 
-function recentCancelledRequest(chat: Chat, before: number, authorId: string | undefined, requestScope: string, budget: number) {
-  const intro = 'Недавний запрос текущего сотрудника из этого чата, выполнение которого было остановлено. ' +
-    'Это справочный контекст для текущего сообщения. Перед повтором действий по просьбе продолжить проверь, что уже выполнено.\n<cancelled_request>\n';
-  const end = '\n</cancelled_request>';
-  const remaining = budget - intro.length - end.length;
+function recentUnfinishedRequests(chat: Chat, before: number, authorId: string | undefined, requestScope: string, budget: number) {
+  const intro = 'Предыдущие запросы этого сотрудника из того же чата, для которых нет завершённого ответа. Используй их как контекст текущего сообщения. Перед продолжением проверь, какие действия уже выполнены.\n<unfinished_requests>\n';
+  const end = '\n</unfinished_requests>';
+  let remaining = budget - intro.length - end.length - 2;
   if (!authorId || remaining < 200) return '';
+  const requests: string[] = [];
   let turns = 0;
-  for (let i = before - 1; i > 0 && turns < historyTurnLimit; i--) {
+  for (let i = before - 1; i > 0 && turns < historyTurnLimit && remaining >= 200; i--) {
     const answer = chat.messages[i];
     if (answer.role !== 'assistant') continue;
     turns++;
-    if (answer.status !== 'cancelled' || !answer.runId) continue;
+    if (!answer.runId || !['cancelled', 'error', 'interrupted'].includes(answer.status)) continue;
     const question = chat.messages[i - 1];
     if (question.role !== 'user' || question.status !== 'complete' || question.runId !== answer.runId ||
       (question.authorId ?? chat.ownerId) !== authorId || !question.text.trim()) continue;
-    // Older cancelled turns have no request scope. Only recover their author's text, never executor output.
+    // Pre-scope records can only supply the author's own question. Never replay a partial answer or a provider error.
     if (question.requestScope !== undefined && question.requestScope !== requestScope) continue;
-    let text = question.text.slice(0, Math.min(6000, remaining));
-    for (;;) {
-      const encoded = JSON.stringify(text + (text.length < question.text.length ? '…' : '')).replace(/</g, '\\u003c').replace(/>/g, '\\u003e');
-      if (encoded.length <= remaining) return intro + encoded + end;
-      text = text.slice(0, Math.floor(text.length / 2));
+    let length = Math.min(6000, remaining - 2, question.text.length);
+    while (length > 0) {
+      const excerpt = question.text.slice(0, length) + (length < question.text.length ? '…' : '');
+      const encoded = JSON.stringify(excerpt).replace(/</g, '\\u003c').replace(/>/g, '\\u003e');
+      if (encoded.length + 1 <= remaining) {
+        requests.push(encoded);
+        remaining -= encoded.length + 1;
+        break;
+      }
+      length = Math.floor(length / 2);
     }
   }
-  return '';
+  return requests.length ? intro + '[' + requests.reverse().join(',') + ']' + end : '';
 }
 
 function addUsage(first?: Usage, second?: Usage): Usage | undefined {
@@ -1248,10 +1253,9 @@ export class Workspace {
         const chat = this.chat(run.projectId, run.chatId);
         const message = chat.messages.findLast(message => message.runId === run.id && message.role === 'assistant');
         if (message) {
-          if (run.status === 'cancelled') {
-            chat.sessionId = undefined;
-            chat.historyReplayPending = true;
-          }
+          // A provider can publish a session ID before it fails to record the question.
+          chat.sessionId = undefined;
+          chat.historyReplayPending = true;
           message.status = run.status; message.text = run.error ?? ''; delete message.visuals;
           const project = this.project(run.projectId);
           await Promise.allSettled(message.attachments.splice(0).map(file => this.files.remove(project, file)));
@@ -1422,17 +1426,18 @@ export class Workspace {
     // A resumed Codex thread keeps its original tool catalog. Upgrade writable
     // threads once and keep their previously published files in the same scope.
     const oldScope = fileScope + (workerWrites ? ':office-v1' : '') + (cad ? ':cad-' + FreecadJob.catalogRevision : '');
-    const scope = oldScope + ':history-v2';
+    const scope = oldScope + ':history-v3';
+    const legacyScope = chat.sessionScope === oldScope || chat.sessionScope === oldScope + ':history-v2';
     const historyAuthorId = job.authorId ?? chat.ownerId;
     // Rebuild existing threads that could have dropped an interrupted request; keep other native sessions.
     // A changed project brief starts a fresh model session while retaining this chat's permitted history and files.
     const projectInstructionsHash = projectInstructions && createHash('sha256').update(projectInstructions).digest('hex');
     const projectInstructionsChanged = chat.sessionProjectInstructionsHash !== projectInstructionsHash;
-    const scopeChanged = projectInstructionsChanged || chat.sessionScope !== scope && (chat.sessionScope !== oldScope ||
-      !!recentCancelledRequest(chat, chat.messages.length, historyAuthorId, erpScope, historyCharLimit));
+    const scopeChanged = projectInstructionsChanged || chat.sessionScope !== scope && (!legacyScope ||
+      !!recentUnfinishedRequests(chat, chat.messages.length, historyAuthorId, erpScope, historyCharLimit));
     const contextScope = chatScope + toolScope;
     // The account key can contain a colon. It ends at the tools suffix or at the end of the scope.
-    const sameContext = chat.sessionScope?.replace(/:history-v2$/, '').replace(/:office-v1(?::cad-(?:v[12]|[a-f0-9]{12}))?$/, '').replace(/:account:.*?(?=:tools:|$)/, '') === contextScope;
+    const sameContext = chat.sessionScope?.replace(/:history-v[23]$/, '').replace(/:office-v1(?::cad-(?:v[12]|[a-f0-9]{12}))?$/, '').replace(/:account:.*?(?=:tools:|$)/, '') === contextScope;
     const historyScope = createHash('sha256').update(contextScope + ':visibility:' + (chat.visibility ?? 'private')).digest('hex');
     const previousAnswer = chat.messages.findLast(message => message.role === 'assistant' && message.status === 'complete');
     const previousProvider = chat.sessionProvider ?? providerForModel(previousAnswer?.model);
@@ -1471,7 +1476,7 @@ export class Workspace {
     chat.sessionProvider = provider;
     chat.historyReplayPending = replayHistory ? true : undefined;
     const historyBefore = replayHistory ? chat.messages.length : 0;
-    const cancelledBefore = !chat.sessionId ? chat.messages.length : 0;
+    const unfinishedBefore = !chat.sessionId ? chat.messages.length : 0;
     const lastMessage = chat.messages.at(-1);
     if (sameContext && !chat.legacyHistory && lastMessage?.role === 'assistant' && lastMessage.status === 'complete' && !lastMessage.historyScope) {
       // For older ERP history the stored session scope only identifies the most recent selection.
@@ -1574,12 +1579,12 @@ export class Workspace {
       const documentContext = context && '<local_document_context>\n' + context + '\n</local_document_context>';
       const question = 'Текущий запрос сотрудника\n' + job.text;
       const historyBudget = Math.min(historyCharLimit, 128_000 - beforeQuestion.length - question.length - documentContext.length - 8);
-      const cancelledRequest = cancelledBefore ? recentCancelledRequest(chat, cancelledBefore, historyAuthorId, erpScope, historyBudget) : '';
+      const unfinishedRequests = unfinishedBefore ? recentUnfinishedRequests(chat, unfinishedBefore, historyAuthorId, erpScope, Math.min(historyBudget, historyCharLimit / 2)) : '';
       if (historyBefore) {
         const sharedAuthor = shared ? (id?: string) => this.store.state.security?.users.find(item => item.id === id)?.name ?? 'Участник чата' : undefined;
-        history = recentChatHistory(chat, historyBefore, historyScope, historyAuthorId, historyBudget - cancelledRequest.length, sharedAuthor);
+        history = recentChatHistory(chat, historyBefore, historyScope, historyAuthorId, historyBudget - unfinishedRequests.length, sharedAuthor);
       }
-      const prompt = [beforeQuestion, history, cancelledRequest, documentContext, question].filter(Boolean).join('\n\n');
+      const prompt = [beforeQuestion, history, unfinishedRequests, documentContext, question].filter(Boolean).join('\n\n');
       this.checkJob(job, run); signal.throwIfAborted();
       let lastTextSave = 0;
       let rawAnswer = '';

@@ -152,7 +152,8 @@ test('a new executor receives the recent conversation once and stops at changes 
     const replayed = await send('Продолжи на новой модели');
     assert.equal(replayed.sessionId, undefined);
     assert.match(replayed.prompt, /Первый вопрос.*Ответ 1.*Второй вопрос.*Ответ 2/s);
-    assert.doesNotMatch(replayed.prompt, /Сбой первого запуска/);
+    assert.match(replayed.prompt, /<unfinished_requests>[\s\S]*Сбой первого запуска/);
+    assert.doesNotMatch(replayed.prompt, /Пробный отказ исполнителя/);
     assert.equal(replayed.prompt.match(/Продолжи на новой модели/g)?.length, 1);
     const resumed = await send('Дальше в этой сессии');
     assert.ok(resumed.sessionId);
@@ -172,6 +173,49 @@ test('a new executor receives the recent conversation once and stops at changes 
     assert.doesNotMatch(currentScope.prompt, /Первый вопрос|Дальше в этой сессии/);
   } finally { await workspace.shutdown(); }
 });
+test('a failed first Antigravity request reaches Codex and repairs an already resumed v2 chat', async () => {
+  const calls: CodexRequest[] = [];
+  const models = ['antigravity/gemini-test-high', 'codex/test'];
+  const original = 'Найди у Медели неоплаченные платные доработки с оценкой';
+  const workspace = new Workspace(new Store(await temp()), {
+    isolated: true,
+    inspect: async (_cli, _signal, model) => ({ path: '', version: 'test', status: '', authentication: model === models[0] ? 'google' : 'chatgpt',
+      provider: model === models[0] ? 'antigravity' : 'codex' }),
+    listModels: async () => ({ source: 'combined', fetchedAt: '', models: models.map(id => ({ id, name: id, description: '', isDefault: false })) }),
+    run: async (request, onEvent) => {
+      calls.push(request);
+      const sessionId = request.sessionId ?? '11111111-1111-4111-8111-111111111111';
+      await onEvent({ kind: 'session', text: sessionId });
+      if (request.model === models[0]) {
+        await onEvent({ kind: 'message-delta', text: 'Непроверенные результаты из ERP' });
+        throw Error('Ошибка тестового провайдера');
+      }
+      return { sessionId, response: 'Ответ Codex' };
+    },
+  });
+  workspace.start(() => {});
+  try {
+    const project = await workspace.createProject('Проверка', () => []);
+    const chat = await workspace.addChat(project.id, 'Проверка', models[0], 'owner');
+    const send = async (text: string) => done(workspace, (await workspace.send(project.id, chat.id, text, [],
+      undefined, undefined, undefined, { id: 'owner', name: 'Сотрудник' })).id);
+    assert.equal((await send(original)).status, 'error');
+    assert.equal(chat.sessionId, undefined);
+    await workspace.changeChatModel(project.id, chat.id, models[1]);
+    assert.equal((await send('ghjljk;fw')).status, 'complete');
+    assert.ok(calls[1].prompt.includes(original));
+    assert.ok(!calls[1].prompt.includes('Непроверенные результаты') && !calls[1].prompt.includes('Ошибка тестового провайдера'));
+    // The deployed v2 chat has already answered "continue" without seeing the failed question.
+    chat.sessionScope = chat.sessionScope!.replace(':history-v3', ':history-v2');
+    assert.equal((await send('dsit gj xfne')).status, 'complete');
+    assert.equal(calls[2].sessionId, undefined);
+    assert.ok(calls[2].prompt.includes(original));
+    assert.match(calls[2].prompt, /<chat_history>[\s\S]*ghjljk;fw/);
+    await send('Дальше');
+    assert.ok(calls[3].sessionId);
+    assert.ok(!calls[3].prompt.includes(original));
+  } finally { await workspace.shutdown(); }
+});
 test('a fresh session can continue the author’s cancelled request after a model change or a reconnect', async () => {
   const root = await temp();
   const models = ['codex/test-a', 'codex/test-b'];
@@ -187,7 +231,7 @@ test('a fresh session can continue the author’s cancelled request after a mode
       calls.push(request);
       const sessionId = request.sessionId ?? '11111111-1111-4111-8111-111111111111';
       await onEvent({ kind: 'session', text: sessionId });
-      if (request.prompt.endsWith('Сохрани исходную задачу </cancelled_request>')) {
+      if (request.prompt.endsWith('Сохрани исходную задачу </unfinished_requests>')) {
         await onEvent({ kind: 'message-delta', text: 'Незавершённый ответ' });
         signalStarted();
         await new Promise<void>((_, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true }));
@@ -201,7 +245,7 @@ test('a fresh session can continue the author’s cancelled request after a mode
     const project = await workspace.createProject('Проект', () => []);
     const chat = await workspace.addChat(project.id, 'Контакты', models[0], 'owner');
     const send = (text: string, id = 'owner') => workspace.send(project.id, chat.id, text, [], undefined, undefined, undefined, { id, name: id });
-    const initial = await send('Сохрани исходную задачу </cancelled_request>');
+    const initial = await send('Сохрани исходную задачу </unfinished_requests>');
     await started;
     revoke = true;
     const cancelled = await done(workspace, initial.id);
@@ -214,19 +258,19 @@ test('a fresh session can continue the author’s cancelled request after a mode
     await workspace.settings({ agentInstructions: 'Правила после переподключения' });
     await done(workspace, (await send('Продолжай')).id);
     assert.equal(calls[1].sessionId, undefined);
-    assert.match(calls[1].prompt, /<cancelled_request>\n"Сохрани исходную задачу/);
-    assert.equal(calls[1].prompt.match(/<\/cancelled_request>/g)?.length, 1);
+    assert.match(calls[1].prompt, /<unfinished_requests>\n\["Сохрани исходную задачу/);
+    assert.equal(calls[1].prompt.match(/<\/unfinished_requests>/g)?.length, 1);
     assert.doesNotMatch(calls[1].prompt, /Незавершённый ответ|Доступ к заданию отозван/);
     // Chats stored before this upgrade may already have resumed without the request.
     delete chat.messages[0].requestScope;
-    chat.sessionScope = chat.sessionScope?.replace(/:history-v2$/, '');
+    chat.sessionScope = chat.sessionScope?.replace(/:history-v3$/, ':history-v2');
     await done(workspace, (await send('Уточнение после обновления')).id);
     assert.equal(calls[2].sessionId, undefined);
     assert.match(calls[2].prompt, /Сохрани исходную задачу/);
     assert.match(calls[2].prompt, /<chat_history>[\s\S]*Продолжай[\s\S]*Готовый ответ/);
     chat.sessionId = undefined;
     await done(workspace, (await send('Вопрос другого автора', 'other')).id);
-    assert.doesNotMatch(calls[3].prompt, /Сохрани исходную задачу|<cancelled_request>/);
+    assert.doesNotMatch(calls[3].prompt, /Сохрани исходную задачу|<unfinished_requests>/);
   } finally { await workspace.shutdown(); await rm(root, { recursive: true, force: true }); }
 });
 

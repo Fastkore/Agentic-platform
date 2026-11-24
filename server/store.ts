@@ -102,7 +102,11 @@ export class Store {
         run.response = undefined;
       }
       for (const project of this.state.projects) for (const chat of project.chats)
-        for (const message of chat.messages) if (message.status === 'running') message.status = 'interrupted';
+        for (const message of chat.messages) if (message.status === 'running') {
+          message.status = 'interrupted';
+          chat.sessionId = undefined;
+          chat.historyReplayPending = true;
+        }
       migrateFastkoreChatBindings(this.state);
       for (const job of this.state.jobs) if (job.fastkoreContext) job.fastkoreContext = parseFastkoreContext(job.fastkoreContext) ?? undefined;
       const queued = new Set(this.state.runs.filter(run => run.status === 'queued').map(run => run.id));
