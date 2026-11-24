@@ -7,10 +7,25 @@ const guides = {
   dropbox: { url: 'https://www.dropbox.com/developers/apps/create', id: 'App key', secret: 'App secret', location: 'Settings', redirect: 'OAuth 2 → Redirect URIs',
     steps: ['Создайте приложение с типом Scoped access и доступом Full Dropbox.'] },
   google: { url: 'https://console.cloud.google.com/apis/credentials', id: 'Client ID', secret: 'Client secret', location: 'Клиенты OAuth', redirect: 'Authorized redirect URIs',
-    steps: ['Выберите проект в Google Cloud и включите Google Drive API.', 'В Google Auth Platform откройте Audience и выберите аудиторию. В Data Access добавьте разрешение https://www.googleapis.com/auth/drive.readonly. В режиме Testing добавьте свой аккаунт в Test users.', 'Откройте Clients → Create client и выберите Web application.'] },
+    steps: ['Выберите проект в Google Cloud и включите Google Drive API.', 'Настройте экран согласия в Google Auth Platform. В разделе Data Access добавьте разрешение https://www.googleapis.com/auth/drive.readonly.', 'Откройте Clients → Create client и выберите Web application.'] },
   yandex: { url: 'https://oauth.yandex.ru/client/new/', id: 'ClientID', secret: 'Client secret', location: 'Карточка приложения', redirect: 'Redirect URI',
     steps: ['Выберите «Для доступа к API или отладки». Укажите название приложения и контактную почту.', 'В правах доступа найдите Яндекс Диск и выберите «Чтение всего Диска» (cloud_api:disk.read).'] },
 };
+function GoogleTestUsers() {
+  return <aside className="library-drive-permissions">
+    <strong>Если приложение в режиме Testing, добавьте тестировщика</strong>
+    <ol>
+      <li>Откройте <a className="library-provider-link" href="https://console.cloud.google.com/auth/audience" target="_blank" rel="noreferrer">Google Auth Platform → Audience ↗</a>.
+        Вверху страницы выберите проект, в котором создан ваш Client ID.</li>
+      <li>В разделе <b>Test users</b> нажмите <b>Add users</b>.</li>
+      <li>Введите полный email аккаунта Google, чей Диск хотите подключить, и нажмите <b>Save</b>. Проверьте, что этот адрес появился в списке.</li>
+      <li>В мастере нажмите <b>Войти через Google</b> и выберите тот же аккаунт.</li>
+    </ol>
+    <p>Если Google уже показал <code>403: access_denied</code> с сообщением о тестировщиках, закройте окно ошибки.
+      После сохранения адреса нажмите в мастере «Назад» и повторите вход с прежними ключами.</p>
+  </aside>;
+}
+
 function DropboxPermissions() {
   return <aside className="library-drive-permissions">
     <strong>Включите оба разрешения для чтения</strong>
@@ -140,14 +155,15 @@ export function ExternalLibraryPicker({ provider, request, onSelect, selectionCo
     </>}
     {step === 'register' && <>
       <strong>Шаг 1. Зарегистрируйте приложение в {name}</strong>
-      <a className={provider === 'dropbox' ? 'library-provider-link' : undefined} href={guide.url} target="_blank" rel="noreferrer">Открыть кабинет {name} ↗</a>
+      <a className="library-provider-link" href={guide.url} target="_blank" rel="noreferrer">Открыть кабинет {name} ↗</a>
       <ol>{guide.steps.map((text, index) => <li key={text}>{text}{provider === 'google' && index === 0 && <>
-        {' '}<a href="https://console.cloud.google.com/apis/library/drive.googleapis.com" target="_blank" rel="noreferrer">Открыть Google Drive API</a>
+        {' '}<a className="library-provider-link" href="https://console.cloud.google.com/apis/library/drive.googleapis.com" target="_blank" rel="noreferrer">Открыть Google Drive API</a>
       </>}</li>)}{screenCode
         ? <li>Оставьте адрес возврата Яндекса <code>{redirect}</code> и нажмите «Создать приложение».</li>
         : <li>В поле <b>{guide.redirect}</b> вставьте адрес ниже и сохраните настройки.</li>}</ol>
       {!screenCode && <label>Адрес возврата<input readOnly value={redirect} onFocus={e => e.currentTarget.select()} /></label>}
       {provider === 'dropbox' && <DropboxPermissions />}
+      {provider === 'google' && <GoogleTestUsers />}
       <div className="settings-actions">
         {!screenCode && <button type="button" className="secondary" onClick={async () => {
           try { await navigator.clipboard.writeText(redirect); setCopied(true); setError(''); }
@@ -159,9 +175,7 @@ export function ExternalLibraryPicker({ provider, request, onSelect, selectionCo
     {step === 'keys' && <>
       <strong>Шаг 2. Введите ключи и войдите</strong>
       {provider === 'dropbox' && <DropboxPermissions />}
-      {provider === 'google' && <p className="help">Если приложение в режиме <b>Testing</b>, откройте
-        {' '}<a className="library-provider-link" href="https://console.cloud.google.com/auth/audience" target="_blank" rel="noreferrer">Google Auth Platform → Audience ↗</a>
-        {' '}в проекте этого Client ID. В разделе <b>Test users → Add users</b> добавьте адрес аккаунта, с которым будете входить, и нажмите <b>Save</b>.</p>}
+      {provider === 'google' && <GoogleTestUsers />}
       <p className="help">В кабинете {name} откройте «{guide.location}». Скопируйте два значения из карточки приложения.</p>
       <label>{guide.id}<input autoComplete="off" spellCheck={false} value={clientId} onChange={e => setClientId(e.target.value)} maxLength={2048} /></label>
       <label>{guide.secret}<input autoComplete="new-password" type="password" value={secret} onChange={e => setSecret(e.target.value)} maxLength={2048} /></label>
@@ -192,12 +206,16 @@ export function ExternalLibraryPicker({ provider, request, onSelect, selectionCo
       <div className="settings-actions">
         {screenCode && <button type="button" className="primary" disabled={!code.trim()}
           onClick={() => void finishLogin.current?.(code.trim())}>Подтвердить код</button>}
-        <a href={authUrl} target="_blank" rel="noopener noreferrer">Открыть окно входа</a>
+        <a className="library-provider-link" href={authUrl} target="_blank" rel="noopener noreferrer">Открыть окно входа</a>
         <button type="button" className="secondary" onClick={() => {
           controller.current?.abort(); setCode(''); setAuthUrl(''); setBusy(false);
         }}>Назад</button>
       </div>
     </>}
+    {authUrl && provider === 'google' && <details>
+      <summary>Google показал ошибку 403 о тестировщиках?</summary>
+      <GoogleTestUsers />
+    </details>}
     {busy && !authUrl && <p className="help" role="status">{connection ? 'Загружаем папки…' : 'Подключаем аккаунт…'}</p>}
     {error && <p className="inline-error" role="alert">{error}</p>}
     {connection && <>
