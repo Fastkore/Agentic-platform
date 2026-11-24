@@ -1253,8 +1253,7 @@ export class Workspace {
         const chat = this.chat(run.projectId, run.chatId);
         const message = chat.messages.findLast(message => message.runId === run.id && message.role === 'assistant');
         if (message) {
-          // A provider can publish a session ID before it fails to record the question.
-          chat.sessionId = undefined;
+          if (run.status === 'cancelled') chat.sessionId = undefined;
           chat.historyReplayPending = true;
           message.status = run.status; message.text = run.error ?? ''; delete message.visuals;
           const project = this.project(run.projectId);
@@ -1505,6 +1504,7 @@ export class Workspace {
       ? await mkdtemp(path.join(tmpdir(), 'bridge-files-')) : undefined);
     const produced: Attachment[] = [];
     let history = '';
+    const previousSession = chat.sessionId;
     let stagedEarlierDocuments = earlierDocuments;
     let executorStarted = false;
     let finalizationStarted: number | undefined;
@@ -1669,7 +1669,8 @@ export class Workspace {
       chat.sessionId = sourcesUsable || shared ? undefined : result.sessionId;
       chat.historyReplayPending = undefined; run.response = answer.text; run.usage = answer.usage;
     } catch (error) {
-      if (history) chat.sessionId = undefined;
+      // Discard a session first announced by a failed attempt. Its transcript may have missed the question.
+      chat.sessionId = previousSession;
       await Promise.allSettled(produced.map(file => this.files.remove(project, file)));
       throw error;
     } finally {
