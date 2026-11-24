@@ -162,7 +162,9 @@ export function ComposerInput({ input, draft, placeholder, editable, pickerEnabl
   const shell = input.current?.closest('.workspace-shell');
   return <>
     {specialistId && <div className="composer-specialist">
-      <span role="status" title="Агент получит этот вопрос для консультации"><AtSign size={14} aria-hidden="true" />Консультация · {specialist?.name ?? 'Агент недоступен'}</span>
+      <span role="status" title="Агент получит этот вопрос для консультации">
+        {specialist ? '@' + specialist.name.toLocaleLowerCase('ru') : 'Агент недоступен'}
+      </span>
       <button type="button" className="workspace-icon" aria-label="Убрать агента" title="Убрать агента"
         disabled={!editable} onClick={() => { onSpecialist(); input.current?.focus(); }}><X size={14} /></button>
     </div>}

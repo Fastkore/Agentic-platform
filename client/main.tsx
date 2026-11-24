@@ -1224,7 +1224,7 @@ function App() {
           files={inFastkore && message.status === 'complete' && message.attachments.length ? message.attachments : undefined} /> :
           <div className="question-bubble">
             {conversation.visibility !== 'project' && message.authorId && message.authorId !== user.id && <small title={dateTooltip(message.createdAt, message.authorName ?? conversation.ownerName)}>{shortUserName(message.authorName ?? conversation.ownerName)}</small>}
-            {message.specialistName && <small title="Консультант для этого запроса">@{message.specialistName}</small>}
+            {message.specialistName && <small title="Консультант для этого запроса">@{message.specialistName.toLocaleLowerCase('ru')}</small>}
             {message.text}
           </div>}
         {message.status === 'complete' && !!message.visuals?.length && <ChatVisuals visuals={message.visuals} />}

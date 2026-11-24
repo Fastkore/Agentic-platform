@@ -197,6 +197,7 @@ export function SpecialistsPanel({ request, globalInstructions, initialProfileId
     </header>
     <form className="specialist-form specialist-editor-form" onSubmit={submit} onInvalid={event => {
       const input = event.target as HTMLInputElement;
+      if (input.id === 'profile-description') setError('Укажите, для какой задачи подключать агента и какой результат от него ждать.');
       const panel = input.closest('[role="tabpanel"]');
       const destination = editorTabs.find(item => panel?.id === 'specialist-panel-' + item.id);
       if (destination) { setTab(destination.id); requestAnimationFrame(() => input.focus()); }
@@ -221,9 +222,10 @@ export function SpecialistsPanel({ request, globalInstructions, initialProfileId
         <div className="specialist-columns">
           <div><label htmlFor="config-name">Название</label><input id="config-name" maxLength={100} required value={profile.name} onChange={event => update({ name: event.target.value })} /></div>
           <div><label htmlFor="profile-description">Когда подключать агента</label>
-            <input id="profile-description" maxLength={1000} required value={profile.description} aria-describedby="profile-description-help"
-              placeholder="Например, для проверки расчётов" onChange={event => update({ description: event.target.value })} />
-            <p id="profile-description-help" className="help">Чат проекта использует это описание при выборе консультанта.</p>
+            <input id="profile-description" maxLength={1000} required pattern={String.raw`.*\S.*`} value={profile.description}
+              aria-describedby="profile-description-help" placeholder="Например, подбирает цены по прайсу и считает итог для КП"
+              onChange={event => { setError(''); update({ description: event.target.value }); }} />
+            <p id="profile-description-help" className="help">Укажите задачу и ожидаемый результат. По этому описанию чат выбирает консультанта.</p>
           </div>
         </div>
         <div className="specialist-basics">
