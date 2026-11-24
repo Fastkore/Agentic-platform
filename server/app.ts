@@ -1301,7 +1301,14 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
     }
     return workspace.cancel(run.id);
   });
-  if (options.clientRoot) await app.register(fastifyStatic, { root: path.resolve(options.clientRoot), prefix: '/', index: ['index.html'], wildcard: false });
+  if (options.clientRoot) await app.register(fastifyStatic, {
+    root: path.resolve(options.clientRoot), prefix: '/', index: ['index.html'], wildcard: false, preCompressed: true,
+    setHeaders(reply, file) {
+      if (path.basename(path.dirname(file)) === 'assets' && /-[\w-]{8}\.(?:js|css)(?:\.(?:br|gz))?$/.test(file)) {
+        reply.header('Cache-Control', 'public, max-age=31536000, immutable');
+      }
+    },
+  });
   app.setNotFoundHandler((_request, reply) => reply.code(404).send({ error: 'Адрес не найден.' }));
   app.addHook('onClose', async () => { await workspace.shutdown(); });
   workspace.start(job => { if (job.credentialId) access.authenticateCredential(job.credentialId); });
