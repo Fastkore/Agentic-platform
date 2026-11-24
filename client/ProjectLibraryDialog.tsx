@@ -1,12 +1,13 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useId, useState } from 'react';
 import { ChevronDown, ChevronRight, Info, RefreshCw } from 'lucide-react';
 import type { ProjectSummary } from '../shared/types';
 import type { LibraryCell, LibraryConnection, LibraryFolderSummary, OutputPolicy, ProjectLibraryView } from '../shared/library';
+import { SettingsTabStrip } from './SettingsTabs';
 import { Select } from './Select';
 import { PermissionSwitch } from './PermissionSwitch';
 import type { Request } from './library-upload';
 import { folderLine, LibraryFolderCard } from './LibraryFolderCard';
-import { CreateLibraryForm, LibraryCreateButtons, type LibraryKind, outputModes, profileLabels } from './LibraryPanel';
+import { CreateLibraryForm, LibraryCreateButtons, libraryTabs, LibraryKindIcon, type LibraryKind, outputModes, profileLabels } from './LibraryPanel';
 import './specialists.css';
 import './library.css';
 
@@ -21,6 +22,8 @@ export function ProjectLibraryPanel({ project, request, section, isAdmin, initia
   const [folders, setFolders] = useState<LibraryFolderSummary[]>([]);
   const [expanded, setExpanded] = useState<string>();
   const [search, setSearch] = useState('');
+  const tabId = useId();
+  const [tab, setTab] = useState<LibraryKind>('s3');
   const [creating, setCreating] = useState<LibraryKind>();
   const [profileFilter, setProfileFilter] = useState(initialProfileId ?? '');
   const [detail, setDetail] = useState<LibraryCell>();
@@ -46,35 +49,42 @@ export function ProjectLibraryPanel({ project, request, section, isAdmin, initia
   const profiles = view?.profiles.filter(p => !profileFilter || p.id === profileFilter) ?? [];
   const matches = (name: string) => name.toLocaleLowerCase('ru').includes(search.trim().toLocaleLowerCase('ru'));
 
+  const foldersById = new Map(folders.map(f => [f.id, f]));
+  const inTab = (id: string) => !!foldersById.get(id)?.external === (tab === 'external');
+  const connections = view?.connections.filter(c => inTab(c.folderId) && matches(c.folderName)) ?? [];
+  const available = view?.available.filter(f => inTab(f.id) && matches(f.name)) ?? [];
   return <div className="project-library-settings">
     <div className="project-agents-intro">
-      <strong>{section === 'folders' ? 'Папки библиотеки' : 'Доступ агентов к папкам'}</strong>
+      {section === 'folders' ? <SettingsTabStrip sections={libraryTabs} value={tab} id={tabId} label="Библиотеки проекта"
+        className="library-tabs" panelId={key => tabId + key + '-panel'} disabled={pending}
+        select={key => { setTab(key); setCreating(undefined); setSearch(''); }} /> : <strong>Доступ агентов к папкам</strong>}
       <span className="project-specialist-actions">
         <button type="button" className="workspace-icon" title="Обновить" aria-label="Обновить" disabled={pending} onClick={() => void load()}><RefreshCw size={16} /></button>
-        {section === 'folders' && isAdmin && <LibraryCreateButtons kind={creating} select={value => { setError(''); setCreating(value); }} disabled={pending} />}
+        {section === 'folders' && isAdmin && <LibraryCreateButtons kind={creating} select={value => { setError(''); setCreating(value); if (value) setTab(value); }} disabled={pending} />}
       </span>
     </div>
     {error && <p className="inline-error" role="alert">{error}</p>}
     {!view && !error && <p role="status">Загрузка…</p>}
     {view && <div className="library-panel">
 
-      {section === 'folders' && <>
+      {section === 'folders' && <div className="library-panel" role="tabpanel" id={tabId + tab + '-panel'} aria-labelledby={tabId + tab}>
         {creating && <CreateLibraryForm key={creating} kind={creating} error={error} request={request} pending={pending} project cancel={() => setCreating(undefined)} submit={create => void act(async () => {
           const created = await create();
           setCreating(undefined);
           await request(base, { method: 'POST', body: JSON.stringify({ folderId: created.id }) });
-          setExpanded(created.id);
+          if (created.external) { setTab('external'); setExpanded(undefined); setSearch(''); }
+          else setExpanded(created.id);
         })} />}
         <input type="search" aria-label="Поиск по папкам библиотеки" placeholder="Поиск по папкам библиотеки…" value={search}
           onChange={event => setSearch(event.target.value)} />
-        {view.connections.some(c => matches(c.folderName)) || view.available.some(f => matches(f.name)) ? <ul className="settings-records project-library-connections">{view.connections.filter(c => matches(c.folderName)).map(c => {
-          const folder = folders.find(f => f.id === c.folderId);
+        {connections.length || available.length ? <ul className="settings-records project-library-connections">{connections.map(c => {
+          const folder = foldersById.get(c.folderId);
           const assigned = view.cells.filter(cell => cell.folderId === c.folderId && cell.granted).map(cell => view.profiles.find(p => p.id === cell.profileId)?.name).filter(Boolean);
           const open = expanded === c.folderId;
           return <li key={c.folderId}>
             <div className="project-library-row">
               <label><input type="checkbox" checked={c.enabled} disabled={pending || !c.canManage}
-                onChange={event => void update(c, { enabled: event.currentTarget.checked })} />{c.folderName}</label>
+                onChange={event => void update(c, { enabled: event.currentTarget.checked })} /><LibraryKindIcon external={!!folder?.external} />{c.folderName}</label>
               <button type="button" className="workspace-icon" aria-label={'Подробности папки «' + c.folderName + '»'} title="Подробности"
                 aria-expanded={open} onClick={() => setExpanded(open ? undefined : c.folderId)}>
                 {open ? <ChevronDown size={15} aria-hidden="true" /> : <ChevronRight size={15} aria-hidden="true" />}
@@ -98,11 +108,11 @@ export function ProjectLibraryPanel({ project, request, section, isAdmin, initia
             </div>}
             </div>}
           </li>;
-        })}{view.available.filter(f => matches(f.name)).map(f => <li key={f.id}>
+        })}{available.map(f => <li key={f.id}>
           <div className="project-library-row"><label><input type="checkbox" checked={false} disabled={pending}
-            onChange={() => void act(() => request(base, { method: 'POST', body: JSON.stringify({ folderId: f.id }) }))} />{f.name}</label></div>
-        </li>)}</ul> : <p className="help">{search.trim() ? 'Папки не найдены.' : 'Доступных папок пока нет.'}</p>}
-      </>}
+            onChange={() => void act(() => request(base, { method: 'POST', body: JSON.stringify({ folderId: f.id }) }))} /><LibraryKindIcon external={!!foldersById.get(f.id)?.external} />{f.name}</label></div>
+        </li>)}</ul> : <p className="help">{search.trim() ? 'Папки не найдены.' : tab === 'external' ? 'Внешних библиотек пока нет.' : 'Обычных библиотек пока нет.'}</p>}
+      </div>}
 
       {section === 'access' && <>
         <div className="library-field-row library-filter">

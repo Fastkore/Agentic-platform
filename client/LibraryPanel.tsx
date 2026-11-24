@@ -1,10 +1,12 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { ChevronLeft, Database, HardDrive, Layers, Plus, Trash2 } from 'lucide-react';
+import { useCallback, useEffect, useRef, useState, useId } from 'react';
+import { ChevronLeft, Cloud, Database, Folder, HardDrive, Layers, Trash2 } from 'lucide-react';
 import type { LibraryFolderSummary, LibraryProfile, OutputPolicy } from '../shared/library';
 import { externalLabels, type ExternalProvider, type ExternalSelection } from '../shared/library';
 import { LibraryStorageSetup, type StorageStatus } from './LibraryStorageSetup';
 import { ExternalLibraryPicker, driveSessionExpired } from './ExternalLibraryPicker';
 import { PermissionSwitch } from './PermissionSwitch';
+import { SettingsTabStrip } from './SettingsTabs';
+import { PlatformIcon } from './PlatformIcon';
 import { WorkspaceDialog } from './WorkspaceDialog';
 import { Select } from './Select';
 import { formatBytes, type Request } from './library-upload';
@@ -40,10 +42,16 @@ export function FolderForm({ draft, setDraft, isAdmin, disabled }: {
 }
 
 export type LibraryKind = 's3' | 'external';
+const kinds = ['s3', 'external'] as const;
+export function LibraryKindIcon({ external }: { external: boolean }) {
+  return <span className={external ? 'library-icon-external' : 'library-icon-ordinary'}><PlatformIcon name={external ? 'cloud' : 'folder'} /></span>;
+}
+export const libraryTabs = [['s3', 'Обычные', Folder], ['external', 'Внешние', Cloud]] as const;
+const adminLibraryTabs = [...libraryTabs, ['storage', 'MinIO / S3', HardDrive]] as const;
 export function LibraryCreateButtons({ kind, select, disabled }: { kind?: LibraryKind; select: (kind?: LibraryKind) => void; disabled: boolean }) {
-  return <span className="library-create-actions">{(['s3', 'external'] as const).map(value =>
+  return <span className="library-create-actions">{kinds.map(value =>
     <button key={value} type="button" className="secondary" disabled={disabled} aria-expanded={kind === value}
-      onClick={() => select(kind === value ? undefined : value)}><Plus size={16} aria-hidden="true" />{value === 's3' ? 'Обычная библиотека' : 'Внешняя библиотека'}</button>
+      onClick={() => select(kind === value ? undefined : value)}><LibraryKindIcon external={value === 'external'} />{value === 's3' ? 'Обычная библиотека' : 'Внешняя библиотека'}</button>
   )}</span>;
 }
 export function CreateLibraryForm({ kind, request, pending, submit, cancel, project, storageChanged, error }: {
@@ -118,6 +126,8 @@ export function LibraryPanel({ request, isAdmin }: { request: Request; isAdmin: 
   const [selected, setSelected] = useState<string>();
   const [folderSearch, setFolderSearch] = useState('');
   const [projectSearch, setProjectSearch] = useState('');
+  const tabId = useId();
+  const [tab, setTab] = useState<LibraryKind | 'storage'>('s3');
   const [creating, setCreating] = useState<LibraryKind>();
   const [storageSetup, setStorageSetup] = useState(false);
   const [editing, setEditing] = useState<{ draft: FolderDraft; revision: number }>();
@@ -155,7 +165,8 @@ export function LibraryPanel({ request, isAdmin }: { request: Request; isAdmin: 
   };
   const editDraft = editing?.draft ?? currentDraft;
   const includes = (name: string, query: string) => name.toLocaleLowerCase('ru').includes(query.trim().toLocaleLowerCase('ru'));
-  const visibleFolders = folders?.filter(item => includes(item.name, folderSearch));
+  const tabFolders = folders?.filter(item => !!item.external === (tab === 'external'));
+  const visibleFolders = tabFolders?.filter(item => includes(item.name, folderSearch));
   const visibleProjects = folder?.projects.filter(project => includes(project.name ?? project.id, projectSearch));
   const processing = storage ? [
     storage.indexQueue > 0 && `В очереди: ${storage.indexQueue}`,
@@ -217,27 +228,34 @@ export function LibraryPanel({ request, isAdmin }: { request: Request; isAdmin: 
     <h2 id="settings-section-title">Библиотеки</h2>
     {error && <p className="inline-error" role="alert">{error}</p>}
     {notice && <p className="help" role="status">{notice}</p>}
-    <section className="library-folders" aria-label="Папки библиотеки">
-      <div className="library-folders-heading">
-        <strong>Папки библиотеки</strong>
-        {isAdmin && <LibraryCreateButtons kind={creating} select={value => { setError(''); setCreating(value); }} disabled={pending} />}
-      </div>
+    <div className="library-folders-heading">
+      <SettingsTabStrip sections={isAdmin ? adminLibraryTabs : libraryTabs} value={tab} id={tabId} label="Библиотеки"
+        className="library-tabs" panelId={key => tabId + key + '-panel'} disabled={pending}
+        select={key => { setTab(key); setCreating(undefined); setFolderSearch(''); setNotice(''); }} />
+      {isAdmin && tab !== 'storage' && <LibraryCreateButtons kind={creating} select={value => {
+        setError(''); setCreating(value); if (value) setTab(value);
+      }} disabled={pending} />}
+    </div>
+    {tab !== 'storage' && <section className="library-folders" role="tabpanel" aria-labelledby={tabId + tab} id={tabId + tab + '-panel'}>
       {creating && <CreateLibraryForm key={creating} kind={creating} error={error} storageChanged={reload} request={request} pending={pending} cancel={() => setCreating(undefined)} submit={create => void act(async () => {
         const created = await create();
-        setCreating(undefined); setSelected(created.id);
+        setCreating(undefined);
+        if (created.external) { setTab('external'); setFolderSearch(''); }
+        else setSelected(created.id);
       }, creating === 'external' ? 'Создана внешняя библиотека.' : 'Папка создана. Загрузите в неё материалы.')} />}
-      {folders && folders.length > 0 && <input type="search" aria-label="Поиск по папкам библиотеки" placeholder="Поиск по папкам библиотеки…"
+      {tabFolders && tabFolders.length > 0 && <input type="search" aria-label="Поиск по папкам библиотеки" placeholder="Поиск по папкам библиотеки…"
         value={folderSearch} onChange={event => setFolderSearch(event.target.value)} />}
       {visibleFolders?.length ? <ul className="settings-records">{visibleFolders.map(f => <li key={f.id}>
         <div>
-          <strong>{f.name}</strong>
+          <strong><LibraryKindIcon external={!!f.external} />{f.name}</strong>
           <small>{statusLabel(f.active)} · {profileLabels[f.profile]} · {outputModes[f.outputPolicy]}</small>
           <small>{folderLine(f)}{f.projects.length ? ' · проекты: ' + f.projects.map(p => p.name ?? p.id).join(', ') : ' · не подключена'}</small>
         </div>
         <button type="button" className="secondary" onClick={() => { setNotice(''); setProjectSearch(''); setSelected(f.id); }}>Открыть</button>
-      </li>)}</ul> : folders && <p className="help">{folders.length ? 'Папки не найдены.' : 'Папок пока нет.'}</p>}
-    </section>
-    {isAdmin && storage && <section className="library-storage" aria-label="Хранилище библиотеки">
+      </li>)}</ul> : folders && <p className="help">{folderSearch.trim() ? 'Папки не найдены.' : tab === 'external' ? 'Внешних библиотек пока нет.' : 'Обычных библиотек пока нет.'}</p>}
+    </section>}
+    {tab === 'storage' && isAdmin && <section className="library-storage" role="tabpanel" id={tabId + tab + '-panel'} aria-labelledby={tabId + tab}>
+      {storage ? <>
       {processing && <p className="help">{processing}</p>}
       <div className="library-storage-row">
         <strong><HardDrive size={15} aria-hidden="true" /> {storage.configured ? (storage.kind === 's3' ? 'Хранилище MinIO / S3' : 'Локальное хранилище') : 'Хранилище не настроено'}</strong>
@@ -248,6 +266,7 @@ export function LibraryPanel({ request, isAdmin }: { request: Request; isAdmin: 
         setStorageSetup(false); setStorageCheck({ message: 'Хранилище подключено. Можно загружать файлы.' }); void load();
       }} />}
       {storageCheck && <p className={storageCheck.failed ? 'inline-error' : 'help'} role={storageCheck.failed ? 'alert' : 'status'}>{storageCheck.message}</p>}
+      </> : <p className="help">Данные о хранилище недоступны. <button type="button" className="secondary" onClick={reload}>Обновить</button></p>}
     </section>}
   </div>;
 }

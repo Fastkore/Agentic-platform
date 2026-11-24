@@ -149,3 +149,11 @@
 .external-library-dialog .settings-actions { display: flex; flex-flow: row nowrap; align-items: center; gap: 8px; }
 .external-library-dialog .settings-actions > :is(button, a) { min-width: 0; max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
 .external-library-dialog .library-form > :is(.primary, .secondary) { justify-self: start; max-width: 100%; }
+
+.specialist-tabs.library-tabs { display: flex; max-width: 100%; }
+.library-tabs .lucide-folder { color: var(--success); }
+.library-tabs .lucide-cloud { color: var(--accent-strong); }
+.library-folders > .settings-records { margin-block-start: 8px; }
+.library-icon-ordinary, .library-icon-external { display: inline-flex; flex: none; }
+.library-icon-ordinary { color: var(--success); }
+.library-icon-external { color: var(--accent-strong); }
