@@ -21,10 +21,18 @@ export function folderLine(folder: LibraryFolderSummary) {
   if (folder.external) parts.push(externalLabels[folder.external.provider] + ' · только чтение');
   const op = folder.operation;
   if (folder.current) {
-    parts.push(`${folder.current.files.toLocaleString('ru')} файлов · ${formatBytes(folder.current.bytes)}`);
+    parts.push(`Файлы: ${folder.current.files.toLocaleString('ru')} · ${formatBytes(folder.current.bytes)}`);
     const without = folder.current.unsupported + folder.current.errors;
     if (without) parts.push(`без поиска ${without}`);
     if (folder.updatedAt) parts.push('обновлено ' + date(folder.updatedAt));
+  } else if (folder.external?.preparingFiles !== undefined) {
+    parts.push(`Найдено файлов: ${folder.external.preparingFiles.toLocaleString('ru')} · подготовка к поиску`);
+  } else if (folder.external?.syncing) {
+    parts.push('Получаем файлы с диска');
+  } else if (folder.external?.error || folder.failed) {
+    parts.push('Материалы ещё не опубликованы');
+  } else if (folder.external) {
+    parts.push('Ожидаем первую синхронизацию');
   } else parts.push('Материалов пока нет');
   if (op?.status === 'open') parts.push('незавершённая загрузка');
   if (op?.status === 'preparing') parts.push(op.processing ? `подготовка ${op.processing.coverage.indexed + op.processing.coverage.unsupported + op.processing.coverage.errors} из ${op.processing.coverage.files}` : 'подготовка');

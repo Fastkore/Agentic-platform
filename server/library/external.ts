@@ -23,8 +23,9 @@ export class ExternalLibraries {
   summary(id: string): ExternalSummary | undefined {
     const row = this.source(id);
     if (!row) return;
+    const preparing = this.db.prepare("SELECT total_files FROM states WHERE folder_id=? AND status='preparing'").get(id) as { total_files: number } | undefined;
     return { provider: row.provider, folder: row.name, checkedAt: row.checked_at ?? undefined, error: row.error ?? undefined,
-      syncing: this.running.has(id) || (row.lease_until ?? 0) > Date.now() || !!this.db.prepare("SELECT 1 FROM states WHERE folder_id=? AND status='preparing'").get(id) };
+      preparingFiles: preparing?.total_files, syncing: this.running.has(id) || (row.lease_until ?? 0) > Date.now() || !!preparing };
   }
   attach(owner: string, id: string, selection: ExternalSelection) {
     const { provider, name, identity, sealed } = this.auth.selected(owner, selection);
