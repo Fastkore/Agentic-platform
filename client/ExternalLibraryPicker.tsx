@@ -127,7 +127,8 @@ export function ExternalLibraryPicker({ provider, request, onSelect, selectionCo
   </div>;
   if (availability === 'missing' && !authUrl && !busy) return <div className="library-form">
     {step === 'start' && <>
-      <p className="help">При первом подключении понадобятся два ключа из кабинета {name}. Мастер покажет, где их взять.</p>
+      <p className="help">При первом подключении понадобятся два ключа из кабинета {provider === 'google' ? 'Google Cloud' : provider === 'yandex' ? 'Яндекс OAuth' : name}.
+        {provider === 'dropbox' ? ' ' : <br />}Мастер покажет, где их взять.</p>
       <div className="settings-actions">
         <button type="button" className="primary" onClick={() => setStep('register')}>Подключить {name}</button>
         <button type="button" className="secondary" onClick={() => setStep('keys')}>У меня есть ключи</button>
