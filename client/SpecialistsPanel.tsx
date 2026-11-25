@@ -145,7 +145,6 @@ export function SpecialistsPanel({ request, initialProfileId }: {
 
   if (!editing) return <div className="specialist-page">
     <header className="specialist-header">
-      <IconTile icon="bot" />
       <div><h2 id="settings-section-title">Агенты</h2><p>Помощники для отдельных задач проекта</p></div>
       <button type="button" className="primary" disabled={!profiles || busy} onClick={() => edit(newProfile)}><Plus size={17} />Добавить агента</button>
     </header>

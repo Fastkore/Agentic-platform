@@ -1,7 +1,7 @@
 .specialist-page { container-type: inline-size; }
 .specialist-header { display: flex; align-items: center; gap: 14px; margin-bottom: 20px; }
 .specialist-header > div { flex: 1; min-width: 0; }
-.specialist-header h2 { margin: 0; font-size: 22px; line-height: 1.15; letter-spacing: -.025em; }
+.specialist-header h2 { margin: 0; font-size: 22px; font-weight: 650; line-height: 1.2; letter-spacing: -.015em; }
 .specialist-header h2:focus { outline: none; }
 .specialist-header p { margin-top: 5px; color: var(--text-muted); }
 .specialist-header .primary, .specialist-file-header .secondary { display: inline-flex; align-items: center; justify-content: center; gap: 7px; flex: none; }
@@ -48,7 +48,7 @@
 .specialist-editor { display: flex; flex-direction: column; flex: 1; min-height: 0; }
 .specialist-editor > .specialist-back { align-self: flex-start; flex: none; }
 .specialist-editor > .specialist-header { flex: none; gap: 10px; margin-bottom: 10px; }
-.specialist-editor > .specialist-header h2 { font-size: 21px; overflow-wrap: anywhere; }
+.specialist-editor > .specialist-header h2 { font-size: 22px; overflow-wrap: anywhere; }
 .specialist-editor > .specialist-header .specialist-icon { width: 32px; height: 32px; flex-basis: 32px; border-radius: 8px; }
 .specialist-editor > .specialist-header .specialist-icon svg { width: 20px; height: 20px; }
 .specialist-editor .specialist-editor-form { display: flex; flex-direction: column; flex: 1; min-height: 0; gap: 0; }

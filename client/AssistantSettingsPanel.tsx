@@ -1,4 +1,4 @@
-import { useEffect, useId, useState } from 'react';
+import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import { FileText, Search, Settings2, ShieldCheck, Users } from 'lucide-react';
 import { assistantAvatars, assistantAvatarSrc, assistantName, defaultAssistantAvatar, type AssistantSettings, type FastkoreRolePermissions, type FastkoreRoleSummary, type ReasoningEffort } from '../shared/types';
 import { hasAdjustableEffort } from '../shared/execution-accounts';
@@ -100,17 +100,25 @@ export function AssistantSettingsPanel({ request, models, onChanged }: {
     ...(model && !models.some(item => item.value === model) ? [{ value: model, label: model }] : []),
     ...models,
   ];
+  const instructionsRef = useRef<HTMLTextAreaElement>(null);
   const instructionsDirty = !!settings && instructions.trim() !== (settings.instructions ?? '').trim();
 
+  useLayoutEffect(() => {
+    const el = instructionsRef.current;
+    if (!el || tab !== 'instructions') return;
+    el.style.height = 'auto';
+    el.style.height = Math.max(160, el.scrollHeight) + 'px';
+  }, [instructions, tab]);
+
   return <div className="settings-server fastis-settings-panel">
+    <div className="fastis-panel-heading">
+      <img src={assistantAvatarSrc(settings?.avatar)} alt="" className="fastis-settings-avatar" />
+      <h2 id="settings-section-title">{assistantName}</h2>
+      <p className="help">Общесистемный помощник вне проектов. Работает по правам и разрешениям CLI/MCP роли сотрудника в Fastkore, с общей базой знаний и без доступа к проектным библиотекам.</p>
+    </div>
     {!settings && !error && <SettingsSpinner label="Загрузка настроек Финиста…" />}
     {error && <p className="inline-error" role="alert">{error}</p>}
     {settings && <>
-      <div className="fastis-panel-intro">
-        <img src={assistantAvatarSrc(settings.avatar)} alt="" className="fastis-settings-avatar" />
-        <p className="help">Общесистемный помощник вне проектов. Работает по правам и разрешениям CLI/MCP роли сотрудника в Fastkore, с общей базой знаний и без доступа к проектным библиотекам.</p>
-      </div>
-
       <SettingsTabStrip sections={assistantTabs} value={tab} select={setTab} id={tabId} label="Разделы настроек Финиста"
         counts={roles ? { permissions: enabledCount } : undefined}
         panelId={key => tabId + key + '-panel'} className="server-settings-tabs" />
@@ -140,7 +148,7 @@ export function AssistantSettingsPanel({ request, models, onChanged }: {
         <section className="setting-section fastis-instructions-section">
           <h3><label htmlFor="fastis-instructions">Дополнительные правила для Финиста</label></h3>
           <p className="help" id="fastis-instructions-help">Например, бизнес-определения метрик, ограничения тематики или формат сводок. Действуют поверх общих инструкций платформы.</p>
-          <textarea id="fastis-instructions" aria-describedby="fastis-instructions-help" rows={10} maxLength={8000}
+          <textarea ref={instructionsRef} id="fastis-instructions" aria-describedby="fastis-instructions-help" maxLength={8000}
             value={instructions} disabled={busy} placeholder="Например: при подсчёте просроченных заказов исключай отменённые и черновики…"
             onChange={e => { setSaved(false); setInstructions(e.target.value); }} />
           <div className="settings-instructions-actions">

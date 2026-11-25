@@ -1806,7 +1806,7 @@ function App() {
         {isAssistant ? <div className="fastis-welcome-header">
           <img src={assistantIconSrc} alt={assistantName} className="fastis-avatar-welcome" />
           <h2>{assistantName}</h2>
-          <p className="fastis-welcome-subtitle">Общесистемный помощник по Fastkore и регламентам компании · только чтение ERP</p>
+          <p className="fastis-welcome-subtitle">Общесистемный помощник по Fastkore и регламентам компании</p>
         </div> : <h2>{relatedDraftKey && !chatId ? fastkoreChatTitle(currentErpContext.current.snapshot) ?? 'Новый чат'
           : selectedProject ? 'Новый чат' : 'Выберите проект'}</h2>}
         {composer}
@@ -1950,7 +1950,7 @@ function App() {
         <section key={settingsSection} className={'panel-body settings-content' + (!inFastkore && settingsSection === 'employeeInstructions' ? ' settings-employee-instructions' : '') + (settingsSection === 'server' ? ' settings-server' : instructionSettings ? ' settings-personal' : '')}
           aria-labelledby="settings-section-title">
           <div className={'settings-pane' + (settingsSection === 'agent' ? ' settings-pane-instructions' : '')}>
-          {settingsSection !== 'profiles' && settingsSection !== 'library' && <h2 id="settings-section-title">{settingsSections[settingsSection].label}</h2>}
+          {settingsSection !== 'profiles' && settingsSection !== 'library' && settingsSection !== 'assistant' && <h2 id="settings-section-title">{settingsSections[settingsSection].label}</h2>}
           {error && <div className="inline-error" role="alert">{error}</div>}
           {instructionsPanel}
           <Suspense fallback={<SettingsSpinner label="Загрузка…" />}>
