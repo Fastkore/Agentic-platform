@@ -13,6 +13,7 @@ export function runToolLabel(tool: string, context?: RunToolContext) {
   if (tool === 'fastkore_cli_auth_info') return 'Fastkore CLI · проверка входа';
   if (tool === 'fastkore_cli_html_show') return 'Fastkore CLI · чтение HTML-поля';
   if (tool === 'fastkore_cli_html_image') return 'Fastkore CLI · просмотр изображения';
+  if (tool === 'fastkore_read_attachment') return 'Fastkore · чтение вложения';
   if (tool === 'fastkore_cli_catalog') return 'Fastkore CLI · каталог команд';
   if (tool === 'fastkore_cli_command_describe' || tool === 'fastkore_cli_describe') {
     return ['Fastkore CLI', 'описание команды', context?.operation].filter(Boolean).join(' · ');

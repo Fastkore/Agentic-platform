@@ -50,9 +50,7 @@ export function fastkorePrompt(context: FastkoreContext | undefined, tools?: Cod
       if (!entity_ids.length) lines.push('Карточка ещё не сохранена. У неё нет идентификатора для чтения.');
       else {
         lines.push('Открытая запись указана в entity_ids[0]. Значения полей карточки в снимке отсутствуют.');
-        if (definitions.some(tool => tool.name === 'fastkore_cli_html_show')) lines.push(
-    'Для описания или комментария в HtmlTextFormat сразу используй fastkore_cli_html_show с GUID самой записи и именем поля. Пустой текст при imageCount > 0 может означать сообщение из одних картинок. Для просмотра доступной картинки вызови fastkore_cli_html_image с её номером, MIME и хешем. Отвечай о содержимом после получения изображения.');
-  if (cli) lines.push('Чтобы прочитать эту карточку, вызови ' + cliCall('data get', ['--entity-set', context.entity_set_id, '--entity', entity_ids[0]]) + '.');
+        if (cli) lines.push('Чтобы прочитать эту карточку, вызови ' + cliCall('data get', ['--entity-set', context.entity_set_id, '--entity', entity_ids[0]]) + '.');
       }
     } else {
       lines.push(entity_ids.length
@@ -81,6 +79,10 @@ export function fastkorePrompt(context: FastkoreContext | undefined, tools?: Cod
     }
     lines.push('Поля снимка для инструментов:', '<fastkore_context>', data(fields), '</fastkore_context>');
   }
+  if (definitions.some(tool => tool.name === 'fastkore_read_attachment')) lines.push(
+    'Для поиска прикреплённых файлов проверь отдельно саму карточку и нужные комментарии через fastkore_GetObjectFiles, используя GUID компонента и GUID соответствующей записи. Чтобы прочитать файл, передай его GUID из списка в fastkore_read_attachment. Имя файла само по себе не подтверждает чтение содержимого.');
+  if (definitions.some(tool => tool.name === 'fastkore_cli_html_show')) lines.push(
+    'Для описания или комментария в HtmlTextFormat сразу используй fastkore_cli_html_show с GUID самой записи и именем поля. Пустой текст при imageCount > 0 может означать сообщение из одних картинок. Для просмотра доступной картинки вызови fastkore_cli_html_image с её номером, MIME и хешем. Отвечай о содержимом после получения изображения.');
   if (mcp) lines.push('Для MCP выбери операцию из каталога этого сеанса и используй её схему. Для итога по окну она должна поддерживать все его ограничения.');
   if (cli) lines.push('Имя инструмента CLI — fastkore_cli_execute. Для подсчётов, сумм и группировок используй data aggregate (--metrics, --group-by) вместо постраничного обхода data query. В data query и data get передавай --properties со списком нужных полей, а для крупных описаний (report definition show, solution, схема) указывай --detail brief или параметр инструмента fields, чтобы избежать переполнения ответа (response_too_large). Не передавай флаги Windows-клиента (--profile, --via-broker, --server): подключение уже задано исполнителем. Для отдельного поиска папки используй catalog tree с --entity-set и при необходимости --tile, --catalog, --folder-path, --contains, продолжая по nextOffset через --offset. Для вопроса об открытой папке требуется снимок этого окна. При отсутствии снимка или несовместимости версии не заменяй текущую папку поиском по имени или чтением всего компонента.');
   if (!cli && !mcp) lines.push('Агенту в этом запросе недоступно чтение данных ERP. Для ответа доступны сведения из снимка, если он передан.');

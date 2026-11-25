@@ -168,3 +168,93 @@ test('Fastkore MCP forwards native tool schemas and arguments, isolates SSO sess
     assert.deepEqual(invalidations, ['mcp_token_denied', 'expired']);
   } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); }
 });
+
+
+test('Fastkore reads only files listed on the requested card or comment, using a separate WebAPI token', async () => {
+  const tls = testCertificate(), card = randomUUID(), comment = randomUUID(), component = randomUUID(), commentComponent = randomUUID();
+  const jpgId = randomUUID(), pdfId = randomUUID();
+  const jpg = Buffer.from('ffd8ffe0ffd9', 'hex');
+  let pdfText = '%PDF-1.4\n';
+  const stream = 'BT /F1 12 Tf 10 100 Td (Material 42) Tj ET\n';
+  const objects = ['<< /Type /Catalog /Pages 2 0 R >>', '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>',
+    '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>', `<< /Length ${stream.length} >>\nstream\n${stream}endstream`];
+  const offsets = objects.map((object, i) => {
+    const offset = pdfText.length;
+    pdfText += `${i + 1} 0 obj\n${object}\nendobj\n`;
+    return offset;
+  });
+  const xref = pdfText.length;
+  pdfText += 'xref\n0 6\n0000000000 65535 f \n' + offsets.map(offset => String(offset).padStart(10, '0') + ' 00000 n \n').join('') +
+    `trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF`;
+  const audiences: string[] = [], downloads: string[] = [];
+  const credential: Credential = { id: randomUUID(), userId: randomUUID(), kind: 'session', source: 'fastkore', name: 'Test',
+    hash: '', createdAt: new Date().toISOString(), erpDelegation: { sealedGrant: 'test', revision: 'rev', expiresAt: Date.now() + 60_000 } };
+  let redirect = false;
+  const server = createServer(tls, async (req, res) => {
+    const url = new URL(req.url!, 'https://erp.test');
+    const send = (payload: unknown) => res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(payload));
+    if (url.pathname === '/webapi/getfile') {
+      assert.equal(req.method, 'GET');
+      assert.equal(req.headers.authorization, 'Bearer fkua1.fastkore-webapi');
+      const fileId = url.searchParams.get('fileGuid')!;
+      downloads.push(fileId);
+      if (redirect) return res.writeHead(302, { Location: '/other' }).end();
+      return res.end(fileId === jpgId ? jpg : pdfText);
+    }
+    let text = ''; for await (const chunk of req) text += chunk;
+    const body = JSON.parse(text);
+    if (url.pathname === '/api/ai/user-token') {
+      assert.equal(req.headers.authorization, 'Bearer test-key');
+      assert.equal(body.delegation, 'fkug1.test');
+      assert.ok(['fastkore-mcp', 'fastkore-webapi'].includes(body.audience));
+      audiences.push(body.audience);
+      return send({ version: 1, token_type: 'Bearer', audience: body.audience, expires_in: 300, access_token: 'fkua1.' + body.audience });
+    }
+    assert.equal(url.pathname, '/webapi/mcp');
+    assert.equal(req.headers.authorization, 'Bearer fkua1.fastkore-mcp');
+    const rpc = (result: unknown) => send({ jsonrpc: '2.0', id: body.id, result });
+    if (body.method === 'initialize') return rpc({ protocolVersion: '2025-06-18' });
+    if (body.method === 'notifications/initialized') return res.writeHead(202).end();
+    if (body.method === 'tools/list') return rpc({ tools: [{ name: 'GetObjectFiles', inputSchema: { type: 'object' } }] });
+    assert.equal(body.params.name, 'GetObjectFiles');
+    const { componentGuid, objectGuid } = body.params.arguments;
+    const files = componentGuid === component && objectGuid === card
+      ? [{ Guid: jpgId, Name: 'screen.jpg', IsFolder: false, DownloadUrl: 'https://untrusted.test/' }]
+      : componentGuid === commentComponent && objectGuid === comment
+        ? [{ Guid: pdfId, Name: 'math.pdf', IsFolder: false }] : [];
+    return rpc({ content: [{ type: 'text', text: JSON.stringify(files) }] });
+  });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  try {
+    const address = server.address();
+    assert.ok(address && typeof address !== 'string');
+    const origin = 'https://127.0.0.1:' + address.port;
+    const mcp = new FastkoreMcp({
+      delegationBinding: () => ({ origin, key: 'test-key', ca: tls.cert, mcpCa: tls.cert, revision: 'rev', mcpUrl: origin + '/webapi/mcp', mcpEnabled: true, cliEnabled: true }),
+      openDelegation: () => ({ grant: 'fkug1.test', expiresAt: credential.erpDelegation!.expiresAt }),
+    }, async () => { assert.fail('the delegation should remain active'); });
+    const signal = AbortSignal.timeout(10000);
+    const tools = (await mcp.prepare(credential, () => {}, signal, undefined, () => true)).tools!;
+    assert.ok(tools.definitions.some(tool => tool.name === 'fastkore_GetObjectFiles'));
+    assert.ok(tools.definitions.some(tool => tool.name === 'fastkore_read_attachment'));
+    const read = (componentGuid: string, objectGuid: string, fileGuid: string) =>
+      tools.call('fastkore_read_attachment', { componentGuid, objectGuid, fileGuid }, signal);
+    assert.equal((await read(component, card, pdfId)).success, false);
+    assert.deepEqual(audiences, ['fastkore-mcp']);
+    assert.deepEqual(downloads, []);
+    const image = await read(component, card, jpgId);
+    assert.equal(image.imageUrl, 'data:image/jpeg;base64,' + jpg.toString('base64'));
+    const pdf = await read(commentComponent, comment, pdfId);
+    assert.equal(pdf.success, true, pdf.text);
+    assert.match(pdf.text, /Material 42/);
+    assert.deepEqual(audiences, ['fastkore-mcp', 'fastkore-webapi']);
+    assert.deepEqual(downloads, [jpgId, pdfId]);
+    redirect = true;
+    assert.equal((await read(commentComponent, comment, pdfId)).success, false);
+    assert.deepEqual(downloads, [jpgId, pdfId, pdfId]);
+  } finally {
+    server.closeAllConnections();
+    await new Promise<void>(resolve => server.close(() => resolve()));
+  }
+});

@@ -148,7 +148,7 @@ export class GlmClient extends CodexClient {
       return Array.isArray(entry?.input_modalities) ? entry.input_modalities.includes('image') : selected === GLM_VISION_MODEL;
     };
     const tools = request.tools;
-    if (tools?.definitions.some(tool => tool.name === 'fastkore_cli_html_image')) {
+    if (tools?.definitions.some(tool => tool.name === 'fastkore_cli_html_image' || tool.name === 'fastkore_read_attachment')) {
       input = { ...input, tools: { ...tools, call: async (name, args, toolSignal) => {
         const result = await tools.call(name, args, toolSignal);
         if (!result.imageUrl || await nativeImages()) return result;

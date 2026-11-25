@@ -5,6 +5,8 @@ import type { CodexTools, CodexToolDefinition } from './codex-tools.js';
 import { delegationLossMessage, postErpJson, type ErpDelegation, type FastkoreSso } from './fastkore.js';
 import { BridgeError, redact } from './store.js';
 import { elapsedMs } from './run-timing.js';
+import { attachmentTool, readFastkoreAttachment } from './fastkore-attachments.js';
+import { maxChatImagePayload } from './chat-images.js';
 
 type Binding = NonNullable<ReturnType<FastkoreSso['delegationBinding']>>;
 type Token = { value: string; expiresAt: number };
@@ -17,6 +19,8 @@ type Session = {
   nextId: number;
   token?: Token;
   refresh?: Promise<Token>;
+  webApiToken?: Token;
+  webApiRefresh?: Promise<Token>;
   catalog?: Catalog;
   catalogPending?: Promise<Catalog>;
   catalogProblem?: string;
@@ -30,6 +34,7 @@ const unavailable = 'Не удалось получить корректный �
 const maxResponse = 768 * 1024;
 // Methods verified as read-only in Fastkore.Business. Unknown methods require write access.
 const readTools = new Set([
+  'GetObjectFiles',
   'GetCurrentUserInfo', 'GetOrder', 'GetOrders', 'GetOrderRange', 'GetOrderByCustomer', 'GetOrdersModifiedInPeriod',
   'GetOrderCommunications', 'GetOrderStageList', 'GetPurchaseOrder', 'GetPurchaseOrders', 'GetPurchaseOrderRange',
   'GetPurchaseOrderBySupplier', 'GetPurchaseOrdersModifiedInPeriod', 'GetPurchaseOrderStageList',
@@ -155,30 +160,35 @@ export class FastkoreMcp {
     } catch { return { revokeDelivery: 'no_response' as const }; }
   }
 
-  private async token(state: Session, binding: Binding): Promise<Token> {
-    if (state.token && state.token.expiresAt > Date.now() + 10_000) return state.token;
-    if (!state.refresh) {
+  private async token(state: Session, binding: Binding, target = audience): Promise<Token> {
+    const webApi = target === 'fastkore-webapi';
+    const tokenKey = webApi ? 'webApiToken' : 'token';
+    const refreshKey = webApi ? 'webApiRefresh' : 'refresh';
+    const cached = state[tokenKey];
+    if (cached && cached.expiresAt > Date.now() + 10_000) return cached;
+    if (!state[refreshKey]) {
       const { credential, delegation } = state;
-      state.refresh = (async () => {
-        const fail = () => new BridgeError('Платформа не получила действительный токен MCP от ERP. Попросите администратора проверить службу выдачи токенов Fastkore.', 502);
+      state[refreshKey] = (async () => {
+        const fail = () => new BridgeError('Платформа не получила действительный токен ' + (webApi ? 'WebAPI' : 'MCP') + ' от ERP. Попросите администратора проверить службу выдачи токенов Fastkore.', 502);
         const { status, value } = await postErpJson(binding.origin + '/api/ai/user-token',
-          JSON.stringify({ version: 1, delegation: delegation.grant, audience }), binding, fail);
+          JSON.stringify({ version: 1, delegation: delegation.grant, audience: target }), binding, fail);
         if (status === 403) {
+          if (webApi) throw new BridgeError('ERP отклонила выдачу токена WebAPI для чтения вложений. Откройте помощника из Fastkore заново. Если ошибка повторится, обратитесь к администратору.', 403);
           if (this.sessions.get(credential.id) === state) await this.invalidate(credential.id, 'mcp_token_denied');
           throw new BridgeError(delegationLossMessage('mcp_token_denied'), 403);
         }
         if (status === 401) throw new BridgeError('ERP отклонила ключ привязки Fastkore. Проверьте подключение.', 424);
-        if (status === 404) throw new BridgeError('На сервере ERP недоступна выдача токенов MCP.', 424);
+        if (status === 404) throw new BridgeError(webApi ? 'На сервере ERP недоступна выдача токенов WebAPI для вложений.' : 'На сервере ERP недоступна выдача токенов MCP.', 424);
         if (status === 429) throw new BridgeError('Fastkore ограничил частоту запросов. Повторите позже.', 429);
         const result = record(value);
-        if (status !== 200 || result?.version !== 1 || result.token_type !== 'Bearer' || result.audience !== audience
+        if (status !== 200 || result?.version !== 1 || result.token_type !== 'Bearer' || result.audience !== target
           || !Number.isInteger(result.expires_in) || result.expires_in <= 0 || result.expires_in > 300
           || typeof result.access_token !== 'string' || !/^fkua1\.[A-Za-z0-9._-]{1,4096}$/.test(result.access_token)) throw fail();
         if (this.sessions.get(credential.id) !== state || delegation.expiresAt <= Date.now()) throw new BridgeError(reauth, 403);
-        return state.token = { value: result.access_token, expiresAt: Math.min(Date.now() + result.expires_in * 1000, delegation.expiresAt) };
-      })().finally(() => { state.refresh = undefined; });
+        return state[tokenKey] = { value: result.access_token, expiresAt: Math.min(Date.now() + result.expires_in * 1000, delegation.expiresAt) };
+      })().finally(() => { state[refreshKey] = undefined; });
     }
-    return state.refresh;
+    return state[refreshKey];
   }
 
   async prepare(credential: Credential, authorize: () => void, signal: AbortSignal,
@@ -300,11 +310,45 @@ export class FastkoreMcp {
       const { tools } = catalog;
       const connection = { sessionId: catalog.sessionId, protocol: catalog.protocol };
       const restrictWrites = readOnly();
+      const definitions = [...tools.values()].filter(tool => !restrictWrites || readTools.has(tool.upstream)).map(tool => tool.definition);
+      const attachmentsAvailable = tools.has('fastkore_GetObjectFiles');
+      const webToken = async () => (await this.token(state, binding, 'fastkore-webapi')).value;
+      let attachmentReads = 0, attachmentImages = 0;
+      if (attachmentsAvailable) definitions.push(attachmentTool);
       return { tools: {
-        definitions: [...tools.values()].filter(tool => !restrictWrites || readTools.has(tool.upstream)).map(tool => tool.definition),
+        definitions,
         async call(name, args, callSignal) {
           const tool = tools.get(name);
           const supplied = record(args);
+          if (name === attachmentTool.name && attachmentsAvailable && supplied) {
+            const started = performance.now();
+            let success = false, status: number | undefined;
+            try {
+              check();
+              if (++attachmentReads > 8) throw new BridgeError('Достигнут лимит чтения вложений за один запрос.', 429);
+              const result = await readFastkoreAttachment(supplied, url, binding.mcpCa, async object => {
+                const listed = await rpc('tools/call', { name: 'GetObjectFiles', arguments: object }, callSignal, connection);
+                if (listed.error || !listed.result || listed.result.isError === true) {
+                  throw new BridgeError('Не удалось получить список вложений записи Fastkore.', 424);
+                }
+                return listed.result;
+              }, webToken, check, callSignal);
+              if (result.imageUrl) {
+                if (attachmentImages + result.imageUrl.length > maxChatImagePayload) {
+                  throw new BridgeError('Изображения во вложениях превышают общий лимит за один запрос.', 413);
+                }
+                attachmentImages += result.imageUrl.length;
+              }
+              success = result.success;
+              return result;
+            } catch (error) {
+              callSignal.throwIfAborted();
+              if (error instanceof BridgeError) { status = error.statusCode; if (status === 401) state.webApiToken = undefined; }
+              return { success: false, text: error instanceof BridgeError ? redact(error.message) : 'Не удалось прочитать вложение Fastkore.' };
+            } finally {
+              audit?.({ tool: 'GetFile', parameters: supplied, success, status, elapsedMs: elapsedMs(started) });
+            }
+          }
           if (!tool || !supplied || Buffer.byteLength(JSON.stringify(supplied)) > 128_000) return { success: false, text: 'Инструмент или его аргументы недоступны.' };
           const started = performance.now(), timing: RpcTiming = {};
           const diagnostic: CallDiagnostic = {};

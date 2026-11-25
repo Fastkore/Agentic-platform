@@ -336,7 +336,7 @@ export class GigaChatClient implements CodexRunner {
           }
         }
         messages.push(message, { role: 'function', name, content: JSON.stringify(toolResult) });
-        if (imageId) messages.push({ role: 'user', content: 'Встроенное изображение из HTML-поля Fastkore, полученное инструментом.', attachments: [imageId] });
+        if (imageId) messages.push({ role: 'user', content: 'Изображение из Fastkore, полученное инструментом.', attachments: [imageId] });
       }
       throw unavailable('превышен лимит последовательных вызовов инструментов.');
     } finally {
