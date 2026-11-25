@@ -14,6 +14,7 @@ import { FastkoreCli } from '../server/fastkore-cli.js';
 import { Workspace } from '../server/workspace.js';
 import { parseHostScreenshotCapability, parseHostScreenshotResult, parseHostTheme } from '../client/fastkore.js';
 import type { FastkoreKeyIssue } from '../shared/types.js';
+import { seedLegacyInstallation } from './erp-browser.js';
 import { testCertificate } from './test-certificate.js';
 
 process.env.BRIDGE_EXECUTION = 'disabled';
@@ -58,7 +59,7 @@ function form(prep: Start, id: string, ticket: string) {
   return new URLSearchParams({ version: '1', installation_id: id, ticket, login_challenge: prep.challenge }).toString();
 }
 const identity = (installation_id: string, id: string) => ({ version: 1, valid: true, installation_id, audience, user: { id, display_name: 'Руководитель' }, role: 'admin' });
-async function fixture(pairingClient?: PairingClient) {
+async function fixture(pairingClient?: PairingClient, setupMode: 'manual' | 'pairing' = 'manual') {
   const root = await mkdtemp(path.join(tmpdir(), 'bridge-sso-'));
   const store = new Store(root), workspace = makeWorkspace(store);
   const userId = randomUUID(), responses = new Map<string, { challenge: string; result: ReturnType<typeof identity> }>();
@@ -77,15 +78,14 @@ async function fixture(pairingClient?: PairingClient) {
   const req = (method: any, url: string, token = '', payload?: unknown, extra: Record<string, string> = {}) => app.inject({
     method, url, headers: { ...headers, ...(token ? { authorization: 'Bearer ' + token } : {}), ...extra }, ...(payload === undefined ? {} : { payload }),
   });
-  const create = async (name: string) => {
-    const created = await req('POST', installations, admin, { name, validateTicketUrl: validationUrl });
-    assert.equal(created.statusCode, 201, created.body);
-    assert.equal(created.headers['cache-control'], 'no-store');
-    return created.json<FastkoreKeyIssue>();
-  };
-  const issue = await create('ERP A'), id = issue.installationId;
+  const created = await req('POST', installations, admin, { validateTicketUrl: validationUrl, setup: setupMode,
+    ...(setupMode === 'manual' ? { name: 'ERP A' } : {}) });
+  assert.equal(created.statusCode, 201, created.body);
+  assert.equal(created.headers['cache-control'], 'no-store');
+  const issue = setupMode === 'manual' ? created.json<FastkoreKeyIssue>() : undefined;
+  const id = issue?.installationId ?? created.json<{ id: string }>().id;
   const patch = (data: unknown, installationId = id) => req('PATCH', installations + '/' + installationId, admin, data);
-  assert.equal((await patch({ enabled: true })).statusCode, 200);
+  if (issue) assert.equal((await patch({ enabled: true })).statusCode, 200);
   const ticket = (prep: Start, externalId = userId, installationId = id) => {
     const value = random();
     responses.set(value, { challenge: prep.challenge, result: identity(installationId, externalId) });
@@ -109,7 +109,7 @@ async function fixture(pairingClient?: PairingClient) {
   }
   const asCookie = (s: { cookie: string; csrf: string }, method: any, url: string, payload?: unknown, extra: Record<string, string> = {}) =>
     req(method, url, '', payload, { cookie: s.cookie, origin, 'x-csrf-token': s.csrf, ...extra });
-  return { root, store, workspace, app, options, issue, id, userId, req, create, patch, ticket, exchange, login, asCookie, responses, admin, adminId,
+  return { root, store, workspace, app, options, issue, id, userId, req, created, patch, ticket, exchange, login, asCookie, responses, admin, adminId,
     get calls() { return calls; }, setValidator: (fn: TicketValidator) => { validate = fn; } };
 }
 
@@ -192,7 +192,7 @@ test('1.1 provisions a cookie-only identity with no automatic platform rights', 
     assert.equal(updatedUser.roleId, 'sso_pending');
     assert.equal(updatedUser.name, 'Иван Петров');
     assert.equal((await f.req('GET', '/api/users', f.admin)).json().find((item: { id: string }) => item.id === session.user.id).name, 'Иван Петров');
-    const other = await f.create('ERP B');
+    const other = await seedLegacyInstallation(f.store, f.options);
     await f.patch({ enabled: true }, other.installationId);
     assert.notEqual((await f.login(f.userId, other.installationId)).user.id, session.user.id);
     const binary = await readFile(f.store.file);
@@ -258,7 +258,7 @@ test('Fastkore roles are scoped to the current installation and preserve unknown
     assert.deepEqual((await f.asCookie(first, 'GET', '/api/auth/browser-session')).json().authentication.roles, first.authentication.roles);
     assert.ok(!Object.hasOwn((await f.req('GET', '/api/users', f.admin)).json().find((user: { id: string }) => user.id === first.user.id), 'roles'));
 
-    const secondInstallation = await f.create('ERP B');
+    const secondInstallation = await seedLegacyInstallation(f.store, f.options);
     await f.patch({ enabled: true }, secondInstallation.installationId);
     roles = [{ id, name: 'Технолог' }];
     const other = await f.login(f.userId, secondInstallation.installationId);
@@ -602,9 +602,10 @@ test('registration and rotation disclose keys once and revoke active and in-flig
     const digest = createHash('sha256').update(f.issue.connectionKey, 'utf8').digest('hex');
     assert.equal(f.issue.erpKeyVerifier, 'fkap1.' + f.id + '.' + digest);
     assert.equal((await f.req('POST', installations, f.admin, { name: 'test', validateTicketUrl: 'http://erp.test/api/ai/validate-ticket' })).statusCode, 400);
-    const second = await f.create('ERP B');
+    const duplicate = await f.req('POST', installations, f.admin, { validateTicketUrl: validationUrl });
+    assert.equal(duplicate.statusCode, 409);
     const list = await f.req('GET', installations, f.admin);
-    assert.equal(list.json().find((item: any) => item.id === second.installationId).enabled, false);
+    assert.deepEqual(list.json().map((item: { id: string }) => item.id), [f.id]);
     assert.ok(!/secret|encryptedKey|connectionKey|erpKeyVerifier/.test(list.body));
     const url = validationUrl.replace('erp.', 'new.');
     assert.equal((await f.patch({ validateTicketUrl: url, confirmValidateTicketUrl: true })).statusCode, 409);
@@ -654,12 +655,13 @@ test('pairing enables a new registration only after ERP confirms it and replays 
       throw new BridgeError('No response', 502);
     }
     return { version: 1, paired: true, installation_id: payload.installation_id };
-  });
+  }, 'pairing');
   try {
-    const created = await f.req('POST', installations, f.admin, { name: 'ERP Pair', validateTicketUrl: 'erp.example.test', setup: 'pairing' });
+    const created = f.created;
     assert.equal(created.statusCode, 201, created.body);
     const registration = created.json();
     assert.equal(registration.validateTicketUrl, validationUrl);
+    assert.equal(registration.name, new URL(validationUrl).hostname);
     assert.equal(registration.pairingStatus, 'unpaired');
     assert.equal(registration.enabled, false);
     assert.doesNotMatch(created.body, /connectionKey|erpKeyVerifier|fkap1\./);

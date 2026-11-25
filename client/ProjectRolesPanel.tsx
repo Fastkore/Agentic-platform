@@ -52,6 +52,7 @@ export function ProjectRolesPanel({ projectId, request, onSaved, pendingChanged 
     }
   }
 
+  const legacySources = new Set(settings?.available.map(role => role.installationId)).size > 1;
   const changed = settings && (selected.length !== settings.roles.length || settings.roles.some(role => !selected.includes(roleKey(role))));
   return <>
     <p className="help">Проект увидят сотрудники с одной из выбранных ролей Fastkore. Без выбранных ролей проект виден администраторам платформы.</p>
@@ -67,7 +68,7 @@ export function ProjectRolesPanel({ projectId, request, onSaved, pendingChanged 
               setSaved(false);
               setSelected(current => checked ? [...current, key] : current.filter(item => item !== key));
             }} />
-            <span>{role.name}<small>{role.installationName}</small></span>
+            <span>{role.name}{legacySources && <small>{role.installationName}</small>}</span>
           </label></li>;
         })}
       </ul> : <p className="help">Роли появятся после входа сотрудников из Fastkore.</p>}

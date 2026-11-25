@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Clock3, FilePenLine, FolderPlus, Globe, LockKeyhole, Network, Search, Send, ShieldCheck, Terminal, Trash2, Users } from 'lucide-react';
 import type { FastkoreRoleSummary, FastkoreRolePermissions } from '../shared/types';
-import { Select } from './Select';
 import { SettingsAction } from './SettingsAction';
 import { SettingsSpinner } from './SettingsSpinner';
 import { PermissionSwitch } from './PermissionSwitch';
@@ -18,7 +17,7 @@ const permissionColumns = [
 
 export function ErpRolesPanel({ request }: { request: Request }) {
   const [roles, setRoles] = useState<FastkoreRoleSummary[]>();
-  const [search, setSearch] = useState(''), [installation, setInstallation] = useState('all');
+  const [search, setSearch] = useState('');
   const [removing, setRemoving] = useState<FastkoreRoleSummary | null>(null);
   const [error, setError] = useState(''), [busy, setBusy] = useState(false);
   useEffect(() => {
@@ -49,9 +48,8 @@ export function ErpRolesPanel({ request }: { request: Request }) {
     finally { setBusy(false); }
   }
   const query = search.trim().toLocaleLowerCase('ru-RU');
-  const filtered = roles?.filter(role => (installation === 'all' || role.installationId === installation)
-    && (!query || (role.name + ' ' + role.installationName).toLocaleLowerCase('ru-RU').includes(query)));
-  const sources = new Map(roles?.map(role => [role.installationId, role.installationName]));
+  const legacySources = new Set(roles?.map(role => role.installationId)).size > 1;
+  const filtered = roles?.filter(role => (role.name + (legacySources ? ' ' + role.installationName : '')).toLocaleLowerCase('ru-RU').includes(query));
   return <div className="erp-roles-panel">
     {removing ? <SettingsAction title="Удалить роль из списка">
       <p>Удалить «{removing.name}»? При следующем входе сотрудника Fastkore сможет передать эту роль снова.</p>
@@ -60,17 +58,15 @@ export function ErpRolesPanel({ request }: { request: Request }) {
         <button className="primary" disabled={busy} onClick={() => void remove()}>Удалить</button>
       </div>
     </SettingsAction> : <>
-      <p className="roles-intro">Роли поступают из Fastkore при входе сотрудников. Здесь собраны роли подключённых установок.</p>
+      <p className="roles-intro">Роли поступают из Fastkore при входе сотрудников.</p>
       <div className="roles-filters">
         <div className="audit-search"><Search size={18} aria-hidden="true" /><input aria-label="Поиск по ролям" placeholder="Поиск по ролям…" value={search} onChange={e => setSearch(e.target.value)} /></div>
-        <Select label="Установка Fastkore" className="settings-select" value={installation} onChange={setInstallation}
-          options={[{ value: 'all', label: 'Все установки' }, ...[...sources].map(([value, label]) => ({ value, label }))]} />
       </div>
       {!roles && !error && <SettingsSpinner label="Загрузка ролей…" />}
       {filtered && !filtered.length && <p role="status">{roles?.length ? 'По выбранным условиям ролей нет.' : 'Роли появятся после входа сотрудников из Fastkore.'}</p>}
       <ul className="erp-role-cards">{filtered?.map(role => <li key={role.installationId + '/' + role.id}>
         <div className="erp-role-heading"><span className="erp-role-icon"><ShieldCheck size={25} aria-hidden="true" /></span>
-          <div><h3>{role.name}</h3><p>{role.installationName}</p></div>
+          <div><h3>{role.name}</h3>{legacySources && <p>{role.installationName}</p>}</div>
           <div className="erp-role-switches" aria-label={'Разрешения · ' + role.name}>
             {permissionColumns.map(column => <div className="erp-role-switch-column" key={column[0].key}>{column.map(({ key, name, icon: Icon }) =>
               <label className="erp-role-permission" key={key}>

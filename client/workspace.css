@@ -847,6 +847,11 @@
   .personal-editor-actions { gap: 9px; }
   .personal-editor-actions .workspace-icon { width: 49px; height: 49px; }
 }
+.workspace-settings .settings-employee-instructions .settings-pane > h2 { font-size: 18px; font-weight: 650; }
+.settings-employee-instructions .personal-sidebar-title h2 { font-size: 14px; font-weight: 600; }
+.settings-employee-instructions :is(.personal-heading h3, .personal-title-input) { font-size: 14px; font-weight: 600; }
+.workspace-dialog .settings-employee-instructions :is(.personal-text, .personal-preview) { font-size: 14px; line-height: 1.5; }
+.settings-employee-instructions .personal-search input[type="search"], .settings-employee-instructions .personal-tree :is(summary, .workspace-row) { font-size: 13px; }
 .workspace-dialog.personal-instructions-compact {
   --settings-width: 1120px; --settings-height: 720px;
 }

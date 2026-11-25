@@ -13,7 +13,7 @@ import { Access } from '../server/access.js';
 import { csrfFor } from '../server/fastkore.js';
 import type { TranscribeDictation } from '../server/dictation.js';
 import type { FastkoreRole, TeamUser } from '../shared/types.js';
-import { erpBrowser } from './erp-browser.js';
+import { erpBrowser, seedLegacyInstallation } from './erp-browser.js';
 
 const password = 'Test-password-for-office-2026';
 async function fixture(transcribeDictation?: TranscribeDictation, run?: CodexRunner['run']) {
@@ -40,7 +40,7 @@ async function fixture(transcribeDictation?: TranscribeDictation, run?: CodexRun
     return { id: user.id, token: cookie, projectRoles };
   }
   const setProjectRoles = (roles: Awaited<ReturnType<typeof employee>>['projectRoles']) => erp.setProjectRoles(app, admin, project.id, roles);
-  return { root, store, workspace, project, legacy, app, req, admin, adminId, enter, employee, setProjectRoles, pair: () => erp.pair(app, admin) };
+  return { root, store, workspace, project, legacy, app, req, admin, adminId, enter, employee, setProjectRoles, pair: async () => erp.pair(app, admin, (await seedLegacyInstallation(store, erp.options, 'ERP')).installationId) };
 }
 async function done(workspace: Workspace) { const end = Date.now() + 10_000; while (workspace.activeRun) { assert.ok(Date.now() < end); await new Promise(r => setTimeout(r, 20)); } }
 

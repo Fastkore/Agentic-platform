@@ -625,8 +625,8 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
     secureRequest(request);
     return configuredSso().confirmInstallationTls(access, () => localAdmin(request), request.params.id, request.body.fingerprint);
   });
-  app.post<{ Body: { name: string; validateTicketUrl: string; setup?: 'pairing' | 'manual'; tlsFingerprint?: string } }>('/api/admin/fastkore/installations', {
-    schema: { body: object({ name: string(100), validateTicketUrl: string(2048), setup: { type: 'string', enum: ['pairing', 'manual'] }, tlsFingerprint }, ['name', 'validateTicketUrl']) },
+  app.post<{ Body: { name?: string; validateTicketUrl: string; setup?: 'pairing' | 'manual'; tlsFingerprint?: string } }>('/api/admin/fastkore/installations', {
+    schema: { body: object({ name: string(100), validateTicketUrl: string(2048), setup: { type: 'string', enum: ['pairing', 'manual'] }, tlsFingerprint }, ['validateTicketUrl']) },
   }, async (request, reply) => {
     localAdmin(request);
     secureRequest(request);

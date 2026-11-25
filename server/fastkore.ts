@@ -238,14 +238,15 @@ export class FastkoreSso {
       return secret;
     } catch { throw new BridgeError('Ключ установки Fastkore недоступен. Проверьте файл ключа шифрования.', 503); }
   }
-  create(items: StoredFastkoreInstallation[], name: string, url: string) {
-    if (items.length >= 50) throw new BridgeError('Достигнут предел регистраций Fastkore.', 409);
-    const id = randomUUID(), validatedName = nameOf(name), validateTicketUrl = validationUrl(url);
+  create(items: StoredFastkoreInstallation[], name: string | undefined, url: string) {
+    const validateTicketUrl = validationUrl(url), validatedName = nameOf(name ?? new URL(validateTicketUrl).hostname);
+    if (items.length) throw new BridgeError('На этом экземпляре уже настроено подключение ERP. Измените существующее подключение.', 409);
+    const id = randomUUID();
     const { issue, encryptedKey } = this.issue(id);
     items.push({ id, name: validatedName, validateTicketUrl, enabled: false, autoProvision: true, defaultRoleId: 'sso_pending', sessionTtlSeconds: 1800, revision: randomUUID(), encryptedKey });
     return { id, result: issue };
   }
-  registerForPairing(items: StoredFastkoreInstallation[], name: string, url: string, trust?: FastkoreTlsTrust) {
+  registerForPairing(items: StoredFastkoreInstallation[], name: string | undefined, url: string, trust?: FastkoreTlsTrust) {
     const { id } = this.create(items, name, url);
     const item = this.find(id, items);
     item.pairing = { required: true };

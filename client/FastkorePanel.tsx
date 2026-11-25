@@ -1,6 +1,5 @@
 import { useEffect, useState } from 'react';
 import { Check, Link2, Plus, X } from 'lucide-react';
-import { Select } from './Select';
 import { SettingsAction } from './SettingsAction';
 import { SettingsSpinner } from './SettingsSpinner';
 import { normalizeFastkoreTicketUrl } from '../shared/fastkore-url';
@@ -94,7 +93,7 @@ function FastkoreMcpSettings({ request }: { request: Request }) {
   return <section className="setting-section">
     {installation && <ConnectionChecks request={request} url={endpoint + '/checks'} installation={installation} />}
     {installation ? <form onSubmit={event => { event.preventDefault(); void save(); }}>
-      <h3>{installation.name}</h3>
+      <h3>Подключение ERP</h3>
       <label htmlFor="current-installation-mcp">HTTPS-адрес MCP</label>
       <input id="current-installation-mcp" type="url" value={url} placeholder="https://erp.example.ru/webapi/mcp"
         maxLength={2048} required disabled={busy || saved} onChange={event => setUrl(event.target.value)} />
@@ -111,27 +110,8 @@ function FastkoreMcpSettings({ request }: { request: Request }) {
 function FastkoreInstallations({ request }: { request: Request }) {
   const [available, setAvailable] = useState<boolean | null>(null);
   const [installations, setInstallations] = useState<FastkoreInstallation[]>([]);
-  const [installationId, setInstallationId] = useState('');
-  const [registering, setRegistering] = useState(false);
-  const [name, setName] = useState(''), [url, setUrl] = useState('');
-  const [checkingInstallation, setCheckingInstallation] = useState(false);
-  const [certificate, setCertificate] = useState<FastkoreTlsInfo | null>(null);
-  const [code, setCode] = useState(''), [rotate, setRotate] = useState(false), [reconnect, setReconnect] = useState(false);
-  const [editing, setEditing] = useState<FastkoreInstallation | null>(null), [confirmUrl, setConfirmUrl] = useState(false);
-  const [confirmPause, setConfirmPause] = useState(false);
-  const [error, setError] = useState(''), [notice, setNotice] = useState(''), [busy, setBusy] = useState(false);
-
-  const installation = installations.find(item => item.id === installationId);
-  const rotating = rotate || installation?.pairingRotationPending === true;
-  const editedUrl = editing && normalizeFastkoreTicketUrl(editing.validateTicketUrl);
-  const urlChanged = !!editedUrl && editedUrl !== installation?.validateTicketUrl;
-
-  async function load(preferredId?: string) {
-    const items = await request<FastkoreInstallation[]>(endpoint);
-    setInstallations(items);
-    setInstallationId(old => preferredId ?? (items.some(item => item.id === old) ? old : items[0]?.id ?? ''));
-  }
-
+  const [error, setError] = useState('');
+  async function reload() { setInstallations(await request<FastkoreInstallation[]>(endpoint)); }
   useEffect(() => {
     let alive = true;
     void Promise.all([
@@ -143,25 +123,47 @@ function FastkoreInstallations({ request }: { request: Request }) {
       if (config.fastkoreEnabled) {
         if (items instanceof Error) { setError(items.message); return; }
         setInstallations(items);
-        setInstallationId(items[0]?.id ?? '');
       }
     }).catch(e => { if (alive) setError(e.message); });
     return () => { alive = false; };
   }, [request]);
 
-  async function run(work: () => Promise<string | void>) {
+  if (error) return <p className="inline-error" role="alert">{error}</p>;
+  if (available === null) return <SettingsSpinner label="Загрузка подключения…" />;
+  if (!available) return <p className="help">Для подключения ERP настройте ключ шифрования Fastkore на сервере.</p>;
+  if (!installations.length) return <FastkoreConnection request={request} reload={reload} />;
+  // Older databases may have multiple installations. Keep each existing binding manageable by its original ID.
+  return <>{installations.map(item => <FastkoreConnection key={item.id} installation={item} request={request} reload={reload} />)}</>;
+}
+
+function FastkoreConnection({ request, installation, reload }: {
+  request: Request; installation?: FastkoreInstallation; reload: () => Promise<void>;
+}) {
+  const [registering, setRegistering] = useState(false);
+  const [url, setUrl] = useState('');
+  const [checkingInstallation, setCheckingInstallation] = useState(false);
+  const [certificate, setCertificate] = useState<FastkoreTlsInfo | null>(null);
+  const [code, setCode] = useState(''), [rotate, setRotate] = useState(false), [reconnect, setReconnect] = useState(false);
+  const [editing, setEditing] = useState<FastkoreInstallation | null>(null), [confirmUrl, setConfirmUrl] = useState(false);
+  const [confirmPause, setConfirmPause] = useState(false);
+  const [error, setError] = useState(''), [notice, setNotice] = useState(''), [busy, setBusy] = useState(false);
+
+  const rotating = rotate || installation?.pairingRotationPending === true;
+  const editedUrl = editing && normalizeFastkoreTicketUrl(editing.validateTicketUrl);
+  const urlChanged = !!editedUrl && editedUrl !== installation?.validateTicketUrl;
+
+  async function run(work: () => Promise<void>) {
     if (busy) return;
     setBusy(true);
     setError('');
     setNotice('');
-    let preferredId: string | undefined;
     try {
-      preferredId = (await work()) || undefined;
+      await work();
     } catch (e) {
       setError((e as Error).message);
     }
     try {
-      await load(preferredId);
+      await reload();
     } catch (e) {
       setError(old => old || (e as Error).message);
     } finally {
@@ -169,19 +171,8 @@ function FastkoreInstallations({ request }: { request: Request }) {
     }
   }
 
-  function selectInstallation(id: string) {
-    setInstallationId(id);
-    setEditing(null);
-    setCode('');
-    setRotate(false);
-    setReconnect(false);
-    setNotice('');
-    setError('');
-  }
-
   function closeRegistration() {
     setRegistering(false);
-    setName('');
     setUrl('');
     setCertificate(null);
     setError('');
@@ -220,46 +211,37 @@ function FastkoreInstallations({ request }: { request: Request }) {
 
   async function pairInstallation(id: string, pairingCode: string, rotateKey = false) {
     const route = endpoint + '/' + id + (rotateKey ? '/pair/rotate-key' : '/pair');
-    const updated = await request<FastkoreInstallation>(route, json('POST', { pairingCode }));
-    setInstallations(items => items.map(item => item.id === id ? updated : item));
+    await request<FastkoreInstallation>(route, json('POST', { pairingCode }));
     setCode('');
     setRotate(false);
     setReconnect(false);
     setNotice(rotateKey ? 'Ключ заменён. Прежние сеансы установки отозваны.' : 'Подключение подтверждено ERP.');
-    return id;
   }
 
   const actionOpen = registering || editing || checkingInstallation || confirmPause;
   return <section className="setting-section fastkore-settings">
-    {available && !actionOpen && <div className="fastkore-heading">
-      <button type="button" className="secondary" disabled={busy} onClick={() => { setError(''); setRegistering(true); }}><Plus size={15} /> Добавить установку</button>
+    {!installation && !actionOpen && <div className="fastkore-heading">
+      <button type="button" className="secondary" disabled={busy} onClick={() => { setError(''); setRegistering(true); }}><Plus size={15} /> Подключить ERP</button>
     </div>}
-    {available === false && <p className="help">Для подключения ERP настройте ключ шифрования Fastkore на сервере.</p>}
-    {available === null && !error && <SettingsSpinner label="Загрузка установок…" />}
     {error && !registering && !checkingInstallation && !editing && !confirmPause && <div className="inline-error" role="alert">{error}</div>}
     {notice && <p className="fastkore-notice" role="status">{notice}</p>}
 
-    {available && <>
-      {!installations.length && !registering && <p>Установок ERP пока нет.</p>}
-      {registering && <SettingsAction title="Добавить установку ERP">
+    <>
+      {!installation && !registering && <p>ERP пока не подключена.</p>}
+      {registering && <SettingsAction title="Подключить ERP">
         <form onSubmit={e => {
           e.preventDefault();
           if (!certificate) { void checkTls(url); return; }
           void run(async () => {
-            const installation = await request<FastkoreInstallation>(endpoint, json('POST', {
-              name: name.trim(), validateTicketUrl: url.trim(), setup: 'pairing', tlsFingerprint: certificate.fingerprint,
+            await request<FastkoreInstallation>(endpoint, json('POST', {
+              validateTicketUrl: url.trim(), setup: 'pairing', tlsFingerprint: certificate.fingerprint,
             }));
-            selectInstallation(installation.id);
-            setInstallations(items => [...items, installation]);
             closeRegistration();
-            return installation.id;
           });
         }}>
-          <label htmlFor="sso-name">Название установки</label>
-          <input id="sso-name" data-settings-focus value={name} onChange={e => setName(e.target.value)} maxLength={100} required />
           <label htmlFor="sso-url">HTTPS-адрес TLS API ERP</label>
           <p className="help">Укажите TLS-порт Fastkore из настроек сервера, например https://erp.example.ru:17027.</p>
-          <input id="sso-url" inputMode="url" autoCapitalize="none" spellCheck={false} disabled={busy} value={url}
+          <input id="sso-url" data-settings-focus inputMode="url" autoCapitalize="none" spellCheck={false} disabled={busy} value={url}
             onChange={e => { setUrl(e.target.value); setCertificate(null); setError(''); }} maxLength={2048} placeholder="erp.example.ru" required />
           {certificate && <TlsFingerprint certificate={certificate} />}
           <div className="settings-dialog-actions">
@@ -271,15 +253,9 @@ function FastkoreInstallations({ request }: { request: Request }) {
         </form>
       </SettingsAction>}
 
-      {!actionOpen && !!installations.length && <div>
-        <label htmlFor="sso-installation">Установка ERP</label>
-        <Select id="sso-installation" className="settings-select" value={installationId} onChange={selectInstallation}
-          disabled={busy} options={installations.map(item => ({ value: item.id, label: item.name }))} />
-      </div>}
-
       {!actionOpen && installation && <article className="access-user fastkore-card">
         <div className="fastkore-card-top">
-          <div><h4>{installation.name}</h4><small className="fastkore-url">{installation.validateTicketUrl}</small>
+          <div><h4>Подключение ERP</h4><small className="fastkore-url">{installation.validateTicketUrl}</small>
             {installation.mcpUrl && <small className="fastkore-url">MCP · {installation.mcpUrl}</small>}</div>
           <span className="fastkore-state" data-connected={installation.enabled}>
             {installation.pairingStatus === 'paired' && installation.enabled && <Check size={14} />}{installationStatus(installation)}
@@ -332,7 +308,6 @@ function FastkoreInstallations({ request }: { request: Request }) {
           e.preventDefault();
           void run(async () => {
             await request(endpoint + '/' + installation.id, json('PATCH', {
-              name: editing.name.trim(),
               validateTicketUrl: editing.validateTicketUrl.trim(),
               mcpUrl: editing.mcpUrl?.trim() ?? '',
               mcpEnabled: editing.mcpEnabled !== false,
@@ -343,8 +318,6 @@ function FastkoreInstallations({ request }: { request: Request }) {
             setNotice('Настройки установки сохранены.');
           });
         }}>
-          <label htmlFor="sso-edit-name">Название установки</label>
-          <input id="sso-edit-name" data-settings-focus value={editing.name} onChange={e => setEditing({ ...editing, name: e.target.value })} maxLength={100} required />
           <label htmlFor="sso-edit-url">HTTPS-адрес TLS API ERP</label>
           <input id="sso-edit-url" inputMode="url" autoCapitalize="none" spellCheck={false} disabled={installation.enabled} value={editing.validateTicketUrl}
             onChange={e => { setEditing({ ...editing, validateTicketUrl: e.target.value }); setConfirmUrl(false); }} maxLength={2048} required />
@@ -373,8 +346,7 @@ function FastkoreInstallations({ request }: { request: Request }) {
             <button type="button" className="secondary" disabled={busy} onClick={closeTlsCheck}>Отмена</button>
             {error && <button type="button" className="secondary" disabled={busy} onClick={() => void checkTls(installation.validateTicketUrl)}>Проверить заново</button>}
             {certificate && <button type="button" className="primary" disabled={busy} onClick={() => void run(async () => {
-              const updated = await request<FastkoreInstallation>(endpoint + '/' + installation.id + '/tls', json('POST', { fingerprint: certificate.fingerprint }));
-              setInstallations(items => items.map(item => item.id === updated.id ? updated : item));
+              await request<FastkoreInstallation>(endpoint + '/' + installation.id + '/tls', json('POST', { fingerprint: certificate.fingerprint }));
               closeTlsCheck();
               setNotice('TLS-соединение с ERP проверено.');
             })}>Отпечаток совпадает</button>}
@@ -393,6 +365,6 @@ function FastkoreInstallations({ request }: { request: Request }) {
         </div>
       </SettingsAction>}
 
-    </>}
+    </>
   </section>;
 }

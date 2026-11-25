@@ -1,11 +1,23 @@
 import assert from 'node:assert/strict';
 import { randomBytes, randomUUID } from 'node:crypto';
 import type { createApp, AppOptions } from '../server/app.js';
-import { audience, csrfFor } from '../server/fastkore.js';
+import type { Store } from '../server/store.js';
+import type { StoredFastkoreInstallation } from '../shared/types.js';
+import { audience, csrfFor, FastkoreSso } from '../server/fastkore.js';
 import type { FastkoreRole, ProjectRole, ProjectRoleSettings, User } from '../shared/types.js';
 
 type App = Awaited<ReturnType<typeof createApp>>;
 const code = () => randomBytes(32).toString('base64url');
+
+// Existing databases may contain a second identity namespace created by an earlier release.
+export async function seedLegacyInstallation(store: Store, options: AppOptions, name = 'ERP B') {
+  const historical: StoredFastkoreInstallation[] = [];
+  const sso = new FastkoreSso(store, options.ssoKey!, options.publicOrigin!);
+  const { result } = sso.create(historical, name, 'https://erp.example.test/api/ai/validate-ticket');
+  store.state.sso!.installations!.push(...historical);
+  await store.save();
+  return result;
+}
 
 export function erpBrowser(publicOrigin = 'https://agents.example.test') {
   const headers = { host: new URL(publicOrigin).host, 'x-forwarded-proto': 'https', origin: publicOrigin };
@@ -31,12 +43,15 @@ export function erpBrowser(publicOrigin = 'https://agents.example.test') {
     });
   }
 
-  async function pair(app: App, admin: string) {
+  async function pair(app: App, admin: string, historicalId?: string) {
     const req = request(app);
     const installations = '/api/admin/fastkore/installations';
-    const registration = await req('POST', installations, admin, { name: 'ERP', validateTicketUrl: 'https://erp.example.test/api/ai/validate-ticket', setup: 'pairing' });
-    assert.equal(registration.statusCode, 201, registration.body);
-    const id = registration.json().id;
+    let id = historicalId;
+    if (!id) {
+      const registration = await req('POST', installations, admin, { validateTicketUrl: 'https://erp.example.test/api/ai/validate-ticket', setup: 'pairing' });
+      assert.equal(registration.statusCode, 201, registration.body);
+      id = registration.json<{ id: string }>().id;
+    }
     const linked = await req('POST', `${installations}/${id}/pair`, admin, { pairingCode: code() });
     assert.equal(linked.statusCode, 200, linked.body);
 

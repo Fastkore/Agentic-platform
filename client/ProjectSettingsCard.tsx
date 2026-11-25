@@ -36,6 +36,7 @@ export function ProjectSettingsCard({ project, request, configure }: {
     return () => controller.abort();
   }, [base, project.libraries, project.specialists, request]);
 
+  const legacySources = new Set(project.roles?.map(role => role.installationId)).size > 1;
   return <li className="agent-card">
     <header className="project-overview-header">
       <div className="settings-project-title"><Folder size={16} aria-hidden="true" /><strong>{project.name}</strong></div>
@@ -44,7 +45,7 @@ export function ProjectSettingsCard({ project, request, configure }: {
     </header>
     <dl className="project-overview-details">
       {([[Database, 'Библиотеки', libraries, 'Пока нет'], [Bot, 'Агенты', specialists, 'Пока нет'],
-        [ShieldCheck, 'Роли', (project.roles ?? []).map(role => role.name + ' · ' + role.installationName), 'Только администраторы']] as const).map(([Icon, title, entries, empty]) =>
+        [ShieldCheck, 'Роли', (project.roles ?? []).map(role => legacySources ? role.name + ' · ' + role.installationName : role.name), 'Только администраторы']] as const).map(([Icon, title, entries, empty]) =>
         <div key={title}><dt><Icon size={16} aria-hidden="true" />{title}</dt>
           <dd>{entries?.length ? <ul className="project-summary-chips">{entries.map((item, index) => <li key={index}>
             <Icon size={14} aria-hidden="true" /><span>{item}</span>

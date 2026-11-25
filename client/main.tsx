@@ -1791,7 +1791,7 @@ function App() {
           onChange={event => chooseSettingsSection(event.target.value as SettingsSection)}>
           {visibleSettingsSections.map(id => <option key={id} value={id}>{settingsSections[id].label}</option>)}
         </select>
-        <section key={settingsSection} className={'panel-body settings-content' + (settingsSection === 'server' ? ' settings-server' : instructionSettings ? ' settings-personal' : '')}
+        <section key={settingsSection} className={'panel-body settings-content' + (!inFastkore && settingsSection === 'employeeInstructions' ? ' settings-employee-instructions' : '') + (settingsSection === 'server' ? ' settings-server' : instructionSettings ? ' settings-personal' : '')}
           aria-labelledby="settings-section-title">
           <div className={'settings-pane' + (settingsSection === 'agent' ? ' settings-pane-instructions' : '')}>
           {settingsSection !== 'profiles' && settingsSection !== 'library' && <h2 id="settings-section-title">{settingsSections[settingsSection].label}</h2>}
