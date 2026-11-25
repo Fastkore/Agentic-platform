@@ -727,11 +727,6 @@
   flex: 1; min-height: 360px; grid-template-columns: clamp(210px, 29%, 290px) minmax(0, 1fr);
   border: 1px solid var(--border); border-radius: 9px; overflow: hidden;
 }
-@container workspace-settings (width <= 680px) {
-  .settings-personal .personal-settings { grid-template-columns: minmax(0, 1fr); }
-  .settings-personal .personal-sidebar { border-inline-end: 0; border-bottom: 1px solid var(--border); }
-  .settings-personal .personal-tree { max-height: 180px; }
-}
 .workspace-settings .settings-pane > h2 { margin: 0 0 16px; font-size: 22px; font-weight: 650; line-height: 1.2; }
 .settings-pane-instructions { display: flex; flex-direction: column; min-height: 100%; }
 .workspace-settings .settings-pane-instructions > h2 { margin-bottom: 12px; }
@@ -792,7 +787,7 @@
   padding: 17px 24px 20px; background: var(--canvas);
 }
 .personal-editor-header { display: flex; flex: none; align-items: center; gap: 13px; margin-bottom: 8px; }
-.personal-editor-header .personal-file-icon { width: 58px; height: 58px; border-radius: 14px; }
+.personal-settings :is(.personal-menu-trigger, .personal-menu-back), .personal-editor-header[data-empty] { display: none; }
 .personal-heading { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 .personal-heading h3, .workspace-dialog .personal-title-input {
   font-size: 16px; font-weight: 650; line-height: 1.3; overflow-wrap: anywhere;
@@ -843,7 +838,6 @@
   .personal-sidebar label.personal-toggle { padding: 15px 9px 4px; font-size: 16px; }
   .personal-editor { padding: 16px 29px 28px; gap: 17px; }
   .personal-editor-header { gap: 17px; margin-bottom: 10px; }
-  .personal-editor-header .personal-file-icon { width: 70px; height: 70px; }
   .personal-editor-actions { gap: 9px; }
   .personal-editor-actions .workspace-icon { width: 49px; height: 49px; }
 }
@@ -876,26 +870,27 @@
 .personal-instructions-compact .personal-sidebar .personal-toggle small { font-size: 10px; line-height: 1.35; }
 .personal-instructions-compact .personal-editor { padding: 12px 15px 14px; gap: 8px; }
 .personal-instructions-compact .personal-editor-header { gap: 8px; margin-bottom: 3px; }
-.personal-instructions-compact .personal-editor-header .personal-file-icon { width: 42px; height: 42px; border-radius: 9px; }
-.personal-instructions-compact .personal-editor-header .personal-file-icon svg { width: 24px; height: 24px; }
 .personal-instructions-compact .personal-editor-actions { gap: 4px; }
 .personal-instructions-compact .personal-editor-actions .workspace-icon { width: 32px; height: 32px; }
 .personal-instructions-compact .personal-editor-actions .workspace-icon svg { width: 17px; height: 17px; }
 .personal-instructions-compact .personal-fields select { font-size: 12px; }
 .personal-instructions-compact :is(.personal-text, .personal-preview) { font-size: 13px; }
 @container workspace-settings (width <= 680px) {
-  .personal-instructions-dialog .personal-settings {
-    grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(145px, 42%) minmax(0, 1fr);
+  .settings-personal .settings-pane { height: 100%; min-height: 0; }
+  .settings-personal .personal-settings, .personal-instructions-dialog .personal-settings {
+    grid-template: minmax(0, 1fr) / minmax(0, 1fr); min-height: 0;
   }
-  .personal-instructions-dialog .personal-sidebar {
-    gap: 6px; padding: 8px 12px; border-inline-end: 0; border-bottom: 1px solid var(--border);
-  }
+  .personal-settings[data-menu-open="false"] > .personal-sidebar,
+  .personal-settings[data-menu-open="true"] > .personal-editor { display: none; }
+  .personal-settings :is(.personal-menu-trigger, .personal-menu-back) { display: inline-flex; align-items: center; }
+  .personal-menu-back { align-self: flex-start; gap: 6px; }
+  .personal-editor-header[data-empty] { display: flex; }
+  .personal-settings .personal-sidebar { gap: 8px; padding: 10px 12px; border-inline-end: 0; overflow-y: auto; }
   .personal-instructions-dialog .personal-sidebar-top { gap: 6px; }
   .personal-sidebar-title .personal-file-icon { display: none; }
   .personal-sidebar label.personal-toggle { padding-top: 6px; }
   .personal-instructions-dialog .personal-editor { gap: 8px; padding: 10px 12px; }
   .personal-instructions-dialog .personal-editor-header { flex-wrap: wrap; gap: 7px; margin-bottom: 0; }
-  .personal-editor-header .personal-file-icon { display: none; }
   .personal-editor-actions .workspace-icon { width: 33px; height: 33px; }
   .personal-fields { grid-template-columns: minmax(0, 1fr); }
 }

@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState } from 'react';
-import { Check, ChevronRight, Download, FileText, Folder, Layers, Plus, Search, Trash2, Undo2, Upload, Users } from 'lucide-react';
+import { useEffect, useId, useRef, useState } from 'react';
+import { ArrowLeft, Check, ChevronRight, Download, FileText, Folder, Layers, Menu, Plus, Search, Trash2, Undo2, Upload, Users } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { instructionTile, personalInstructionLimits as limits, type PersonalInstructions, type PersonalInstructionsEdit, type PersonalInstructionsView, type SharedWorkNote, type WorkNote } from '../shared/personal-instructions';
@@ -44,6 +44,10 @@ export function PersonalInstructionsPanel({ request, project, erp, context, admi
   const [draft, setDraft] = useState<Draft>();
   const [sharedNotes, setSharedNotes] = useState<SharedWorkNote[]>([]);
   const [selected, setSelected] = useState('');
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuId = useId();
+  const menuTrigger = useRef<HTMLButtonElement>(null);
+  const menuBack = useRef<HTMLButtonElement>(null);
   const [search, setSearch] = useState('');
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const [authors, setAuthors] = useState<Author[]>([]);
@@ -112,13 +116,25 @@ export function PersonalInstructionsPanel({ request, project, erp, context, admi
   function updateNote(changes: Partial<DraftNote>) {
     if (draft) change({ ...draft, notes: draft.notes.map(item => item.key === selected ? { ...item, ...changes } : item) });
   }
+  useEffect(() => {
+    if (menuOpen) menuBack.current?.focus();
+  }, [menuOpen]);
+  function closeMenu() {
+    if (!menuOpen) return;
+    setMenuOpen(false);
+    requestAnimationFrame(() => menuTrigger.current?.focus());
+  }
+  function openInstruction(key: string) {
+    setSelected(key);
+    closeMenu();
+  }
   function addNote(title = 'Новый приём', text = '') {
     if (!draft || draft.notes.length >= limits.notes) return;
     const key = 'new-' + ++counter.current;
     const pendingScope = erp && scopeContext && scopeContext.view !== 'none' ? 'erp' : undefined;
     change({ ...draft, notes: [...draft.notes, { key, title, text, pendingScope }] });
     setSearch(''); setCollapsed(new Set());
-    setSelected(key); setError('');
+    openInstruction(key); setError('');
   }
   async function importNote(file: File) {
     try {
@@ -130,7 +146,7 @@ export function PersonalInstructionsPanel({ request, project, erp, context, admi
       const text = body.slice(heading?.[0].length ?? 0).trim();
       if (!title || title.length > limits.title || !text || text.length > limits.note) throw new Error('В приёме помещается до 100 символов в названии и до 600 в тексте.');
       addNote(title, text);
-    } catch (cause) { setError((cause as Error).message); }
+    } catch (cause) { setError((cause as Error).message); closeMenu(); }
   }
   async function save() {
     if (!draft) return;
@@ -181,8 +197,15 @@ export function PersonalInstructionsPanel({ request, project, erp, context, admi
     } else change({ ...draft, text: '' });
   }
 
-  return <div className="personal-settings">
-    <aside className="personal-sidebar">
+  return <div className="personal-settings" data-menu-open={menuOpen} onKeyDown={event => {
+    if (event.key === 'Escape' && menuOpen && menuBack.current?.getClientRects().length) {
+      event.preventDefault(); event.stopPropagation(); closeMenu();
+    }
+  }}>
+    <aside className="personal-sidebar" id={menuId} aria-label="Список инструкций">
+      <button ref={menuBack} type="button" className="secondary personal-menu-back" onClick={closeMenu}>
+        <ArrowLeft size={16} aria-hidden="true" />К инструкции
+      </button>
       <div className="personal-sidebar-top">
         {administration && <div className="personal-sidebar-title">
           <span className="personal-file-icon"><Layers size={23} aria-hidden="true" /></span>
@@ -230,9 +253,9 @@ export function PersonalInstructionsPanel({ request, project, erp, context, admi
             <span className="personal-badge">{group.visible.length + Number(group.hasInstructions)}</span>
           </summary>
           {group.hasInstructions && <button type="button" className="workspace-row" aria-current={!selected ? 'page' : undefined}
-            onClick={() => setSelected('')}><FileText size={16} aria-hidden="true" /><span>Указания</span></button>}
+            onClick={() => openInstruction('')}><FileText size={16} aria-hidden="true" /><span>Указания</span></button>}
           {group.visible.map(item => <button type="button" className="workspace-row" key={item.key} title={item.title}
-            aria-current={selected === item.key ? 'page' : undefined} onClick={() => setSelected(item.key)}>
+            aria-current={selected === item.key ? 'page' : undefined} onClick={() => openInstruction(item.key)}>
             <FileText size={16} aria-hidden="true" /><span>{item.title || 'Новый приём'}</span>
             {item.authorName && <Users className="personal-shared-icon" size={15} aria-label="Приём коллеги" />}
           </button>)}
@@ -247,25 +270,30 @@ export function PersonalInstructionsPanel({ request, project, erp, context, admi
       </label>}
     </aside>
     <section className="personal-editor" aria-label={note ? 'Рабочий приём' : 'Указания сотрудника'}>
-      {draft && <header className="personal-editor-header">
-        <span className="personal-file-icon"><FileText size={30} aria-hidden="true" /></span>
-        <div className="personal-heading">
-          {note && canEdit ? <textarea className="personal-title-input" aria-label="Название" placeholder="Новый приём"
-            rows={1} value={note.title} maxLength={limits.title} disabled={busy}
-            onChange={event => updateNote({ title: event.target.value.replace(/[\r\n]+/g, ' ') })} /> : <h3>{title}</h3>}
-        </div>
-        <div className="personal-editor-actions">
-          {canEdit && <button type="button" className="workspace-icon personal-save" aria-label="Сохранить" title="Сохранить" disabled={!canSave}
-            onClick={() => void save()}><Check size={22} aria-hidden="true" /></button>}
-          {canEdit && <button type="button" className="workspace-icon" aria-label="Отменить правки" title="Отменить правки" disabled={!dirty || busy}
-            onClick={revert}><Undo2 size={20} aria-hidden="true" /></button>}
-          {note && <button type="button" className="workspace-icon" aria-label="Скачать SKILL.md" title="Скачать SKILL.md"
-            disabled={!note.title.trim() || !note.text.trim()} onClick={() => downloadNote(note)}><Download size={19} aria-hidden="true" /></button>}
-          {canEdit && <button type="button" className="workspace-icon personal-delete" aria-label={note ? 'Удалить приём' : 'Очистить указания'}
-            title={note ? 'Удалить приём' : 'Очистить указания'} disabled={busy || !note && !text}
-            onClick={remove}><Trash2 size={19} aria-hidden="true" /></button>}
-        </div>
-      </header>}
+      <header className="personal-editor-header" data-empty={!draft || undefined}>
+        <button ref={menuTrigger} type="button" className="workspace-icon personal-menu-trigger" aria-label="Список инструкций"
+          title="Список инструкций" aria-expanded={menuOpen} aria-controls={menuId} onClick={() => setMenuOpen(true)}>
+          <Menu size={19} aria-hidden="true" />
+        </button>
+        {draft && <>
+          <div className="personal-heading">
+            {note && canEdit ? <textarea className="personal-title-input" aria-label="Название" placeholder="Новый приём"
+              rows={1} value={note.title} maxLength={limits.title} disabled={busy}
+              onChange={event => updateNote({ title: event.target.value.replace(/[\r\n]+/g, ' ') })} /> : <h3>{title}</h3>}
+          </div>
+          <div className="personal-editor-actions">
+            {canEdit && <button type="button" className="workspace-icon personal-save" aria-label="Сохранить" title="Сохранить" disabled={!canSave}
+              onClick={() => void save()}><Check size={22} aria-hidden="true" /></button>}
+            {canEdit && <button type="button" className="workspace-icon" aria-label="Отменить правки" title="Отменить правки" disabled={!dirty || busy}
+              onClick={revert}><Undo2 size={20} aria-hidden="true" /></button>}
+            {note && <button type="button" className="workspace-icon" aria-label="Скачать SKILL.md" title="Скачать SKILL.md"
+              disabled={!note.title.trim() || !note.text.trim()} onClick={() => downloadNote(note)}><Download size={19} aria-hidden="true" /></button>}
+            {canEdit && <button type="button" className="workspace-icon personal-delete" aria-label={note ? 'Удалить приём' : 'Очистить указания'}
+              title={note ? 'Удалить приём' : 'Очистить указания'} disabled={busy || !note && !text}
+              onClick={remove}><Trash2 size={19} aria-hidden="true" /></button>}
+          </div>
+        </>}
+      </header>
       {error && <p role="alert" className="inline-error">{error}</p>}
       {conflict && <button type="button" className="secondary personal-reload" onClick={() => {
         if (window.confirm('Загрузить актуальную версию и сбросить черновик?')) void load();
