@@ -42,12 +42,12 @@ export const assistantAvatars = [
   { id: 'falcon-helmet', label: 'Сокол в каске', src: '/icons/finist-falcon-helmet.png' },
   { id: 'bird-helmet', label: 'Финист в каске', src: '/icons/finist-bird-helmet.png' },
   { id: 'bird-hat', label: 'Финист в котелке', src: '/icons/finist-bird-hat.png' },
-  { id: 'bird-classic', label: 'Цифровой Финист', src: '/icons/finist-bird-classic.png' },
+  { id: 'crystal-falcon', label: 'Кристальный сокол', src: '/icons/finist-crystal-falcon.png' },
 ] as const;
 export type AssistantAvatarId = typeof assistantAvatars[number]['id'];
 export const defaultAssistantAvatar: AssistantAvatarId = 'falcon-helmet';
 export function assistantAvatarSrc(id?: string) {
-  return assistantAvatars.find(item => item.id === id)?.src ?? assistantAvatars[0].src;
+  return (assistantAvatars.find(item => item.id === id) ?? assistantAvatars.find(item => item.id === defaultAssistantAvatar) ?? assistantAvatars[0]).src;
 }
 export interface AssistantSettings { enabled: boolean; avatar?: AssistantAvatarId; instructions?: string; model?: string; reasoningEffort?: ReasoningEffort; revision: number }
 export interface AssistantState { chats: Chat[]; attachments: Attachment[]; settings?: AssistantSettings }
