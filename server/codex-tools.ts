@@ -3,7 +3,7 @@ import { redact } from './store.js';
 export interface CodexToolDefinition {
   type: 'function'; name: string; description: string; inputSchema: Record<string, unknown>;
 }
-export interface CodexToolResult { success: boolean; text: string }
+export interface CodexToolResult { success: boolean; text: string; imageUrl?: string }
 export interface CodexTools {
   definitions: CodexToolDefinition[];
   call(name: string, args: unknown, signal: AbortSignal): Promise<CodexToolResult>;

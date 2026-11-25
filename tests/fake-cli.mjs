@@ -6,7 +6,7 @@ const args = process.argv.slice(2);
 if (args[0] === '--version') { console.log('codex mock 1.0'); process.exit(0); }
 if (args[0] === 'login') { console.error('Logged in using ChatGPT'); process.exit(0); }
 if (args.includes('app-server')) {
-  let steeringThread, localChat;
+  let steeringThread, htmlImageThread, localChat;
   for await (const line of createInterface({ input: process.stdin })) {
     const request = JSON.parse(line);
     if (request.method === 'initialize') console.log(JSON.stringify({ id: request.id, result: { userAgent: 'fake' } }));
@@ -26,6 +26,13 @@ if (args.includes('app-server')) {
     if (request.method === 'turn/start') {
       const threadId = request.params.threadId;
       console.log(JSON.stringify({ id: request.id, result: { turn: { id: 'turn-1' } } }));
+      if (request.params.input[0].text.includes('VERIFY_HTML_IMAGE')) {
+        htmlImageThread = threadId;
+        console.log(JSON.stringify({ id: 92, method: 'item/tool/call', params: {
+          threadId, turnId: 'turn-1', callId: 'html-image', tool: 'fastkore_cli_html_image', arguments: {},
+        } }));
+        continue;
+      }
       if (request.params.input[0].text.includes('VERIFY_CHAT_IMAGE')) {
         const images = request.params.input.filter(input => input.type === 'image');
         console.log(JSON.stringify({ method: 'item/completed', params: {
@@ -61,6 +68,14 @@ if (args.includes('app-server')) {
         console.log(JSON.stringify({ method: 'item/completed', params: { threadId, item: { id: 'text-1', type: 'agentMessage', text: 'Проверяю документы.' } } }));
         console.log(JSON.stringify({ method: 'turn/completed', params: { threadId, turn: { status: 'completed' } } }));
       }, 300);
+    }
+    if (request.id === 92 && htmlImageThread) {
+      const items = request.result?.contentItems ?? [];
+      const image = items.find(item => item.type === 'inputImage');
+      if (!image || items.some(item => item.text?.includes('base64,'))) process.exit(1);
+      const text = createHash('sha256').update(Buffer.from(image.imageUrl.split(',')[1], 'base64')).digest('hex');
+      console.log(JSON.stringify({ method: 'item/completed', params: { threadId: htmlImageThread, item: { id: 'vision', type: 'agentMessage', text } } }));
+      console.log(JSON.stringify({ method: 'turn/completed', params: { threadId: htmlImageThread, turn: { status: 'completed' } } }));
     }
     if (request.method === 'turn/steer') {
       if (request.params.threadId !== steeringThread || request.params.expectedTurnId !== 'turn-1') {

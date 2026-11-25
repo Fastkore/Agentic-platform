@@ -8,6 +8,7 @@ import { getCACertificates } from 'node:tls';
 import { gigaChatScopes, type GigaChatScope } from '../shared/execution-accounts.js';
 import type { CliInfo, CodexLimits, ModelCatalog, Usage } from '../shared/types.js';
 import type { CodexEvent, CodexRequest, CodexRunner } from './codex.js';
+import type { CodexToolResult } from './codex-tools.js';
 import { BridgeError } from './store.js';
 import { describeToolContext } from './tool-context.js';
 
@@ -313,7 +314,7 @@ export class GigaChatClient implements CodexRunner {
         }
         if (step === 64) break;
         const name = call.name, args = call.arguments, toolCallId = randomUUID();
-        let result = { success: false, text: 'Инструмент не разрешён для этого запроса.' };
+        let result: CodexToolResult = { success: false, text: 'Инструмент не разрешён для этого запроса.' };
         if (definitions.some(definition => definition.name === name)) {
           await onEvent({ kind: 'tool', text: name, toolCallId, toolContext: describeToolContext(name, args) });
           try { result = await request.tools!.call(name, args, signal); }
@@ -321,7 +322,21 @@ export class GigaChatClient implements CodexRunner {
           finally { await onEvent({ kind: 'tool-end', toolCallId }); }
         }
         signal.throwIfAborted();
-        messages.push(message, { role: 'function', name, content: JSON.stringify(result) });
+        const { imageUrl, ...toolResult } = result;
+        let imageId: string | undefined;
+        if (imageUrl) {
+          try {
+            if (!/(?:Max|Pro|Ultra)/i.test(model)) throw unavailable('для просмотра изображения выберите Pro, Max или Ultra.');
+            imageId = await this.uploadImage(credentials, imageUrl, signal);
+            images.push(imageId);
+          } catch (error) {
+            signal.throwIfAborted();
+            toolResult.success = false;
+            toolResult.text = error instanceof BridgeError ? error.message : 'Не удалось передать изображение модели.';
+          }
+        }
+        messages.push(message, { role: 'function', name, content: JSON.stringify(toolResult) });
+        if (imageId) messages.push({ role: 'user', content: 'Встроенное изображение из HTML-поля Fastkore, полученное инструментом.', attachments: [imageId] });
       }
       throw unavailable('превышен лимит последовательных вызовов инструментов.');
     } finally {

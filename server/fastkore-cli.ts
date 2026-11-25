@@ -1,4 +1,4 @@
-import { X509Certificate } from 'node:crypto';
+import { createHash, X509Certificate } from 'node:crypto';
 import { request } from 'node:http';
 import type { Credential } from '../shared/types.js';
 import type { FastkoreContext, FastkoreEntityContext } from '../shared/fastkore-context.js';
@@ -6,6 +6,7 @@ import type { FastkoreCliCommand } from './codex-tools.js';
 import { delegationLossMessage, postErpJson, type FastkoreSso } from './fastkore.js';
 import { BridgeError, redact } from './store.js';
 import { elapsedMs } from './run-timing.js';
+import { chatImageUrl, maxChatImageBytes, maxChatImageUrlLength } from './chat-images.js';
 
 export type FastkoreCliPage = { pageSize: number; orderBy?: string; descending?: boolean; after?: string; properties?: string[] };
 export type FastkoreCliRead =
@@ -17,9 +18,13 @@ export type FastkoreCliRead =
 export type FastkoreCliReadSupport = { contextPaging: boolean; batchGet: boolean };
 export type FastkoreCliTiming = { trustMs?: number; ticketMs?: number; ticketStatus?: number; cliRpcMs?: number; cliProcessMs?: number; exitCode?: number };
 export type FastkoreCliOperation = FastkoreCliRead | { operation: 'auth-info' } |
-  { operation: 'execute'; command: string; args: string[]; workDirectoryId: string; context?: FastkoreContext };
-export type FastkoreCliResult = { success: boolean; exitCode: number; data?: unknown; error?: undefined } |
-  { success: boolean | null; exitCode: number | null; data?: undefined; error: { code: 'cli_stdout_too_large'; actualBytes: number; limitBytes: number } };
+  { operation: 'execute'; command: string; args: string[]; workDirectoryId: string; context?: FastkoreContext } | FastkoreHtmlOperation;
+type HtmlField = { entitySet: string; entity: string; property: string };
+export type FastkoreHtmlOperation = HtmlField & (
+  { operation: 'html-show'; offset?: number; index?: number } |
+  { operation: 'html-image'; index: number; sha256: string; mimeType: string });
+export type FastkoreCliResult = { success: boolean; exitCode: number; data?: unknown; imageUrl?: string; error?: undefined } |
+  { success: boolean | null; exitCode: number | null; imageUrl?: undefined; data?: undefined; error: { code: 'cli_stdout_too_large'; actualBytes: number; limitBytes: number } };
 const audience = 'fastkore-cli';
 const unavailable = 'Платформа не получила ответ от исполнителя Fastkore CLI. Повторите запрос. Если ошибка повторится, попросите администратора проверить службу CLI.';
 const reauth = 'Доступ к ERP завершён или отозван. Войдите в помощника из Fastkore заново.';
@@ -41,6 +46,8 @@ export class FastkoreCli {
     return new Promise((resolve, reject) => {
       const fail = () => new BridgeError(unavailable, 503);
       const body = payload && JSON.stringify(payload);
+      const imageExport = (payload as { operation?: string } | undefined)?.operation === 'html-image';
+      const responseLimit = imageExport ? Math.max(this.transportLimitBytes, maxChatImageUrlLength + 1024) : this.transportLimitBytes;
       const timeout = AbortSignal.timeout(95_000);
       const req = request({
         socketPath: this.socketPath, path, method: body ? 'POST' : 'GET',
@@ -52,13 +59,16 @@ export class FastkoreCli {
           if (timing && typeof processMs === 'string' && /^\d{1,6}$/.test(processMs)) timing.cliProcessMs = Number(processMs);
           if (res.statusCode === 409 || res.statusCode === 429) throw new BridgeError('Исполнитель Fastkore CLI занят. Повторите позже.', 429);
           if (res.statusCode === 422) throw new BridgeError('Установленная Fastkore CLI не поддерживает этот режим чтения.', 422);
+          if (res.statusCode === 413 && imageExport) {
+            throw new BridgeError('Встроенное изображение превышает лимит 20 МБ.', 413);
+          }
           if (res.statusCode === 400) throw new BridgeError('Проверьте имя команды, её параметры и пути. CLI использует подключение текущего сотрудника и рабочую папку cli.', 400);
           if (res.statusCode !== 200) throw fail();
           let bytes = 0;
           const chunks: Buffer[] = [];
           for await (const chunk of res) {
             bytes += chunk.length;
-            if (bytes > this.transportLimitBytes) throw fail();
+            if (bytes > responseLimit) throw fail();
             chunks.push(chunk);
           }
           resolve(JSON.parse(Buffer.concat(chunks, bytes).toString('utf8')));
@@ -89,10 +99,10 @@ export class FastkoreCli {
     }
     // Verify the runner's fixed address and CA before sending a ticket.
     const trust = await this.exchange('/trust', undefined, AbortSignal.any([signal, AbortSignal.timeout(2000)])) as
-      { authority?: string; caFingerprint?: string; contextPaging?: boolean; batchGet?: boolean; contextVersions?: Record<string, number[]> } | null;
+      { authority?: string; caFingerprint?: string; contextPaging?: boolean; batchGet?: boolean; contextVersions?: Record<string, number[]>; htmlFields?: boolean } | null;
     if (trust?.authority !== authority) throw new BridgeError(`Исполнитель CLI настроен на ${trust?.authority ?? 'неизвестный адрес'}, а установка ERP использует ${authority}. Исправьте адрес исполнителя.`, 424);
     if (trust.caFingerprint !== caFingerprint) throw new BridgeError('CA исполнителя CLI отличается от подтверждённого CA ERP. Обновите сертификат исполнителя.', 424);
-    return { authority, caFingerprint, contextPaging: trust.contextPaging === true, batchGet: trust.batchGet === true, contextVersions: trust.contextVersions };
+    return { authority, caFingerprint, contextPaging: trust.contextPaging === true, batchGet: trust.batchGet === true, contextVersions: trust.contextVersions, htmlFields: trust.htmlFields === true };
   }
 
   async run(operation: FastkoreCliOperation, sso: Pick<FastkoreSso, 'delegationBinding' | 'openDelegation'>,
@@ -115,7 +125,7 @@ export class FastkoreCli {
       }
     };
     const trustStarted = performance.now();
-    const { authority, caFingerprint, contextPaging, batchGet, contextVersions } = await this.checkTrust(binding, signal)
+    const { authority, caFingerprint, contextPaging, batchGet, contextVersions, htmlFields } = await this.checkTrust(binding, signal)
       .finally(() => { if (timing) timing.trustMs = elapsedMs(trustStarted); });
     if ('context' in operation && operation.context?.version === 2 && (operation.operation === 'page' ||
       operation.operation === 'execute' && operation.args.some(arg => arg === '--context' || arg.startsWith('--context=')))) {
@@ -124,6 +134,9 @@ export class FastkoreCli {
     }
     if ((operation.operation === 'page' && !contextPaging) || (operation.operation === 'get-many' && !batchGet)) {
       throw new BridgeError('Установленная Fastkore CLI не поддерживает этот режим чтения.', 422);
+    }
+    if ((operation.operation === 'html-show' || operation.operation === 'html-image') && !htmlFields) {
+      throw new BridgeError('Для чтения HTML-полей требуется Fastkore CLI 27.0.64.0 или новее.', 424);
     }
     check();
     const started = Date.now(), ticketStarted = performance.now();
@@ -160,6 +173,17 @@ export class FastkoreCli {
       result.exitCode === null || result.error ||
       (result.success ? result.exitCode !== 0 || !Object.hasOwn(result, 'data') : result.exitCode === 0)) throw new BridgeError(unavailable, 502);
     if (timing) timing.exitCode = result.exitCode;
+    if (operation.operation === 'html-image' && result.success) {
+      const data = result.data as { mimeType?: unknown; byteLength?: unknown; sha256?: unknown } | undefined;
+      const prefix = 'data:' + operation.mimeType + ';base64,';
+      if (typeof result.imageUrl !== 'string' || !result.imageUrl.startsWith(prefix) || result.imageUrl.length > maxChatImageUrlLength ||
+        data?.mimeType !== operation.mimeType || data?.sha256 !== operation.sha256) throw new BridgeError('CLI вернула некорректное изображение.', 502);
+      const bytes = Buffer.from(result.imageUrl.slice(prefix.length), 'base64');
+      if (bytes.length > maxChatImageBytes || bytes.length !== data.byteLength || createHash('sha256').update(bytes).digest('hex') !== operation.sha256) {
+        throw new BridgeError('Размер или хеш изображения не совпадает. Перечитайте HTML-поле.', 502);
+      }
+      return { success: true, exitCode: 0, data, imageUrl: chatImageUrl(bytes, operation.mimeType) };
+    }
     if (operation.operation === 'auth-info' && result.success) {
       const data = result.data as { user?: { guid?: string } } | undefined;
       const guid = data?.user?.guid;

@@ -47,6 +47,11 @@ function imageType(contents: Buffer) {
   if (header.startsWith('GIF87a') || header.startsWith('GIF89a')) return 'gif';
 }
 
+export function chatImageUrl(contents: Buffer, mimeType: string) {
+  if ('image/' + imageType(contents) !== mimeType) throw new BridgeError('Байты изображения не соответствуют указанному формату.', 415);
+  return 'data:' + mimeType + ';base64,' + contents.toString('base64');
+}
+
 export async function readChatImages(files: Attachment[], project: Project, storage: FileStorage, signal: AbortSignal) {
   if (!files.length) return undefined;
   validateChatImages(files);

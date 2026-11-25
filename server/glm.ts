@@ -142,11 +142,29 @@ export class GlmClient extends CodexClient {
     const reasoningEffort = request.reasoningEffort === 'xhigh' || request.reasoningEffort === 'max' ? 'max'
       : request.reasoningEffort === 'low' ? 'low' : 'high';
     let input = { ...request, model, reasoningEffort } satisfies CodexRequest;
-    if (request.imageUrls?.length) {
-      const selected = model ?? GLM_DEFAULT_MODEL;
+    const selected = model ?? GLM_DEFAULT_MODEL;
+    const nativeImages = async () => {
       const entry = (await this.modelCatalog()).find(item => item.slug === selected);
-      const nativeImages = Array.isArray(entry?.input_modalities) ? entry.input_modalities.includes('image') : selected === GLM_VISION_MODEL;
-      if (!nativeImages) {
+      return Array.isArray(entry?.input_modalities) ? entry.input_modalities.includes('image') : selected === GLM_VISION_MODEL;
+    };
+    const tools = request.tools;
+    if (tools?.definitions.some(tool => tool.name === 'fastkore_cli_html_image')) {
+      input = { ...input, tools: { ...tools, call: async (name, args, toolSignal) => {
+        const result = await tools.call(name, args, toolSignal);
+        if (!result.imageUrl || await nativeImages()) return result;
+        try {
+          const key = readGlmKey(this.glmHome);
+          if (!key) throw new BridgeError('Сохраните ключ GLM Coding Plan для просмотра изображений.', 503);
+          const observation = await describeGlmImages(key, [result.imageUrl], request.imageQuestion ?? request.prompt.slice(-4000), toolSignal);
+          return { success: true, text: result.text + '\nНаблюдения модели GLM по изображению: ' + JSON.stringify(observation) };
+        } catch (error) {
+          toolSignal.throwIfAborted();
+          return { success: false, text: error instanceof BridgeError ? error.message : 'Не удалось передать изображение модели GLM.' };
+        }
+      } } };
+    }
+    if (request.imageUrls?.length) {
+      if (!await nativeImages()) {
         const key = readGlmKey(this.glmHome);
         if (!key) throw new BridgeError('Сохраните ключ GLM Coding Plan для просмотра изображений.', 503);
         await onEvent({ kind: 'progress', text: 'GLM анализирует изображения…' });

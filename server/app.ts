@@ -30,6 +30,7 @@ import { canAccessProject, canRenameProject, canUseAssistant, creationRoles, pro
 import { withInternetTools } from './internet-tools.js';
 import { withFastkoreCliDescription } from './codex-tools.js';
 import { formatFastkoreCliResult, withFastkoreCliCommands } from './fastkore-cli-tools.js';
+import { withFastkoreHtml } from './fastkore-html-tools.js';
 import { executionConcurrencySchema } from './execution-concurrency.js';
 import type { AgentProfile, Credential, Dataset, FastkoreAuthentication, FastkoreInstallation, FastkoreKeyIssue, FastkoreRolePermissions, FileStorageProvider, ProjectAgentPolicy, ProjectAgentSettings, ProjectChatDefaults, Settings, User, WorkRole } from '../shared/types.js';
 import type { AuditEvent, ProjectRolePolicy, ProjectRoleSettings, RelatedChatSummary, Run, UnassignedChatSummary, UserRecord } from '../shared/types.js';
@@ -203,9 +204,12 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
     const descriptionOnly = () => withFastkoreCliDescription(base, (command, callSignal) => fastkoreCli.describe(command, callSignal), () => { current(); });
     if (cli.cliProblem || !cli.binding) return { tools: descriptionOnly(), problem: problems(cli.cliProblem) };
     const cliStarted = performance.now();
+    let cliSupport;
     try {
-      const problem = await cliTrustProblem(cli.binding, signal);
-      if (problem) return { tools: descriptionOnly(), problem: problems(problem) };
+      cliSupport = await fastkoreCli.checkTrust(cli.binding, signal);
+    } catch (error) {
+      signal.throwIfAborted();
+      return { tools: descriptionOnly(), problem: problems(error instanceof BridgeError ? error.message : 'Не удалось проверить подключение CLI.') };
     } finally {
       if (run?.timing) run.timing.cliSetupMs ??= elapsedMs(cliStarted);
     }
@@ -233,7 +237,20 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
           return { success, text: formatted.text };
         } finally { audit('erp.cli.command', command, { success, elapsedMs: elapsedMs(started), ...timing, responseChars }); }
       }, () => { current(); }) : descriptionOnly();
-    return { tools: commands, problem: problems() };
+    const tools = cliSupport?.htmlFields && run ? withFastkoreHtml(commands, async (operation, callSignal) => {
+      const started = performance.now(), timing: FastkoreCliTiming = {};
+      let success = false;
+      try {
+        const result = await fastkoreCli.run(operation, sso, current,
+          id => fastkoreMcp.invalidate(id, 'cli_ticket_denied'), callSignal, timing);
+        success = result.success === true;
+        return result;
+      } finally {
+        audit('erp.cli.command', operation.operation === 'html-show' ? 'data html show' : 'data html export',
+          { success, objectIds: erpAuditIds({ entitySetId: operation.entitySet, entityId: operation.entity }), elapsedMs: elapsedMs(started), ...timing });
+      }
+    }) : commands;
+    return { tools, problem: problems() };
   };
   migrateFastkoreChatBindings(workspace.store.state);
   if (sso) {

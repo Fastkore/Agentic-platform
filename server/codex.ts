@@ -5,7 +5,7 @@ import path from 'node:path';
 import { createInterface } from 'node:readline';
 import { BridgeError, redact } from './store.js';
 import type { CliInfo, CodexLimits, LimitWindow, ModelCatalog, ModelOption, RunToolContext, Usage } from '../shared/types.js';
-import type { CodexTools } from './codex-tools.js';
+import type { CodexTools, CodexToolResult } from './codex-tools.js';
 import { describeToolContext } from './tool-context.js';
 import { personalInstructionsTool } from '../shared/personal-instructions.js';
 import { chatImagesUnsupportedProvider } from './chat-images.js';
@@ -287,7 +287,7 @@ export class CodexClient implements CodexRunner {
     let pendingSteer: { id: number; finish: (result: SteerResult) => void } | undefined;
     const eventLimit = 4_000_000;
     // App Server can echo multimodal inputs in user-message and turn notifications.
-    const echoedInputLimit = eventLimit + (request.imageUrls ?? []).reduce((length, url) => length + url.length, 0);
+    let echoedInputLimit = eventLimit + (request.imageUrls ?? []).reduce((length, url) => length + url.length, 0);
     // A tool call can block the event iterator while the app server acknowledges steering.
     server.lines.on('line', line => {
       if (!pendingSteer || line.length > eventLimit) return;
@@ -312,7 +312,7 @@ export class CodexClient implements CodexRunner {
         signal.throwIfAborted();
         if (line.length > echoedInputLimit) throw new BridgeError('Слишком большое событие Codex.', 502);
         let message: any; try { message = JSON.parse(line); } catch { continue; }
-        if (line.length > eventLimit && message.params?.item?.type === 'userMessage') continue;
+        if (line.length > eventLimit && ['userMessage', 'dynamicToolCall'].includes(message.params?.item?.type)) continue;
         if (line.length > eventLimit && message.id !== 3 && message.method !== 'turn/started' && message.method !== 'turn/completed') {
           throw new BridgeError('Слишком большое событие Codex.', 502);
         }
@@ -322,7 +322,7 @@ export class CodexClient implements CodexRunner {
             continue;
           }
           const { threadId, turnId: toolTurn, callId, tool, arguments: args } = message.params ?? {};
-          let result = { success: false, text: 'Вызов инструмента недоступен.' };
+          let result: CodexToolResult = { success: false, text: 'Вызов инструмента недоступен.' };
           if (sessionId && threadId === sessionId && (!turnId || toolTurn === turnId) && typeof callId === 'string'
             && !seenCalls.has(callId) && typeof tool === 'string' && ++toolCalls <= 64) {
             seenCalls.add(callId);
@@ -333,7 +333,11 @@ export class CodexClient implements CodexRunner {
             await onEvent({ kind: 'tool-end', toolCallId: callId });
           }
           signal.throwIfAborted();
-          server.send({ id: message.id, result: { success: result.success, contentItems: [{ type: 'inputText', text: result.text }] } });
+          if (result.imageUrl) echoedInputLimit += result.imageUrl.length;
+          server.send({ id: message.id, result: { success: result.success, contentItems: [
+            { type: 'inputText', text: result.text },
+            ...(result.imageUrl ? [{ type: 'inputImage', imageUrl: result.imageUrl }] : []),
+          ] } });
           continue;
         }
         if (typeof message.id === 'number' && message.id > 100) continue;

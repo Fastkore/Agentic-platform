@@ -5,7 +5,10 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
+import { createHash, randomUUID } from 'node:crypto';
 import { CodexClient, type CodexEvent, type CodexRunner, type SteerTurn } from '../server/codex.js';
+import { createCodexWorker } from '../server/codex-worker.js';
+import { RemoteCodexRunner } from '../server/codex-remote.js';
 import { createApp } from '../server/app.js';
 import { Store } from '../server/store.js';
 import { Workspace } from '../server/workspace.js';
@@ -14,6 +17,26 @@ async function until(check: () => boolean) {
   const deadline = Date.now() + 7000;
   while (!check()) { if (Date.now() > deadline) throw Error('timeout'); await new Promise(resolve => setTimeout(resolve, 10)); }
 }
+
+test('the remote worker sends an HTML tool image to Codex as image input', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'bridge-html-vision-'));
+  const socket = process.platform === 'win32' ? '\\\\.\\pipe\\html-vision-' + randomUUID() : path.join(root, 'worker.sock');
+  const executor = new CodexClient([fileURLToPath(new URL('./fake-cli.mjs', import.meta.url))], 'worker');
+  const worker = createCodexWorker({
+    inspect: (_path, signal) => executor.inspect(process.execPath, signal),
+    run: (job, onEvent, signal) => executor.run({ ...job, cliPath: process.execPath, workspace: root }, onEvent, signal),
+  });
+  const jpeg = Buffer.from('ffd8ffe000104a46494600010100000100010000ffd9', 'hex');
+  try {
+    await worker.listen({ path: socket });
+    const remote = new RemoteCodexRunner(socket);
+    const result = await remote.run({ cliPath: '', workspace: root, prompt: 'VERIFY_HTML_IMAGE', allowWrite: false, tools: {
+      definitions: [{ type: 'function', name: 'fastkore_cli_html_image', description: 'JPG', inputSchema: { type: 'object' } }],
+      call: async () => ({ success: true, text: 'Встроенный JPG', imageUrl: 'data:image/jpeg;base64,' + jpeg.toString('base64') }),
+    } }, async () => {}, AbortSignal.timeout(8000));
+    assert.equal(result.response, createHash('sha256').update(jpeg).digest('hex'));
+  } finally { await worker.close(); await rm(root, { recursive: true, force: true }); }
+});
 
 test('Codex acknowledges steering for the same turn while a tool is still executing', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'bridge-steer-cli-'));

@@ -8,6 +8,7 @@ import { commandCatalog, commandArguments, jobDirectory } from './fastkore-cli-c
 import { CliProcessPool } from './cli-process-pool.mjs';
 import { readCommandOptions } from './fastkore-cli-reads.mjs';
 import { runCliProcess } from './fastkore-cli-output.mjs';
+import { htmlArguments, readHtmlImage } from './fastkore-cli-html.mjs';
 
 const socket = '/run/fastkore-cli/pilot.sock';
 const serverAddress = process.env.FASTKORE_SERVER;
@@ -49,6 +50,7 @@ const hasOption = (command, flag) => {
   return !!entry && [...entry.required, ...entry.optional].some(value => value.split(/\s+/).includes(flag));
 };
 Object.assign(trust, {
+  htmlFields: catalog.has('data html show') && catalog.has('data html export'),
   contextVersions,
   contextPaging: hasOption('data query', '--context') && hasOption('data query', '--page-size') && hasOption('data query', '--after'),
   batchGet: hasOption('data get', '--entities'),
@@ -81,6 +83,12 @@ async function readCommand(req) {
   const { operation, ticket, authority, caFingerprint, ...args } = input;
   if (authority !== trust.authority || caFingerprint !== trust.caFingerprint ||
     typeof ticket !== 'string' || !ticketPattern.test(ticket)) return;
+  if (operation === 'html-show' || operation === 'html-image') {
+    if (!trust.htmlFields) return { unsupported: true };
+    const argv = htmlArguments(operation, args);
+    if (!argv) return;
+    return { argv: [...argv, '--user-ticket-stdin', '--json'], ticket, image: operation === 'html-image' ? args : undefined };
+  }
   if (operation === 'execute' && Object.keys(args).every(key => ['command', 'args', 'workDirectoryId', 'context'].includes(key)) && jobsRoot) {
     const cwd = await jobDirectory(jobsRoot, args.workDirectoryId);
     const argv = await commandArguments(catalog, args.command, args.args, cwd);
@@ -122,15 +130,24 @@ const server = createServer(async (req, res) => {
   const stop = slot.controller;
   res.once('close', () => { if (!res.writableEnded) stop.abort(); });
   if (res.destroyed) stop.abort();
-  let snapshotDir;
+  let snapshotDir, imageDirectory, imageFile;
   async function dispose() {
     if (snapshotDir) {
       await unlink(join(snapshotDir, 'context.json')).catch(() => {});
       await rmdir(snapshotDir).catch(() => {});
     }
+    if (imageDirectory) {
+      if (imageFile) await unlink(imageFile).catch(() => {});
+      await rmdir(imageDirectory).catch(() => {});
+    }
     slot.release();
   }
   try {
+    if (read?.image) {
+      imageDirectory = await mkdtemp('/tmp/fastkore-html-');
+      imageFile = join(imageDirectory, 'image.' + read.image.mimeType.split('/')[1]);
+      args.push('--out', imageFile);
+    }
     if (read?.context) {
       snapshotDir = await mkdtemp('/tmp/fastkore-context-');
       const file = join(snapshotDir, 'context.json');
@@ -165,6 +182,14 @@ const server = createServer(async (req, res) => {
       const parsed = JSON.parse(stdout.text);
       if (read) {
         if (parsed.success !== true || parsed.exitCode !== 0 || !Object.hasOwn(parsed, 'data')) throw new Error();
+        if (read.image) {
+          try {
+            const imageUrl = await readHtmlImage(imageFile, parsed.data, read.image);
+            if (!imageUrl) { send(413, {}); return; }
+            send(200, { success: true, exitCode: 0, data: { mimeType: parsed.data.mimeType, byteLength: parsed.data.byteLength, sha256: parsed.data.sha256 }, imageUrl });
+          } catch { send(502, { error: 'invalid_html_image' }); }
+          return;
+        }
         send(200, { success: true, exitCode: 0, data: parsed.data });
         return;
       }

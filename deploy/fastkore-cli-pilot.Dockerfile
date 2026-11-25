@@ -15,6 +15,7 @@ COPY fastkore-cli-commands.mjs ./
 COPY fastkore-cli-reads.mjs ./
 COPY cli-process-pool.mjs ./
 COPY fastkore-cli-output.mjs ./
+COPY fastkore-cli-html.mjs ./
 RUN install -d -o app -g app /workspace && install -d -o 1000 -g 1000 -m 0770 /run/fastkore-cli
 ENV HOME=/tmp XDG_DATA_HOME=/tmp/.local/share
 USER $APP_UID:1000

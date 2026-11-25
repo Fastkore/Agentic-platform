@@ -60,6 +60,7 @@ export function erpFileWriteAllowed(state: RoleState, credential: Credential) {
   return credential.externalRoles.some(role => erpRolePermissions(state, credential.installationId!, role.id).fileWrite);
 }
 export const fastkoreReadCommands = new Set([
+  'data html show',
   'auth info', 'catalog tree', 'data get', 'data query', 'data aggregate', 'schema entity-set list', 'schema entity-set show', 'schema property show',
   'report definition show',
 ]);

@@ -60,7 +60,7 @@ export function createCodexWorker(codex: CodexRunner = new CodexClient([], 'work
   const consultations = new Map<string, { signal: AbortSignal; controller: AbortController; running: boolean }>();
   let accountChange: { id?: string; all?: boolean } | undefined;
   const runner = async (model?: string) => accounts ? accounts.runner((await accounts.select(model)).account.id) : codex;
-  const pendingTools = new Map<string, { resolve: (result: CodexToolResult) => void; maxResponseChars: number }>();
+  const pendingTools = new Map<string, { resolve: (result: CodexToolResult) => void; maxResponseChars: number; acceptsImage: boolean }>();
   const steeringTurns = new Map<string, SteerTurn>();
   const inspectCache = new Map<string, { expires: number; info: Awaited<ReturnType<CodexRunner['inspect']>> }>();
   const inspectAccount = async (accountId: string, executor: CodexRunner, signal?: AbortSignal) => {
@@ -175,15 +175,17 @@ export function createCodexWorker(codex: CodexRunner = new CodexClient([], 'work
   app.post<{ Params: { id: string }; Body: { key: string; scope?: GigaChatScope } }>('/accounts/:id/key', { schema: { body: {
     type: 'object', additionalProperties: false, required: ['key'], properties: { key: { type: 'string', minLength: 1, maxLength: 2048 }, scope: { enum: gigaChatScopes } },
   } } }, request => changeAccount(() => accounts!.setKey(request.params.id, request.body.key, request.body.scope), { id: request.params.id }));
-  app.post<{ Body: WorkerToolResult }>('/tool-result', { bodyLimit: 6 * maxFastkoreCliResponseChars + 1024, schema: { body: {
+  app.post<{ Body: WorkerToolResult }>('/tool-result', { bodyLimit: 6 * maxFastkoreCliResponseChars + maxChatImageUrlLength + 1024, schema: { body: {
     type: 'object', additionalProperties: false, required: ['id', 'success', 'text'],
-    properties: { id: { type: 'string', maxLength: 36 }, success: { type: 'boolean' }, text: { type: 'string', maxLength: maxFastkoreCliResponseChars } },
+    properties: { id: { type: 'string', maxLength: 36 }, success: { type: 'boolean' }, text: { type: 'string', maxLength: maxFastkoreCliResponseChars },
+      imageUrl: { type: 'string', maxLength: maxChatImageUrlLength, pattern: chatImageUrlPattern } },
   } } }, async request => {
     const pending = pendingTools.get(request.body.id);
     if (!active.size || !pending) throw new BridgeError('Вызов инструмента завершён.', 409);
     if (request.body.text.length > pending.maxResponseChars) throw new BridgeError('Ответ превышает лимит вызова инструмента.', 413);
+    if (request.body.imageUrl && (!request.body.success || !pending.acceptsImage)) throw new BridgeError('В этом вызове изображение недопустимо.', 400);
     pendingTools.delete(request.body.id);
-    pending.resolve({ success: request.body.success, text: request.body.text });
+    pending.resolve({ success: request.body.success, text: request.body.text, ...(request.body.imageUrl ? { imageUrl: request.body.imageUrl } : {}) });
     return { ok: true };
   });
   app.post<{ Body: WorkerSteer }>('/steer', { schema: { body: {
@@ -270,7 +272,7 @@ export function createCodexWorker(codex: CodexRunner = new CodexClient([], 'work
           const requestedLimit = name === 'fastkore_cli_execute' && args && typeof args === 'object'
             ? (args as Record<string, unknown>).maxResponseChars : undefined;
           const maxResponseChars = isFastkoreCliResponseLimit(requestedLimit) ? requestedLimit : defaultToolResponseChars;
-          const result = new Promise<CodexToolResult>(resolve => pendingTools.set(id, { resolve, maxResponseChars }));
+          const result = new Promise<CodexToolResult>(resolve => pendingTools.set(id, { resolve, maxResponseChars, acceptsImage: name === 'fastkore_cli_html_image' }));
           const cancel = () => pendingTools.get(id)?.resolve({ success: false, text: 'Вызов инструмента не завершён.' });
           stop.addEventListener('abort', cancel, { once: true });
           try {

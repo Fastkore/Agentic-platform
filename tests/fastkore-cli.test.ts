@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { randomUUID, X509Certificate } from 'node:crypto';
+import { createHash, randomUUID, X509Certificate } from 'node:crypto';
 import { createServer as httpServer, type IncomingMessage } from 'node:http';
 import { createServer as httpsServer } from 'node:https';
 import { once } from 'node:events';
@@ -9,6 +9,7 @@ import path from 'node:path';
 import type { Credential } from '../shared/types.js';
 import { FastkoreCli, type FastkoreCliTiming } from '../server/fastkore-cli.js';
 import { formatFastkoreCliResult } from '../server/fastkore-cli-tools.js';
+import { withFastkoreHtml } from '../server/fastkore-html-tools.js';
 import { testCertificate } from './test-certificate.js';
 
 async function requestJson(req: IncomingMessage) {
@@ -26,6 +27,10 @@ test('Fastkore CLI uses a fresh ticket per command and stops after ERP revokes t
   const key = 'test-binding-key';
   const tickets = new Set<string>();
   const used: string[] = [];
+  const jpeg = Buffer.from('ffd8ffe000104a46494600010100000100010000ffd9', 'hex');
+  const sha256 = createHash('sha256').update(jpeg).digest('hex');
+  const mimeType = 'image/jpeg', imageUrl = 'data:' + mimeType + ';base64,' + jpeg.toString('base64');
+  let imageResponse: 'ok' | 'conflict' | 'invalid' = 'ok';
   let denied = false, forgotten = false, wrongAudience = false, wrongTrust = false, wrongUser = false, cliEnabled = true;
   const erp = httpsServer(tls, async (req, res) => {
     assert.equal(req.url, '/api/ai/cli-ticket');
@@ -46,7 +51,7 @@ test('Fastkore CLI uses a fresh ticket per command and stops after ERP revokes t
   const caFingerprint = new X509Certificate(tls.cert).fingerprint256;
   const runner = httpServer(async (req, res) => {
     if (req.url === '/trust') {
-      res.end(JSON.stringify({ authority, caFingerprint: wrongTrust ? 'different' : caFingerprint }));
+      res.end(JSON.stringify({ authority, caFingerprint: wrongTrust ? 'different' : caFingerprint, htmlFields: true }));
       return;
     }
     assert.equal(req.url, '/read');
@@ -55,6 +60,25 @@ test('Fastkore CLI uses a fresh ticket per command and stops after ERP revokes t
     assert.equal(input.caFingerprint, caFingerprint);
     assert.ok(tickets.delete(input.ticket), 'every process receives a different unused ticket');
     used.push(input.operation);
+    if (input.operation === 'html-show') {
+      assert.equal(input.entity, entityId);
+      assert.equal(input.offset, 4000);
+      assert.equal(input.index, 2);
+      res.end(JSON.stringify({ success: true, exitCode: 0, data: { text: '', imageCount: 1, nextIndex: 3,
+        images: [{ index: 2, status: 'available', sha256, mimeType, byteLength: jpeg.length }] } }));
+      return;
+    }
+    if (input.operation === 'html-image') {
+      assert.equal(input.entity, entityId);
+      assert.equal(input.index, 2);
+      assert.equal(input.sha256, sha256);
+      assert.equal(input.mimeType, mimeType);
+      assert.equal(input.out, undefined);
+      if (imageResponse === 'conflict') { res.end(JSON.stringify({ success: false, exitCode: 4 })); return; }
+      res.end(JSON.stringify({ success: true, exitCode: 0,
+        data: { byteLength: jpeg.length + (imageResponse === 'invalid' ? 1 : 0), sha256, mimeType }, imageUrl }));
+      return;
+    }
     if (input.command === 'oversized') {
       res.end(JSON.stringify({ success: true, exitCode: 0, error: { code: 'cli_stdout_too_large', actualBytes: 9000000, limitBytes: 8388608 } }));
       return;
@@ -115,6 +139,24 @@ test('Fastkore CLI uses a fresh ticket per command and stops after ERP revokes t
     await assert.rejects(run({ operation: 'auth-info' }), /отклонила делегирование.*билета CLI/);
     assert.ok(forgotten);
     assert.equal(used.length, 6);
+    denied = false;
+    forgotten = false;
+    wrongUser = false;
+    const tools = withFastkoreHtml({ definitions: [], call: async () => ({ success: false, text: '' }) }, operation => run(operation));
+    const field = { entitySet: 'IssueRequest', entity: entityId, property: 'Text' };
+    const signal = AbortSignal.timeout(5000);
+    const html = await tools.call('fastkore_cli_html_show', { ...field, offset: 4000, index: 2 }, signal);
+    assert.equal(JSON.parse(html.text).data.text, '');
+    assert.equal(JSON.parse(html.text).data.imageCount, 1);
+    const selected = { ...field, index: 2, mimeType, sha256 };
+    const image = await tools.call('fastkore_cli_html_image', selected, signal);
+    assert.equal(image.imageUrl, imageUrl);
+    assert.doesNotMatch(image.text, /base64/);
+    imageResponse = 'conflict';
+    assert.match((await tools.call('fastkore_cli_html_image', selected, signal)).text, /Заново прочитайте/);
+    imageResponse = 'invalid';
+    assert.match((await tools.call('fastkore_cli_html_image', selected, signal)).text, /Размер или хеш/);
+    assert.deepEqual(used.slice(6), ['html-show', 'html-image', 'html-image', 'html-image']);
   } finally {
     await Promise.all([erp, runner].map(server => new Promise<void>(resolve => {
       server.closeAllConnections();

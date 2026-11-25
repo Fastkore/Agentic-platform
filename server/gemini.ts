@@ -9,6 +9,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { createInterface } from 'node:readline';
 import { killTree, type CodexEvent, type CodexRequest, type CodexResult, type CodexRunner } from './codex.js';
+import type { CodexToolResult } from './codex-tools.js';
 import type { CliInfo, ModelCatalog } from '../shared/types.js';
 import { BridgeError, redact } from './store.js';
 import { readGoogleLimits } from './google-limits.js';
@@ -102,7 +103,7 @@ export class GeminiClient implements CodexRunner {
         if (rpc.method === 'tools/list') { reply({ tools: definitions.map(({ name, description, inputSchema }) => ({ name, description, inputSchema })) }); return; }
         if (rpc.method !== 'tools/call') throw Error('Unknown method');
         const { name, arguments: args } = rpc.params;
-        let result = { success: false, text: 'Инструмент недоступен.' };
+        let result: CodexToolResult = { success: false, text: 'Инструмент недоступен.' };
         if (definitions.some(item => item.name === name)) {
           const toolCallId = randomUUID();
           await onEvent({ kind: 'tool', text: name, toolCallId, toolContext: describeToolContext(name, args) });
@@ -114,7 +115,8 @@ export class GeminiClient implements CodexRunner {
             await onEvent({ kind: 'tool-end', toolCallId });
           }
         }
-        reply({ content: [{ type: 'text', text: result.text }], isError: !result.success });
+        const image = result.imageUrl?.match(/^data:(image\/(?:jpeg|png|gif|webp));base64,([A-Za-z0-9+/]+=*)$/);
+        reply({ content: [{ type: 'text', text: result.text }, ...(image ? [{ type: 'image', mimeType: image[1], data: image[2] }] : [])], isError: !result.success });
       } catch { send(200, { jsonrpc: '2.0', id: rpcId, error: { code: -32603, message: 'Не удалось выполнить инструмент.' } }); }
     });
     server.listen(0, '127.0.0.1');
