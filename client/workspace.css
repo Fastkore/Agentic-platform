@@ -220,20 +220,20 @@
   border-color: var(--accent); background: var(--accent-soft); color: var(--accent-strong);
 }
 .fastis-screen-chip > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.fastis-settings-card { padding: 14px; border: 1px solid var(--border); border-radius: 10px; background: var(--control); }
-.fastis-settings-header { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+.fastis-panel-intro {
+  display: flex; align-items: center; gap: 12px; margin-bottom: 14px;
+}
+.fastis-panel-intro > p { margin: 0; line-height: 1.45; }
 .fastis-settings-avatar {
-  width: 56px; height: 56px; border-radius: 13px; object-fit: cover; flex: 0 0 auto;
+  width: 44px; height: 44px; border-radius: 11px; object-fit: cover; flex: 0 0 auto;
   border: 1px solid var(--control-border);
 }
-.fastis-settings-summary { flex: 1 1 240px; min-width: 0; }
-.fastis-settings-summary h3 { margin: 0 0 4px; }
-.fastis-settings-summary p { margin: 0; }
 .select-option-thumb {
   width: 20px; height: 20px; border-radius: 5px; object-fit: cover; flex: none;
 }
-.fastis-roles-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
-.fastis-role-list { margin-top: 10px; }
+.fastis-roles-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 6px; }
+.fastis-roles-heading h3 { margin: 0; }
+.fastis-role-list { margin-top: 12px; }
 .fastis-role-list > li { padding: 9px 14px; gap: 12px; }
 .fastis-role-row-main {
   display: flex; align-items: center; gap: 8px; flex: 1 1 auto; min-width: 0;
@@ -250,11 +250,20 @@
 .fastis-settings-panel .account-active-status.active { color: var(--success); background: color-mix(in srgb, var(--success) 10%, var(--surface)); }
 .fastis-settings-panel .account-active-status input { position: static; opacity: 1; margin: 0; flex: 0 0 16px; }
 .fastis-settings-panel .account-active-status.active input { accent-color: var(--success); }
-.fastis-settings-form { display: grid; gap: 10px; }
-.fastis-settings-form textarea {
+.fastis-settings-form { display: grid; gap: 14px; }
+.fastis-settings-form > .setting-section { margin-bottom: 0; }
+.fastis-instructions-section { display: grid; gap: 8px; }
+.fastis-instructions-section h3 { margin: 0; }
+.fastis-instructions-section h3 label { margin: 0; font: inherit; color: inherit; }
+.fastis-instructions-section > .help { margin: 0; line-height: 1.45; }
+.fastis-instructions-section textarea {
   width: 100%; min-height: 110px; padding: 10px 12px; border: 1px solid var(--control-border);
   border-radius: 8px; background: var(--control); color: var(--text); font: inherit; resize: vertical;
 }
+.fastis-instructions-section .settings-instructions-actions {
+  display: flex; align-items: center; justify-content: flex-end; gap: 12px; margin-top: 4px;
+}
+.fastis-instructions-section .settings-instructions-actions .help { margin: 0; }
 .projects-toggle { flex: 1; min-height: 32px; gap: 5px; padding-inline: 6px; color: var(--text-muted); font-weight: 600; }
 .project-tree {
   flex: 1; min-height: 0; overflow: auto; padding: 0 10px 12px;

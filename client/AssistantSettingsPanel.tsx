@@ -102,26 +102,23 @@ export function AssistantSettingsPanel({ request, models, onChanged }: {
     reasoningEffort !== (settings.reasoningEffort ?? 'high')
   );
 
-  return <div className="erp-roles-panel fastis-settings-panel">
+  return <div className="settings-server fastis-settings-panel">
     {!settings && !error && <SettingsSpinner label="Загрузка настроек Финиста…" />}
     {error && <p className="inline-error" role="alert">{error}</p>}
     {settings && <>
-      <section className="setting-section fastis-settings-card">
-        <div className="fastis-settings-header">
-          <img src={assistantAvatarSrc(settings.avatar)} alt="" className="fastis-settings-avatar" />
-          <div className="fastis-settings-summary">
-            <h3>{assistantName}</h3>
-            <p className="help">Общесистемный помощник вне проектов. Работает по правам сотрудника в Fastkore в режиме только чтения, с общей базой знаний и без доступа к проектным библиотекам.</p>
-          </div>
-        </div>
-      </section>
+      <div className="fastis-panel-intro">
+        <img src={assistantAvatarSrc(settings.avatar)} alt="" className="fastis-settings-avatar" />
+        <p className="help">Общесистемный помощник вне проектов. Работает по правам сотрудника в Fastkore в режиме только чтения, с общей базой знаний и без доступа к проектным библиотекам.</p>
+      </div>
 
       <SettingsTabStrip sections={assistantTabs} value={tab} select={setTab} id={tabId} label="Разделы настроек Финиста"
         counts={roles ? { permissions: enabledCount } : undefined}
         panelId={key => tabId + key + '-panel'} className="server-settings-tabs" />
 
-      {tab === 'general' && <section className="setting-section" role="tabpanel" id={tabId + 'general-panel'} aria-labelledby={tabId + 'general'}>
-        <form className="fastis-settings-form" onSubmit={e => { e.preventDefault(); if (formDirty) void saveSettings({ instructions, model, reasoningEffort }); }}>
+      {tab === 'general' && <form className="fastis-settings-form" role="tabpanel" id={tabId + 'general-panel'} aria-labelledby={tabId + 'general'}
+        onSubmit={e => { e.preventDefault(); if (formDirty) void saveSettings({ instructions, model, reasoningEffort }); }}>
+        <section className="setting-section settings-models">
+          <h3>Внешний вид и модель</h3>
           <div className="settings-model-row">
             <label htmlFor="fastis-avatar">Иконка для всех</label>
             <Select id="fastis-avatar" className="settings-select" value={settings.avatar ?? defaultAssistantAvatar} disabled={busy}
@@ -138,17 +135,20 @@ export function AssistantSettingsPanel({ request, models, onChanged }: {
             <Select id="fastis-reasoning" className="settings-select" value={reasoningEffort} options={reasoningOptions} disabled={busy}
               onChange={value => { setSaved(false); setReasoningEffort(value as ReasoningEffort); }} />
           </div>}
-          <label htmlFor="fastis-instructions">Дополнительные правила для Финиста</label>
+        </section>
+
+        <section className="setting-section fastis-instructions-section">
+          <h3><label htmlFor="fastis-instructions">Дополнительные правила для Финиста</label></h3>
           <p className="help" id="fastis-instructions-help">Например, бизнес-определения метрик, ограничения тематики или формат сводок. Действуют поверх общих инструкций платформы.</p>
           <textarea id="fastis-instructions" aria-describedby="fastis-instructions-help" rows={5} maxLength={8000}
             value={instructions} disabled={busy} placeholder="Например: при подсчёте просроченных заказов исключай отменённые и черновики…"
             onChange={e => { setSaved(false); setInstructions(e.target.value); }} />
           <div className="settings-instructions-actions">
-            {saved && <span role="status" className="help">Настройки Финиста сохранены.</span>}
+            {saved && <span role="status" className="help">Настройки сохранены.</span>}
             <button type="submit" className="primary" disabled={busy || !formDirty}>Сохранить</button>
           </div>
-        </form>
-      </section>}
+        </section>
+      </form>}
 
       {tab === 'permissions' && <section className="setting-section" role="tabpanel" id={tabId + 'permissions-panel'} aria-labelledby={tabId + 'permissions'}>
         <div className="fastis-roles-heading">
