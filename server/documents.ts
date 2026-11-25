@@ -59,7 +59,7 @@ export async function documentPreview(kind: 'pdf' | 'xlsx' | 'drawing', input: B
     const preview = worker;
     return await new Promise<string | DrawingPages>((resolve, reject) => {
       const invalid = () => new BridgeError('Документ повреждён или превышает лимиты предпросмотра.', 422);
-      timer = setTimeout(() => reject(invalid()), kind === 'drawing' ? 15000 : 5000);
+      timer = setTimeout(() => reject(invalid()), kind === 'xlsx' ? 5000 : 15000);
       preview.once('message', resolve);
       preview.once('error', () => reject(invalid()));
       preview.once('exit', () => reject(invalid()));

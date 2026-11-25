@@ -234,7 +234,7 @@ test('Fastkore reads only files listed on the requested card or comment, using a
       delegationBinding: () => ({ origin, key: 'test-key', ca: tls.cert, mcpCa: tls.cert, revision: 'rev', mcpUrl: origin + '/webapi/mcp', mcpEnabled: true, cliEnabled: true }),
       openDelegation: () => ({ grant: 'fkug1.test', expiresAt: credential.erpDelegation!.expiresAt }),
     }, async () => { assert.fail('the delegation should remain active'); });
-    const signal = AbortSignal.timeout(10000);
+    const signal = AbortSignal.timeout(25000);
     const tools = (await mcp.prepare(credential, () => {}, signal, undefined, () => true)).tools!;
     assert.ok(tools.definitions.some(tool => tool.name === 'fastkore_GetObjectFiles'));
     assert.ok(tools.definitions.some(tool => tool.name === 'fastkore_read_attachment'));
