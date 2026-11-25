@@ -3,6 +3,7 @@ import { Clock3, FilePenLine, FolderPlus, Globe, LockKeyhole, Network, Search, S
 import type { FastkoreRoleSummary, FastkoreRolePermissions } from '../shared/types';
 import { Select } from './Select';
 import { SettingsAction } from './SettingsAction';
+import { SettingsSpinner } from './SettingsSpinner';
 import { PermissionSwitch } from './PermissionSwitch';
 
 type Request = <T>(url: string, init?: RequestInit) => Promise<T>;
@@ -65,7 +66,7 @@ export function ErpRolesPanel({ request }: { request: Request }) {
         <Select label="Установка Fastkore" className="settings-select" value={installation} onChange={setInstallation}
           options={[{ value: 'all', label: 'Все установки' }, ...[...sources].map(([value, label]) => ({ value, label }))]} />
       </div>
-      {!roles && !error && <p role="status">Загрузка…</p>}
+      {!roles && !error && <SettingsSpinner label="Загрузка ролей…" />}
       {filtered && !filtered.length && <p role="status">{roles?.length ? 'По выбранным условиям ролей нет.' : 'Роли появятся после входа сотрудников из Fastkore.'}</p>}
       <ul className="erp-role-cards">{filtered?.map(role => <li key={role.installationId + '/' + role.id}>
         <div className="erp-role-heading"><span className="erp-role-icon"><ShieldCheck size={25} aria-hidden="true" /></span>

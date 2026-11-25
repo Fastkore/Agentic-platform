@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { KeyRound, LogIn, Plus, RefreshCw, Trash2 } from 'lucide-react';
 import { type ExecutionAccount, type ExecutionAccounts, type ExecutionProvider, type GigaChatScope } from '../shared/execution-accounts';
 import { Select } from './Select';
+import { SettingsSpinner } from './SettingsSpinner';
 import { WorkspaceDialog } from './WorkspaceDialog';
 
 type Request = <T>(url: string, init?: RequestInit) => Promise<T>;
@@ -75,7 +76,7 @@ export function ExecutionAccountsPanel({ request, busy, changed }: { request: Re
         onClick={() => void action(load)}><RefreshCw size={16} /></button>
     </div>
     <p className="help">Сотрудникам видны модели всех активных аккаунтов — они работают вместе. Неактивные аккаунты скрыты от сотрудников; в этом списке видны всегда.</p>
-    {!data && !error && <p role="status">Загрузка…</p>}
+    {!data && !error && <SettingsSpinner label="Загрузка аккаунтов…" />}
     {data?.proxyUrl !== undefined && <div className="setting-section">
       <label htmlFor="execution-https-proxy">HTTPS-прокси</label>
       <input id="execution-https-proxy" type="url" maxLength={2048} value={proxyDraft ?? data.proxyUrl}

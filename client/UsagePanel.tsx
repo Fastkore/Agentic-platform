@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent } from 'react';
 import type { TokenActivityReport } from '../shared/types';
 import { Select } from './Select';
+import { SettingsSpinner } from './SettingsSpinner';
 
 const dayMs = 86_400_000;
 const weeks = 52;
@@ -81,7 +82,7 @@ export function UsagePanel({ request }: { request: <T>(url: string, init?: Reque
   }, [report, start, currentDay]);
 
   if (error) return <p className="inline-error" role="alert">{error}</p>;
-  if (!records) return <p role="status">Загрузка…</p>;
+  if (!records) return <SettingsSpinner label="Загрузка статистики…" />;
   const isDaily = mode === 'days';
   const entries = isDaily ? days : periods.map(period => ({ date: period.date, tokens: mode === 'total' ? period.total : period.tokens }));
   const last = isDaily ? Math.round((currentDay - start) / dayMs) : weeks - 1;

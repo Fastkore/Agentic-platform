@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import type { ProjectRole, ProjectRoleLabel, ProjectRolePolicy, ProjectRoleSettings } from '../shared/types';
 import type { Request } from './library-upload';
+import { SettingsSpinner } from './SettingsSpinner';
 
 const roleKey = ({ installationId, roleId }: ProjectRole) => installationId + '/' + roleId;
 
@@ -55,7 +56,7 @@ export function ProjectRolesPanel({ projectId, request, onSaved, pendingChanged 
   return <>
     <p className="help">Проект увидят сотрудники с одной из выбранных ролей Fastkore. Без выбранных ролей проект виден администраторам платформы.</p>
     {error && <p className="inline-error" role="alert">{error}</p>}
-    {!settings && !error && <p role="status">Загрузка…</p>}
+    {!settings && !error && <SettingsSpinner label="Загрузка ролей…" />}
     {settings && <form onSubmit={event => { event.preventDefault(); if (changed) void save(); }}>
       {settings.available.length ? <ul className="settings-records project-role-options" aria-label="Роли с доступом к проекту">
         {settings.available.map(role => {

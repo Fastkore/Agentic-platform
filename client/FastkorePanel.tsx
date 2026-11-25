@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Check, Link2, Plus, X } from 'lucide-react';
 import { Select } from './Select';
 import { SettingsAction } from './SettingsAction';
+import { SettingsSpinner } from './SettingsSpinner';
 import { normalizeFastkoreTicketUrl } from '../shared/fastkore-url';
 import type { FastkoreConnectionCheck, FastkoreInstallation, FastkoreTlsInfo } from '../shared/types';
 
@@ -33,7 +34,7 @@ function ConnectionChecks({ request, url, installation }: { request: Request; ur
       {check.ready ? <Check size={17} aria-hidden="true" /> : <X size={17} aria-hidden="true" />}
       <div><b>{labels[check.id]} · {check.ready ? 'Настроено' : 'Требует настройки'}</b><p>{check.message}</p></div>
     </div>)}
-    {loading && <p role="status">Проверяем настройки подключения…</p>}
+    {loading && <SettingsSpinner inline label="Проверяем настройки подключения…" />}
     {error && <p role="alert" className="inline-error">{error}</p>}
     <button type="button" className="secondary" disabled={loading} onClick={() => setRefresh(value => value + 1)}>Проверить настройки</button>
   </div>;
@@ -102,7 +103,7 @@ function FastkoreMcpSettings({ request }: { request: Request }) {
         <p className="help">Новый домен MCP указывается при локальном входе администратора.</p>
         <div className="settings-dialog-actions"><button className="primary" disabled={busy || url.trim() === (installation.mcpUrl ?? '')}>Сохранить</button></div>
       </>}
-    </form> : !error && <p role="status">Загрузка…</p>}
+    </form> : !error && <SettingsSpinner label="Загрузка настроек…" />}
     {error && <p role="alert" className="inline-error">{error}</p>}
   </section>;
 }
@@ -133,12 +134,14 @@ function FastkoreInstallations({ request }: { request: Request }) {
 
   useEffect(() => {
     let alive = true;
-    void request<{ fastkoreEnabled: boolean }>('/api/auth/browser-session').then(async config => {
+    void Promise.all([
+      request<{ fastkoreEnabled: boolean }>('/api/auth/browser-session'),
+      request<FastkoreInstallation[]>(endpoint).catch((cause: Error) => cause),
+    ]).then(([config, items]) => {
       if (!alive) return;
       setAvailable(config.fastkoreEnabled);
       if (config.fastkoreEnabled) {
-        const items = await request<FastkoreInstallation[]>(endpoint);
-        if (!alive) return;
+        if (items instanceof Error) { setError(items.message); return; }
         setInstallations(items);
         setInstallationId(items[0]?.id ?? '');
       }
@@ -232,7 +235,7 @@ function FastkoreInstallations({ request }: { request: Request }) {
       <button type="button" className="secondary" disabled={busy} onClick={() => { setError(''); setRegistering(true); }}><Plus size={15} /> Добавить установку</button>
     </div>}
     {available === false && <p className="help">Для подключения ERP настройте ключ шифрования Fastkore на сервере.</p>}
-    {available === null && !error && <p role="status">Загрузка настроек…</p>}
+    {available === null && !error && <SettingsSpinner label="Загрузка установок…" />}
     {error && !registering && !checkingInstallation && !editing && !confirmPause && <div className="inline-error" role="alert">{error}</div>}
     {notice && <p className="fastkore-notice" role="status">{notice}</p>}
 
@@ -364,7 +367,7 @@ function FastkoreInstallations({ request }: { request: Request }) {
 
       {installation && checkingInstallation && <SettingsAction title="Проверить подключение ERP">
         <div>
-          {certificate ? <TlsFingerprint certificate={certificate} previous={installation.tlsFingerprint} /> : busy && <p role="status">Проверяем TLS…</p>}
+          {certificate ? <TlsFingerprint certificate={certificate} previous={installation.tlsFingerprint} /> : busy && <SettingsSpinner inline label="Проверяем TLS…" />}
           {error && <div className="inline-error" role="alert">{error}</div>}
           <div className="settings-dialog-actions">
             <button type="button" className="secondary" disabled={busy} onClick={closeTlsCheck}>Отмена</button>

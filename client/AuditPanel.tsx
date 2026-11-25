@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { ArrowDown, ArrowUp, CalendarDays, Layers, LockKeyhole, LogIn, Search, Settings2, UserRound } from 'lucide-react';
 import type { AuditEvent, ProjectSummary, User } from '../shared/types';
 import { Select } from './Select';
+import { ProgressRing, SettingsSpinner } from './SettingsSpinner';
 import { shortUserName, userInitials } from './user-name';
 
 type Request = <T>(url: string, init?: RequestInit) => Promise<T>;
@@ -59,7 +60,7 @@ export function AuditPanel({ request }: { request: Request }) {
     return () => controller.abort();
   }, [request]);
   if (error) return <p className="inline-error" role="alert">{error}</p>;
-  if (!data) return <p role="status">Загрузка…</p>;
+  if (!data) return <SettingsSpinner label="Загрузка журнала доступа…" />;
   async function loadOlder() {
     const last = data?.events.at(-1);
     if (!last || loadingOlder) return;
@@ -160,7 +161,7 @@ export function AuditPanel({ request }: { request: Request }) {
     <p className="audit-count" role="status">Показано {rows.length} из {data.events.length}</p>
     {pageError && <p className="inline-error" role="alert">{pageError}</p>}
     {hasOlder && <button type="button" className="secondary" disabled={loadingOlder} onClick={() => void loadOlder()}>
-      {loadingOlder ? 'Загрузка…' : 'Загрузить предыдущие события'}
+      {loadingOlder ? <><ProgressRing size={15} />Загрузка…</> : 'Загрузить предыдущие события'}
     </button>}
   </div>;
 }

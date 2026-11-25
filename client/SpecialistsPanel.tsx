@@ -5,6 +5,7 @@ import { hasAdjustableEffort } from '../shared/execution-accounts';
 import { isAutomaticModel } from '../shared/model-selection';
 import { Select } from './Select';
 import { PermissionSwitch as Toggle } from './PermissionSwitch';
+import { SettingsSpinner } from './SettingsSpinner';
 import './specialists.css';
 
 type Request = <T>(url: string, init?: RequestInit) => Promise<T>;
@@ -158,7 +159,7 @@ export function SpecialistsPanel({ request, globalInstructions, initialProfileId
         options={[{ value: 'default', label: 'По умолчанию' }, { value: 'name', label: 'По названию' }, { value: 'enabled', label: 'Включённые сверху' }]} />
     </div>
     {error && <div className="inline-error" role="alert">{error}</div>}
-    {!profiles && !error && <p role="status" className="help">Загрузка…</p>}
+    {!profiles && !error && <SettingsSpinner label="Загрузка агентов…" />}
     {profiles && !visible.length && <p role="status" className="help">{profiles.length ? 'Агенты не найдены' : 'Добавьте первого агента'}</p>}
     {!!visible.length && <ul className="specialist-list">{visible.map(profile => <li key={profile.id}>
       <IconTile icon={profileIcon(profile)} />
@@ -276,7 +277,7 @@ export function SpecialistsPanel({ request, globalInstructions, initialProfileId
             <button type="button" className="workspace-icon" aria-label="Обновить модели" title="Обновить модели" disabled={modelsLoading}
               onClick={() => setModelRefresh(value => value + 1)}><RefreshCw size={16} className={modelsLoading ? 'spin' : undefined} /></button>
           </div>
-          {modelsLoading && <p className="help" role="status">Загрузка моделей…</p>}
+          {modelsLoading && <SettingsSpinner inline label="Загрузка моделей…" />}
           {modelError && <p className="inline-error" role="alert">{modelError}</p>}
           {hasAdjustableEffort(profile.model) && <><label htmlFor="profile-effort">Уровень рассуждения</label><Select id="profile-effort" className="settings-select" value={profile.reasoningEffort}
             onChange={reasoningEffort => update({ reasoningEffort: reasoningEffort as AgentProfile['reasoningEffort'] })}

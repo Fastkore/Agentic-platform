@@ -132,7 +132,7 @@ export interface StoredFastkoreInstallation extends Omit<FastkoreInstallation, '
 }
 export interface State { schemaVersion: 1; settings: Settings; projects: Project[]; runs: Run[]; jobs?: Job[]; externalIdentities?: ExternalIdentity[]; sso?: { installations?: StoredFastkoreInstallation[]; roles?: FastkoreRoleRecord[]; roleSnapshots?: FastkoreRoleSnapshot[]; rolePermissions?: (FastkoreRolePermissions & { installationId: string; roleId: string })[] }; security?: Security; corporate?: Corporate }
 export interface CliInfo { provider?: ExecutionProvider; accountId?: string; catalogRevision?: string; path: string; version: string; authentication: 'chatgpt' | 'google' | 'glm' | 'gigachat' | 'api-key' | 'signed-out' | 'unknown'; status: string }
-export interface ProjectSummary { id: string; name: string; instructions?: string; directory: string; chatCount: number; roles?: ProjectRoleLabel[]; canRename?: boolean; chatCapabilities?: Omit<AgentSummary, 'id' | 'name' | 'description' | 'model'> }
+export interface ProjectSummary { id: string; name: string; instructions?: string; directory: string; chatCount: number; roles?: ProjectRoleLabel[]; specialists?: string[]; libraries?: string[]; canRename?: boolean; chatCapabilities?: Omit<AgentSummary, 'id' | 'name' | 'description' | 'model'> }
 export interface ChatSummary { id: string; title: string; updatedAt: string; messageCount: number; ownerId?: string; ownerName?: string; visibility?: 'private' | 'project'; linkedToFastkore?: true; pinned?: boolean }
 export const unassignedChatsLabel = 'Без проекта';
 export const sharedChatWaitMessage = 'Другой участник ждёт ответа в этом чате. Вы сможете написать, когда его запросы завершатся.';

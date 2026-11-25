@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { ChevronRight } from 'lucide-react';
 import { externalLabels, type ExternalFolder, type ExternalProvider, type ExternalSelection } from '../shared/library';
 import type { Request } from './library-upload';
+import { SettingsSpinner } from './SettingsSpinner';
 
 const guides = {
   dropbox: { url: 'https://www.dropbox.com/developers/apps/create', id: 'App key', secret: 'App secret', location: 'Settings', redirect: 'OAuth 2 → Redirect URIs',
@@ -139,7 +140,7 @@ export function ExternalLibraryPicker({ provider, request, onSelect, selectionCo
     setChosen(true);
   }
 
-  if (availability === 'checking') return <p className="help" role="status">Проверяем подключение к {name}…</p>;
+  if (availability === 'checking') return <SettingsSpinner inline label={`Проверяем подключение к ${name}…`} />;
   if (availability === 'failed') return <div className="library-form">
     <p role="alert">Не удалось проверить, доступен ли {name}.</p>
     <button className="secondary" type="button" onClick={() => setCheck(n => n + 1)}>Проверить ещё раз</button>
@@ -216,7 +217,7 @@ export function ExternalLibraryPicker({ provider, request, onSelect, selectionCo
       <summary>Google показал ошибку 403 о тестировщиках?</summary>
       <GoogleTestUsers />
     </details>}
-    {busy && !authUrl && <p className="help" role="status">{connection ? 'Загружаем папки…' : 'Подключаем аккаунт…'}</p>}
+    {busy && !authUrl && <SettingsSpinner label={connection ? 'Загружаем папки…' : 'Подключаем аккаунт…'} />}
     {error && <p className="inline-error" role="alert">{error}</p>}
     {connection && <>
       <strong>{chosen ? 'Папка для библиотеки выбрана' : 'Откройте папку для библиотеки'}</strong>

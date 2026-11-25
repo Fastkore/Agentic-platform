@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Download, FileText, Paperclip, Trash2 } from 'lucide-react';
 import type { Attachment } from '../shared/types';
+import { SettingsSpinner } from './SettingsSpinner';
 import { WorkspaceDialog } from './WorkspaceDialog';
 
 type StoredFile = Pick<Attachment, 'id' | 'name' | 'size'> & { messageId: string; canDelete: boolean };
@@ -42,7 +43,7 @@ export function ChatFilesDialog({ projectId, chatId, request, close, attach, cha
       </div>
     </> : <>
       <p className="help">Загруженные файлы, изображения и результаты этого чата. Сохраняются после остановки задания и перезапуска.</p>
-      {!files && !error && <p role="status">Загружаем файлы…</p>}
+      {!files && !error && <SettingsSpinner label="Загружаем файлы…" />}
       {files?.length === 0 && <p>В этом чате пока нет файлов.</p>}
       <div className="chat-stored-files">{files?.map(file => <div key={file.id} className="chat-stored-file">
         <FileText size={20} aria-hidden="true" />

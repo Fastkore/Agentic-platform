@@ -3,6 +3,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Download, FileText, Pencil, RefreshCw, Trash2, Upload } from 'lucide-react';
 import type { KnowledgeFile, KnowledgeOverview, KnowledgeSection } from '../shared/knowledge';
+import { SettingsSpinner } from './SettingsSpinner';
 import './knowledge.css';
 
 function downloadBlob(blob: Blob, name: string) {
@@ -69,7 +70,7 @@ export function KnowledgePanel({ section, request, download, dirtyChanged }: {
       : 'Материалы компании доступны всем агентам этой установки. Загружайте регламенты, справочники и другие рабочие документы.'}</p>
     {error && <p className="inline-error" role="alert">{error}</p>}
     {notice && <p role="status">{notice}</p>}
-    {!data ? <p role="status">Загрузка…</p> : editor ? <div className="knowledge-editor">
+    {!data ? (!error && <SettingsSpinner label="Загрузка документов…" />) : editor ? <div className="knowledge-editor">
       <div className="knowledge-toolbar"><h3>{editor.file.name}</h3><button className="secondary" disabled={busy} onClick={closeEditor}>К списку</button></div>
       <div className="knowledge-toolbar">
         <div className="button-pair"><button className="secondary" aria-pressed={!preview} onClick={() => setPreview(false)}>Текст</button>

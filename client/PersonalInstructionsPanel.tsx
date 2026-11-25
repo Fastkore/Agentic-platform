@@ -5,6 +5,7 @@ import remarkGfm from 'remark-gfm';
 import { instructionTile, personalInstructionLimits as limits, type PersonalInstructions, type PersonalInstructionsEdit, type PersonalInstructionsView, type SharedWorkNote, type WorkNote } from '../shared/personal-instructions';
 import type { FastkoreContext } from '../shared/fastkore-context';
 import { PermissionSwitch } from './PermissionSwitch';
+import { SettingsSpinner } from './SettingsSpinner';
 
 const personalEndpoint = '/api/me/instructions';
 const adminEndpoint = '/api/admin/instructions';
@@ -269,7 +270,7 @@ export function PersonalInstructionsPanel({ request, project, erp, context, admi
       {conflict && <button type="button" className="secondary personal-reload" onClick={() => {
         if (window.confirm('Загрузить актуальную версию и сбросить черновик?')) void load();
       }}>Загрузить актуальную версию</button>}
-      {!draft && (busy ? <p role="status">Загрузка…</p> : error && endpoint ?
+      {!draft && (busy ? <SettingsSpinner label="Загрузка инструкций…" /> : error && endpoint ?
         <button type="button" className="secondary personal-reload" onClick={() => void load()}>Повторить</button> :
         !error && <p className="help">Сохранённых инструкций пока нет.</p>)}
       {draft && administration && note && <label className="personal-publish">

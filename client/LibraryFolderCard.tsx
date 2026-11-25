@@ -5,6 +5,7 @@ import { externalLabels, type ExternalSelection } from '../shared/library';
 import { ExternalLibraryPicker, driveSessionExpired } from './ExternalLibraryPicker';
 import { formatBytes, formatFileCount, type Request } from './library-upload';
 import { LibraryUploadPanel } from './LibraryUploadPanel';
+import { SettingsSpinner } from './SettingsSpinner';
 
 interface Problems { counts: Record<string, number>; files: { path: string; state: string; note: string | null }[] }
 interface Tree { path: string; entries: { name: string; type: 'dir' | 'file'; fileId?: string; size?: number; extraction?: string }[]; next?: string }
@@ -59,6 +60,7 @@ export function LibraryFolderCard({ request, folder, isAdmin, reload }: { reques
   const base = '/api/library/' + encodeURIComponent(folder.id);
   const [upload, setUpload] = useState<OperationMode>();
   const [view, setView] = useState<FileView>();
+  const [loadingView, setLoadingView] = useState<'tree' | 'problems'>();
   const tree = view?.kind === 'tree' ? view.tree : undefined;
   const problems = view?.kind === 'problems' ? view : undefined;
   const [error, setError] = useState('');
@@ -79,10 +81,14 @@ export function LibraryFolderCard({ request, folder, isAdmin, reload }: { reques
   }
   const post = (url: string, body: unknown = {}) => request(url, { method: 'POST', body: JSON.stringify(body) });
   const browse = useCallback(async (path: string) => {
-    setView({ kind: 'tree', tree: await request<Tree>(`${base}/tree?path=${encodeURIComponent(path)}`) });
+    setLoadingView('tree');
+    try { setView({ kind: 'tree', tree: await request<Tree>(`${base}/tree?path=${encodeURIComponent(path)}`) }); }
+    finally { setLoadingView(undefined); }
   }, [base, request]);
   const showProblems = (failed: boolean) => act(async () => {
-    setView({ kind: 'problems', failed, data: await request<Problems>(`${base}/problems${failed ? '?failed=1' : ''}`) });
+    setLoadingView('problems');
+    try { setView({ kind: 'problems', failed, data: await request<Problems>(`${base}/problems${failed ? '?failed=1' : ''}`) }); }
+    finally { setLoadingView(undefined); }
   });
   const projects = folder.projects.map(p => p.name ?? p.id);
   const removeFile = (path: string) => {
@@ -97,7 +103,7 @@ export function LibraryFolderCard({ request, folder, isAdmin, reload }: { reques
       <p className="help">{externalLabels[folder.external.provider]} / {folder.external.folder} · только чтение
         {folder.external.checkedAt && ' · проверено ' + date(folder.external.checkedAt)}</p>
       {folder.external.error && <p className="inline-error" role="alert">{folder.external.error}</p>}
-      {preparing && <p className="help" role="status">Идёт синхронизация и подготовка к поиску…</p>}
+      {preparing && <SettingsSpinner inline label="Идёт синхронизация и подготовка к поиску…" />}
       <div className="settings-actions library-sync-actions">
         {canManage && <button type="button" className="secondary" disabled={pending || preparing} onClick={() => void act(() => post(base + '/external/sync'))}>Синхронизировать</button>}
         {isAdmin && <button type="button" className="secondary" onClick={() => { setReconnecting(!reconnecting); setSelection(undefined); }}> {reconnecting ? 'Отмена' : 'Восстановить связь'}</button>}
@@ -109,7 +115,7 @@ export function LibraryFolderCard({ request, folder, isAdmin, reload }: { reques
       {folder.failed && !folder.operation && <p className="library-warning" role="status">
         Последнее обновление не опубликовано: {folder.failed.failure === 'conflict' ? 'папку уже обновила другая операция.'
           : `не обработано файлов ${folder.failed.coverage.errors}.`}</p>}
-      {folder.operation?.status === 'preparing' && <p className="help" role="status">Идёт подготовка к поиску. До её окончания агент использует прежнее содержимое папки.</p>}
+      {folder.operation?.status === 'preparing' && <SettingsSpinner inline label="Идёт подготовка к поиску. До её окончания агент использует прежнее содержимое папки." />}
       <div className="settings-actions library-card-actions">
         {folder.canUpload && <>
           <button type="button" className={folder.current ? 'secondary' : 'primary'} disabled={pending || preparing} onClick={() => setUpload('replace')}>
@@ -132,12 +138,13 @@ export function LibraryFolderCard({ request, folder, isAdmin, reload }: { reques
     </>}
     {error && <p className="inline-error" role="alert">{error}</p>}
     {notice && <p className="help" role="status">{notice}</p>}
-    {problems && <div className="library-problems">
+    {loadingView && <SettingsSpinner label={loadingView === 'tree' ? 'Загрузка файлов…' : 'Загрузка списка файлов…'} />}
+    {!loadingView && problems && <div className="library-problems">
       <p className="help">{Object.entries(problems.data.counts).map(([state, n]) => `${problemStates[state] ?? state}: ${n}`).join(' · ') || 'Все файлы обработаны.'}</p>
       <ul>{problems.data.files.map(f => <li key={f.path}><b>{problemStates[f.state] ?? f.state}</b> <code>{f.path}</code>{f.note ? ` — ${f.note}` : ''}</li>)}</ul>
       {problems.data.files.length >= 500 && <p className="help">Показаны первые 500 файлов.</p>}
     </div>}
-    {tree && <div className="library-browser">
+    {!loadingView && tree && <div className="library-browser">
       <nav className="library-breadcrumb" aria-label="Путь">
         <button type="button" onClick={() => void act(() => browse(''))}>{folder.name}</button>
         {crumbs.map((name, i) => <span key={i}>/ <button type="button" onClick={() => void act(() => browse(crumbs.slice(0, i + 1).join('/')))}>{name}</button></span>)}

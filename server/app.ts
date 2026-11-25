@@ -941,16 +941,27 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
   });
   app.get('/api/projects', { onSend: revalidateJson }, async request => {
     const p = principal(request);
-    const catalog = isSettingsAdmin(p) ? projectRoleOptions(workspace.store.state) : undefined;
-    return workspace.store.state.projects.filter(project => canAccessProject(p.user, project, p.credential)).map(project => ({
-      id: project.id, name: project.name, instructions: project.instructions, directory: project.directory,
-      chatCapabilities: { ...workspace.corporate.projectChat(project),
-        closedAnalysis: process.env.BRIDGE_LIBRARY_CLOSED_ANALYSIS === 'verified' &&
-          workspace.library.policy.runScope(p.user.id, project.id, projectChatGrantId, p.credential.id).entries.some(entry => entry.classification === 'restricted') },
-      canRename: canRenameProject(workspace.store.state, p.user, project, p.credential),
-      chatCount: project.chats.filter(chat => !chat.archivedAt && access.canChat(p.user, chat) && chatIdentityMatches(p, chat)).length,
-      roles: catalog?.filter(role => project.rolePolicy?.roles.some(selected => selected.installationId === role.installationId && selected.roleId === role.roleId)),
-    }));
+    const settingsOverview = isSettingsAdmin(p);
+    const catalog = settingsOverview ? projectRoleOptions(workspace.store.state) : undefined;
+    const libraryLabels = settingsOverview ? workspace.library.registry.projectLibraryLabels() : undefined;
+    return workspace.store.state.projects.filter(project => canAccessProject(p.user, project, p.credential)).map(project => {
+      let specialists: string[] | undefined;
+      if (settingsOverview) {
+        const policy = project.agentPolicy ?? workspace.corporate.defaultProjectPolicy('legacy');
+        const connected = new Set(policy.connections.map(({ profileId }) => profileId));
+        specialists = workspace.corporate.data.profiles.filter(profile => connected.has(profile.id)).map(profile => profile.name);
+      }
+      return {
+        id: project.id, name: project.name, instructions: project.instructions, directory: project.directory,
+        chatCapabilities: { ...workspace.corporate.projectChat(project),
+          closedAnalysis: process.env.BRIDGE_LIBRARY_CLOSED_ANALYSIS === 'verified' &&
+            workspace.library.policy.runScope(p.user.id, project.id, projectChatGrantId, p.credential.id).entries.some(entry => entry.classification === 'restricted') },
+        canRename: canRenameProject(workspace.store.state, p.user, project, p.credential),
+        chatCount: project.chats.filter(chat => !chat.archivedAt && access.canChat(p.user, chat) && chatIdentityMatches(p, chat)).length,
+        roles: catalog?.filter(role => project.rolePolicy?.roles.some(selected => selected.installationId === role.installationId && selected.roleId === role.roleId)),
+        ...(settingsOverview ? { specialists, libraries: libraryLabels?.get(project.id) ?? [] } : {}),
+      };
+    });
   });
   app.post('/api/migrations/desktop', async request => { localAdmin(request); const result = await workspace.importDesktop(); access.migrate(); await workspace.store.save(); return result; });
   const instructionsText = { type: 'string', maxLength: maxProjectInstructions };

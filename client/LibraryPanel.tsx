@@ -5,6 +5,7 @@ import { externalLabels, type ExternalProvider, type ExternalSelection } from '.
 import { LibraryStorageSetup, type StorageStatus } from './LibraryStorageSetup';
 import { ExternalLibraryPicker, driveSessionExpired } from './ExternalLibraryPicker';
 import { PermissionSwitch } from './PermissionSwitch';
+import { SettingsSpinner } from './SettingsSpinner';
 import { SettingsTabStrip } from './SettingsTabs';
 import { PlatformIcon } from './PlatformIcon';
 import { WorkspaceDialog } from './WorkspaceDialog';
@@ -124,7 +125,7 @@ export function CreateLibraryForm({ kind, request, pending, submit, cancel, proj
       </> : storage?.configured ? <p className="help">Назовите библиотеку и нажмите «{project ? 'Создать и подключить' : 'Создать'}». Затем нажмите «Загрузить папку» и выберите файлы на компьютере.</p>
         : storage ? <LibraryStorageSetup request={request} onSaved={() => { setReloadStorage(n => n + 1); storageChanged?.(); }} />
         : storageError ? <><p role="alert">{storageError}</p><button type="button" className="secondary" onClick={() => setReloadStorage(n => n + 1)}>Проверить ещё раз</button></>
-        : <p role="status">Проверяем хранилище…</p>}
+        : <SettingsSpinner inline label="Проверяем хранилище…" />}
     </fieldset>
     {showDetails && <>
       {kind === 'external' && <p className="help">Проверьте название и нажмите «{project ? 'Создать и подключить' : 'Создать'}». После этого начнётся загрузка папки в поисковый индекс.</p>}
@@ -146,6 +147,7 @@ export function CreateLibraryForm({ kind, request, pending, submit, cancel, proj
 export function LibraryPanel({ request, isAdmin }: { request: Request; isAdmin: boolean }) {
   const [folders, setFolders] = useState<LibraryFolderSummary[]>();
   const [storage, setStorage] = useState<StorageStatus>();
+  const [storageLoading, setStorageLoading] = useState(false);
   const [selected, setSelected] = useState<string>();
   const [confirmRemoval, setConfirmRemoval] = useState(false);
   const [folderSearch, setFolderSearch] = useState('');
@@ -159,15 +161,20 @@ export function LibraryPanel({ request, isAdmin }: { request: Request; isAdmin: 
   const [notice, setNotice] = useState('');
   const [storageCheck, setStorageCheck] = useState<{ message: string; failed?: boolean }>();
   const [pending, setPending] = useState(false);
-  const load = useCallback(async () => {
-    await Promise.all([
-      request<LibraryFolderSummary[]>('/api/library').then(setFolders).catch((e: Error) => setError(e.message)),
-      isAdmin ? request<StorageStatus>('/api/library/storage').then(setStorage).catch(() => setStorage(undefined)) : undefined,
-    ]);
+  const loadStorage = useCallback(async () => {
+    if (!isAdmin) return;
+    setStorageLoading(true);
+    try { setStorage(await request<StorageStatus>('/api/library/storage')); }
+    catch { setStorage(undefined); }
+    finally { setStorageLoading(false); }
   }, [request, isAdmin]);
+  const load = useCallback(async () => {
+    await request<LibraryFolderSummary[]>('/api/library').then(setFolders).catch((e: Error) => setError(e.message));
+  }, [request]);
   useEffect(() => { void load(); }, [load]);
+  useEffect(() => { if (isAdmin && tab === 'storage') void loadStorage(); }, [isAdmin, tab, loadStorage]);
   useLibraryRefresh(folders, load);
-  const reload = useCallback(() => { void load(); }, [load]);
+  const reload = useCallback(() => { void load(); if (isAdmin && tab === 'storage') void loadStorage(); }, [load, isAdmin, tab, loadStorage]);
   async function act(work: () => Promise<unknown>, done?: string) {
     if (pending) return;
     setPending(true); setError(''); setNotice('');
@@ -179,7 +186,7 @@ export function LibraryPanel({ request, isAdmin }: { request: Request; isAdmin: 
     try {
       await request('/api/library/storage/check', { method: 'POST', body: '{}' });
       setStorageCheck({ message: 'Соединение с хранилищем проверено.' });
-      await load();
+      await loadStorage();
     } catch (e) {
       setStorageCheck({ message: (e as Error).message, failed: true });
     } finally { setPending(false); }
@@ -275,6 +282,7 @@ export function LibraryPanel({ request, isAdmin }: { request: Request; isAdmin: 
         else setSelected(created.id);
       }, creating === 'external' ? 'Создана внешняя библиотека.' : 'Папка создана. Загрузите в неё материалы.')} />}
       {tabFolders && tabFolders.length > 0 && <LibrarySearch value={folderSearch} onChange={setFolderSearch} />}
+      {!folders && !error && <SettingsSpinner label="Загрузка библиотек…" />}
       {visibleFolders?.length ? <ul className="settings-records">{visibleFolders.map(f => <li key={f.id}>
         <div>
           <strong><LibraryKindIcon external={!!f.external} />{f.name}</strong>
@@ -293,10 +301,10 @@ export function LibraryPanel({ request, isAdmin }: { request: Request; isAdmin: 
         {storage.configured && <button type="button" className="secondary" disabled={pending} onClick={() => void checkStorage()}>Проверить</button>}</div>
       </div>
       {storageSetup && <LibraryStorageSetup request={request} location={storage.location} cancel={() => setStorageSetup(false)} onSaved={() => {
-        setStorageSetup(false); setStorageCheck({ message: 'Хранилище подключено. Можно загружать файлы.' }); void load();
+        setStorageSetup(false); setStorageCheck({ message: 'Хранилище подключено. Можно загружать файлы.' }); void loadStorage();
       }} />}
       {storageCheck && <p className={storageCheck.failed ? 'inline-error' : 'help'} role={storageCheck.failed ? 'alert' : 'status'}>{storageCheck.message}</p>}
-      </> : <p className="help">Данные о хранилище недоступны. <button type="button" className="secondary" onClick={reload}>Обновить</button></p>}
+      </> : storageLoading ? <SettingsSpinner label="Загрузка данных хранилища…" /> : <p className="help">Данные о хранилище недоступны. <button type="button" className="secondary" onClick={reload}>Обновить</button></p>}
     </section>}
   </div>;
 }

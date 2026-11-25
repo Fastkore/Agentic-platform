@@ -2,6 +2,7 @@ import { useEffect, useState, type ReactNode } from 'react';
 import { ArrowLeft, ArchiveRestore, Trash2 } from 'lucide-react';
 import type { ArchivedChatSummary, Chat } from '../shared/types';
 import { WorkspaceDialog } from './WorkspaceDialog';
+import { SettingsSpinner } from './SettingsSpinner';
 import { chatTooltip, shortDate } from './chat-date';
 
 export function ChatArchiveDialog({ request, close, renderChat, onRestore, manage }: {
@@ -71,13 +72,14 @@ export function ChatArchiveDialog({ request, close, renderChat, onRestore, manag
           <button type="button" className="secondary" disabled={pending} onClick={() => void update(false)}><ArchiveRestore size={16} />Восстановить</button>
           <button type="button" className="secondary archive-danger" disabled={pending} onClick={() => setConfirmDelete(true)}><Trash2 size={16} />Удалить</button>
         </div>)}
-      </> : !error && <p role="status">Загрузка…</p>}
+      </> : !error && <SettingsSpinner label="Загрузка истории…" />}
     </> : <div className="archive-list">
       {list?.map(item => <button type="button" className="workspace-row archive-row" key={item.id} title={chatTooltip(item, item.archivedAt)} onClick={() => { setError(''); setSelected(item); }}>
         <span><strong>{item.title}</strong><small>{item.projectName} · {item.ownerName}</small></span>
         <time dateTime={item.archivedAt}>{shortDate(item.archivedAt)}</time>
       </button>)}
-      {!list?.length && !error && <p className="help" role="status">{list ? 'Архив пуст.' : 'Загрузка…'}</p>}
+      {!list && !error && <SettingsSpinner label="Загрузка архива…" />}
+      {list && !list.length && !error && <p className="help" role="status">Архив пуст.</p>}
     </div>}
   </WorkspaceDialog>;
 }

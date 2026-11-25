@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Folder, Trash2 } from 'lucide-react';
 import { SettingsAction } from './SettingsAction';
+import { SettingsSpinner } from './SettingsSpinner';
 import { shortUserName, userInitials } from './user-name';
 import type { TeamUser, User } from '../shared/types';
 
@@ -57,7 +58,7 @@ export function AccountPanel({ request, renewed, fastkore }: { request: Request;
 }
 
 export function TeamPanel({ request, self, manageAdministrators }: { request: Request; self: User; manageAdministrators: boolean }) {
-  const [users, setUsers] = useState<TeamUser[]>([]);
+  const [users, setUsers] = useState<TeamUser[]>();
   const [removing, setRemoving] = useState<TeamUser>();
   const [error, setError] = useState(''), [busy, setBusy] = useState(false);
 
@@ -76,7 +77,7 @@ export function TeamPanel({ request, self, manageAdministrators }: { request: Re
 
   async function updateUser(user: User, changes: { disabled: boolean }) {
     const updated = await request<User>(`/api/users/${user.id}`, json('PATCH', changes));
-    setUsers(items => items.map(item => item.id === updated.id ? { ...item, ...updated, projects: updated.disabled ? [] : item.projects } : item));
+    setUsers(items => items?.map(item => item.id === updated.id ? { ...item, ...updated, projects: updated.disabled ? [] : item.projects } : item));
     if (!updated.disabled) await load();
   }
 
@@ -90,7 +91,7 @@ export function TeamPanel({ request, self, manageAdministrators }: { request: Re
         <button type="button" className="secondary" disabled={busy} onClick={() => { setRemoving(undefined); setError(''); }}>Отмена</button>
         <button type="button" className="danger" disabled={busy} onClick={() => void run(async () => {
           await request(`/api/users/${removing.id}`, { method: 'DELETE' });
-          setUsers(items => items.filter(item => item.id !== removing.id));
+          setUsers(items => items?.filter(item => item.id !== removing.id));
           setRemoving(undefined);
         })}>Удалить</button>
       </div>
@@ -99,7 +100,7 @@ export function TeamPanel({ request, self, manageAdministrators }: { request: Re
         <h3>Учётные записи</h3>
       </div>
       <p className="help">Проекты назначаются ролям Fastkore в «Настройки → Проекты → Настроить проект → Роли».</p>
-      <table className="team-table">
+      {!users && !error ? <SettingsSpinner label="Загрузка учётных записей…" /> : users && <table className="team-table">
         <thead><tr><th scope="col">Имя</th><th scope="col">Роли Fastkore</th><th scope="col">Доступ</th><th scope="col">Проекты</th></tr></thead>
         <tbody>{users.map(user => <tr key={user.id}>
           <th scope="row"><div className="person-cell"><span className="person-avatar" aria-hidden="true">{userInitials(user.name)}</span><div><b title={user.name}>{shortUserName(user.name)}{user.id === self.id && ' (вы)'}</b><small>{user.role === 'admin' ? 'Руководитель' : user.username.startsWith('sso-') ? 'Сотрудник Fastkore' : user.username}</small></div></div></th>
@@ -130,7 +131,7 @@ export function TeamPanel({ request, self, manageAdministrators }: { request: Re
             </ul> : <span className="help">Нет доступных проектов</span>}
           </td>
         </tr>)}</tbody>
-      </table>
+      </table>}
     </section>}
     {error && <div className="inline-error" role="alert">{error}</div>}
   </>;

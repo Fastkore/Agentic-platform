@@ -1,6 +1,7 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import type { ChatSummary, ChatView } from '../shared/types';
 import { chatTooltip, shortDate } from './chat-date';
+import { SettingsSpinner } from './SettingsSpinner';
 
 type ProjectChatSummary = ChatSummary & { archivedAt?: string };
 
@@ -38,7 +39,7 @@ export function ProjectChatsPanel({ projectId, request, renderChat }: {
   }, [path, request, selectedId]);
 
   if (listError) return <p className="inline-error" role="alert">{listError}</p>;
-  if (!chats) return <p className="help" role="status">Загрузка чатов…</p>;
+  if (!chats) return <SettingsSpinner label="Загрузка чатов…" />;
   if (!chats.length) return <p className="help">В проекте пока нет чатов.</p>;
 
   return <div className="project-chats-layout">
@@ -51,7 +52,7 @@ export function ProjectChatsPanel({ projectId, request, renderChat }: {
     </nav>
     {selected && <section key={selected.id} className="project-chat-history" aria-label={'История чата «' + selected.title + '»'} tabIndex={0}>
       <header><h3>{selected.title}</h3>{selected.archivedAt && <span className="project-chat-archived">Архив</span>}</header>
-      {!history ? <p className="help" role="status">Загрузка истории…</p> : 'error' in history
+      {!history ? <SettingsSpinner label="Загрузка истории…" /> : 'error' in history
         ? <p className="inline-error" role="alert">{history.error}</p>
         : history.chat.messages.length ? renderChat(history.chat, projectId) : <p className="help">В чате пока нет сообщений.</p>}
     </section>}

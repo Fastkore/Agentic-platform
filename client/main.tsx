@@ -8,6 +8,7 @@ import { ChatFileDrop } from './ChatFileDrop';
 import { ChatFilesDialog } from './ChatFilesDialog';
 import { ExecutionConcurrencySettings } from './ExecutionConcurrencySettings';
 import { ServerSettingsTabs } from './SettingsTabs';
+import { SettingsSpinner } from './SettingsSpinner';
 import { ChatArchiveDialog } from './ChatArchiveDialog';
 import { ChatVisuals } from './ChatVisuals';
 import { shortUserName } from './user-name';
@@ -46,6 +47,23 @@ const FastkorePanel = lazy(() => import('./FastkorePanel').then(module => ({ def
 const KnowledgePanel = lazy(() => import('./KnowledgePanel').then(module => ({ default: module.KnowledgePanel })));
 const ChatModelPreview = lazy(() => import('./ChatModelPreview').then(module => ({ default: module.ChatModelPreview })));
 const LibraryPanel = lazy(() => import('./LibraryPanel').then(module => ({ default: module.LibraryPanel })));
+
+let settingsPreloaded = false;
+function preloadSettingsPanels() {
+  if (settingsPreloaded) return;
+  settingsPreloaded = true;
+  void Promise.allSettled([
+    import('./AccessPanel'),
+    import('./AuditPanel'),
+    import('./ErpRolesPanel'),
+    import('./SpecialistsPanel'),
+    import('./UsagePanel'),
+    import('./FastkorePanel'),
+    import('./KnowledgePanel'),
+    import('./LibraryPanel'),
+    import('./ProjectLibraryDialog'),
+  ]);
+}
 
 let accessKey = sessionStorage.getItem('bridge-key') ?? '';
 const agentsUrl = (projectId: string) => projectId ? '/api/projects/' + encodeURIComponent(projectId) + '/agents' : '/api/agents';
@@ -1047,7 +1065,13 @@ function App() {
       if (epoch === authEpoch) setScalePendingEpoch(undefined);
     }
   }
+  useEffect(() => {
+    if (!loggedIn || !user || setupRequired) return;
+    const timer = window.setTimeout(preloadSettingsPanels, 250);
+    return () => window.clearTimeout(timer);
+  }, [loggedIn, user, setupRequired]);
   function showSettings() {
+    preloadSettingsPanels();
     setInitialSpecialistId(undefined);
     if (accountMenu.current) accountMenu.current.open = false;
     setSidebarOpen(false);
@@ -1127,7 +1151,7 @@ function App() {
   const writeMode = !!(canUseChatTools && writePermission &&
     (!status.isolatedCodex || status.workerFilesAvailable && messageAgent.toolIds.includes('chat-files')));
   function renderChatAccess() {
-    if (!status) return <p role="status" className="help">Загрузка…</p>;
+    if (!status) return <SettingsSpinner inline label="Загрузка…" />;
     if (!projectId) return <p className="help">Выберите проект, чтобы увидеть доступные инструменты чата.</p>;
     const fileWriteProblems = [
       !canUseChatTools && 'Инструменты текущего чата недоступны.',
@@ -1197,13 +1221,18 @@ function App() {
   }
   const settingsProjects = projects.filter(project => project.name.toLocaleLowerCase('ru').includes(settingsProjectSearch.trim().toLocaleLowerCase('ru')));
   function openProjectSettings(project: ProjectSummary, trigger: HTMLButtonElement) {
+    preloadSettingsPanels();
     trigger.closest('details')?.removeAttribute('open');
     setError('');
     projectActionFromSettings.current = panel === 'settings';
     setProjectActionTarget(project);
     setPanel('project-settings');
   }
-  const closeProjectPanel = () => setPanel(projectActionFromSettings.current ? 'settings' : null);
+  const closeProjectPanel = () => {
+    const toSettings = projectActionFromSettings.current;
+    setPanel(toSettings ? 'settings' : null);
+    if (toSettings) void api<ProjectSummary[]>('/api/projects').then(setProjects).catch(() => {});
+  };
   async function deleteProject(project: ProjectSummary) {
     await api(`/api/projects/${encodeURIComponent(project.id)}`, { method: 'DELETE' });
     setProjects(old => old.filter(item => item.id !== project.id));
@@ -1680,7 +1709,7 @@ function App() {
       onRestore={project => void (projects.some(item => item.id === project) ? loadChats(project) : api<UnassignedChatSummary[]>(unassignedChatsUrl).then(setUnassignedChats)).catch(fail)} />}
     {relatedPanelOpen && erpChatKey && <WorkspaceDialog title="Связанные чаты" className="related-chats-dialog" close={closePanel}>
       {error && <p className="inline-error" role="alert">{error}</p>}
-      {relatedLoading ? <p className="help" role="status">Загрузка…</p> : <div className="archive-list">
+      {relatedLoading ? <SettingsSpinner label="Загрузка чатов…" /> : <div className="archive-list">
         {relatedChats?.list.map(item => <button type="button" className="workspace-row archive-row" key={item.id} aria-current={item.id === chatId ? 'page' : undefined}
           onClick={() => { navigateToRelated(item); closePanel(); }} title={chatTooltip(item)}><span><strong>{item.title}</strong><small>{item.parent ? 'Исходный чат · ' : ''}{item.projectName}</small></span>
           <time dateTime={item.updatedAt}>{shortDate(item.updatedAt)}</time></button>)}
@@ -1698,7 +1727,7 @@ function App() {
             <button className="workspace-row search-project" onClick={() => { navigateWorkspace(project.id); closePanel(); }}><Folder size={16} />{project.name}</button>}
           {matchingChats.map(item => <button key={item.id} className="workspace-row chat-row" title={chatTooltip(item)} onClick={() => { navigateWorkspace(item.projectId, item.id); closePanel(); }}><span>{item.title}</span><time dateTime={item.updatedAt}>{shortDate(item.updatedAt)}</time></button>)}
         </div>)}
-        {searchLoading && <p className="composer-status" role="status">Загрузка…</p>}
+        {searchLoading && <SettingsSpinner inline label="Загрузка…" />}
         {!searchLoading && !searchable.length && <p className="composer-status">Ничего не найдено</p>}
       </div>
     </WorkspaceDialog>}
@@ -1763,7 +1792,7 @@ function App() {
           {settingsSection !== 'profiles' && settingsSection !== 'library' && <h2 id="settings-section-title">{settingsSections[settingsSection].label}</h2>}
           {error && <div className="inline-error" role="alert">{error}</div>}
           {instructionsPanel}
-          <Suspense fallback={<p role="status">Загрузка…</p>}>
+          <Suspense fallback={<SettingsSpinner label="Загрузка…" />}>
           {settingsSection === 'account' && <AccountPanel request={api} renewed={saveToken} fastkore={authSource === 'fastkore'} />}
           {settingsSection === 'team' && <TeamPanel request={api} self={user} manageAdministrators={authSource === 'local'} />}
           {settingsSection === 'projects' && <>

@@ -298,3 +298,26 @@ test('search: an extra word does not empty the result; lines with more words com
   const allowed = [{ ...target[0], allow: new Set(['Z/guide.md']) }];
   assert.deepEqual(reader.search(allowed, 'Suspended').hits.map(h => h.path), ['Z/guide.md']);
 });
+
+test('tree skips large subdirectories with B-tree jumps, preserves adjacent filenames and paginates; projectLibraryLabels formats status', async () => {
+  const f = await libraryFixture();
+  const active = f.registry.createFolder(admin, { name: 'Активная', profile: 'code' });
+  const inactive = f.registry.createFolder(admin, { name: 'Отключённая', profile: 'documents', active: false });
+  const files: Record<string, string> = { 'src.txt': 'before\n', 'src0.txt': 'after\n', 'z.txt': 'end\n' };
+  for (let i = 0; i < 80; i++) files[`src/file_${String(i).padStart(3, '0')}.cs`] = `class C${i} {}\n`;
+  await upload(f, active.id, files);
+  const state = current(f.registry, active.id);
+  const root = f.registry.tree(state.id, '');
+  assert.deepEqual(root.entries.map(e => [e.name, e.type]), [['src.txt', 'file'], ['src', 'dir'], ['src0.txt', 'file'], ['z.txt', 'file']]);
+  assert.equal(root.next, undefined);
+  const page1 = f.registry.tree(state.id, '', '', 2);
+  assert.deepEqual(page1.entries.map(e => e.name), ['src.txt', 'src']);
+  assert.ok(page1.next);
+  const page2 = f.registry.tree(state.id, '', page1.next, 2);
+  assert.deepEqual(page2.entries.map(e => e.name), ['src0.txt', 'z.txt']);
+  assert.equal(page2.next, undefined);
+  assert.ok(f.registry.storageStatus().indexChunks > 0);
+  f.registry.db.prepare("INSERT INTO connections VALUES ('p1', ?, 1, 'explanation_only', 1, 'now')").run(active.id);
+  f.registry.db.prepare("INSERT INTO connections VALUES ('p1', ?, 1, 'explanation_only', 1, 'now')").run(inactive.id);
+  assert.deepEqual(f.registry.projectLibraryLabels().get('p1'), ['Активная', 'Отключённая (выключена)']);
+});

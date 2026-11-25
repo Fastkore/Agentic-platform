@@ -173,6 +173,11 @@ export class LibraryRegistry {
       chmodSync(file, 0o600);
       this.db.exec('PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000; PRAGMA secure_delete=ON;');
       this.migrate();
+      this.db.exec(`
+        CREATE INDEX IF NOT EXISTS blobs_folder_usage ON blobs(folder_id, size) WHERE kind='original' AND state IN ('verified','pending');
+        CREATE INDEX IF NOT EXISTS blobs_orphan ON blobs(orphaned_at) WHERE state='orphan';
+        CREATE INDEX IF NOT EXISTS states_folder_status ON states(folder_id, status, created_at DESC);
+      `);
       this.audit = new AuditJournal(this.db);
     } catch (error) { this.db.close(); throw error; }
   }
@@ -246,7 +251,19 @@ export class LibraryRegistry {
       indexFailures: one<{ n: number }>("SELECT count(*) n FROM index_jobs WHERE status='failed'").n,
       openUploads: one<{ n: number }>("SELECT count(*) n FROM operations WHERE status='open'").n,
       orphanBlobs: one<{ n: number }>("SELECT count(*) n FROM blobs WHERE state='orphan'").n,
-      indexChunks: one<{ n: number }>('SELECT count(*) n FROM chunks').n };
+      indexChunks: one<{ n: number }>('SELECT count(*) n FROM chunk_refs').n };
+  }
+  projectLibraryLabels(): Map<string, string[]> {
+    const result = new Map<string, string[]>();
+    const rows = this.db.prepare(`SELECT c.project_id, c.enabled, f.name, f.active
+      FROM connections c JOIN folders f ON f.id=c.folder_id WHERE f.deleted_at IS NULL ORDER BY c.rowid`).all() as
+      { project_id: string; enabled: number; name: string; active: number }[];
+    for (const row of rows) {
+      const list = result.get(row.project_id) ?? [];
+      list.push(row.name + (row.enabled && row.active ? '' : ' (выключена)'));
+      result.set(row.project_id, list);
+    }
+    return result;
   }
 
   // ---- authorization -------------------------------------------------------------------------
@@ -442,17 +459,52 @@ export class LibraryRegistry {
   tree(stateId: string, prefix: string, cursor = '', limit = 200, allow?: ReadonlySet<string>) {
     if (prefix && pathProblem(prefix.replace(/\/$/, ''), { maxPathLength: this.limits.maxPathLength, maxDepth: this.limits.maxDepth })) throw new BridgeError('Некорректный путь.');
     const base = prefix ? prefix.replace(/\/?$/, '/') : '';
-    const rows = (this.db.prepare(fileSelect + ' WHERE f.state_id=? AND f.path >= ? AND f.path < ? AND f.path > ? ORDER BY f.path LIMIT ?')
-      .all(stateId, base, base + '￿', cursor ? base + cursor : '', 20_000) as LibraryFile[]).filter(row => !allow || allow.has(row.path));
+    const high = '\uffff';
     const entries: { name: string; type: 'dir' | 'file'; fileId?: string; size?: number; extraction?: string; lines?: number; language?: string }[] = [];
     const seen = new Set<string>();
     let next: string | undefined;
+    if (!allow) {
+      const upper = base + high;
+      const query = this.db.prepare(fileSelect + ' WHERE f.state_id=? AND f.path >= ? AND f.path < ? AND f.path > ? ORDER BY f.path LIMIT 16');
+      let minPath = base;
+      let after = cursor ? base + cursor : '';
+      while (true) {
+        const batch = query.all(stateId, minPath, upper, after) as LibraryFile[];
+        if (!batch.length) break;
+        let jumped = false;
+        for (const row of batch) {
+          if (row.path < minPath) continue;
+          const rest = row.path.slice(base.length);
+          const slash = rest.indexOf('/');
+          const name = slash >= 0 ? rest.slice(0, slash) : rest;
+          if (!seen.has(name)) {
+            if (entries.length >= limit) {
+              next = entries.at(-1)!.name + (entries.at(-1)!.type === 'dir' ? '/' + high : '');
+              return { path: base, entries, next };
+            }
+            seen.add(name);
+            entries.push(slash >= 0 ? { name, type: 'dir' } : { name, type: 'file', fileId: row.file_id, size: row.size,
+              extraction: row.extraction_state, lines: row.line_count ?? undefined, language: row.language ?? undefined });
+          }
+          if (slash >= 0) {
+            minPath = base + name + '0';
+            if (batch.length === 16 && batch.at(-1)!.path < minPath) { after = ''; jumped = true; break; }
+          } else {
+            after = row.path;
+          }
+        }
+        if (!jumped && batch.length < 16) break;
+      }
+      return { path: base, entries, next };
+    }
+    const rows = (this.db.prepare(fileSelect + ' WHERE f.state_id=? AND f.path >= ? AND f.path < ? AND f.path > ? ORDER BY f.path LIMIT ?')
+      .all(stateId, base, base + high, cursor ? base + cursor : '', 20_000) as LibraryFile[]).filter(row => allow.has(row.path));
     for (const row of rows) {
       const rest = row.path.slice(base.length);
       const slash = rest.indexOf('/');
       const name = slash >= 0 ? rest.slice(0, slash) : rest;
       if (seen.has(name)) continue;
-      if (entries.length >= limit) { next = entries.at(-1)!.name + (entries.at(-1)!.type === 'dir' ? '/￿' : ''); break; }
+      if (entries.length >= limit) { next = entries.at(-1)!.name + (entries.at(-1)!.type === 'dir' ? '/' + high : ''); break; }
       seen.add(name);
       entries.push(slash >= 0 ? { name, type: 'dir' } : { name, type: 'file', fileId: row.file_id, size: row.size, extraction: row.extraction_state,
         lines: row.line_count ?? undefined, language: row.language ?? undefined });

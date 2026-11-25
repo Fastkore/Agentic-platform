@@ -187,7 +187,7 @@ export class LibraryIndexer {
         this.queueResult(file, result, true);
         // Link already written chunks and derived objects before this drive can be disconnected.
         const needsCommit = signal && (result.textBlobId || previousBatch !== this.batch);
-        if (needsCommit || this.batch.length >= 4000 || Date.now() - lastFlush > 2000) { flush(); lastFlush = Date.now(); }
+        if (needsCommit || this.batch.length >= 1000 || Date.now() - lastFlush > 500) { flush(); lastFlush = Date.now(); }
       }
       flush();
     } finally { this.batch = []; }
@@ -344,7 +344,7 @@ export class LibraryIndexer {
     const insertOffset = this.db.prepare('INSERT OR REPLACE INTO line_index VALUES (?,?,?)');
     const insertSection = this.db.prepare('INSERT OR REPLACE INTO sections VALUES (?,?,?)');
     const commit = () => {
-      if (!commitEarly || this.batch.length < 4000) return;
+      if (!commitEarly || this.batch.length < 1000) return;
       const work = this.batch; this.batch = [];
       this.registry.tx(() => { for (const write of work) write(); });
     };

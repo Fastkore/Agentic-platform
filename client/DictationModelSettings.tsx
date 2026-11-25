@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import type { DictationModelId, DictationModels } from '../shared/types';
+import { SettingsSpinner } from './SettingsSpinner';
 
 const endpoint = '/api/dictation/models';
 const labels: Record<DictationModelId, string> = { turbo: 'Быстро', quality: 'Точнее' };
@@ -44,11 +45,12 @@ export function DictationModelSettings({ request }: { request: <T>(url: string, 
   }
 
   return <>
+    {!state && !error && !connectionError && <SettingsSpinner inline label="Загрузка моделей речи…" />}
     {state && <div className="dictation-model-list" aria-label="Модель распознавания речи">
       {state.models.map(model => <div className="dictation-model-row" key={model.id}>
         <span><b>{labels[model.id]}</b><small>{model.name}</small></span>
-        {state.loading === model.id ? <small role="status">Загружается в память…</small>
-          : state.downloading === model.id ? <small role="status">Скачивается…</small>
+        {state.loading === model.id ? <SettingsSpinner inline label="Загружается в память…" />
+          : state.downloading === model.id ? <SettingsSpinner inline label="Скачивается…" />
             : state.active === model.id ? <small className="active-dictation-model">Активна</small>
               : <button type="button" className="secondary" disabled={busy || working}
                 aria-label={`${model.installed ? 'Выбрать' : 'Загрузить'} ${model.name}`}

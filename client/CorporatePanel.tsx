@@ -1,5 +1,6 @@
 import { Select } from './Select';
 import { SettingsAction } from './SettingsAction';
+import { SettingsSpinner } from './SettingsSpinner';
 import React, { useEffect, useState } from 'react';
 import type { AgentProfile, Dataset, WorkRole } from '../shared/types';
 type Request = <T>(url: string, init?: RequestInit) => Promise<T>;
@@ -36,7 +37,7 @@ export function CorporatePanel({ request, section }: { request: Request; section
   const entries = section === 'roles' ? roles : datasets;
   const addLabel = section === 'roles' ? 'Добавить роль' : 'Добавить источник';
   return <>
-    {!loaded && !error && <p role="status">Загрузка…</p>}
+    {!loaded && !error && <SettingsSpinner label="Загрузка…" />}
     {!editing && loaded && <>
       <div className="settings-list-toolbar"><button className="primary" onClick={create}>{addLabel}</button></div>
       {entries.length ? <ul className="settings-records">

@@ -47,7 +47,8 @@ export class LibraryPolicy {
     if (!this.directory.projectExists(projectId)) return false;
     if (actor.admin) return true;
     if (!this.directory.canAccessProject(actor.id, projectId, actor.credentialId)) return false;
-    return this.registry.listFolders(actor).some(f => this.manageable(actor, f.id));
+    const managed = this.db.prepare('SELECT m.folder_id FROM folder_managers m JOIN folders f ON f.id=m.folder_id WHERE m.user_id=? AND f.deleted_at IS NULL').all(actor.id) as { folder_id: string }[];
+    return managed.some(m => this.manageable(actor, m.folder_id));
   }
   private requireManager(actor: LibraryActor, projectId: string) {
     this.requireProject(actor, projectId);

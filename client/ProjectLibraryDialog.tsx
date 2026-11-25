@@ -3,6 +3,7 @@ import { ChevronDown, ChevronRight, Info, RefreshCw } from 'lucide-react';
 import type { ProjectSummary } from '../shared/types';
 import type { LibraryCell, LibraryConnection, LibraryFolderSummary, OutputPolicy, ProjectLibraryView } from '../shared/library';
 import { SettingsTabStrip } from './SettingsTabs';
+import { SettingsSpinner } from './SettingsSpinner';
 import { Select } from './Select';
 import { PermissionSwitch } from './PermissionSwitch';
 import { formatFileCount, type Request } from './library-upload';
@@ -68,7 +69,7 @@ export function ProjectLibraryPanel({ project, request, section, isAdmin, initia
       </span>
     </div>
     {error && <p className="inline-error" role="alert">{error}</p>}
-    {!view && !error && <p role="status">Загрузка…</p>}
+    {!view && !error && <SettingsSpinner label="Загрузка библиотек…" />}
     {view && <div className="library-panel">
 
       {section === 'folders' && <div className="library-panel" role="tabpanel" id={tabId + tab + '-panel'} aria-labelledby={tabId + tab}>

@@ -5,6 +5,7 @@ import { WorkspaceDialog } from './WorkspaceDialog';
 import { ProjectRolesPanel } from './ProjectRolesPanel';
 import { ProjectInstructions } from './ProjectInstructions';
 import { ProjectChatsPanel } from './ProjectChatsPanel';
+import { SettingsSpinner } from './SettingsSpinner';
 import { SettingsTabStrip } from './SettingsTabs';
 
 const ProjectLibraryPanel = lazy(() => import('./ProjectLibraryDialog').then(module => ({ default: module.ProjectLibraryPanel })));
@@ -120,7 +121,7 @@ export function ProjectSettingsDialog({ project, request, close, openSpecialist,
       {settings?.isolated && <button type="button" className="secondary" disabled={pending} aria-haspopup="dialog"
         onClick={() => { setSelected([]); setError(''); setAdding(true); }}><Plus size={16} aria-hidden="true" />Добавить агента</button>}
     </div>
-    {!settings && !error && <p role="status">Загрузка…</p>}
+    {!settings && !error && <SettingsSpinner label="Загрузка агентов…" />}
     {settings && <div className="project-agent-scroll">
       {connected.length > 0 ? <ul className="agent-card-list">
         {connected.map(profile => <li className="agent-card" key={profile.id}>
@@ -148,7 +149,7 @@ export function ProjectSettingsDialog({ project, request, close, openSpecialist,
       </ul> : <p className="help">В проекте пока нет подключённых агентов.</p>}
     </div>}
     </> : section === 'chats' ? <ProjectChatsPanel projectId={project.id} request={request} renderChat={renderChat} />
-      : section !== 'roles' ? <Suspense fallback={<p role="status">Загрузка…</p>}>
+      : section !== 'roles' ? <Suspense fallback={<SettingsSpinner label="Загрузка…" />}>
       <ProjectLibraryPanel key={libraryProfile ?? ''} project={project} request={request} section={section === 'library' ? 'folders' : 'access'}
         isAdmin={isAdmin} initialProfileId={libraryProfile} pendingChanged={setLibraryPending} />
     </Suspense> : null}
