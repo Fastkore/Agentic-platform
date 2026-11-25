@@ -21,7 +21,7 @@ import { FreecadJob } from './freecad.js';
 import { CorporateAccess, projectChatGrantId } from './corporate.js';
 import type { RunLibraryScope } from './library/policy.js';
 import type { Principal } from './access.js';
-import { canAccessProject, erpFileWriteAllowed, erpRolesForUser, isErpReadOnly, projectAllowsRoles } from './erp-roles.js';
+import { canAccessProject, erpFileWriteAllowed, erpRolePermissions, erpRolesForUser, isErpReadOnly, projectAllowsRoles } from './erp-roles.js';
 import { KnowledgeBase } from './knowledge.js';
 import { withKnowledge } from './knowledge-tools.js';
 import { canEditInstructionsFromChat, personalInstructionRequest, personalPrompt, personalToolInstructions, sharedPersonalToolInstructions, withPersonalInstructions } from './personal-instructions.js';
@@ -93,9 +93,10 @@ function earlierChatImages(chat: Chat, project: Project, authorId?: string) {
 }
 
 function recentChatHistory(chat: Chat, before: number, scope: string, authorId: string | undefined, budget: number, libraryHistory: string,
-  sharedAuthor?: (id?: string) => string) {
+  renewalScope?: string, sharedAuthor?: (id?: string) => string) {
   const turns: string[] = [];
   let legacyTurns = 0;
+  let oldestQuestionAt: string | undefined;
   let remaining = budget - historyIntro.length - historyEnd.length - 2;
   for (let i = before - 1; i > 0 && turns.length < historyTurnLimit && remaining > 200; i--) {
     const answer = chat.messages[i];
@@ -106,7 +107,7 @@ function recentChatHistory(chat: Chat, before: number, scope: string, authorId: 
     const question = chat.messages[i - 1];
     if (question.role !== 'user' || question.status !== 'complete' ||
       question.runId !== answer.runId || !sharedAuthor && (question.authorId ?? chat.ownerId) !== authorId) break;
-    if (!sharedAuthor && answer.historyScope !== scope) {
+    if (!sharedAuthor && answer.historyScope !== scope && !(renewalScope && answer.renewalScope === renewalScope)) {
       if (chat.legacyHistory?.scope === scope && chat.legacyHistory.lastAnswerId === answer.id) legacyTurns = chat.legacyHistory.turns;
       if (answer.historyScope || legacyTurns <= 0) break;
       legacyTurns--;
@@ -114,13 +115,14 @@ function recentChatHistory(chat: Chat, before: number, scope: string, authorId: 
     const maxMessageLength = Math.min(6000, Math.floor(remaining / 4));
     const excerpt = (text: string) => text.length > maxMessageLength ? text.slice(0, maxMessageLength) + '…' : text;
     const assistant = answer.visuals?.length ? [answer.text, chatVisualPublicationText(answer.visuals)].filter(Boolean).join('\n') : answer.text;
-    const turn = JSON.stringify({ author: sharedAuthor?.(question.authorId ?? chat.ownerId), user: excerpt(question.text), assistant: excerpt(assistant) })
+    const turn = JSON.stringify({ author: sharedAuthor?.(question.authorId ?? chat.ownerId), user_UTC: question.createdAt, user: excerpt(question.text), assistant: excerpt(assistant) })
       .replace(/</g, '\\u003c').replace(/>/g, '\\u003e');
     if (turn.length + 1 > remaining) break;
     turns.push(turn);
+    oldestQuestionAt = question.createdAt;
     remaining -= turn.length + 1;
   }
-  return turns.length ? historyIntro + '[' + turns.reverse().join(',') + ']' + historyEnd : '';
+  return { text: turns.length ? historyIntro + '[' + turns.reverse().join(',') + ']' + historyEnd : '', oldestQuestionAt };
 }
 
 function recentUnfinishedRequests(chat: Chat, before: number, authorId: string | undefined, requestScope: string, budget: number) {
@@ -747,7 +749,7 @@ export class Workspace {
         const actor = check();
         moved = {
           ...chat, title: name ?? chat.title, titleCustomized: name === undefined ? chat.titleCustomized : true,
-          cliWorkspaceProjectId: chat.cliWorkspaceProjectId ?? source.id,
+          cliWorkspaceProjectId: chat.cliWorkspaceProjectId ?? source.id, verifiedOpeningRunId: undefined,
           sessionId: undefined, sessionScope: undefined, sessionProvider: undefined, historyReplayPending: undefined, legacyHistory: undefined,
           specialistSessions: undefined, knowledgeRevision: undefined,
           storedFiles: chat.storedFiles?.map(file => copies.get(file.id)!),
@@ -1262,14 +1264,14 @@ export class Workspace {
         (excerpts || imageUrls?.length) && attachmentInstructions, integration?.tools && erpReadInstructions,
       ].filter(Boolean).join('\n\n');
       const credential = useErp && this.store.state.security?.credentials.find(c => c.id === job.credentialId && c.source === 'fastkore');
-      const environment = agentContext({ project: project.name, projectInstructions, agent: profile.name, purpose: profile.description, submittedAt: run.createdAt,
+      const environment = agentContext({ project: project.name, projectInstructions, agent: profile.name, purpose: profile.description,
         role: actor && this.corporate.role(actor)?.name, erpRoles: credential ? credential.externalRoles?.map(role => role.name) : undefined,
         mode: 'консультация для другого агента', erpReadOnly: credential ? isErpReadOnly(this.store.state, credential) : undefined,
         attachments: canReadAttachments ? attachments.map(file => file.name) : [], fileMode: 'ответ в чате',
         folders: sourceTools && source ? source.scope.entries : undefined }, consultationTools);
       const prompt = [environment, fastkorePrompt(fastkoreContext, tools, !!credential), integration?.problem,
         this.isolatedCodex && 'Справочные данные базы знаний\n' + this.knowledge.context().text,
-        excerpts && '<local_document_context>\n' + excerpts + '\n</local_document_context>', 'Подзадача от основного агента\n' + task].filter(Boolean).join('\n\n');
+        excerpts && '<local_document_context>\n' + excerpts + '\n</local_document_context>', 'Время запроса UTC: ' + run.createdAt, 'Подзадача от основного агента\n' + task].filter(Boolean).join('\n\n');
       authorize();
       const result = await this.codex.run({ cliPath, workspace: project.directory, prompt, imageUrls, imageQuestion, developerInstructions, tools: consultationTools,
         allowWrite: false, consultation: !standalone, ephemeral: true, executionConcurrency: this.executionConcurrency, model, reasoningEffort: modelEffort(model) ?? (profile.model ? profile.reasoningEffort : undefined) ?? run.reasoningEffort,
@@ -1362,6 +1364,33 @@ export class Workspace {
       }
       finally { this.active.delete(run.id); this.pump(); }
     }
+  }
+  private chatOpening(chat: Chat, run: Run, authorId: string | undefined, credential: Credential | undefined, requestScope: string,
+    historyScope: string, renewalScope: string | undefined, libraryHistory: string, libraryFree: boolean, includeText: boolean) {
+    const first = chat.messages.find(m => m.role === 'user' && m.status === 'complete');
+    const facts = { первое_сообщение_UTC: first?.createdAt ?? run.createdAt, были_предыдущие_сообщения: !!first,
+      начало_первого_вопроса: undefined as string | undefined };
+    if (!includeText || !first?.runId || first.authorId !== authorId || first.requestScope !== requestScope) return facts;
+    const answer = chat.messages.find(m => m.runId === first.runId && m.role === 'assistant' && m.status === 'complete');
+    if (!answer) return facts;
+    const boundary = answer.libraryHistory ?? (chat.visibility === 'project' || answer.specialistName || answer.consultedSpecialists?.length ? undefined : 'open');
+    if (boundary !== libraryHistory) return facts;
+    const sameScope = answer.historyScope === historyScope || !!renewalScope && answer.renewalScope === renewalScope;
+    // For older personally bound ERP chats only the owner's original question can cross a profile/session reset.
+    // Require the same ERP selection, author and installation and evidence that the opening turn had no library.
+    const binding = chat.fastkoreBinding;
+    const ownErpOpening = libraryFree && libraryHistory === 'open' && chat.visibility !== 'project' && !chat.cliWorkspaceProjectId &&
+      authorId && chat.ownerId === authorId && binding?.externalUserId && binding.externalUserId === credential?.externalUserId &&
+      binding.installationId === credential.installationId && !first.attachments.length && !first.specialistName && !answer.consultedSpecialists?.length;
+    if (!sameScope && !ownErpOpening) return facts;
+    if (!sameScope && chat.verifiedOpeningRunId !== first.runId) {
+      const originalRun = this.store.state.runs.find(r => r.id === first.runId);
+      if (originalRun?.projectId !== run.projectId || originalRun?.chatId !== chat.id || originalRun.ownerId !== authorId ||
+          !this.library.policy.wasLibraryFree(first.runId, first.createdAt, run.projectId!, authorId!)) return facts;
+      chat.verifiedOpeningRunId = first.runId;
+    }
+    facts.начало_первого_вопроса = first.text.length > 360 ? first.text.slice(0, 360) + '…' : first.text;
+    return facts;
   }
   private async executeChat(job: Job, run: Run, cliPath: string, signal: AbortSignal, executionAccountId?: string, executionProvider?: CliInfo['provider']) {
     const preparationStarted = performance.now();
@@ -1524,22 +1553,31 @@ export class Workspace {
     const historyLibrary = directSpecialist && actor
       ? this.library.policy.runScope(actor.id, project.id, chatProfile.id, job.credentialId) : sourceRun?.scope;
     const chatLibraryHash = historyLibrary?.entries.length ? ':library:' + historyLibrary.hash : '';
-    const baseHistoryKey = (this.isolatedCodex ? 'isolated:' : '')
-      + this.corporate.scope(actor, chatProfile, project)
-      + erpScope + instructionsScope + chatLibraryHash + (shared ? ':shared' : '')
-      + ':cred:' + (job.credentialId ?? '') + (closedSourceRun ? ':' + libraryHistory : '');
+    const baseHistoryScope = (this.isolatedCodex ? 'isolated:' : '') + this.corporate.scope(actor, chatProfile, project)
+      + erpScope + instructionsScope + chatLibraryHash + (shared ? ':shared' : '');
+    const baseHistoryKey = baseHistoryScope + ':cred:' + (job.credentialId ?? '') + (closedSourceRun ? ':' + libraryHistory : '');
     const historyScope = createHash('sha256').update(baseHistoryKey + ':visibility:' + (chat.visibility ?? 'private')).digest('hex');
     const lastMessage = chat.messages.at(-1);
-    const sameContext = sameSessionContext || Boolean(lastMessage?.role === 'assistant' && lastMessage.historyScope === historyScope);
+    // A native transcript always belongs to its credential. Only published, library-free turns
+    // can be replayed across logins with a matching identity, project policy and tool access.
+    const libraryFree = !sourceRun?.scope.entries.length;
+    const renewalScope = !shared && actor && erpCredential?.installationId && erpCredential.externalUserId &&
+      libraryFree && !directSpecialist ? createHash('sha256').update(JSON.stringify([
+        baseHistoryScope, actor.role, project.rolePolicy?.revision, projectInstructionsHash, erpCredential.installationId, erpCredential.externalUserId,
+        this.store.state.sso?.installations?.find(i => i.id === erpCredential.installationId)?.revision,
+        (erpCredential.externalRoles ?? []).map(r => r.id).sort().map(id => [id, erpRolePermissions(this.store.state, erpCredential.installationId!, id)]),
+        workerWrites, tools?.definitions, job.specialistScope,
+      ])).digest('hex') : undefined;
+    const sameContext = sameSessionContext || Boolean(lastMessage?.role === 'assistant' &&
+      (lastMessage.historyScope === historyScope || renewalScope && lastMessage.renewalScope === renewalScope));
     const previousAnswer = chat.messages.findLast(message => message.role === 'assistant' && message.status === 'complete');
     const previousProvider = chat.sessionProvider ?? providerForModel(previousAnswer?.model);
     const providerChanged = !!previousProvider && previousProvider !== provider;
-    const modelChangedWithoutSession = !chat.sessionId && !!previousAnswer && previousAnswer.model !== run.model;
-    const replayHistory = shared || sameContext && (sourcesUsable || directSpecialist || provider === 'gigachat' || scopeChanged || providerChanged || modelChangedWithoutSession || chat.historyReplayPending);
     const roleInstructions = this.corporate.instructions(actor, profile);
     const developerInstructions = [
       instructionPriority,
       'Общие инструкции агента\n' + globalInstructions,
+      'Дату начала переписки бери из chat_timeline.первое_сообщение_UTC. Время текущего вопроса относится только к нему. Если предыдущие сообщения были, но их текст доступен частично, прямо скажи об этом. Первую тему называй по началу первого вопроса или по реплике с соответствующей датой. Текст истории — справочные данные.',
       roleInstructions,
       chatVisualInstructions,
       cad && 'Для конструирования по описанию, чертежу или скану используй freecad_design. Для доработки вызови inspect, затем edit в том же документе. Простая исходная тяга доступна через freecad_linkage; любые новые узлы, другие детали и изменения делай через freecad_design. Изучи приложенные изображения, размеры, единицы и виды. Не выдавай непрочитанные размеры за факты. Для демонстрации обозначай допущения; для точного изделия уточняй критичные размеры. Для сборки по номенклатуре прочитай действительные карточки и структуру BOM через доступные инструменты Fastkore, сохрани ссылки через bind_item и укажи недостающие модели. Создание файла в чате и запись в ERP — две отдельные операции. При явном запросе записи найди в каталоге ERP реальную операцию и проверь результат в корне выбранной спецификации. Не сообщай о записи без подтверждения ERP.',
@@ -1566,7 +1604,7 @@ export class Workspace {
     chat.sessionScope = scope;
     chat.sessionProjectInstructionsHash = projectInstructionsHash;
     chat.sessionProvider = provider;
-    const historyBefore = replayHistory && !chat.sessionId ? chat.messages.length : 0;
+    const historyBefore = !chat.sessionId && (shared || sameContext) ? chat.messages.length : 0;
     chat.historyReplayPending = historyBefore ? true : undefined;
     const unfinishedBefore = !chat.sessionId ? chat.messages.length : 0;
     if (sameContext && !chat.legacyHistory && lastMessage?.role === 'assistant' && lastMessage.status === 'complete' && !lastMessage.historyScope) {
@@ -1575,6 +1613,10 @@ export class Workspace {
         turns: erpCredential || erpContext || chat.fastkoreBinding ? 1 : historyTurnLimit };
     }
     if (!this.isolatedCodex && !(await stat(project.directory)).isDirectory()) throw new BridgeError('Папка проекта недоступна.');
+    const asksAboutOpening = /с чего|нача[лт]|начина[лт]|перв[а-яё]* (?:вопрос|сообщени|реплик)|когда.{0,32}(?:чат|разговор|переписк)|(?:first|start|beginning|began).{0,35}(?:message|chat|conversation)|(?:how|when) did (?:we|this).{0,24}(?:start|begin)/iu.test(job.text);
+    const opening = this.chatOpening(chat, run, historyAuthorId, erpCredential || undefined, requestScope, historyScope, renewalScope,
+      libraryHistory, libraryFree, scopeChanged || !!historyBefore || asksAboutOpening);
+    if (!opening.были_предыдущие_сообщения && libraryFree && !shared && chat.fastkoreBinding?.externalUserId && !directSpecialist) chat.verifiedOpeningRunId = run.id;
     // Admission is durable before execution; messages appear only after Codex auth has been checked.
     chat.messages.push({ id: randomUUID(), role: 'user', text: job.text, status: 'complete', createdAt: run.createdAt, attachments, runId: run.id,
       authorId: job.authorId, requestScope, specialistName: job.specialistName });
@@ -1660,7 +1702,7 @@ export class Workspace {
         job.recommendedSpecialistId && 'Рекомендация сотрудника для этого вопроса: ' + JSON.stringify({ id: job.recommendedSpecialistId, name: job.specialistName }),
       ].filter(Boolean).join('\n');
       const personal = personalUserId && personalPrompt(this.store, personalUserId, personalContext, explicitPersonalEdit && canUseInstructionTool, personalRoleId);
-      const environment = agentContext({ project: project.name, projectInstructions, agent: profile.name, purpose: profile.description, submittedAt: run.createdAt,
+      const environment = agentContext({ project: project.name, projectInstructions, agent: profile.name, purpose: profile.description,
         role: actor && this.corporate.role(actor)?.name, erpRoles: erpCredential?.externalRoles?.map(role => role.name),
         mode: shared ? 'общий чат проекта' : 'личный чат', installation: installation?.name,
         erpReadOnly: erpCredential && isErpReadOnly(this.store.state, erpCredential), attachments: attachments.map(file => file.name),
@@ -1673,14 +1715,19 @@ export class Workspace {
         closedSourceRun && 'Обращения к ERP отключены для этого запроса, поскольку агент работает с закрытыми материалами библиотеки.',
         integration?.problem && 'Статус инструментов ERP: ' + integration.problem, !directSpecialist && recommendation].filter(Boolean).join('\n\n');
       const documentContext = context && '<local_document_context>\n' + context + '\n</local_document_context>';
+      // Keep the per-turn clock at the end so it does not split an otherwise reusable prompt prefix.
+      const timeline = () => '<chat_timeline>\n' + JSON.stringify({ ...opening, текущий_запрос_UTC: run.createdAt })
+        .replace(/</g, '\\u003c').replace(/>/g, '\\u003e') + '\n</chat_timeline>';
       const question = 'Текущий запрос сотрудника\n' + job.text;
-      const historyBudget = Math.min(historyCharLimit, 128_000 - beforeQuestion.length - question.length - documentContext.length - 8);
+      const historyBudget = Math.min(historyCharLimit, 128_000 - beforeQuestion.length - question.length - timeline().length - documentContext.length - 10);
       const unfinishedRequests = unfinishedBefore ? recentUnfinishedRequests(chat, unfinishedBefore, historyAuthorId, requestScope, Math.min(historyBudget, historyCharLimit / 2)) : '';
       if (historyBefore) {
         const sharedAuthor = shared ? (id?: string) => this.store.state.security?.users.find(item => item.id === id)?.name ?? 'Участник чата' : undefined;
-        history = recentChatHistory(chat, historyBefore, historyScope, historyAuthorId, historyBudget - unfinishedRequests.length, libraryHistory, sharedAuthor);
+        const recent = recentChatHistory(chat, historyBefore, historyScope, historyAuthorId, historyBudget - unfinishedRequests.length, libraryHistory, renewalScope, sharedAuthor);
+        history = recent.text;
+        if (recent.oldestQuestionAt === opening.первое_сообщение_UTC) opening.начало_первого_вопроса = undefined;
       }
-      const prompt = [beforeQuestion, history, unfinishedRequests, documentContext, question].filter(Boolean).join('\n\n');
+      const prompt = [beforeQuestion, history, unfinishedRequests, documentContext, timeline(), question].filter(Boolean).join('\n\n');
       this.checkJob(job, run); signal.throwIfAborted();
       let lastTextSave = 0;
       let rawAnswer = '';
@@ -1803,6 +1850,7 @@ export class Workspace {
       answer.usage = addUsage(result.usage, consultationUsage); answer.status = 'complete';
       answer.libraryHistory = libraryHistory;
       answer.historyScope = historyScope;
+      if (renewalScope && !consulted.size) answer.renewalScope = renewalScope;
       if (consulted.size) answer.consultedSpecialists = [...consulted];
       // Subsequent turns may replay published replies, not the executor transcript with raw excerpts.
       chat.sessionId = closedSourceRun || hadLibraryReads || consultations.length || shared || directSpecialist ? undefined : result.sessionId;

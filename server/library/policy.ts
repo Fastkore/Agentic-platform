@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import type { LibraryCell, LibraryConnection, OutputPolicy, ProjectLibraryView } from '../../shared/library.js';
 import { projectChatGrantId } from '../corporate.js';
 import { BridgeError } from '../store.js';
-import { notFound, type FolderRow, type LibraryActor, type LibraryRegistry } from './registry.js';
+import { notFound, runScopeRetentionMs, type FolderRow, type LibraryActor, type LibraryRegistry } from './registry.js';
 
 /** Platform facts the library policy depends on; supplied by the workspace from the canonical project/specialist model. */
 export interface PlatformDirectory {
@@ -191,6 +191,18 @@ export class LibraryPolicy {
     const scope = this.runScope(userId, projectId, profileId, credentialId);
     this.db.prepare('INSERT OR REPLACE INTO run_scopes VALUES (?,?,?,?,?,?,NULL)').run(runId, projectId, userId, profileId, JSON.stringify(scope), Date.now());
     return scope;
+  }
+  /** A missing recent admission means the project had no connected library. Expired evidence is inconclusive. */
+  wasLibraryFree(runId: string, createdAt: string, projectId: string, actorId: string) {
+    const row = this.db.prepare('SELECT scope FROM run_scopes WHERE run_id=?').get(runId) as { scope: string } | undefined;
+    if (row) {
+      try {
+        const scope: RunLibraryScope = JSON.parse(row.scope);
+        return scope.projectId === projectId && scope.actorId === actorId && Array.isArray(scope.entries) && scope.entries.length === 0;
+      } catch { return false; }
+    }
+    const age = Date.now() - Date.parse(createdAt);
+    return age >= 0 && age < runScopeRetentionMs;
   }
   storedRunScope(runId: string) {
     const row = this.db.prepare('SELECT scope FROM run_scopes WHERE run_id=?').get(runId) as { scope: string } | undefined;

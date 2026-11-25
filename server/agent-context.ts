@@ -10,7 +10,6 @@ interface AgentContext {
   projectInstructions?: string;
   agent: string;
   purpose: string;
-  submittedAt: string;
   role?: string;
   mode: 'личный чат' | 'общий чат проекта' | 'консультация для другого агента';
   installation?: string;
@@ -31,7 +30,7 @@ export function agentContext(context: AgentContext, tools?: CodexTools) {
   const facts = {
     проект: context.project, инструкция_проекта: context.projectInstructions, агент: context.agent, назначение_агента: context.purpose || undefined,
     режим: context.mode, рабочая_роль: context.role, результат: context.fileMode,
-    отправлено_UTC: context.submittedAt, установка_Fastkore: context.installation,
+    установка_Fastkore: context.installation,
     роли_Fastkore: context.erpRoles?.length ? context.erpRoles : undefined,
     вложения_этого_вопроса: context.attachments.length ? context.attachments : undefined,
     всего_папок_библиотеки: folders.length || undefined,

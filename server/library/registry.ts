@@ -14,6 +14,8 @@ import { ExternalLibraries } from './external.js';
 import { FilesystemLibraryBlobStore, blobKey, storageFromInput, type LibraryBlobStore, type StorageInput, type LibraryStorageConfig } from './blob-store.js';
 import { LibrarySettings } from './settings.js';
 
+export const runScopeRetentionMs = 7 * 86_400_000;
+
 export interface LibraryActor { id: string; admin: boolean; credentialId?: string }
 export interface LibraryLimits {
   maxFiles: number; maxFileBytes: number; maxDepth: number; maxPathLength: number; partBytes: number; manifestPageEntries: number;
@@ -1104,7 +1106,7 @@ export class LibraryRegistry {
         this.db.prepare('DELETE FROM contents WHERE sha256=? AND size=?').run(c.sha256, c.size);
         if (c.text_blob_id) this.db.prepare("UPDATE blobs SET state='orphan', orphaned_at=? WHERE id=? AND state='verified'").run(at, c.text_blob_id);
       }
-      this.db.prepare('DELETE FROM run_scopes WHERE created_at<?').run(at - 7 * 86_400_000);
+      this.db.prepare('DELETE FROM run_scopes WHERE created_at<?').run(at - runScopeRetentionMs);
     });
     const store = this.storage.store;
 

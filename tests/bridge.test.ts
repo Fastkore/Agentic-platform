@@ -419,7 +419,7 @@ test('personal instructions persist per employee and agent edits follow the curr
       const call = (args: unknown) => request.tools!.call('my_instructions', args, signal);
       const append = await call({ action: 'append', text: 'Отмечай источник.' });
       const remember = await call({ action: 'remember', title: 'Проверка отчёта', text: 'Перед выдачей отчёта сверь контрольный итог.', scope: 'project' });
-      if (request.prompt.includes('Запиши в мою инструкцию')) {
+      if (request.prompt.split('Текущий запрос сотрудника\n').at(-1)?.includes('Запиши в мою инструкцию')) {
         assert.equal(append.success, true, append.text);
         assert.equal(remember.success, true, remember.text);
         const list = JSON.parse((await call({ action: 'read' })).text);
