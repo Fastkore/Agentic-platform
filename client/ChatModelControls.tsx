@@ -1,6 +1,7 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import { Check, ChevronDown, ChevronRight, RotateCcw } from 'lucide-react';
 import { hasAdjustableEffort } from '../shared/execution-accounts';
+import { modelEffort } from '../shared/model-selection';
 import type { ReasoningEffort } from '../shared/types';
 import type { SelectOption } from './Select';
 
@@ -21,7 +22,7 @@ export function ChatModelControls({ effort, levels, model, models, disabled, onE
   const modelMenu = useRef<HTMLDivElement>(null);
   const dragging = useRef(false);
   const id = useId();
-  const adjustsEffort = hasAdjustableEffort(model);
+  const adjustsEffort = hasAdjustableEffort(model) || (!!modelEffort(model) && levels.length > 1);
   const step = requestedStep === 'effort' && !adjustsEffort ? 'model' : requestedStep;
   const actual = Math.max(0, levels.findIndex(item => item.value === effort));
   const index = preview ?? actual;
@@ -72,7 +73,7 @@ export function ChatModelControls({ effort, levels, model, models, disabled, onE
           <strong>{level.label}</strong><span title={modelName}>{modelName}<ChevronRight size={12} aria-hidden="true" /></span>
         </button>
         <button type="button" className="workspace-icon effort-reset" aria-label="Сбросить до высокого" title="Сбросить до высокого"
-          disabled={disabled || effort === 'high'} onClick={() => chooseLevel(levels.findIndex(item => item.value === 'high'))}><RotateCcw size={16} /></button>
+          disabled={disabled || effort === 'high' || !levels.some(item => item.value === 'high')} onClick={() => chooseLevel(levels.findIndex(item => item.value === 'high'))}><RotateCcw size={16} /></button>
       </div>
       <div className="effort-track" style={{ '--effort-fill': `${100 * index / Math.max(1, levels.length - 1)}%` } as React.CSSProperties}>
         <div className="effort-marks" aria-hidden="true">{levels.map(item => <span key={item.value} />)}</div>
@@ -87,7 +88,7 @@ export function ChatModelControls({ effort, levels, model, models, disabled, onE
       <p>Выбрать модель</p>
       {models.map(item => <button type="button" key={item.value} data-selected={item.value === model} aria-pressed={item.value === model}
         title={item.detailTitle} disabled={item.disabled || disabled} onClick={() => {
-          const showEffort = adjustsEffort && hasAdjustableEffort(item.value);
+          const showEffort = hasAdjustableEffort(item.value) || !!modelEffort(item.value);
           setStep(showEffort ? 'effort' : null);
           setPreview(undefined);
           requestAnimationFrame(() => (showEffort ? modelButton : trigger).current?.focus());

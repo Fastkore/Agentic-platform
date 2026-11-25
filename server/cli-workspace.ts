@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { cp, lstat, mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { cp, lstat, mkdir, readdir, readFile, rm, utimes, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { BridgeError } from './store.js';
 
@@ -123,6 +123,10 @@ export class CliWorkspace {
     const target = path.join(jobDirectory, 'cli');
     await mkdir(target, { mode: 0o700 });
     if (current) {
+      if (current.modernRevision) {
+        const now = new Date();
+        await utimes(path.join(current.directory, '..', 'ready'), now, now);
+      }
       const size = current.modernRevision ? revisionSizes.get(current.directory) : undefined;
       if (size === undefined) {
         const computed = await treeSize(current.directory, chatLimit);

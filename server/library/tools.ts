@@ -35,6 +35,13 @@ export class RunReadLog {
   constructor(readonly runId: string) {}
   record(text: string) { this.excerpts.push(text); }
   texts() { return this.excerpts; }
+  copy() {
+    const copy = new RunReadLog(this.runId);
+    copy.calls = this.calls;
+    for (const id of this.consulted) copy.consulted.add(id);
+    for (const excerpt of this.excerpts) copy.record(excerpt);
+    return copy;
+  }
   purge() { this.excerpts.length = 0; this.consulted.clear(); }
 }
 

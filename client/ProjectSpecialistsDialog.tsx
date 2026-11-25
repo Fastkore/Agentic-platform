@@ -3,13 +3,14 @@ import { Bot, Check, Database, FileText, MessageSquare, Pencil, Plus, Settings2,
 import type { ChatView, ProjectAgentConnection, ProjectAgentPolicy, ProjectAgentSettings, ProjectRoleLabel, ProjectSummary } from '../shared/types';
 import { WorkspaceDialog } from './WorkspaceDialog';
 import { ProjectRolesPanel } from './ProjectRolesPanel';
+import { ChatDefaultsEditor } from './ChatDefaultsEditor';
 import { ProjectInstructions } from './ProjectInstructions';
 import { ProjectChatsPanel } from './ProjectChatsPanel';
 import { SettingsSpinner } from './SettingsSpinner';
 import { SettingsTabStrip } from './SettingsTabs';
 
 const ProjectLibraryPanel = lazy(() => import('./ProjectLibraryDialog').then(module => ({ default: module.ProjectLibraryPanel })));
-const sections = [['specialists', 'Агенты', Bot], ['instructions', 'Инструкция', FileText], ['library', 'Библиотеки', Database], ['access', 'Доступ к материалам', ShieldCheck], ['roles', 'Роли', Users], ['chats', 'Чаты', MessageSquare]] as const;
+const sections = [['instructions', 'Инструкция', FileText], ['specialists', 'Агенты', Bot], ['library', 'Библиотеки', Database], ['access', 'Доступ к материалам', ShieldCheck], ['roles', 'Роли', Users], ['chats', 'Чаты', MessageSquare]] as const;
 type Section = typeof sections[number][0];
 
 export function ProjectSettingsDialog({ project, request, close, openSpecialist, rename, saveInstructions, remove, isAdmin, rolesChanged, renderChat, chatError }: {
@@ -34,7 +35,7 @@ export function ProjectSettingsDialog({ project, request, close, openSpecialist,
   const [rolesPending, setRolesPending] = useState(false);
   const [rolesOpened, setRolesOpened] = useState(false);
   const [error, setError] = useState('');
-  const [section, setSection] = useState<Section>('specialists');
+  const [section, setSection] = useState<Section>(sections[0][0]);
   const [libraryProfile, setLibraryProfile] = useState<string>();
   const [name, setName] = useState(project.name);
   const [renameDraft, setRenameDraft] = useState<string>();
@@ -114,17 +115,24 @@ export function ProjectSettingsDialog({ project, request, close, openSpecialist,
     {error && !adding && <p className="inline-error" role="alert">{error}</p>}
     {section === 'chats' && chatError && <p className="inline-error" role="alert">{chatError}</p>}
     <div id={tabs + '-panel'} role="tabpanel" aria-labelledby={tabs + section} tabIndex={0}
-      className={section === 'chats' ? 'project-chats-panel' : 'project-agent-scroll'}>
+      className={section === 'chats' ? 'project-chats-panel' : section === 'instructions' ? 'project-instructions-panel' : 'project-agent-scroll'}>
     {section === 'instructions' ? <ProjectInstructions project={project} save={saveInstructions} /> : section === 'specialists' ? <>
     <div className="project-agents-intro">
       <strong>Подключённые агенты</strong>
       {settings?.isolated && <button type="button" className="secondary" disabled={pending} aria-haspopup="dialog"
         onClick={() => { setSelected([]); setError(''); setAdding(true); }}><Plus size={16} aria-hidden="true" />Добавить агента</button>}
     </div>
+    {settings?.chatDefaults && <ChatDefaultsEditor value={settings.chatDefaults}
+      save={async value => {
+        const updated = await request<typeof value>('/api/projects/' + encodeURIComponent(project.id) + '/chat-defaults',
+          { method: 'PUT', body: JSON.stringify(value) });
+        setSettings(current => current && { ...current, chatDefaults: updated });
+        return updated;
+      }} />}
     {!settings && !error && <SettingsSpinner label="Загрузка агентов…" />}
     {settings && <div className="project-agent-scroll">
-      {connected.length > 0 ? <ul className="agent-card-list">
-        {connected.map(profile => <li className="agent-card" key={profile.id}>
+      {connected.length > 0 ? <ul className="settings-records project-agent-rows">
+        {connected.map(profile => <li key={profile.id}>
           <div className="agent-card-heading">
             <Bot size={17} aria-hidden="true" />
             <div>

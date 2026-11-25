@@ -71,7 +71,7 @@ export function ProjectRolesPanel({ projectId, request, onSaved, pendingChanged 
           </label></li>;
         })}
       </ul> : <p className="help">Роли появятся после входа сотрудников из Fastkore.</p>}
-      <div className="settings-dialog-actions">
+      <div className="settings-dialog-actions project-role-actions">
         {saved && <span role="status">Роли проекта сохранены.</span>}
         <button type="submit" className="primary" disabled={!changed || pending}>Сохранить роли</button>
       </div>

@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useId, useState } from 'react';
-import { ChevronDown, ChevronRight, Info, RefreshCw } from 'lucide-react';
+import { ChevronDown, ChevronRight, RefreshCw } from 'lucide-react';
+import { InfoHint } from './InfoHint';
 import type { ProjectSummary } from '../shared/types';
-import type { LibraryCell, LibraryConnection, LibraryFolderSummary, OutputPolicy, ProjectLibraryView } from '../shared/library';
+import type { LibraryConnection, LibraryFolderSummary, OutputPolicy, ProjectLibraryView } from '../shared/library';
 import { SettingsTabStrip } from './SettingsTabs';
 import { SettingsSpinner } from './SettingsSpinner';
 import { Select } from './Select';
@@ -28,7 +29,6 @@ export function ProjectLibraryPanel({ project, request, section, isAdmin, initia
   const [tab, setTab] = useState<LibraryKind>('s3');
   const [creating, setCreating] = useState<LibraryKind>();
   const [profileFilter, setProfileFilter] = useState(initialProfileId ?? '');
-  const [detail, setDetail] = useState<LibraryCell>();
   const [error, setError] = useState('');
   const [pending, setPending] = useState(false);
   const load = useCallback(async () => {
@@ -133,23 +133,17 @@ export function ProjectLibraryPanel({ project, request, section, isAdmin, initia
                 <span className="library-cell">
                   <PermissionSwitch name={`${c.folderName} — ${p.name}`} checked={cell.granted} disabled={pending || !c.canManage} onChange={checked => void grant(c, p.id, checked)} />
                   <span>{cell.granted ? (cell.allowed ? outputModes[cell.outputPolicy!] + (cell.files !== undefined ? ` · ${formatFileCount(cell.files)}` : '') : 'Недоступно') : 'Нет доступа'}</span>
-                  <button type="button" className="workspace-icon" title="Почему" aria-label={`Доступ: ${c.folderName} — ${p.name}`} onClick={() => setDetail(cell)}><Info size={15} /></button>
+                  <InfoHint label={'Доступ: ' + c.folderName + ' — ' + p.name}>
+                    {cell.allowed ? 'Агент может использовать папку.' : cell.reasons.join('; ')}
+                    {cell.files !== undefined && ' Разрешено материалов: ' + formatFileCount(cell.files) + '.'}
+                  </InfoHint>
+                  {cell.files !== undefined && c.canManage && <button type="button" className="secondary" disabled={pending}
+                    onClick={() => void grant(c, p.id, true, { allFiles: true })}>Открыть всю папку</button>}
                 </span>
               </td>;
             })}
           </tr>)}</tbody>
         </table></div> : <p className="help">Сначала подключите папки на вкладке «Библиотеки».</p>}
-        {detail && (() => {
-          const c = view.connections.find(x => x.folderId === detail.folderId);
-          const p = view.profiles.find(x => x.id === detail.profileId);
-          return <div className="agent-card library-detail" role="status">
-            <strong>{c?.folderName} — {p?.name}</strong>
-            <p className="help">{detail.allowed ? 'Агент может использовать папку.' : detail.reasons.join('; ')}</p>
-            {detail.files !== undefined && <p className="help">В списке разрешённых материалов — {formatFileCount(detail.files)} (перенесено из прежних «Файлов проекта»).
-              {c?.canManage && <> <button type="button" className="secondary" disabled={pending} onClick={() => void grant(c, detail.profileId, true, { allFiles: true }).then(() => setDetail(undefined))}>Открыть всю папку</button></>}</p>}
-            <div className="settings-actions"><button type="button" className="secondary" onClick={() => setDetail(undefined)}>Закрыть</button></div>
-          </div>;
-        })()}
       </>}
     </div>}
     {removing && <LibraryRemovalDialog title="Убрать из проекта" name={removing.folderName}

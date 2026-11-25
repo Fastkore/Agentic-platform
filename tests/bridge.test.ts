@@ -206,7 +206,7 @@ test('a failed first Antigravity request reaches Codex and repairs an already re
     assert.ok(calls[1].prompt.includes(original));
     assert.ok(!calls[1].prompt.includes('Непроверенные результаты') && !calls[1].prompt.includes('Ошибка тестового провайдера'));
     // The deployed v2 chat has already answered "continue" without seeing the failed question.
-    chat.sessionScope = chat.sessionScope!.replace(':history-v3', ':history-v2');
+    chat.sessionScope = chat.sessionScope!.replace(/:history-v\d+$/, ':history-v2');
     assert.equal((await send('dsit gj xfne')).status, 'complete');
     assert.equal(calls[2].sessionId, undefined);
     assert.ok(calls[2].prompt.includes(original));
@@ -263,7 +263,7 @@ test('a fresh session can continue the author’s cancelled request after a mode
     assert.doesNotMatch(calls[1].prompt, /Незавершённый ответ|Доступ к заданию отозван/);
     // Chats stored before this upgrade may already have resumed without the request.
     delete chat.messages[0].requestScope;
-    chat.sessionScope = chat.sessionScope?.replace(/:history-v3$/, ':history-v2');
+    chat.sessionScope = chat.sessionScope?.replace(/:history-v\d+$/, ':history-v2');
     await done(workspace, (await send('Уточнение после обновления')).id);
     assert.equal(calls[2].sessionId, undefined);
     assert.match(calls[2].prompt, /Сохрани исходную задачу/);

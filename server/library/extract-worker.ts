@@ -1,8 +1,10 @@
 import { parentPort, workerData } from 'node:worker_threads';
+import { createHash } from 'node:crypto';
+import { publicationCharacterLimit } from './publication-file.js';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import readExcelFile from 'read-excel-file/node';
-import { strFromU8, unzipSync } from 'fflate';
+import { strFromU8, unzipSync, zipSync } from 'fflate';
 import { Parser } from 'saxen';
 
 /**
@@ -162,6 +164,55 @@ async function pdfLines(data: Uint8Array) {
     return out.join('\n');
   } finally { await task.destroy(); }
 }
-const { kind, input } = workerData as { kind: 'pdf' | 'xlsx' | 'docx'; input: Uint8Array };
+// Supplement the reader's visible text with every XML part (headers, hidden sheets, notes,
+// relationships and document properties). Repackage inspected parts so ZIP metadata is not published.
+function inspectOfficeParts(input: Uint8Array) {
+  let total = 0, entries = 0;
+  const names = new Set<string>();
+  const parts = unzipSync(input, { filter: file => {
+    total += file.originalSize;
+    if (++entries > 4096 || total > 32 * 1024 * 1024 || names.has(file.name) || /(^|\/)\.\.(\/|$)|[\\\0]/.test(file.name)) throw Error('Unsupported package');
+    names.add(file.name);
+    return !file.name.endsWith('/') || file.originalSize !== 0;
+  } });
+  const extracted: string[] = [];
+  let size = 0;
+  function add(value: string) {
+    if (!value.trim()) return;
+    size += value.length + 1;
+    if (size > publicationCharacterLimit) throw Error('Document too large to check');
+    extracted.push(value);
+  }
+  for (const [name, data] of Object.entries(parts)) {
+    add(name);
+    if (name === 'docProps/thumbnail.jpeg' && createHash('sha256').update(data).digest('hex') ===
+      '96367138dc44ce09bf2c8f0f8e49348a1478d2c5c0af69bbc2bbc38b63cdcead') continue; // Stock python-docx template thumbnail
+    if (!/\.(xml|rels)$/i.test(name)) throw Error('Opaque document part');
+    const xml = new TextDecoder('utf-8', { fatal: true }).decode(data);
+    if (/<!DOCTYPE|<!ENTITY/i.test(xml)) throw Error('Unsupported XML declarations');
+    const parser = new Parser();
+    const invalid = () => { throw Error('Unsupported XML'); };
+    let section = '';
+    parser.on('openTag', (tag, attrs, decode) => {
+      add(tag);
+      for (const [key, value] of Object.entries(attrs())) { add(key); add(decode(value)); }
+    });
+    parser.on('text', (value, decode) => { const decoded = decode(value); add(decoded); section += decoded; });
+    parser.on('closeTag', tag => {
+      if (/^(?:.*:)?(?:p|row|si|c)$/.test(tag)) { add(section); section = ''; }
+    });
+    parser.on('comment', add);
+    parser.on('cdata', value => { add(value); section += value; });
+    parser.on('question', value => { if (!/^<\?xml\s/i.test(value)) add(value); });
+    parser.on('attention', invalid); parser.on('error', invalid); parser.on('warn', invalid);
+    parser.parse(xml);
+    add(section);
+  }
+  return { text: extracted.join('\n'), contents: zipSync(parts, { level: 1 }) };
+}
+
+const { kind, input, publication } = workerData as { kind: 'pdf' | 'xlsx' | 'docx'; input: Uint8Array; publication?: boolean };
+const inspected = publication ? inspectOfficeParts(input) : undefined;
 const text = kind === 'pdf' ? await pdfLines(input) : kind === 'docx' ? docxLines(input) : await xlsxLines(Buffer.from(input.buffer, input.byteOffset, input.byteLength));
-parentPort!.postMessage(text);
+if (inspected && text.length + inspected.text.length > publicationCharacterLimit) throw Error('Document too large to check');
+parentPort!.postMessage(inspected ? { contents: inspected.contents, text: text + '\n' + inspected.text } : text);

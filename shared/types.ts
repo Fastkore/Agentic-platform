@@ -30,7 +30,7 @@ export interface TokenActivityReport {
 export type RunStatus = 'queued' | 'running' | 'complete' | 'cancelled' | 'error' | 'interrupted';
 export interface ProjectFile { id: string; name: string; size: number; uploadedAt: string }
 export interface Attachment { id: string; name: string; path?: string; storage?: 's3'; size: number; ownerId?: string; libraryUploadedAt?: string; uploadedAt?: string }
-export interface Message { id: string; role: 'user' | 'assistant'; text: string; status: RunStatus; createdAt: string; attachments: Attachment[]; visuals?: ChatVisual[]; instructionSave?: 'saved' | 'already-saved' | 'not-saved'; usage?: Usage; runId?: string; model?: string; authorId?: string; authorName?: string; fileScope?: string; freecadSourceId?: string; historyScope?: string; requestScope?: string; specialistName?: string; consultedSpecialists?: string[] }
+export interface Message { id: string; role: 'user' | 'assistant'; text: string; status: RunStatus; createdAt: string; attachments: Attachment[]; visuals?: ChatVisual[]; instructionSave?: 'saved' | 'already-saved' | 'not-saved'; usage?: Usage; runId?: string; model?: string; authorId?: string; authorName?: string; fileScope?: string; freecadSourceId?: string; libraryHistory?: string; historyScope?: string; requestScope?: string; specialistName?: string; consultedSpecialists?: string[] }
 export interface ErpContext { installationId: string; entityType: string; entityId: string }
 export interface FastkoreChatBinding { installationId: string; externalUserId?: string; key: string; view: FastkoreContext['view']; entitySetId?: string; entityId?: string; entityName?: string; contextName?: string; entityUri?: string; tileId?: string; tileName?: string }
 export type FastkoreNavigationTarget = { installationId: string } & ({ entityUri: string } | { tileId: string; tileName?: string });
@@ -39,7 +39,9 @@ export interface ExternalIdentity { installationId: string; externalUserId: stri
 export interface Chat { storedFiles?: Attachment[]; reasoningEffort?: ReasoningEffort; id: string; title: string; titleCustomized?: true; sessionId?: string; sessionScope?: string; sessionProjectInstructionsHash?: string; sessionProvider?: CliInfo['provider']; historyReplayPending?: true; legacyHistory?: { lastAnswerId: string; scope: string; turns: number }; cliWorkspaceProjectId?: string; consultantIds?: string[]; knowledgeRevision?: string; specialistSessions?: Record<string, Pick<Chat, 'sessionId' | 'sessionScope' | 'knowledgeRevision'>>; updatedAt: string; archivedAt?: string; messages: Message[]; lastCompletedReplyId?: string; model?: string; agentProfileId?: string; erpContext?: ErpContext; fastkoreBinding?: FastkoreChatBinding; fastkoreHistory?: { binding: FastkoreChatBinding; turns: number } | null; linkedToFastkore?: true; ownerId?: string; ownerName?: string; visibility?: 'private' | 'project' }
 export interface ProjectAgentConnection { profileId: string; toolIds: AgentToolId[]; fileIds: string[] | null }
 export interface ProjectAgentPolicy { revision: number; connections: ProjectAgentConnection[] }
+export type ProjectChatDefaults = Pick<AgentProfile, 'instructions' | 'instructionFiles' | 'model' | 'reasoningEffort' | 'revision'>;
 export interface ProjectAgentSettings {
+  chatDefaults?: ProjectChatDefaults;
   policy: ProjectAgentPolicy;
   profiles: Pick<AgentSummary, 'id' | 'name' | 'description' | 'toolIds' | 'unavailableReason'>[];
   files: ProjectFile[];
@@ -50,7 +52,7 @@ export interface ProjectRolePolicy { revision: number; roles: ProjectRole[] }
 export interface ProjectRoleLabel extends ProjectRole { name: string; installationName: string }
 export interface ProjectRoleSettings extends ProjectRolePolicy { available: ProjectRoleLabel[] }
 export const maxProjectInstructions = 2000;
-export interface Project { id: string; name: string; instructions?: string; directory: string; chats: Chat[]; attachments: Attachment[]; rolePolicy?: ProjectRolePolicy; agentPolicy?: ProjectAgentPolicy; chatTools?: AgentToolId[]; chatAllowWrite?: boolean; legacyChatFileIds?: string[] | null; revokeRetiredChatGrants?: true; deletedAt?: string }
+export interface Project { id: string; name: string; instructions?: string; directory: string; chats: Chat[]; attachments: Attachment[]; rolePolicy?: ProjectRolePolicy; agentPolicy?: ProjectAgentPolicy; chatDefaults?: ProjectChatDefaults; chatTools?: AgentToolId[]; chatAllowWrite?: boolean; legacyChatFileIds?: string[] | null; revokeRetiredChatGrants?: true; deletedAt?: string }
 export type RunToolKind = 'cli' | 'mcp' | 'internet' | 'knowledge' | 'specialist' | 'other';
 export interface RunTiming {
   queueMs: number;
@@ -86,7 +88,7 @@ export const specialistFileLimits = { count: 5, characters: 6_000 };
 export interface AgentProfile { id: string; name: string; description: string; instructions: string; enabled: boolean; autoConnect?: boolean; model: string; reasoningEffort: 'low' | 'medium' | 'high' | 'xhigh'; operationIds: string[]; datasetIds: string[]; skillIds: string[]; allowWrite: boolean; revision: number; toolIds?: AgentToolId[]; icon?: SpecialistIcon; instructionFiles?: SpecialistInstructionFile[] }
 export interface Dataset { id: string; name: string; directory: string; projectIds: string[]; classification: 'shared' | 'restricted'; revision: number }
 export interface Corporate { roles: WorkRole[]; profiles: AgentProfile[]; datasets: Dataset[] }
-export interface AgentSummary { id: string; name: string; description: string; available: boolean; unavailableReason?: string; closedAnalysis?: boolean; model: string; allowWrite?: boolean; toolIds: AgentToolId[] }
+export interface AgentSummary { id: string; name: string; description: string; available: boolean; unavailableReason?: string; closedAnalysis?: boolean; reasoningEffort?: ReasoningEffort; model: string; allowWrite?: boolean; toolIds: AgentToolId[] }
 export interface UserRecord extends User { passwordHash: string; createdAt: string; deletedAt?: string; interfaceScale?: InterfaceScale; pinnedChatIds?: string[]; readChatReplies?: Record<string, string> }
 export interface StoredErpDelegation { sealedGrant: string; expiresAt: number; revision: string }
 export interface FastkoreRole { id: string; name: string }
@@ -132,7 +134,7 @@ export interface StoredFastkoreInstallation extends Omit<FastkoreInstallation, '
 }
 export interface State { schemaVersion: 1; settings: Settings; projects: Project[]; runs: Run[]; jobs?: Job[]; externalIdentities?: ExternalIdentity[]; sso?: { installations?: StoredFastkoreInstallation[]; roles?: FastkoreRoleRecord[]; roleSnapshots?: FastkoreRoleSnapshot[]; rolePermissions?: (FastkoreRolePermissions & { installationId: string; roleId: string })[] }; security?: Security; corporate?: Corporate }
 export interface CliInfo { provider?: ExecutionProvider; accountId?: string; catalogRevision?: string; path: string; version: string; authentication: 'chatgpt' | 'google' | 'glm' | 'gigachat' | 'api-key' | 'signed-out' | 'unknown'; status: string }
-export interface ProjectSummary { id: string; name: string; instructions?: string; directory: string; chatCount: number; roles?: ProjectRoleLabel[]; specialists?: string[]; libraries?: string[]; canRename?: boolean; chatCapabilities?: Omit<AgentSummary, 'id' | 'name' | 'description' | 'model'> }
+export interface ProjectSummary { id: string; name: string; instructions?: string; directory: string; chatCount: number; roles?: ProjectRoleLabel[]; specialists?: string[]; libraries?: string[]; canRename?: boolean; chatCapabilities?: Omit<AgentSummary, 'id' | 'name' | 'description' | 'model'> & { model?: string } }
 export interface ChatSummary { id: string; title: string; updatedAt: string; messageCount: number; ownerId?: string; ownerName?: string; visibility?: 'private' | 'project'; linkedToFastkore?: true; pinned?: boolean }
 export const unassignedChatsLabel = 'Без проекта';
 export const sharedChatWaitMessage = 'Другой участник ждёт ответа в этом чате. Вы сможете написать, когда его запросы завершатся.';

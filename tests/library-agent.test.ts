@@ -1,5 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { writeFile } from 'node:fs/promises';
+import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { SOURCE_TRUST_INSTRUCTIONS } from '../server/agent-context.js';
 import { fixture, grantedFolder, idle, json } from './library-app.js';
@@ -134,6 +136,35 @@ test('explanation only: code blocks, encoded copies and listings are not publish
   } finally { await f.app.close(); }
 });
 
+test('library outputs stay pending until publication; readable files survive alongside a withheld format', async () => {
+  const f = await fixture(undefined, { workerFiles: true, afterDelta: async () => {
+    const message = f.project.chats[0].messages.at(-1)!;
+    assert.equal(message.text, '');
+    assert.deepEqual(message.attachments, []);
+  } });
+  try {
+    await f.workspace.settings({ allowWrite: true });
+    f.project.chatAllowWrite = true;
+    const { folder } = await grantedFolder(f, { 'price.txt': 'Цена изделия 100 рублей.' }, { outputPolicy: 'excerpts_allowed' });
+    f.holder.respond = async (request, signal) => {
+      assert.ok((await request.tools!.call('library_read', { folder: folder.id, path: 'price.txt' }, signal)).success);
+      const output = path.join(f.root, 'worker', request.workDirectoryId!, 'output');
+      await writeFile(path.join(output, 'summary.txt'), 'Согласован итог.');
+      await writeFile(path.join(output, 'drawing.bin'), Buffer.from([1, 2, 3]));
+      return 'Расчёт готов.';
+    };
+    const chats = '/api/projects/' + f.project.id + '/chats';
+    const chat = (await f.req('POST', chats, f.token, {})).json();
+    const sent = await f.req('POST', chats + '/' + chat.id + '/messages', f.token, { text: 'Подготовь результат' });
+    await idle(f.workspace);
+    const run = f.workspace.getRun(sent.json().id);
+    assert.equal(run.status, 'complete', run.error);
+    const answer = f.project.chats[0].messages.at(-1)!;
+    assert.deepEqual(answer.attachments.map(item => item.name), ['summary.txt']);
+    assert.match(answer.text, /удержала файлы/);
+  } finally { await f.app.close(); }
+});
+
 test('connecting a shared folder grants project chat by default while specialists and restricted folders require explicit assignment', async () => {
   const f = await fixture(async request => request.tools?.definitions.some(d => d.name === 'library_list') ? 'С библиотекой' : 'Без библиотеки');
   try {
@@ -202,6 +233,36 @@ test('a folder toggle pauses access across projects without removing files or sp
     assert.equal(turnedOn.statusCode, 200, turnedOn.body);
     assert.equal(policy.runScope(f.employee.id, f.project.id, 'universal', credentialId).entries.length, 1);
   } finally { await f.app.close(); }
+});
+
+test('closed specialist answers retain their own history boundary in private and project chats', async () => {
+  const previous = process.env.BRIDGE_LIBRARY_CLOSED_ANALYSIS;
+  process.env.BRIDGE_LIBRARY_CLOSED_ANALYSIS = 'verified';
+  const f = await fixture(async request => request.tools?.definitions.some(tool => tool.name === 'library_read') ? 'Расчёт в закрытом режиме' : 'Обычный ответ');
+  try {
+    const specialist = f.workspace.corporate.data.profiles.find(p => p.id === 'estimator')!;
+    specialist.enabled = true;
+    const { folder } = await grantedFolder(f, { 'fixture.txt': 'Тестовый справочник' }, { classification: 'restricted', profileId: specialist.id });
+    const details = (await f.req('GET', '/api/library/' + folder.id, f.admin)).json();
+    assert.equal((await f.req('PATCH', '/api/library/' + folder.id, f.admin, { active: true, revision: details.revision })).statusCode, 200);
+    const base = '/api/projects/' + f.project.id + '/chats';
+    for (const shared of [false, true]) {
+      const url = base + '/' + (await f.req('POST', base, f.token, {})).json().id;
+      if (shared) assert.equal((await f.req('PATCH', url + '/visibility', f.token, { visibility: 'project' })).statusCode, 200);
+      for (const requiredSpecialistId of ['estimator', undefined]) {
+        const sent = await f.req('POST', url + '/messages', f.token, { text: 'Продолжай', requiredSpecialistId });
+        await idle(f.workspace);
+        const run = f.workspace.getRun(sent.json().id);
+        assert.equal(run.status, 'complete', run.error);
+        if (requiredSpecialistId) assert.equal(run.response, 'Расчёт в закрытом режиме');
+        else assert.doesNotMatch(f.calls.at(-1)!.prompt, /Расчёт в закрытом режиме/);
+      }
+    }
+  } finally {
+    await f.app.close();
+    if (previous === undefined) delete process.env.BRIDGE_LIBRARY_CLOSED_ANALYSIS;
+    else process.env.BRIDGE_LIBRARY_CLOSED_ANALYSIS = previous;
+  }
 });
 
 test('HTTP protocol: one operation per folder (409), "Библиотека актуальна", part limits, removal and folder deletion through the API', async () => {
@@ -306,7 +367,26 @@ test('the project routes a quote to an estimator with its own library grant and 
     assert.equal(direct.llmCalls, 1);
     const denied = await f.req('POST', route, f.token, { agentProfileId: 'accountant' });
     assert.equal(denied.statusCode, 403);
+    await f.workspace.settings({ reasoningEffort: 'low' });
     const projectChat = await f.req('POST', route, f.token, {});
+    const next = async (text: string, requiredSpecialistId?: string) => {
+      const sent = await f.req('POST', route + '/' + projectChat.json().id + '/messages', f.token, { text, requiredSpecialistId });
+      await idle(f.workspace);
+      const run = f.workspace.getRun(sent.json().id);
+      assert.equal(run.status, 'complete', run.error);
+      return f.calls.at(-1)!;
+    };
+    f.holder.respond = async () => 'Товар выбран.';
+    assert.equal((await next('Выбираю SH-12')).reasoningEffort, 'low');
+    f.holder.respond = async () => 'Две единицы стоят 24 000 рублей.';
+    assert.match((await next('Посчитай две единицы', 'estimator')).prompt, /Выбираю SH-12/);
+    f.holder.respond = async () => 'Итого 24 000.';
+    assert.match((await next('Округли итог')).prompt, /Две единицы стоят 24 000/);
+    await grantedFolder(f, { 'note.txt': 'Доступный справочник.' }, { profile: 'documents' });
+    await next('Вопрос без чтения');
+    const resumed = await next('Ещё один вопрос');
+    assert.ok(resumed.sessionId);
+    assert.doesNotMatch(resumed.prompt, /<chat_history>/);
     assert.equal((await f.req('POST', route + '/' + projectChat.json().id + '/messages', f.token,
       { text: 'Подготовь КП', requiredSpecialistId: 'accountant' })).statusCode, 403);
   } finally { await f.app.close(); }

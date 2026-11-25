@@ -114,7 +114,8 @@ test('the retired assistant becomes a project chat and preserves its history and
   try {
     const state = structuredClone(f.store.state);
     const project = state.projects.find(item => item.id === f.project.id)!;
-    const legacy = { ...state.corporate!.profiles[0], id: 'universal', enabled: true, allowWrite: true };
+    const legacy = { ...state.corporate!.profiles[0], id: 'universal', enabled: true, allowWrite: true,
+      model: 'legacy-default', instructions: 'Проверяй единицы измерения.', instructionFiles: [{ name: 'units.md', text: 'Укажи валюту.' }] };
     state.corporate!.profiles.unshift(legacy);
     project.agentPolicy = { revision: 7, connections: [{ profileId: legacy.id, toolIds: ['chat-files'], fileIds: null }] };
     const original = await f.workspace.addChat(f.project.id);
@@ -127,6 +128,17 @@ test('the retired assistant becomes a project chat and preserves its history and
     assert.deepEqual(project.agentPolicy, { revision: 7, connections: [] });
     assert.deepEqual(project.chatTools, ['chat-files', 'fastkore']);
     assert.equal(project.chatAllowWrite, true);
+    assert.deepEqual(project.chatDefaults?.instructionFiles, legacy.instructionFiles);
+    assert.equal(project.chatDefaults?.model, legacy.model);
+    assert.equal(project.chatDefaults?.instructions, legacy.instructions);
+    f.project.chatDefaults = structuredClone(project.chatDefaults);
+    assert.match(f.workspace.corporate.instructions(undefined, f.workspace.corporate.profile(undefined, undefined, f.project)), /Укажи валюту/);
+    const route = '/api/projects/' + f.project.id;
+    assert.equal((await f.req('GET', route + '/agent-settings', f.admin)).json().chatDefaults.model, legacy.model);
+    const edit = { ...project.chatDefaults, instructions: 'Укажи дату.' };
+    assert.equal((await f.req('PUT', route + '/chat-defaults', f.admin, edit)).statusCode, 200);
+    assert.equal((await f.req('PUT', route + '/chat-defaults', f.admin, edit)).statusCode, 409);
+    assert.equal((await f.req('PUT', route + '/chat-defaults', f.token, edit)).statusCode, 403);
     assert.equal(old.sessionId, undefined);
     assert.equal(old.agentProfileId, undefined);
     assert.equal(old.historyReplayPending, true);

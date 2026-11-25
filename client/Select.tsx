@@ -1,9 +1,9 @@
 import { useEffect, useId, useImperativeHandle, useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type Ref } from 'react';
 import { createPortal } from 'react-dom';
-import { Check, ChevronDown } from 'lucide-react';
+import { Check, ChevronDown, type LucideIcon } from 'lucide-react';
 import { interfaceScale } from './interface-scale';
 
-export interface SelectOption { value: string; label: string; disabled?: boolean; detail?: string; detailTitle?: string }
+export interface SelectOption { value: string; label: string; icon?: LucideIcon; disabled?: boolean; detail?: string; detailTitle?: string }
 export interface SelectHandle { open(): void }
 interface SelectProps {
   options: SelectOption[];
@@ -17,6 +17,11 @@ interface SelectProps {
   disabled?: boolean;
   fitContent?: boolean;
   ref?: Ref<SelectHandle>;
+}
+
+function OptionLabel({ option, fallback }: { option?: SelectOption; fallback?: string }) {
+  const Icon = option?.icon;
+  return <span className={Icon ? 'select-label-icon' : undefined}>{Icon && <Icon size={16} aria-hidden="true" />}{option?.label ?? fallback}</span>;
 }
 
 export function Select({ options, value, onChange, id, label, className = '', placeholder, title, disabled, fitContent, ref }: SelectProps) {
@@ -130,14 +135,14 @@ export function Select({ options, value, onChange, id, label, className = '', pl
       disabled={disabled || !enabled.length} className={'workspace-select ' + className}
       onClick={() => { if (expanded) setOpen(false); else reveal(); }}
       onBlur={() => setOpen(false)} onKeyDown={onKeyDown}>
-      <span>{options[selected]?.label ?? placeholder ?? 'Выберите'}</span><ChevronDown size={13} aria-hidden="true" />
+      <OptionLabel option={options[selected]} fallback={placeholder ?? 'Выберите'} /><ChevronDown size={13} aria-hidden="true" />
     </button>
     {expanded && portal && placement && createPortal(<div ref={menu} className="workspace-select-menu" id={listId} role="listbox" aria-label={label} style={placement}>
       {options.map((option, index) => <div id={listId + '-' + index} key={option.value} role="option"
         aria-selected={value === option.value} aria-disabled={option.disabled || undefined} data-active={active === index}
         onPointerDown={event => event.preventDefault()} onPointerMove={() => { if (!option.disabled) setActive(index); }}
         onClick={() => choose(index)}>
-        <span>{option.label}</span>{option.detail && <small className="select-option-detail" title={option.detailTitle}>{option.detail}</small>}{value === option.value && <Check size={15} aria-hidden="true" />}
+        <OptionLabel option={option} />{option.detail && <small className="select-option-detail" title={option.detailTitle}>{option.detail}</small>}{value === option.value && <Check size={15} aria-hidden="true" />}
       </div>)}
     </div>, portal)}
   </>;

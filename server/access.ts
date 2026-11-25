@@ -361,7 +361,7 @@ export class Access {
   viewChat(chat: Chat, session?: Credential): ChatView {
     const { specialistSessions, knowledgeRevision, fastkoreBinding, fastkoreHistory, titleCustomized, cliWorkspaceProjectId, sessionProvider, historyReplayPending, legacyHistory, ...view } = chat;
     const authorName = this.userNameLookup();
-    const messages = chat.messages.map(({ historyScope, requestScope, ...message }) => {
+    const messages = chat.messages.map(({ historyScope, libraryHistory, requestScope, ...message }) => {
       if (message.role === 'assistant') return message;
       const authorId = message.authorId ?? chat.ownerId;
       return { ...message, authorId, authorName: authorName(authorId) };

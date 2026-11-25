@@ -14,7 +14,7 @@ const estimatorInstructions = 'Готовь расчёты стоимости и
 function projectChatProfile(project?: Project): AgentProfile {
   return { id: projectChatGrantId, name: 'Чат проекта', description: '', instructions: '', enabled: true,
     toolIds: project?.chatTools,
-    model: '', reasoningEffort: 'high', operationIds: ['chat'], datasetIds: [], skillIds: [], allowWrite: project?.chatAllowWrite === true, revision: 1 };
+    model: '', reasoningEffort: 'high', operationIds: ['chat'], datasetIds: [], skillIds: [], allowWrite: project?.chatAllowWrite === true, revision: 1, ...project?.chatDefaults };
 }
 function migrateEstimateOperation(corporate: Corporate) {
   const retired = 'estimate';
@@ -66,6 +66,10 @@ export function initializeCorporate(state: State): Corporate {
       project.chatTools = agentToolIds.filter(id => id === 'fastkore' || retired.toolIds!.includes(id));
     }
     if (retired && (previous || !project.agentPolicy)) {
+      if (retired.instructions || retired.instructionFiles?.length || retired.model) {
+        project.chatDefaults ??= { instructions: retired.instructions, instructionFiles: structuredClone(retired.instructionFiles),
+          model: retired.model, reasoningEffort: retired.reasoningEffort, revision: retired.revision };
+      }
       if (retired.allowWrite) project.chatAllowWrite = true;
       if (((retired.toolIds ?? ['project-files']) as string[]).includes('project-files') &&
         (!project.agentPolicy || (previous?.toolIds as string[] | undefined)?.includes('project-files'))) {
@@ -151,12 +155,12 @@ export class CorporateAccess {
   }
   summary(profile: AgentProfile, project?: Project): AgentSummary {
     const unavailableReason = this.unavailable(profile, project);
-    return { id: profile.id, name: profile.name, description: profile.description, model: profile.model, allowWrite: profile.allowWrite,
+    return { id: profile.id, name: profile.name, description: profile.description, model: profile.model, reasoningEffort: profile.model ? profile.reasoningEffort : undefined, allowWrite: profile.allowWrite,
       toolIds: this.tools(profile, project), available: !unavailableReason, unavailableReason };
   }
   projectChat(project: Project) {
-    const { available, unavailableReason, toolIds, allowWrite } = this.summary(projectChatProfile(project), project);
-    return { available, unavailableReason, toolIds, allowWrite };
+    const { available, unavailableReason, toolIds, allowWrite, model, reasoningEffort } = this.summary(projectChatProfile(project), project);
+    return { available, unavailableReason, toolIds, allowWrite, model, reasoningEffort };
   }
   specialists(user: User | undefined, project: Project, mainProfileId: string) {
     if (!user || user.disabled) return [];

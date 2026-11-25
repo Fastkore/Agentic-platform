@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useId, useState } from 'react';
 import type { Request } from './library-upload';
 
 export interface StorageLocation { endpoint: string; bucket: string; region: string; forcePathStyle: boolean }
@@ -7,6 +7,7 @@ export interface StorageStatus { configured: boolean; kind?: string; location?: 
 export function LibraryStorageSetup({ request, location, onSaved, cancel }: {
   request: Request; location?: StorageLocation; onSaved: () => void; cancel?: () => void;
 }) {
+  const hintId = useId();
   const [aws, setAws] = useState(location ? !location.endpoint : false);
   const [endpoint, setEndpoint] = useState(location?.endpoint || 'http://minio:9000');
   const [bucket, setBucket] = useState(location?.bucket || '');
@@ -44,10 +45,10 @@ export function LibraryStorageSetup({ request, location, onSaved, cancel }: {
       <label>Сервис<select value={aws ? 'aws' : 'minio'} onChange={e => setAws(e.target.value === 'aws')}>
         <option value="minio">MinIO или другой S3-сервис</option><option value="aws">Amazon S3</option>
       </select></label>
-      {!aws && <><label>Адрес S3 API<input type="url" value={endpoint} onChange={e => setEndpoint(e.target.value)} placeholder="http://minio:9000" /></label>
-        <p className="help">Если хранилище в соседнем контейнере, подключите оба сервиса к общей Docker-сети. Укажите имя сервиса и внутренний порт API, например http://minio:9000.</p></>}
-      <label>Название бакета<input value={bucket} onChange={e => setBucket(e.target.value)} placeholder="Например, project-library" /></label>
-      <p className="help">Создайте отдельный закрытый бакет в консоли хранилища или укажите существующий бакет библиотеки.</p>
+      {!aws && <div className="storage-field"><label>Адрес S3 API<input aria-describedby={hintId + '-endpoint'} type="url" value={endpoint} onChange={e => setEndpoint(e.target.value)} placeholder="http://minio:9000" /></label>
+        <p className="help" id={hintId + '-endpoint'}>Если хранилище в соседнем контейнере, подключите оба сервиса к общей Docker-сети. Укажите имя сервиса и внутренний порт API, например http://minio:9000.</p></div>}
+      <div className="storage-field"><label>Название бакета<input aria-describedby={hintId + '-bucket'} value={bucket} onChange={e => setBucket(e.target.value)} placeholder="Например, project-library" /></label>
+        <p className="help" id={hintId + '-bucket'}>Создайте отдельный закрытый бакет в консоли хранилища или укажите существующий бакет библиотеки.</p></div>
       {aws ? <label>Регион бакета<input value={region} onChange={e => setRegion(e.target.value)} /></label> :
         <details><summary>Дополнительные настройки</summary>
           <label>Регион<input value={region} onChange={e => setRegion(e.target.value)} /></label>

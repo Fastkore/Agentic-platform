@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
-import { BarChart3, Bot, Calculator, ChevronDown, ChevronLeft, Database, FileText, Folder, MessageCircle, Paperclip, Pencil, Plus, RefreshCw, Search, Settings2, X } from 'lucide-react';
+import { BarChart3, Bot, Calculator, ChevronLeft, Database, FileText, Folder, MessageCircle, Paperclip, Pencil, Plus, RefreshCw, Search, Settings2, X } from 'lucide-react';
 import { specialistFileLimits, specialistIcons, type AgentProfile, type ModelCatalog, type SpecialistIcon } from '../shared/types';
 import { hasAdjustableEffort } from '../shared/execution-accounts';
-import { isAutomaticModel } from '../shared/model-selection';
+import { groupModelOptions, isAutomaticModel, modelEffort } from '../shared/model-selection';
+import { reasoningOptions } from './ChatModelControls';
+import { InfoHint } from './InfoHint';
 import { Select } from './Select';
 import { PermissionSwitch as Toggle } from './PermissionSwitch';
 import { SettingsSpinner } from './SettingsSpinner';
@@ -17,7 +19,6 @@ const newProfile: AgentProfile = { id: '', name: '', description: '', instructio
 const editorTabs = [
   { id: 'general', label: 'Основное', icon: Bot },
   { id: 'instructions', label: 'Инструкции', icon: FileText },
-  { id: 'model', label: 'Модель', icon: Settings2 },
 ] as const;
 type EditorTab = typeof editorTabs[number]['id'];
 
@@ -28,9 +29,8 @@ function IconTile({ icon }: { icon: SpecialistIcon }) {
   const Icon = icons[icon];
   return <span className="specialist-icon" aria-hidden="true"><Icon size={23} strokeWidth={1.8} /></span>;
 }
-export function SpecialistsPanel({ request, globalInstructions, initialProfileId }: {
+export function SpecialistsPanel({ request, initialProfileId }: {
   request: Request;
-  globalInstructions: string;
   initialProfileId?: string;
 }) {
   const [profiles, setProfiles] = useState<Profile[]>();
@@ -65,7 +65,7 @@ export function SpecialistsPanel({ request, globalInstructions, initialProfileId
   }, [initialProfileId, request]);
   useEffect(() => { if (editingProfile) heading.current?.focus(); }, [editingProfile]);
   useEffect(() => {
-    if (!editingProfile || tab !== 'model') return;
+    if (!editingProfile) return;
     const controller = new AbortController();
     setModelsLoading(true);
     setModelError('');
@@ -77,7 +77,7 @@ export function SpecialistsPanel({ request, globalInstructions, initialProfileId
       if (!controller.signal.aborted) setModelError(error.message);
     }).finally(() => { if (!controller.signal.aborted) setModelsLoading(false); });
     return () => controller.abort();
-  }, [request, editingProfile, tab, modelRefresh]);
+  }, [request, editingProfile, modelRefresh]);
 
   const visible = (profiles ?? []).filter(profile => {
     const search = query.trim().toLocaleLowerCase('ru');
@@ -183,12 +183,15 @@ export function SpecialistsPanel({ request, globalInstructions, initialProfileId
   const profile = editing;
   const files = profile.instructionFiles ?? [];
   const availableModels = models?.models.filter(model => !isAutomaticModel(model.id)) ?? [];
+  const choices = groupModelOptions(availableModels.map(model => ({ value: model.id, label: model.name })), profile.model, profile.reasoningEffort);
   const modelOptions = [
     { value: '', label: 'Модель диалога' },
     ...(profile.model && !availableModels.some(model => model.id === profile.model)
       ? [{ value: profile.model, label: profile.model + (models ? ' · недоступна' : '') }] : []),
-    ...availableModels.map(model => ({ value: model.id, label: model.name })),
+    ...choices.rows,
   ];
+  const hasEffort = !!profile.model && (choices.variants.size > 0 || hasAdjustableEffort(profile.model));
+  const effortOptions = reasoningOptions.filter(option => !choices.variants.size || choices.variants.has(option.value));
   const submit = (event: FormEvent) => { event.preventDefault(); if (!busy) void save(profile, true); };
   return <div className="specialist-page specialist-editor">
     <header className="specialist-header">
@@ -218,24 +221,48 @@ export function SpecialistsPanel({ request, globalInstructions, initialProfileId
         </button>)}
       </div>
       <div role="tabpanel" id="specialist-panel-general" aria-labelledby="specialist-tab-general" className="specialist-tabpanel" hidden={tab !== 'general'} tabIndex={0}>
-      <section className="specialist-card">
+      <section className="specialist-card specialist-general-card">
         <h3>Основная информация</h3>
         <div className="specialist-columns">
           <div><label htmlFor="config-name">Название</label><input id="config-name" maxLength={100} required value={profile.name} onChange={event => update({ name: event.target.value })} /></div>
-          <div><label htmlFor="profile-description">Когда подключать агента</label>
+          <div><div className="specialist-field-label"><label htmlFor="profile-description">Когда подключать агента</label>
+              <InfoHint label="Как заполнить назначение агента" descriptionId="profile-description-help">
+                Укажите задачу и ожидаемый результат. По этому описанию чат выбирает консультанта.
+              </InfoHint></div>
             <input id="profile-description" maxLength={1000} required pattern={String.raw`.*\S.*`} value={profile.description}
               aria-describedby="profile-description-help" placeholder="Например, подбирает цены по прайсу и считает итог для КП"
               onChange={event => { setError(''); update({ description: event.target.value }); }} />
-            <p id="profile-description-help" className="help">Укажите задачу и ожидаемый результат. По этому описанию чат выбирает консультанта.</p>
+
           </div>
         </div>
+        <div className="specialist-columns specialist-model-fields">
+          <div><label htmlFor="profile-model">Модель</label>
+            <div className="specialist-model-picker">
+              <Select id="profile-model" label="Модель агента" className="settings-select" value={profile.model} options={modelOptions}
+                disabled={busy} onChange={model => update({ model, reasoningEffort: modelEffort(model) ?? profile.reasoningEffort })} />
+              <button type="button" className="workspace-icon" aria-label="Обновить модели" title="Обновить модели" disabled={modelsLoading}
+                onClick={() => setModelRefresh(value => value + 1)}><RefreshCw size={16} className={modelsLoading ? 'spin' : undefined} /></button>
+            </div>
+          </div>
+          <div><label htmlFor="profile-effort">Уровень рассуждения</label>
+            <Select id="profile-effort" className="settings-select" disabled={busy || !hasEffort}
+              value={hasEffort ? modelEffort(profile.model) ?? profile.reasoningEffort : ''}
+              placeholder={profile.model ? 'Задаётся моделью' : 'Из настроек диалога'} options={effortOptions}
+              onChange={value => {
+                const reasoningEffort = value as AgentProfile['reasoningEffort'];
+                update({ reasoningEffort, model: choices.variants.get(reasoningEffort) ?? profile.model });
+              }} />
+          </div>
+        </div>
+        {modelsLoading && <SettingsSpinner inline label="Загрузка моделей…" />}
+        {modelError && <p className="inline-error" role="alert">{modelError}</p>}
         <div className="specialist-basics">
           <label className="specialist-enabled">
             <Toggle name="Агент включён" checked={profile.enabled} onChange={enabled => update({ enabled })} />
             {profile.enabled ? 'Агент включён' : 'Агент выключен'}</label>
           <div className="specialist-icon-select"><label htmlFor="specialist-icon">Иконка</label>
             <Select id="specialist-icon" className="settings-select" value={profileIcon(profile)} onChange={icon => update({ icon: icon as SpecialistIcon })}
-              options={specialistIcons.map(value => ({ value, label: iconLabels[value] }))} />
+              options={specialistIcons.map(value => ({ value, label: iconLabels[value], icon: icons[value] }))} />
           </div>
           <label className="specialist-enabled"><Toggle name="Автоматически подключать к новым проектам" checked={profile.autoConnect === true}
             disabled={busy} onChange={autoConnect => update({ autoConnect })} />
@@ -261,28 +288,6 @@ export function SpecialistsPanel({ request, globalInstructions, initialProfileId
           <button type="button" className="workspace-icon" aria-label={'Убрать файл ' + file.name}
             onClick={() => update({ instructionFiles: files.filter(item => item.name !== file.name) })} disabled={busy}><X size={15} /></button>
         </li>)}</ul>}
-      </section>
-      <details className="specialist-card specialist-disclosure">
-        <summary><ChevronDown size={17} aria-hidden="true" />Общие инструкции</summary>
-        <pre>{globalInstructions}</pre>
-      </details>
-      </div>
-
-      <div role="tabpanel" id="specialist-panel-model" aria-labelledby="specialist-tab-model" className="specialist-tabpanel" hidden={tab !== 'model'} tabIndex={0}>
-      <section className="specialist-card">
-          <label htmlFor="profile-model">Модель</label>
-          <div className="specialist-model-picker">
-            <Select id="profile-model" label="Модель агента" className="settings-select" value={profile.model}
-              options={modelOptions} disabled={busy} onChange={model => update({ model })} />
-            <button type="button" className="workspace-icon" aria-label="Обновить модели" title="Обновить модели" disabled={modelsLoading}
-              onClick={() => setModelRefresh(value => value + 1)}><RefreshCw size={16} className={modelsLoading ? 'spin' : undefined} /></button>
-          </div>
-          {modelsLoading && <SettingsSpinner inline label="Загрузка моделей…" />}
-          {modelError && <p className="inline-error" role="alert">{modelError}</p>}
-          {hasAdjustableEffort(profile.model) && <><label htmlFor="profile-effort">Уровень рассуждения</label><Select id="profile-effort" className="settings-select" value={profile.reasoningEffort}
-            onChange={reasoningEffort => update({ reasoningEffort: reasoningEffort as AgentProfile['reasoningEffort'] })}
-            options={[{ value: 'low', label: 'Низкий' }, { value: 'medium', label: 'Средний' }, { value: 'high', label: 'Высокий' }, { value: 'xhigh', label: 'Очень высокий' }]} /></>}
-      <p className="help">Настройки модели в чате имеют приоритет.</p>
       </section>
       </div>
 

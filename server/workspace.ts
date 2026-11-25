@@ -4,8 +4,8 @@ import { mkdir, mkdtemp, readFile, realpath, rename, rm, rmdir, stat, unlink, wr
 import { tmpdir } from 'node:os';
 import { isDeepStrictEqual } from 'node:util';
 import { performance } from 'node:perf_hooks';
-import type { AgentProfile, Attachment, Chat, CliInfo, CodexLimits, Credential, FastkoreChatBinding, FileStorageProvider, FileStorageStatus, Job, Message, ModelCatalog, Project, ProjectAgentPolicy, ProjectRole, Run, Settings, TokenActivityReport, Usage, User } from '../shared/types.js';
-import { sharedChatWaitMessage } from '../shared/types.js';
+import type { AgentProfile, Attachment, Chat, CliInfo, CodexLimits, Credential, FastkoreChatBinding, FileStorageProvider, FileStorageStatus, Job, Message, ModelCatalog, Project, ProjectAgentPolicy, ProjectChatDefaults, ProjectRole, Run, Settings, TokenActivityReport, Usage, User } from '../shared/types.js';
+import { sharedChatWaitMessage, specialistFileLimits } from '../shared/types.js';
 import { fastkoreExecutionContext, fastkoreSelectionChatKey, type FastkoreContext } from '../shared/fastkore-context.js';
 import { fastkorePrompt } from './fastkore-prompt.js';
 import { agentContext, SOURCE_TRUST_INSTRUCTIONS } from './agent-context.js';
@@ -32,9 +32,10 @@ import { executionConnected, providerForModel, type ExecutionAccount } from '../
 import { fastkoreChatSessionMatches, matchesFastkoreChat, matchesLegacyFastkoreList, rememberFastkoreTurn } from './fastkore-chat.js';
 import { defaultExecutionConcurrency, validExecutionConcurrency } from './execution-concurrency.js';
 import { elapsedMs, timeExecutor } from './run-timing.js';
-import { concreteModel } from '../shared/model-selection.js';
+import { concreteModel, modelEffort } from '../shared/model-selection.js';
 import { ProjectLibrary, type PlatformDirectory } from './library/index.js';
-import { publicationProblems } from './library/tools.js';
+import { inspectPublicationFile } from './library/publication-file.js';
+import { publicationProblems, type RunReadLog } from './library/tools.js';
 import { libraryStorageFromEnv, type LibraryStorageConfig } from './library/blob-store.js';
 import { chatVisualInstructions, chatVisualPublicationText, splitChatVisuals } from './chat-visuals.js';
 import { chatFileEntries } from '../shared/chat-attachments.js';
@@ -91,7 +92,7 @@ function earlierChatImages(chat: Chat, project: Project, authorId?: string) {
   return stored ? [stored] : [];
 }
 
-function recentChatHistory(chat: Chat, before: number, scope: string, authorId: string | undefined, budget: number,
+function recentChatHistory(chat: Chat, before: number, scope: string, authorId: string | undefined, budget: number, libraryHistory: string,
   sharedAuthor?: (id?: string) => string) {
   const turns: string[] = [];
   let legacyTurns = 0;
@@ -99,6 +100,9 @@ function recentChatHistory(chat: Chat, before: number, scope: string, authorId: 
   for (let i = before - 1; i > 0 && turns.length < historyTurnLimit && remaining > 200; i--) {
     const answer = chat.messages[i];
     if (answer.role !== 'assistant' || answer.status !== 'complete') continue;
+    // Older shared and specialist replies have no reliable record of their source boundary.
+    const previousBoundary = answer.libraryHistory ?? (sharedAuthor || answer.specialistName || answer.consultedSpecialists?.length ? undefined : 'open');
+    if (previousBoundary !== libraryHistory) break;
     const question = chat.messages[i - 1];
     if (question.role !== 'user' || question.status !== 'complete' ||
       question.runId !== answer.runId || !sharedAuthor && (question.authorId ?? chat.ownerId) !== authorId) break;
@@ -494,6 +498,24 @@ export class Workspace {
         throw error;
       }
       return { name };
+    });
+  }
+  saveChatDefaults(projectId: string, input: ProjectChatDefaults, authorize: () => string) {
+    return this.admit(async () => {
+      this.writable();
+      const actorId = authorize();
+      const project = this.activeProject(projectId);
+      const old = project.chatDefaults;
+      if (!old || old.revision !== input.revision) throw new BridgeError('Настройки изменились. Откройте проект заново.', 409);
+      const files = input.instructionFiles ?? [];
+      if (files.reduce((sum, file) => sum + file.text.length, 0) > specialistFileLimits.characters ||
+          files.some(file => !old.instructionFiles?.some(previous => previous.name === file.name) || !file.text.trim()) ||
+          new Set(files.map(file => file.name)).size !== files.length) throw new BridgeError('Проверьте файлы инструкций и их общий размер.');
+      const next = { ...input, revision: old.revision + 1 };
+      project.chatDefaults = next;
+      try { await this.store.save({ audit: { id: randomUUID(), actorId, action: 'project.chat-defaults', targetId: projectId, createdAt: new Date().toISOString() } }); }
+      catch (error) { project.chatDefaults = old; throw error; }
+      return next;
     });
   }
   saveProjectInstructions(projectId: string, input: { instructions: string; previous: string }, authorize: () => string) {
@@ -1127,7 +1149,7 @@ export class Workspace {
       const run: Run = { id: randomUUID(), projectId, chatId, ownerId: author?.id ?? chat.ownerId,
         agentProfileId: profile.id === projectChatGrantId ? chat.agentProfileId : profile.id,
         profileRevision: profile.revision, status: 'queued', progress: 'Ожидает выполнения', createdAt: new Date().toISOString(), clientRequestId, requestHash: hash, model: resolvedModel || undefined,
-        reasoningEffort: chat.reasoningEffort ?? profile.reasoningEffort ?? this.store.state.settings.reasoningEffort ?? 'high' };
+        reasoningEffort: modelEffort(resolvedModel) ?? chat.reasoningEffort ?? (profile.model ? profile.reasoningEffort : undefined) ?? this.store.state.settings.reasoningEffort ?? 'high' };
       run.executionProvider = provider;
       const job: Job = { runId: run.id, kind: 'chat', text, attachmentIds, authorId: author?.id, credentialId: author?.credentialId,
         scope: this.corporate.scope(actor, profile, project),
@@ -1216,6 +1238,7 @@ export class Workspace {
     let sourceTools;
     try {
       const source = actor && this.library.prepareRun(libraryRunId, actor.id, project.id, profile.id, this.isolatedCodex, provider === 'codex');
+      if (source?.closed) throw new BridgeError('Для работы с закрытой библиотекой обратитесь к специалисту напрямую.', 409);
       const allowedTools = this.corporate.tools(profile, project);
       const useErp = !source?.closed && allowedTools.includes('fastkore');
       const fastkoreContext = useErp ? job.fastkoreContext : undefined;
@@ -1249,12 +1272,13 @@ export class Workspace {
         excerpts && '<local_document_context>\n' + excerpts + '\n</local_document_context>', 'Подзадача от основного агента\n' + task].filter(Boolean).join('\n\n');
       authorize();
       const result = await this.codex.run({ cliPath, workspace: project.directory, prompt, imageUrls, imageQuestion, developerInstructions, tools: consultationTools,
-        allowWrite: false, consultation: !standalone, ephemeral: true, executionConcurrency: this.executionConcurrency, model, reasoningEffort: run.reasoningEffort ?? profile.reasoningEffort,
+        allowWrite: false, consultation: !standalone, ephemeral: true, executionConcurrency: this.executionConcurrency, model, reasoningEffort: modelEffort(model) ?? (profile.model ? profile.reasoningEffort : undefined) ?? run.reasoningEffort,
       }, async () => {}, signal);
       authorize();
+      const evidence = sourceTools && source ? { scope: source.scope, log: sourceTools.log.copy() } : undefined;
       const publication = sourceTools && source && await this.library.publishChecked(result.response, source.scope, sourceTools.log);
       authorize();
-      return { result, publication, scope: sourceTools && source ? source.scope : undefined };
+      return { result, publication, evidence };
     } finally {
       sourceTools?.log.purge();
       if (actor) this.library.finishRun(libraryRunId);
@@ -1358,12 +1382,14 @@ export class Workspace {
     const sourcesUsable = !!(actor && sourceRun?.scope.entries.length && sourceRun.toolsSupported);
     const closedSourceRun = sourcesUsable && !!sourceRun?.closed;
     const protectSourceFiles = closedSourceRun;
+    const libraryHistory = closedSourceRun ? 'restricted:' + this.corporate.scope(actor, profile, project) + ':' + sourceRun!.scope.hash + ':' + createHash('sha256').update(job.credentialId ?? '').digest('hex') : 'open';
     const fastkoreContext = allowedTools.includes('fastkore') ? job.fastkoreContext : undefined;
     const snapshot = fastkoreContext && JSON.stringify(fastkoreContext);
     const erpContext = job.fastkoreContext;
     const bindingKey = chat.fastkoreBinding?.view === 'list' || chat.fastkoreBinding?.externalUserId ? undefined : chat.fastkoreBinding?.key;
     const selectionKey = erpContext && !bindingKey ? fastkoreSelectionChatKey(erpContext) : undefined;
     const erpScope = erpContext ? ':erp:' + (bindingKey ?? createHash('sha256').update(selectionKey ?? JSON.stringify(erpContext)).digest('hex')) : '';
+    const requestScope = closedSourceRun ? erpScope + ':' + libraryHistory : erpScope;
     const erpStarted = performance.now();
     const integration = !closedSourceRun && this.isolatedCodex && job.credentialId && allowedTools.includes('fastkore') && this.prepareFastkoreTools
       ? await this.prepareFastkoreTools(job.credentialId, fastkoreContext, () => this.checkJob(job, run), signal, run)
@@ -1416,23 +1442,24 @@ export class Workspace {
       onSaved: changed => { if (changed || !instructionSave) instructionSave = changed ? 'saved' : 'already-saved'; },
     }) : internetTools;
     const availableSpecialists = job.specialistScope ? this.corporate.specialists(actor, project, profile.id) : [];
-    const specialists = protectSourceFiles ? [] : availableSpecialists;
+    const specialists = protectSourceFiles ? [] : availableSpecialists.filter(item => !actor || process.env.BRIDGE_LIBRARY_CLOSED_ANALYSIS !== 'verified' ||
+      !this.library.policy.runScope(actor.id, project.id, item.id, job.credentialId).entries.some(entry => entry.classification === 'restricted'));
     const globalInstructions = settings.agentInstructions ?? DEFAULT_AGENT_INSTRUCTIONS;
     const consulted = new Set<string>();
-    const consultationScopes: RunLibraryScope[] = [];
+    const consultations: { scope: RunLibraryScope; log: RunReadLog }[] = [];
     let consultationUsage: Usage | undefined;
     let consultationCount = 0;
     const consult = async (specialist: AgentProfile, task: string, callSignal: AbortSignal, standalone = false) => {
       if (++consultationCount > 4) return { success: false, text: 'Лимит консультаций для этого вопроса исчерпан.' };
       run.progress = 'Консультация · ' + specialist.name;
       const consultationSignal = AbortSignal.any([signal, callSignal, AbortSignal.timeout(180_000)]);
-      const { result, publication, scope } = await this.consultSpecialist(project, specialist, actor, job, run,
+      const { result, publication, evidence } = await this.consultSpecialist(project, specialist, actor, job, run,
         cliPath, task, globalInstructions, projectInstructions, availableDocuments, imageUrls, consultationSignal, standalone);
       consultationUsage = addUsage(consultationUsage, result.usage);
       if (publication && !publication.allowed) return { success: false, text: publication.text };
       if (!result.response.trim()) return { success: false, text: 'Агент не вернул ответ.' };
       consulted.add(specialist.name);
-      if (scope) consultationScopes.push(scope);
+      if (evidence) consultations.push(evidence);
       return { success: true, text: result.response.slice(0, 90_000) };
     };
     const tools: CodexTools | undefined = specialists.length ? {
@@ -1482,7 +1509,7 @@ export class Workspace {
     // A resumed Codex thread keeps its original tool catalog. Upgrade writable
     // threads once and keep their previously published files in the same scope.
     const oldScope = fileScope + (workerWrites ? ':office-v1' : '') + (cad ? ':cad-' + FreecadJob.catalogRevision : '');
-    const scope = oldScope + ':history-v3';
+    const scope = oldScope + ':history-v4';
     const legacyScope = chat.sessionScope === oldScope || chat.sessionScope === oldScope + ':history-v2';
     const historyAuthorId = job.authorId ?? chat.ownerId;
     // Rebuild existing threads that could have dropped an interrupted request; keep other native sessions.
@@ -1490,17 +1517,17 @@ export class Workspace {
     const projectInstructionsHash = projectInstructions && createHash('sha256').update(projectInstructions).digest('hex');
     const projectInstructionsChanged = chat.sessionProjectInstructionsHash !== projectInstructionsHash;
     const scopeChanged = projectInstructionsChanged || chat.sessionScope !== scope && (!legacyScope ||
-      !!recentUnfinishedRequests(chat, chat.messages.length, historyAuthorId, erpScope, historyCharLimit));
+      !!recentUnfinishedRequests(chat, chat.messages.length, historyAuthorId, requestScope, historyCharLimit));
     const contextScope = chatScope + toolScope;
     // The account key can contain a colon. It ends at the tools suffix or at the end of the scope.
-    const sameSessionContext = chat.sessionScope?.replace(/:history-v[23]$/, '').replace(/:office-v1(?::cad-(?:v[12]|[a-f0-9]{12}))?$/, '').replace(/:account:.*?(?=:tools:|$)/, '') === contextScope;
-    const chatLibraryHash = !directSpecialist ? (sourceRun?.hashKey ?? '')
-      : (actor && this.library.policy.hasConnections(project.id)
-        ? ':library:' + this.library.policy.runScope(actor.id, project.id, chatProfile.id, job.credentialId).hash : '');
+    const sameSessionContext = chat.sessionScope?.replace(/:history-v[234]$/, '').replace(/:office-v1(?::cad-(?:v[12]|[a-f0-9]{12}))?$/, '').replace(/:account:.*?(?=:tools:|$)/, '') === contextScope;
+    const historyLibrary = directSpecialist && actor
+      ? this.library.policy.runScope(actor.id, project.id, chatProfile.id, job.credentialId) : sourceRun?.scope;
+    const chatLibraryHash = historyLibrary?.entries.length ? ':library:' + historyLibrary.hash : '';
     const baseHistoryKey = (this.isolatedCodex ? 'isolated:' : '')
       + this.corporate.scope(actor, chatProfile, project)
       + erpScope + instructionsScope + chatLibraryHash + (shared ? ':shared' : '')
-      + ':cred:' + (job.credentialId ?? '');
+      + ':cred:' + (job.credentialId ?? '') + (closedSourceRun ? ':' + libraryHistory : '');
     const historyScope = createHash('sha256').update(baseHistoryKey + ':visibility:' + (chat.visibility ?? 'private')).digest('hex');
     const lastMessage = chat.messages.at(-1);
     const sameContext = sameSessionContext || Boolean(lastMessage?.role === 'assistant' && lastMessage.historyScope === historyScope);
@@ -1539,8 +1566,8 @@ export class Workspace {
     chat.sessionScope = scope;
     chat.sessionProjectInstructionsHash = projectInstructionsHash;
     chat.sessionProvider = provider;
-    chat.historyReplayPending = replayHistory ? true : undefined;
-    const historyBefore = replayHistory ? chat.messages.length : 0;
+    const historyBefore = replayHistory && !chat.sessionId ? chat.messages.length : 0;
+    chat.historyReplayPending = historyBefore ? true : undefined;
     const unfinishedBefore = !chat.sessionId ? chat.messages.length : 0;
     if (sameContext && !chat.legacyHistory && lastMessage?.role === 'assistant' && lastMessage.status === 'complete' && !lastMessage.historyScope) {
       // For older ERP history the stored session scope only identifies the most recent selection.
@@ -1550,7 +1577,7 @@ export class Workspace {
     if (!this.isolatedCodex && !(await stat(project.directory)).isDirectory()) throw new BridgeError('Папка проекта недоступна.');
     // Admission is durable before execution; messages appear only after Codex auth has been checked.
     chat.messages.push({ id: randomUUID(), role: 'user', text: job.text, status: 'complete', createdAt: run.createdAt, attachments, runId: run.id,
-      authorId: job.authorId, requestScope: erpScope, specialistName: job.specialistName });
+      authorId: job.authorId, requestScope, specialistName: job.specialistName });
     const answer: Chat['messages'][number] = { id: randomUUID(), role: 'assistant', text: '', status: 'running', createdAt: new Date().toISOString(), attachments: [], runId: run.id, model: run.model,
       ...(directSpecialist ? { specialistName: profile.name } : {}) };
     chat.messages.push(answer); chat.updatedAt = new Date().toISOString();
@@ -1569,6 +1596,8 @@ export class Workspace {
     const temp = workerDirectory ?? (!this.isolatedCodex && availableDocuments.some(file => file.storage === 's3')
       ? await mkdtemp(path.join(tmpdir(), 'bridge-files-')) : undefined);
     const produced: Attachment[] = [];
+    const withheld = new Set<string>();
+    let cadFileId: string | undefined;
     let history = '';
     const previousSession = chat.sessionId;
     let stagedEarlierDocuments = earlierDocuments;
@@ -1646,10 +1675,10 @@ export class Workspace {
       const documentContext = context && '<local_document_context>\n' + context + '\n</local_document_context>';
       const question = 'Текущий запрос сотрудника\n' + job.text;
       const historyBudget = Math.min(historyCharLimit, 128_000 - beforeQuestion.length - question.length - documentContext.length - 8);
-      const unfinishedRequests = unfinishedBefore ? recentUnfinishedRequests(chat, unfinishedBefore, historyAuthorId, erpScope, Math.min(historyBudget, historyCharLimit / 2)) : '';
+      const unfinishedRequests = unfinishedBefore ? recentUnfinishedRequests(chat, unfinishedBefore, historyAuthorId, requestScope, Math.min(historyBudget, historyCharLimit / 2)) : '';
       if (historyBefore) {
         const sharedAuthor = shared ? (id?: string) => this.store.state.security?.users.find(item => item.id === id)?.name ?? 'Участник чата' : undefined;
-        history = recentChatHistory(chat, historyBefore, historyScope, historyAuthorId, historyBudget - unfinishedRequests.length, sharedAuthor);
+        history = recentChatHistory(chat, historyBefore, historyScope, historyAuthorId, historyBudget - unfinishedRequests.length, libraryHistory, sharedAuthor);
       }
       const prompt = [beforeQuestion, history, unfinishedRequests, documentContext, question].filter(Boolean).join('\n\n');
       this.checkJob(job, run); signal.throwIfAborted();
@@ -1660,23 +1689,20 @@ export class Workspace {
       const executorTiming = timeExecutor(timing);
       executorStarted = true;
       const imageQuestion = imageUrls?.length && provider === 'glm' ? job.text : undefined;
-      const libraryReadActive = () => Boolean(projectSourceTools?.log.texts().length);
+      const libraryReadActive = () => Boolean(projectSourceTools?.log.calls);
       const result = await this.codex.run({ expectedAccountId: executionAccountId?.split(':')[0], cliPath, workspace: project.directory, prompt, imageUrls, imageQuestion, developerInstructions, tools: cad?.withTools(tools) ?? tools, sessionId: chat.sessionId, sessionSlot: chat.id,
         executionConcurrency: this.executionConcurrency, workDirectoryId: workerWrites ? run.id : undefined, allowWrite: this.isolatedCodex ? workerWrites : writable,
         model: run.model, reasoningEffort: run.reasoningEffort ?? this.store.state.settings.reasoningEffort ?? 'high' }, async event => {
         executorTiming.event(event);
         this.checkJob(job, run); signal.throwIfAborted();
-        if (event.kind === 'session' && !closedSourceRun && !libraryReadActive() && !consultationScopes.length && !shared && !directSpecialist) {
+        if (event.kind === 'session' && !closedSourceRun && !libraryReadActive() && !consultations.length && !shared && !directSpecialist) {
           if (chat.sessionId && chat.sessionId !== event.text) throw new BridgeError('Неожиданная замена сессии Codex.');
           chat.sessionId = event.text;
         }
-        // Hold streaming only when closed sources or strict explanation-only library excerpts were read in this turn.
-        if (!closedSourceRun && !consultationScopes.length && (event.kind === 'message' || event.kind === 'message-delta' || event.kind === 'message-replace')) {
+        if (!closedSourceRun && !libraryReadActive() && !consultations.length && (event.kind === 'message' || event.kind === 'message-delta' || event.kind === 'message-replace')) {
           if (event.kind === 'message-replace') rawAnswer = event.text ?? '';
           else rawAnswer += (event.kind === 'message' && rawAnswer ? '\n\n' : '') + (event.text ?? '');
-          const canStreamNow = !libraryReadActive() || (!sourceRun?.strict && publicationProblems(rawAnswer, projectSourceTools!.log.texts(), 'excerpts_allowed').length === 0);
-          if (canStreamNow) answer.text = splitChatVisuals(rawAnswer, true).text;
-          else if (answer.text) answer.text = '';
+          answer.text = splitChatVisuals(rawAnswer, true).text;
         }
         if (event.kind === 'tool' && event.toolCallId && event.text) {
           activeTools.set(event.toolCallId, { name: event.text, context: event.toolContext });
@@ -1690,7 +1716,7 @@ export class Workspace {
           run.toolContext = currentTool?.context;
         }
         if (event.kind === 'usage') { answer.usage = event.usage; run.usage = event.usage; }
-        if (event.kind === 'progress') run.progress = (!closedSourceRun && !consultationScopes.length && event.text) || 'Выполняется…';
+        if (event.kind === 'progress') run.progress = (!closedSourceRun && !libraryReadActive() && !consultations.length && event.text) || 'Выполняется…';
         if (event.kind === 'message-delta' && lastTextSave && Date.now() - lastTextSave < 100) return;
         if (event.kind !== 'progress') {
           await this.store.saveRun(run, chat);
@@ -1709,49 +1735,78 @@ export class Workspace {
         cliSaved = true;
       }
       if (knowledgeContext) chat.knowledgeRevision = knowledgeContext.revision;
-      if (workerDirectory) await this.admit(async () => {
+      const checks = [...consultations];
+      if (sourceRun && projectSourceTools) checks.push({ scope: sourceRun.scope, log: projectSourceTools.log });
+      const readChecks = checks.filter(check => check.log.calls);
+      const hadLibraryReads = libraryReadActive();
+      if (workerDirectory) {
         const { provider } = this.fileStorageStatus;
         let added = 0;
         for await (const file of workerOutputs(workerDirectory, signal, cad?.files)) {
           this.checkJob(job, run);
-          added += file.contents.length;
+          let output = file.contents;
+          if (readChecks.length) {
+            let contents: string;
+            try {
+              const inspected = await inspectPublicationFile(file.name, file.contents, signal);
+              contents = file.name + '\n' + inspected.text;
+              output = inspected.contents;
+            }
+            catch {
+              signal.throwIfAborted();
+              withheld.add('формат или содержимое не удалось проверить полностью');
+              continue;
+            }
+            if (readChecks.some(({ scope, log }) => publicationProblems(contents, log.texts(),
+              scope.entries.some(entry => entry.outputPolicy === 'explanation_only') ? 'explanation_only' : 'excerpts_allowed').length)) {
+              withheld.add('содержимое превышает разрешённый объём цитирования');
+              continue;
+            }
+          }
+          added += output.length;
           this.checkFileBudget(project, job.authorId, added, produced.length + 1);
-          const saved = await this.files.upload(provider, project, file.name, file.contents);
+          const saved = await this.files.upload(provider, project, file.name, output);
           saved.ownerId = job.authorId;
           produced.push(saved);
-          if (file === cad?.files[0]) answer.freecadSourceId = saved.id;
+          if (file === cad?.files[0]) cadFileId = saved.id;
         }
         this.checkJob(job, run); signal.throwIfAborted();
-        answer.attachments = produced;
-      });
-      this.checkJob(job, run); signal.throwIfAborted();
-      answer.attachments = produced;
-      if (produced.length) answer.fileScope = fileScope;
-      const { text, visuals } = splitChatVisuals(result.response);
-      if (consultationScopes.some(scope => scope.entries.some(entry => !this.library.policy.stillAllowed(scope, entry)))) {
-        throw new BridgeError('Доступ консультанта к библиотеке изменился. Повторите запрос.', 409);
       }
-      const hadLibraryReads = libraryReadActive();
-      const outputExcerpts = produced.length && hadLibraryReads
-        ? (await Promise.all(produced.map(file => this.files.excerpt(project, file, signal).catch(() => '')))).filter(Boolean).join('\n')
-        : '';
-      const extraCheckedText = [visuals && chatVisualPublicationText(visuals), outputExcerpts].filter(Boolean).join('\n');
-      const publication = projectSourceTools && await this.library.publishChecked(text, sourceRun!.scope, projectSourceTools.log, extraCheckedText);
+      const { text, visuals } = splitChatVisuals(result.response);
+      const visualText = visuals && chatVisualPublicationText(visuals);
+      let publication: { allowed: boolean; text: string } | undefined;
+      for (const { scope, log } of checks) {
+        publication = await this.library.publishChecked(text, scope, log, visualText);
+        if (!publication.allowed) break;
+      }
+      if (publication?.allowed && checks.some(({ scope }) => scope.entries.some(entry => !this.library.policy.stillAllowed(scope, entry)))) {
+        publication = { allowed: false, text: 'Ответ не опубликован: доступ к библиотеке изменился. Повторите запрос.' };
+      }
       this.checkJob(job, run); signal.throwIfAborted();
       if (publication && !publication.allowed && produced.length) {
         await Promise.allSettled(produced.splice(0).map(file => this.files.remove(project, file)));
-        answer.attachments = [];
-        delete answer.fileScope;
+        withheld.add('публикация ответа запрещена');
       }
+      if (produced.length) await this.admit(async () => {
+        this.checkJob(job, run); signal.throwIfAborted();
+        if (checks.some(({ scope }) => scope.entries.some(entry => !this.library.policy.stillAllowed(scope, entry)))) {
+          throw new BridgeError('Доступ к библиотеке изменился перед публикацией файлов.', 409);
+        }
+        this.checkFileBudget(project, job.authorId, produced.reduce((total, file) => total + file.size, 0), produced.length);
+        answer.attachments = produced;
+        answer.fileScope = fileScope;
+        answer.freecadSourceId = cadFileId;
+      });
       if (visuals && (!publication || publication.allowed)) answer.visuals = visuals;
       else delete answer.visuals;
-      answer.text = publication ? publication.text : text;
+      answer.text = [publication ? publication.text : text, withheld.size && 'Платформа удержала файлы: ' + [...withheld].join(', ') + '.'].filter(Boolean).join('\n\n');
       answer.usage = addUsage(result.usage, consultationUsage); answer.status = 'complete';
+      answer.libraryHistory = libraryHistory;
       answer.historyScope = historyScope;
       if (consulted.size) answer.consultedSpecialists = [...consulted];
       // Subsequent turns may replay published replies, not the executor transcript with raw excerpts.
-      chat.sessionId = closedSourceRun || hadLibraryReads || consultationScopes.length || shared || directSpecialist ? undefined : result.sessionId;
-      chat.historyReplayPending = (hadLibraryReads || consultationScopes.length || directSpecialist) ? true : undefined; run.response = answer.text; run.usage = answer.usage;
+      chat.sessionId = closedSourceRun || hadLibraryReads || consultations.length || shared || directSpecialist ? undefined : result.sessionId;
+      chat.historyReplayPending = (hadLibraryReads || consultations.length || directSpecialist) ? true : undefined; run.response = answer.text; run.usage = answer.usage;
     } catch (error) {
       // Discard a session first announced by a failed attempt. Its transcript may have missed the question.
       chat.sessionId = previousSession;
@@ -1759,6 +1814,7 @@ export class Workspace {
       throw error;
     } finally {
       answer.instructionSave = instructionSave ?? (job.credentialId && (explicitPersonalEdit || this.steeredInstructionEdits.has(run.id)) ? 'not-saved' : undefined);
+      for (const { log } of consultations) log.purge();
       projectSourceTools?.log.purge();
       if (sourceRun) this.library.finishRun(run.id);
       try {

@@ -32,7 +32,7 @@ import { VoiceDictation } from './VoiceDictation';
 import { DictationModelSettings } from './DictationModelSettings';
 import { PersonalInstructionsPanel } from './PersonalInstructionsPanel';
 import { DEFAULT_AGENT_INSTRUCTIONS } from '../shared/agent-instructions';
-import { concreteModel, isAutomaticModel } from '../shared/model-selection';
+import { concreteModel, groupModelOptions, isAutomaticModel, modelEffort } from '../shared/model-selection';
 import { canReadChatAttachment, previewModelFormat, type PreviewModelFormat } from '../shared/chat-attachments';
 import { fastkoreChatContextKey, fastkoreChatTitle, fastkoreContextProblem, isFastkoreContextMessage, isFastkoreTileList, parseFastkoreContext, type FastkoreContext } from '../shared/fastkore-context';
 import { formatFilterNode, type FastkoreFilterDisplay } from '../shared/fastkore-filter-display';
@@ -336,7 +336,9 @@ function App() {
   const currentAgent = chat?.agentProfileId ? agents.find(agent => agent.id === chat.agentProfileId) : undefined;
   const projectChat = selectedProject?.chatCapabilities;
   const projectChatAvailable = projectChat?.available === true;
-  const messageAgent = chat?.agentProfileId ? currentAgent : projectChat && { ...projectChat, id: '', name: 'Чат проекта', model: '' };
+  const leadAgent = chat?.agentProfileId ? currentAgent : projectChat && { ...projectChat, id: '', name: 'Чат проекта' };
+  const selectedSpecialist = availableAgents.find(agent => agent.id === specialistId);
+  const messageAgent = selectedSpecialist ?? leadAgent;
   const otherSpecialists = availableAgents.filter(agent => agent.id !== currentAgent?.id);
   const chatConsultants = otherSpecialists.filter(agent => chat?.consultantIds?.includes(agent.id));
   const availableConsultants = otherSpecialists.filter(agent => !chatConsultants.includes(agent));
@@ -1191,17 +1193,20 @@ function App() {
     </div>;
   }
   const catalogOptions = catalog?.models.filter(model => !isAutomaticModel(model.id)).map(model => ({ value: model.id, label: model.name })) ?? [];
-  const chatModel = concreteModel(catalog, chat?.model || messageAgent?.model || status?.settings.model);
-  const chatReasoning = chat?.reasoningEffort ?? status?.settings.reasoningEffort ?? 'high';
-  const chatReasoningOptions = chatModel.startsWith('glm') ? reasoningOptions.filter(option => option.value !== 'medium') : reasoningOptions;
+  const chatModel = concreteModel(catalog, selectedSpecialist?.model || chat?.model || leadAgent?.model || status?.settings.model);
+  const chatReasoning = modelEffort(chatModel) ?? chat?.reasoningEffort ?? messageAgent?.reasoningEffort ?? status?.settings.reasoningEffort ?? 'high';
+  const chatChoices = groupModelOptions(catalogOptions, chatModel, chatReasoning);
+  const chatReasoningOptions = reasoningOptions.filter(option => (!chatChoices.variants.size || chatChoices.variants.has(option.value))
+    && (!chatModel.startsWith('glm') || option.value !== 'medium'));
   const chatModels = [
     ...(chatModel && !catalogOptions.some(model => model.value === chatModel) ? [{ value: chatModel, label: modelName(chatModel) }] : []),
-    ...catalogOptions,
+    ...chatChoices.rows,
   ];
   const serverModel = concreteModel(catalog, status?.settings.model);
+  const serverChoices = groupModelOptions(catalogOptions, serverModel, status?.settings.reasoningEffort);
   const serverModels = [
     ...(serverModel && !catalogOptions.some(model => model.value === serverModel) ? [{ value: serverModel, label: modelName(serverModel) }] : []),
-    ...catalogOptions,
+    ...serverChoices.rows,
   ];
   async function saveProjectName(id: string, draft: string) {
     const { name } = await api<{ name: string }>('/api/projects/' + encodeURIComponent(id), {
@@ -1443,7 +1448,7 @@ function App() {
           <ModelPicker key={status?.cli?.accountId} request={api} unavailableReason={codexNotice} revision={status?.codexLimitsRevision}
             model={chatModel} options={chatModels} effort={chatModel.startsWith('glm') && chatReasoning === 'medium' ? 'high' : chatReasoning}
             levels={chatReasoningOptions} disabled={!canEdit || !canEditChatDetails || chatBusy || pending || modelsLoading}
-            onModel={model => void changeModel(model)} onEffort={value => void changeReasoning(value)} />
+            onModel={model => void changeModel(model)} onEffort={value => { const variant = chatChoices.variants.get(value); if (variant) void changeModel(variant); else void changeReasoning(value); }} />
           {canDictate && <VoiceDictation key={JSON.stringify([user.id, projectId, chatId, messageAgent?.id])} canSend={canSend && !pending}
             transcribe={async (wav, signal) => {
               const data = new FormData();
@@ -1805,7 +1810,7 @@ function App() {
           </ul></>}
           {settingsSection === 'roles' && <ErpRolesPanel request={api} />}
           {settingsSection === 'library' && <LibraryPanel request={api} isAdmin={isAdmin} />}
-          {settingsSection === 'profiles' && <SpecialistsPanel request={api} globalInstructions={savedInstructions} initialProfileId={initialSpecialistId} />}
+          {settingsSection === 'profiles' && <SpecialistsPanel request={api} initialProfileId={initialSpecialistId} />}
           {settingsSection === 'audit' && <AuditPanel request={api} />}
           {settingsSection === 'usage' && <UsagePanel request={api} />}
           {settingsSection === 'fastkore' && <FastkorePanel request={api} currentInstallationOnly={authSource === 'fastkore'} />}
@@ -1833,10 +1838,14 @@ function App() {
                   {modelsLoading ? <LoaderCircle className="spin" size={16} /> : <RefreshCw size={16} />}
                 </button>
               </div>
-              {hasAdjustableEffort(serverModel) && <div className="settings-model-row">
+              {(hasAdjustableEffort(serverModel) || serverChoices.variants.size > 0) && <div className="settings-model-row">
                 <label htmlFor="server-reasoning">Рассуждение по умолчанию</label>
-                <Select id="server-reasoning" className="settings-select" value={status?.settings.reasoningEffort ?? 'high'} options={reasoningOptions}
-                  disabled={pending} onChange={value => void saveSettings({ reasoningEffort: value as Settings['reasoningEffort'] })} />
+                <Select id="server-reasoning" className="settings-select" value={modelEffort(serverModel) ?? status?.settings.reasoningEffort ?? 'high'} options={reasoningOptions.filter(level => !serverChoices.variants.size || serverChoices.variants.has(level.value))}
+                  disabled={pending} onChange={value => {
+                    const effort = value as NonNullable<Settings['reasoningEffort']>;
+                    const variant = serverChoices.variants.get(effort);
+                    void saveSettings(variant ? { model: variant } : { reasoningEffort: effort });
+                  }} />
               </div>}
               {modelError && <p role="status">{modelError}</p>}
             </section>

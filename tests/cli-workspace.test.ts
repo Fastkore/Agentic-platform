@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readFile, readdir, writeFile, rm, symlink } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, readdir, writeFile, rm, symlink, stat, utimes } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { CliWorkspace } from '../server/cli-workspace.js';
@@ -60,9 +60,13 @@ test('CLI storage migrates a legacy backup and ignores unpublished snapshots aft
     const unchangedJob = path.join(root, 'unchanged');
     await mkdir(unchangedJob);
     const unchangedWorkspace = new CliWorkspace(root, identity);
+    const ready = path.join(versions, published, 'ready');
+    const expired = new Date(Date.now() - 31 * 86400_000);
+    await utimes(ready, expired, expired);
     await unchangedWorkspace.restore(unchangedJob);
     await unchangedWorkspace.save(unchangedJob);
     assert.deepEqual(await readdir(versions), [published]);
+    assert.ok(Date.now() - (await stat(ready)).mtimeMs < 60_000);
 
     const emptyJob = path.join(root, 'empty-job');
     await mkdir(emptyJob);

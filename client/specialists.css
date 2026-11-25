@@ -69,6 +69,12 @@
 .specialist-tabpanel > .specialist-card + .specialist-card { margin-top: 14px; }
 .specialist-editor-form > .settings-dialog-actions { flex: none; border-top: 1px solid var(--border); margin: 0; padding-top: 12px; }
 .specialist-editor-form > .inline-error { flex: none; margin: 8px 0; max-height: 90px; overflow: auto; }
+.specialist-general-card { display: grid; gap: 10px; }
+.specialist-form .specialist-general-card :is(h3, label) { margin-block: 0; }
+.specialist-general-card .specialist-columns > div { display: grid; align-content: start; gap: 4px; min-width: 0; }
+.specialist-field-label { display: flex; align-items: center; gap: 5px; }
+.specialist-field-label .workspace-icon { width: 20px; height: 20px; }
+.specialist-model-fields .settings-select { width: 100%; margin: 0; }
 .specialist-model-picker { display: flex; align-items: center; gap: 8px; }
 .specialist-model-picker > .settings-select { flex: 1; min-width: 0; margin: 0; }
 .specialist-model-picker > button.workspace-icon { flex: none; }
@@ -87,6 +93,7 @@
 .specialist-form .specialist-columns input:not([type="checkbox"]) { width: 100%; }
 .specialist-basics { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 20px; margin-top: 12px; }
 .specialist-basics :is(.specialist-enabled, .specialist-icon-select) { display: inline-flex; align-items: center; gap: 8px; }
+.specialist-general-card .specialist-basics { margin-top: 0; }
 .specialist-basics label, .specialist-icon-select .settings-select { margin: 0; }
 .specialist-icon-select .settings-select { min-height: 32px; min-width: 108px; }
 .specialist-instructions { display: flex; flex-direction: column; }
@@ -99,12 +106,6 @@
 .specialist-files li details { min-width: 0; flex: 1; }
 .specialist-files li summary { cursor: pointer; overflow-wrap: anywhere; padding-block: 6px; }
 .specialist-card pre { max-height: 240px; overflow: auto; margin: 10px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text-secondary); font: inherit; }
-.specialist-disclosure { padding-block: 0; }
-.specialist-disclosure > summary { display: flex; align-items: center; gap: 8px; padding-block: 12px; cursor: pointer; font-weight: 600; list-style: none; }
-.specialist-disclosure > summary::-webkit-details-marker { display: none; }
-.specialist-disclosure > summary svg { transform: rotate(-90deg); color: var(--text-muted); }
-.specialist-disclosure[open] > summary svg { transform: none; }
-.specialist-disclosure > :is(pre, .specialist-advanced) { margin: 0 0 14px; }
 .specialist-form .settings-dialog-actions { margin-top: 2px; }
 .message-specialists { color: var(--text-muted); margin-top: 8px; font-size: 12px; }
 @media (721px <= width <= 1440px), (width > 720px) and (height <= 820px) {
@@ -120,7 +121,6 @@
   .specialist-meta { margin-top: 5px; }
   .specialist-form { gap: 10px; }
   .specialist-card { padding: 11px 12px; }
-  .specialist-disclosure { padding-block: 0; }
 }
 @container (max-width: 620px) {
   .specialist-filters { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }

@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { strToU8, zipSync } from 'fflate';
 import { LibraryIndexer } from '../server/library/indexer.js';
+import { inspectPublicationFile } from '../server/library/publication-file.js';
 import { LibraryReader } from '../server/library/reader.js';
 import { admin, current, libraryFixture, upload } from './library-helpers.js';
 
@@ -48,6 +49,18 @@ export function xlsx() {
     'xl/worksheets/sheet1.xml': strToU8(sheet),
   }));
 }
+
+test('publication inspects the full Office container and preserves readable documents', async () => {
+  const signal = AbortSignal.timeout(10000);
+  for (const [name, data, expected] of [['quote.docx', docx(), 'После таблицы'], ['price.xlsx', xlsx(), '1500']] as const) {
+    const checked = await inspectPublicationFile(name, data, signal);
+    assert.ok(checked.text.includes(expected));
+    assert.ok((await inspectPublicationFile(name, checked.contents, signal)).text.includes(expected));
+  }
+  const csv = Buffer.from('Reference,Cost\n'.repeat(1200) + 'Final row,12345');
+  assert.match((await inspectPublicationFile('table.csv', csv, signal)).text, /Final row,12345$/);
+  await assert.rejects(inspectPublicationFile('package.zip', docx(), signal));
+});
 
 test('DOCX: headings become sections, paragraphs and table rows are lines with table and row numbers; no pages are invented', async () => {
   const f = await libraryFixture({ limits: { partBytes: 8 * 1024 * 1024 } });

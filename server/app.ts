@@ -31,7 +31,7 @@ import { withInternetTools } from './internet-tools.js';
 import { withFastkoreCliDescription } from './codex-tools.js';
 import { formatFastkoreCliResult, withFastkoreCliCommands } from './fastkore-cli-tools.js';
 import { executionConcurrencySchema } from './execution-concurrency.js';
-import type { AgentProfile, Credential, Dataset, FastkoreAuthentication, FastkoreInstallation, FastkoreKeyIssue, FastkoreRolePermissions, FileStorageProvider, ProjectAgentPolicy, ProjectAgentSettings, Settings, User, WorkRole } from '../shared/types.js';
+import type { AgentProfile, Credential, Dataset, FastkoreAuthentication, FastkoreInstallation, FastkoreKeyIssue, FastkoreRolePermissions, FileStorageProvider, ProjectAgentPolicy, ProjectAgentSettings, ProjectChatDefaults, Settings, User, WorkRole } from '../shared/types.js';
 import type { AuditEvent, ProjectRolePolicy, ProjectRoleSettings, RelatedChatSummary, Run, UnassignedChatSummary, UserRecord } from '../shared/types.js';
 import { agentToolIds } from '../shared/agent-tools.js';
 import { operationIds, projectChatGrantId } from './corporate.js';
@@ -1027,6 +1027,7 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
       policy: { ...policy, connections: policy.connections.map(connection => ({
         ...connection, fileIds: connection.fileIds?.filter(id => fileIds.has(id)) ?? null,
       })) },
+      chatDefaults: project.chatDefaults,
       files,
       isolated: workspace.isolatedCodex,
       profiles: workspace.corporate.data.profiles.map(profile => ({
@@ -1035,6 +1036,13 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
       })),
     };
   });
+  app.put<{ Params: { projectId: string }; Body: ProjectChatDefaults }>('/api/projects/:projectId/chat-defaults', {
+    schema: { body: object({ revision, instructions: { type: 'string', maxLength: 20000 }, model: modelSchema,
+      reasoningEffort: { enum: ['low', 'medium', 'high', 'xhigh'] },
+      instructionFiles: { type: 'array', maxItems: specialistFileLimits.count, items: object({
+        name: string(120), text: string(specialistFileLimits.characters) }, ['name', 'text']) },
+    }, ['revision', 'instructions', 'model', 'reasoningEffort']) },
+  }, request => workspace.saveChatDefaults(request.params.projectId, request.body, () => settingsAdmin(request).id));
   app.put<{ Params: { projectId: string }; Body: ProjectAgentPolicy }>(projectAgentSettings, {
     schema: { body: object({
       revision: { ...revision, minimum: 0 },

@@ -6,6 +6,20 @@ import path from 'node:path';
 import test from 'node:test';
 import { AntigravityClient } from '../server/gemini.js';
 
+import { groupModelOptions, modelEffort } from '../shared/model-selection.js';
+
+test('Antigravity family choices preserve exact CLI IDs and offer only listed efforts', () => {
+  const options = ['high', 'medium', 'low', 'xhigh'].map(effort => ({ value: 'antigravity/gemini-4-neon-' + effort,
+    label: 'Gemini 4 Neon (' + effort + ')' }));
+  options.push({ value: 'antigravity/gemini-pro-orchestrator', label: 'Orchestrator (Carbon)' });
+  const choices = groupModelOptions(options, options[1].value, 'high');
+  assert.deepEqual(choices.rows, [{ value: options[1].value, label: 'Gemini 4 Neon' }, options[4]]);
+  assert.equal(choices.variants.get('xhigh'), options[3].value);
+  assert.equal(modelEffort(options[3].value), 'xhigh');
+  assert.equal(groupModelOptions(options.slice(0, 2), options[0].value).variants.has('low'), false);
+  assert.equal(modelEffort(options[4].value), undefined);
+});
+
 test('AntigravityClient isolates MCP configs across concurrent runs and keeps stable cwd on resume', async () => {
   const home = await mkdtemp(path.join(tmpdir(), 'bridge-agy-concurrent-'));
   const fakeAgy = path.join(home, 'fake-agy.mjs');
