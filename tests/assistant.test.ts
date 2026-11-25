@@ -104,14 +104,18 @@ test('Fastis is opt-in per ERP role, can be completely disabled by role or globa
     assert.equal((await f.req('GET', '/api/assistant/chats', alice.token)).statusCode, 403);
     assert.equal((await f.req('GET', `/api/assistant/chats/${chatId}`, alice.token)).statusCode, 403);
 
-    // Global disable turns Fastis off even for platform admin and allowed roles.
+    // Global disable and avatar selection persist and propagate through /api/status.
     const settingsBefore = (await f.req('GET', '/api/admin/assistant/settings', f.admin)).json();
     assert.equal(settingsBefore.enabled, true);
+    assert.equal(settingsBefore.avatar, 'falcon-helmet');
     const disabled = await f.req('PUT', '/api/admin/assistant/settings', f.admin, {
-      enabled: false, instructions: 'Проверяй критерии просрочки.', revision: settingsBefore.revision,
+      enabled: false, avatar: 'bird-hat', instructions: 'Проверяй критерии просрочки.', revision: settingsBefore.revision,
     });
     assert.equal(disabled.statusCode, 200);
-    assert.equal((await f.req('GET', '/api/status', f.admin)).json().assistantAvailable, false);
+    assert.equal(disabled.json().avatar, 'bird-hat');
+    const adminStatusAfter = (await f.req('GET', '/api/status', f.admin)).json();
+    assert.equal(adminStatusAfter.assistantAvailable, false);
+    assert.equal(adminStatusAfter.assistantAvatar, 'bird-hat');
     assert.equal((await f.req('GET', '/api/status', bob.token)).json().assistantAvailable, false);
     assert.equal((await f.req('GET', '/api/assistant/chats', f.admin)).statusCode, 403);
     assert.equal((await f.req('GET', '/api/assistant/chats', bob.token)).statusCode, 403);

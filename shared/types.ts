@@ -38,7 +38,18 @@ export type ChatView = Chat & { fastkoreNavigation?: FastkoreNavigationTarget };
 export interface ExternalIdentity { installationId: string; externalUserId: string; userId: string }
 export const assistantProjectId = '__fastis__';
 export const assistantName = 'Финист';
-export interface AssistantSettings { enabled: boolean; instructions?: string; model?: string; reasoningEffort?: ReasoningEffort; revision: number }
+export const assistantAvatars = [
+  { id: 'falcon-helmet', label: 'Сокол в каске', src: '/icons/finist-falcon-helmet.png' },
+  { id: 'bird-helmet', label: 'Финист в каске', src: '/icons/finist-bird-helmet.png' },
+  { id: 'bird-hat', label: 'Финист в котелке', src: '/icons/finist-bird-hat.png' },
+  { id: 'bird-classic', label: 'Цифровой Финист', src: '/icons/finist-bird-classic.png' },
+] as const;
+export type AssistantAvatarId = typeof assistantAvatars[number]['id'];
+export const defaultAssistantAvatar: AssistantAvatarId = 'falcon-helmet';
+export function assistantAvatarSrc(id?: string) {
+  return assistantAvatars.find(item => item.id === id)?.src ?? assistantAvatars[0].src;
+}
+export interface AssistantSettings { enabled: boolean; avatar?: AssistantAvatarId; instructions?: string; model?: string; reasoningEffort?: ReasoningEffort; revision: number }
 export interface AssistantState { chats: Chat[]; attachments: Attachment[]; settings?: AssistantSettings }
 export interface Chat { verifiedOpeningRunId?: string; storedFiles?: Attachment[]; reasoningEffort?: ReasoningEffort; id: string; title: string; titleCustomized?: true; sessionId?: string; sessionScope?: string; sessionProjectInstructionsHash?: string; sessionProvider?: CliInfo['provider']; historyReplayPending?: true; legacyHistory?: { lastAnswerId: string; scope: string; turns: number }; cliWorkspaceProjectId?: string; consultantIds?: string[]; knowledgeRevision?: string; specialistSessions?: Record<string, Pick<Chat, 'sessionId' | 'sessionScope' | 'knowledgeRevision'>>; updatedAt: string; archivedAt?: string; messages: Message[]; lastCompletedReplyId?: string; model?: string; agentProfileId?: string; erpContext?: ErpContext; fastkoreBinding?: FastkoreChatBinding; fastkoreHistory?: { binding: FastkoreChatBinding; turns: number } | null; linkedToFastkore?: true; assistantInstallationId?: string; assistantExternalUserId?: string; ownerId?: string; ownerName?: string; visibility?: 'private' | 'project' }
 export interface ProjectAgentConnection { profileId: string; toolIds: AgentToolId[]; fileIds: string[] | null }
@@ -146,4 +157,4 @@ export interface UnassignedChatSummary extends ChatSummary { projectId: string }
 export interface ArchivedChatSummary extends ChatSummary { projectId: string; projectName: string; archivedAt: string }
 export interface RelatedChatSummary extends ChatSummary { projectId: string; projectName: string; parent?: true; contextMatches?: false; legacyContext?: true }
 export interface ToolPermissions { erpRoles?: { cli: boolean; mcp: boolean }; reconnectReason?: string; cli: boolean; mcp: boolean; fileWrite?: boolean; cliUnavailableReason?: string; mcpUnavailableReason?: string; webSearch: boolean; webRead?: boolean }
-export interface Status { version: string; activeRun: Run | null; activeRuns?: Run[]; queuedRuns: QueuedRun[]; unreadChatReplies?: Record<string, string>; busy: boolean; executionDisabled?: boolean; isolatedCodex?: boolean; workerFilesAvailable?: boolean; codexLimitsRevision?: number; user: User; setupRequired: boolean; canCreateProject?: boolean; assistantAvailable?: boolean; assistantModel?: string; assistantReasoningEffort?: ReasoningEffort; dictationAvailable?: boolean; dictationEnabled?: boolean; fastkoreToolsStatus?: 'unavailable' | 'ready' | 'reauth'; toolPermissions?: ToolPermissions; cli: CliInfo | null; settings: Settings; addresses: string[]; port: number; lan: boolean; storageWarning?: string; fileStorage?: FileStorageStatus }
+export interface Status { version: string; activeRun: Run | null; activeRuns?: Run[]; queuedRuns: QueuedRun[]; unreadChatReplies?: Record<string, string>; busy: boolean; executionDisabled?: boolean; isolatedCodex?: boolean; workerFilesAvailable?: boolean; codexLimitsRevision?: number; user: User; setupRequired: boolean; canCreateProject?: boolean; assistantAvailable?: boolean; assistantAvatar?: AssistantAvatarId; assistantModel?: string; assistantReasoningEffort?: ReasoningEffort; dictationAvailable?: boolean; dictationEnabled?: boolean; fastkoreToolsStatus?: 'unavailable' | 'ready' | 'reauth'; toolPermissions?: ToolPermissions; cli: CliInfo | null; settings: Settings; addresses: string[]; port: number; lan: boolean; storageWarning?: string; fileStorage?: FileStorageStatus }

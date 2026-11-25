@@ -16,7 +16,7 @@ import { instructionTile, personalInstructionLimits as personalLimits, type Pers
 import { instructionComponent } from './instruction-context.js';
 import { UploadAdmission } from './upload-admission.js';
 import { loadDictation, maxDictationBytes, validateDictation, type TranscribeDictation } from './dictation.js';
-import { assistantName, assistantProjectId, maxProjectInstructions, interfaceScales, specialistFileLimits, specialistIcons, unassignedChatsLabel } from '../shared/types.js';
+import { assistantAvatars, assistantName, assistantProjectId, maxProjectInstructions, interfaceScales, specialistFileLimits, specialistIcons, unassignedChatsLabel } from '../shared/types.js';
 import type { AssistantSettings, DictationModelId, FastkoreConnectionCheck, InterfaceScale } from '../shared/types.js';
 import { fastkoreChatTitle, fastkoreExecutionContext, parseFastkoreContext } from '../shared/fastkore-context.js';
 import { canReadChatAttachment, chatFileEntries } from '../shared/chat-attachments.js';
@@ -830,9 +830,10 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
         access.canAccessAssistantChat(u, chat, credential)) unreadChatReplies[chat.id] = replyId;
     }
     const assistantAvailable = canUseAssistant(workspace.store.state, u, credential);
-    const assistantDefaults = assistantAvailable ? workspace.assistantSettings() : undefined;
+    const assistantConfig = workspace.assistantSettings();
+    const assistantDefaults = assistantAvailable ? assistantConfig : undefined;
     return { version: '0.6.0', activeRun, activeRuns, queuedRuns, unreadChatReplies, busy: workspace.busy, user: publicUser(u), setupRequired: access.setupRequired, canCreateProject: canCreateProject(u, credential),
-      assistantAvailable, assistantModel: assistantDefaults?.model || undefined, assistantReasoningEffort: assistantDefaults?.reasoningEffort,
+      assistantAvailable, assistantAvatar: assistantConfig.avatar, assistantModel: assistantDefaults?.model || undefined, assistantReasoningEffort: assistantDefaults?.reasoningEffort,
       cli: u.role === 'admin' ? cli : cli && { ...cli, path: '', status: '' },
       isolatedCodex: workspace.isolatedCodex, workerFilesAvailable: workspace.workerFilesAvailable, codexLimitsRevision: workspace.codexLimitsRevision,
       settings: { ...settings, cliPath: u.role === 'admin' ? settings.cliPath : '',
@@ -1360,7 +1361,7 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
     return workspace.assistantSettings();
   });
   app.put<{ Body: Partial<Omit<AssistantSettings, 'revision'>> & { revision: number } }>('/api/admin/assistant/settings', {
-    schema: { body: object({ enabled: { type: 'boolean' }, instructions: { type: 'string', maxLength: 8000 }, model: modelSchema,
+    schema: { body: object({ enabled: { type: 'boolean' }, avatar: { enum: assistantAvatars.map(item => item.id) }, instructions: { type: 'string', maxLength: 8000 }, model: modelSchema,
       reasoningEffort: { enum: ['low', 'medium', 'high', 'xhigh'] }, revision: { type: 'integer', minimum: 0, maximum: 2147483647 } }, ['revision']) },
   }, async request => {
     const saved = await workspace.saveAssistantSettings(request.body, () => settingsAdmin(request));

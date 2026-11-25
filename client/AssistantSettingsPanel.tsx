@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Search, ShieldCheck, Users } from 'lucide-react';
-import { assistantName, type AssistantSettings, type FastkoreRolePermissions, type FastkoreRoleSummary, type ReasoningEffort } from '../shared/types';
+import { assistantAvatars, assistantAvatarSrc, assistantName, defaultAssistantAvatar, type AssistantSettings, type FastkoreRolePermissions, type FastkoreRoleSummary, type ReasoningEffort } from '../shared/types';
 import { hasAdjustableEffort } from '../shared/execution-accounts';
 import { PermissionSwitch } from './PermissionSwitch';
 import { Select } from './Select';
@@ -104,7 +104,7 @@ export function AssistantSettingsPanel({ request, models, onChanged }: {
     {settings && <>
       <section className="setting-section fastis-settings-card">
         <div className="fastis-settings-header">
-          <img src="/icons/fastis-robot.png" alt="" className="fastis-settings-avatar" />
+          <img src={assistantAvatarSrc(settings.avatar)} alt="" className="fastis-settings-avatar" />
           <div className="fastis-settings-summary">
             <h3>{assistantName}</h3>
             <p className="help">Общесистемный помощник вне проектов. Работает по правам сотрудника в Fastkore в режиме только чтения, с общей базой знаний и без доступа к проектным библиотекам.</p>
@@ -114,6 +114,21 @@ export function AssistantSettingsPanel({ request, models, onChanged }: {
               onChange={enabled => void saveSettings({ enabled })} />
             <span>{settings.enabled ? 'Включён' : 'Отключён'}</span>
           </label>
+        </div>
+        <div className="fastis-avatar-picker" role="radiogroup" aria-label="Аватар Финиста">
+          <span className="help">Иконка в интерфейсе:</span>
+          <div className="fastis-avatar-options">
+            {assistantAvatars.map(option => {
+              const selected = (settings.avatar ?? defaultAssistantAvatar) === option.id;
+              return <button key={option.id} type="button" role="radio" aria-checked={selected}
+                className={'fastis-avatar-option' + (selected ? ' is-selected' : '')}
+                disabled={busy} title={option.label}
+                onClick={() => { if (!selected) void saveSettings({ avatar: option.id }); }}>
+                <img src={option.src} alt="" />
+                <span>{option.label}</span>
+              </button>;
+            })}
+          </div>
         </div>
       </section>
 

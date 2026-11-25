@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { isDeepStrictEqual } from 'node:util';
 import { performance } from 'node:perf_hooks';
 import type { AgentProfile, AssistantSettings, Attachment, Chat, CliInfo, CodexLimits, Credential, FastkoreChatBinding, FileStorageProvider, FileStorageStatus, Job, Message, ModelCatalog, Project, ProjectAgentPolicy, ProjectChatDefaults, ProjectRole, Run, Settings, TokenActivityReport, Usage, User } from '../shared/types.js';
-import { assistantName, assistantProjectId, sharedChatWaitMessage, specialistFileLimits } from '../shared/types.js';
+import { assistantName, assistantProjectId, defaultAssistantAvatar, sharedChatWaitMessage, specialistFileLimits } from '../shared/types.js';
 import { fastkoreExecutionContext, fastkoreSelectionChatKey, type FastkoreContext } from '../shared/fastkore-context.js';
 import { fastkorePrompt } from './fastkore-prompt.js';
 import { agentContext, SOURCE_TRUST_INSTRUCTIONS } from './agent-context.js';
@@ -251,7 +251,7 @@ export class Workspace {
   project(id: string): Project { const p = this.store.state.projects.find(p => p.id === id); if (!p) throw new BridgeError('Проект не найден.', 404); return p; }
   assistantSettings(): AssistantSettings {
     const saved = this.store.state.assistant?.settings;
-    return { enabled: saved?.enabled ?? true, instructions: saved?.instructions ?? '', model: saved?.model ?? '', reasoningEffort: saved?.reasoningEffort ?? 'high', revision: saved?.revision ?? 0 };
+    return { enabled: saved?.enabled ?? true, avatar: saved?.avatar ?? defaultAssistantAvatar, instructions: saved?.instructions ?? '', model: saved?.model ?? '', reasoningEffort: saved?.reasoningEffort ?? 'high', revision: saved?.revision ?? 0 };
   }
   assistantProfile(): AgentProfile {
     const settings = this.assistantSettings();
@@ -297,6 +297,7 @@ export class Workspace {
       const previous = assistant.settings;
       const next: AssistantSettings = {
         enabled: input.enabled ?? current.enabled,
+        avatar: input.avatar ?? current.avatar ?? defaultAssistantAvatar,
         instructions: input.instructions !== undefined ? input.instructions.trim() : current.instructions,
         model,
         reasoningEffort: input.reasoningEffort ?? current.reasoningEffort,

@@ -1,7 +1,7 @@
 import React, { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { Archive, ArrowUp, BarChart3, Bot, Box, Camera, Check, ChevronDown, ChevronRight, ClipboardList, Copy, Database, Download, EllipsisVertical, Eraser, FileText, Folder, History, Link2, LoaderCircle, LockKeyhole, LogOut, Menu, Moon, Network, PanelLeftClose, PanelLeftOpen, Pencil, Pin, Plus, RefreshCw, Search, Settings2, ShieldCheck, Square, SquarePen, Sun, Terminal, Trash2, Users, X } from 'lucide-react';
-import { assistantName, assistantProjectId, maxProjectInstructions, interfaceScales, sharedChatWaitMessage, unassignedChatsLabel, type AgentSummary, type Attachment, type Chat, type ChatView, type ChatSummary, type CodexLimits, type FastkoreAuthentication, type FastkoreNavigationTarget, type FileStorageStatus, type InterfaceScale, type ModelCatalog, type ProjectSummary, type RelatedChatSummary, type Run, type Settings, type Status, type UnassignedChatSummary, type User } from '../shared/types';
+import { assistantAvatarSrc, assistantName, assistantProjectId, maxProjectInstructions, interfaceScales, sharedChatWaitMessage, unassignedChatsLabel, type AgentSummary, type Attachment, type Chat, type ChatView, type ChatSummary, type CodexLimits, type FastkoreAuthentication, type FastkoreNavigationTarget, type FileStorageStatus, type InterfaceScale, type ModelCatalog, type ProjectSummary, type RelatedChatSummary, type Run, type Settings, type Status, type UnassignedChatSummary, type User } from '../shared/types';
 import './style.css';
 import './workspace.css';
 import { ChatFileDrop } from './ChatFileDrop';
@@ -256,6 +256,7 @@ function App() {
   const sendAttempt = useRef<{ chatId: string; content: string; requestId: string } | null>(null);
   const isAssistant = projectId === assistantProjectId;
   const assistantAvailable = status?.assistantAvailable === true;
+  const assistantIconSrc = assistantAvatarSrc(status?.assistantAvatar);
   const assistantChats = chatLists[assistantProjectId] ?? [];
   const relatedDraftKey = !isAssistant && currentErpContext.current.active && erpChatKey ? 'erp:' + erpChatKey : '';
   const draftSlot = chatId || (isAssistant ? 'assistant:new' : relatedDraftKey);
@@ -1587,7 +1588,7 @@ function App() {
               aria-expanded={assistantChats.length ? assistantExpanded : undefined}
               aria-controls={assistantChats.length ? 'chats-fastis' : undefined}
               onClick={() => openAssistant()}>
-              <img src="/icons/fastis-robot.png" alt="" className="fastis-avatar-sm" />
+              <img src={assistantIconSrc} alt="" className="fastis-avatar-sm" />
               <span>{assistantName}</span>
               {(assistantRunning || assistantUnread) && <span className="fastis-entry-state" aria-hidden="true">
                 {assistantRunning ? <LoaderCircle size={13} className="spin" /> : <span className="chat-row-unread-dot" />}
@@ -1748,7 +1749,7 @@ function App() {
           aria-label="Открыть проекты" aria-controls="workspace-sidebar" aria-expanded={sidebarOpen}><Menu size={20} /></button>
         {chat && <>
           <div className="workspace-chat-title">
-            {isAssistant ? <img src="/icons/fastis-robot.png" alt={assistantName} className="fastis-avatar-header" />
+            {isAssistant ? <img src={assistantIconSrc} alt={assistantName} className="fastis-avatar-header" />
               : <Folder size={17} aria-label={withoutProject ? unassignedChatsLabel : selectedProject?.name} />}
             <h1 title={chatTooltip(chat)}>{chat.title}</h1>
             {canEditChatDetails && <button type="button" className="workspace-icon chat-rename-button"
@@ -1804,7 +1805,7 @@ function App() {
         <div className="conversation-lane conversation-footer">{composer}</div>
       </> : <div className="workspace-welcome">
         {isAssistant ? <div className="fastis-welcome-header">
-          <img src="/icons/fastis-robot.png" alt={assistantName} className="fastis-avatar-welcome" />
+          <img src={assistantIconSrc} alt={assistantName} className="fastis-avatar-welcome" />
           <h2>{assistantName}</h2>
           <p className="fastis-welcome-subtitle">Общесистемный помощник по Fastkore и регламентам компании · только чтение ERP</p>
         </div> : <h2>{relatedDraftKey && !chatId ? fastkoreChatTitle(currentErpContext.current.snapshot) ?? 'Новый чат'
@@ -1884,7 +1885,7 @@ function App() {
       <div className="search-results">
         {searchable.map(({ project, matchingChats }) => <div key={project.id}>
           {project.id === unassignedGroupId ? <div className="workspace-row search-project"><Folder size={16} />{project.name}</div> :
-            project.id === assistantProjectId ? <button className="workspace-row search-project" onClick={() => { openAssistant(); closePanel(); }}><img src="/icons/fastis-robot.png" alt="" className="fastis-avatar-sm" />{project.name}</button> :
+            project.id === assistantProjectId ? <button className="workspace-row search-project" onClick={() => { openAssistant(); closePanel(); }}><img src={assistantIconSrc} alt="" className="fastis-avatar-sm" />{project.name}</button> :
             <button className="workspace-row search-project" onClick={() => { navigateWorkspace(project.id); closePanel(); }}><Folder size={16} />{project.name}</button>}
           {matchingChats.map(item => <button key={item.id} className="workspace-row chat-row" title={chatTooltip(item)} onClick={() => { if (item.projectId === assistantProjectId) openAssistant(item.id); else navigateWorkspace(item.projectId, item.id); closePanel(); }}><span>{item.title}</span><time dateTime={item.updatedAt}>{shortDate(item.updatedAt)}</time></button>)}
         </div>)}

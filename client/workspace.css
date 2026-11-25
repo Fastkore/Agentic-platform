@@ -230,6 +230,23 @@
 .fastis-settings-summary h3 { margin: 0 0 4px; }
 .fastis-settings-summary p { margin: 0; }
 .fastis-master-switch { margin-left: auto; }
+.fastis-avatar-picker {
+  margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border);
+  display: grid; gap: 8px;
+}
+.fastis-avatar-options { display: flex; flex-wrap: wrap; gap: 8px; }
+.fastis-avatar-option {
+  display: inline-flex; align-items: center; gap: 8px; padding: 6px 10px 6px 6px;
+  border: 1px solid var(--control-border); border-radius: 10px; background: var(--surface);
+  color: var(--text-secondary); font-size: 12.5px;
+}
+.fastis-avatar-option:hover:not(:disabled) { background: var(--selected); color: var(--text); }
+.fastis-avatar-option.is-selected {
+  border-color: var(--accent); background: var(--accent-soft); color: var(--text); font-weight: 600;
+}
+.fastis-avatar-option img {
+  width: 34px; height: 34px; border-radius: 8px; object-fit: cover; flex: 0 0 auto;
+}
 .fastis-roles-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
 .fastis-role-cards .erp-role-heading { align-items: center; }
 .fastis-role-users { display: inline-flex; align-items: center; gap: 5px; margin-left: auto; color: var(--text-muted); font-size: 12px; }
