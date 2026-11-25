@@ -229,10 +229,6 @@
 .fastis-settings-summary { flex: 1 1 240px; min-width: 0; }
 .fastis-settings-summary h3 { margin: 0 0 4px; }
 .fastis-settings-summary p { margin: 0; }
-.fastis-header-controls {
-  display: flex; align-items: center; gap: 10px; margin-left: auto; flex-wrap: wrap;
-}
-.fastis-avatar-select { width: auto; min-width: 190px; margin: 0; }
 .select-option-thumb {
   width: 20px; height: 20px; border-radius: 5px; object-fit: cover; flex: none;
 }

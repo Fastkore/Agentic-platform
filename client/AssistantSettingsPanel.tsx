@@ -113,12 +113,6 @@ export function AssistantSettingsPanel({ request, models, onChanged }: {
             <h3>{assistantName}</h3>
             <p className="help">Общесистемный помощник вне проектов. Работает по правам сотрудника в Fastkore в режиме только чтения, с общей базой знаний и без доступа к проектным библиотекам.</p>
           </div>
-          <label className={'check-setting account-active-status' + (settings.enabled ? ' active' : ' inactive')}>
-            <input type="checkbox" checked={settings.enabled} disabled={busy}
-              aria-label={'Активен · ' + assistantName}
-              onChange={e => void saveSettings({ enabled: e.target.checked })} />
-            {settings.enabled ? 'Активен' : 'Неактивен'}
-          </label>
         </div>
       </section>
 
@@ -161,7 +155,7 @@ export function AssistantSettingsPanel({ request, models, onChanged }: {
           <h3>Доступ по ролям Fastkore</h3>
           {roles && roles.length > 0 && <span className="help">Активно: {enabledCount} из {roles.length}</span>}
         </div>
-        <p className="help">Выберите роли, которым показывать {assistantName} в боковой панели. Администраторам платформы помощник доступен, пока включён выше.</p>
+        <p className="help">Выберите роли, которым показывать {assistantName} в боковой панели. Если отключить все роли, помощник будет скрыт от сотрудников.</p>
         {roles && roles.length > 4 && <div className="roles-filters">
           <div className="audit-search"><Search size={18} aria-hidden="true" /><input aria-label="Поиск по ролям" placeholder="Поиск по ролям…" value={search} onChange={e => setSearch(e.target.value)} /></div>
         </div>}
@@ -178,7 +172,7 @@ export function AssistantSettingsPanel({ request, models, onChanged }: {
                 <span className="fastis-role-users" title="Сотрудников с ролью"><Users size={13} aria-hidden="true" />{role.userCount}</span>
               </div>
               <label className={'check-setting account-active-status' + (allowed ? ' active' : ' inactive')}>
-                <input type="checkbox" checked={allowed} disabled={busy || !settings.enabled}
+                <input type="checkbox" checked={allowed} disabled={busy}
                   aria-label={'Активен · ' + role.name}
                   onChange={e => void toggleRole(role, e.target.checked)} />
                 {allowed ? 'Активен' : 'Неактивен'}
