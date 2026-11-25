@@ -1395,7 +1395,7 @@ function App() {
   const linkedTarget = inFastkore && erpAuth && chat?.id === chatId && chat.fastkoreNavigation?.installationId === erpAuth.installationId
     ? chat.fastkoreNavigation : undefined;
   const linkedElsewhere = chat?.linkedToFastkore && canPostToChat && !relatedLoading && !matchesErpChat && (inFastkore || !!erpChatKey);
-  const showLinkedNotice = linkedElsewhere || (chatBusy && linkedTarget);
+  const showLinkedNotice = linkedElsewhere || (chatBusy && linkedTarget && !matchesErpChat);
   const composer = <div className="bridge-composer">
     {withoutProject && <p className="composer-status">Выберите проект, чтобы продолжить чат.</p>}
     {chat && showLinkedNotice && <LinkedFastkoreNotice key={chat.id} target={linkedTarget} elsewhere={!!linkedElsewhere} />}
