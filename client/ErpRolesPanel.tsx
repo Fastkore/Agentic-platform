@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Clock3, FilePenLine, FolderPlus, Globe, LockKeyhole, Network, Search, Send, ShieldCheck, Terminal, Trash2, Users } from 'lucide-react';
+import { Bot, Clock3, FilePenLine, FolderPlus, Globe, LockKeyhole, Network, Search, Send, ShieldCheck, Terminal, Trash2, Users } from 'lucide-react';
 import type { FastkoreRoleSummary, FastkoreRolePermissions } from '../shared/types';
 import { SettingsAction } from './SettingsAction';
 import { SettingsSpinner } from './SettingsSpinner';
@@ -12,7 +12,8 @@ const permissionColumns = [
   [{ key: 'webSearch', name: 'Веб-поиск', icon: Search }, { key: 'webRead', name: 'Чтение страниц', icon: Globe },
     { key: 'fileWrite', name: 'Запись файлов', icon: FilePenLine }],
   [{ key: 'createProjects', name: 'Создание проектов, изменение названия и инструкции', icon: FolderPlus },
-    { key: 'readOnly', name: 'Только чтение в Fastkore', icon: LockKeyhole }],
+    { key: 'readOnly', name: 'Только чтение в Fastkore', icon: LockKeyhole },
+    { key: 'assistant', name: 'Помощник Fastis', icon: Bot }],
 ] as const;
 
 export function ErpRolesPanel({ request }: { request: Request }) {

@@ -4,6 +4,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 import type { Attachment, AuditEvent, Chat, ProjectAgentPolicy, ProjectRolePolicy, Run, State } from '../shared/types.js';
+import { assistantProjectId } from '../shared/types.js';
 import { DEFAULT_AGENT_INSTRUCTIONS } from '../shared/agent-instructions.js';
 import type { PersonalInstructions, WorkNote } from '../shared/personal-instructions.js';
 import { migrateFastkoreChatBindings } from './fastkore-chat.js';
@@ -15,7 +16,7 @@ export class BridgeError extends Error { constructor(message: string, public sta
 export function redact(text: string) { return text.replace(/\bfkap1\.[a-f0-9-]{36}\.[A-Za-z0-9_-]+\b/gi, '[REDACTED]').replace(/\b(?:fku[ag]1|fkct1)\.[A-Za-z0-9._-]+/gi, '[REDACTED]').replace(/\b(?:sk-|ccb_[ks]_)[A-Za-z0-9_-]{8,}\b/g, '[REDACTED]').replace(/(Bearer\s+)[^\s"']+/gi, '$1[REDACTED]').replace(/((?:access_token|refresh_token|api_key|authorization|password|delegation|grant|login_challenge|ticket|pairing_code|pairingCode|connectionKey|erp_key_verifier|erpKeyVerifier|__Host-bridge_sso_start|__Host-bridge_session)["'\s:=]+)[^\s,"';}&]+/gi, '$1[REDACTED]'); }
 type AccessState = Pick<State, 'security' | 'externalIdentities' | 'sso'>;
 export type AccessDraft = AccessState & { projectRolePolicies?: Map<string, ProjectRolePolicy>; projectAgentPolicies?: Map<string, ProjectAgentPolicy> };
-const empty = (): State => ({ schemaVersion: 1, settings: { cliPath: '', allowWrite: false, includePreviews: true, model: '', agentInstructions: DEFAULT_AGENT_INSTRUCTIONS }, projects: [], runs: [], jobs: [] });
+const empty = (): State => ({ schemaVersion: 1, settings: { cliPath: '', allowWrite: false, includePreviews: true, model: '', agentInstructions: DEFAULT_AGENT_INSTRUCTIONS }, projects: [], assistant: { chats: [], attachments: [] }, runs: [], jobs: [] });
 type Row = { id: string; parent: string; payload: string };
 type ChatFileDeletion = { projectId: string; file: Attachment };
 const tables = ['projects', 'chats', 'messages', 'attachments', 'runs', 'jobs'] as const;
@@ -95,13 +96,14 @@ export class Store {
         this.state.settings.agentInstructions = DEFAULT_AGENT_INSTRUCTIONS;
       }
       this.state.jobs ??= [];
+      this.state.assistant ??= { chats: [], attachments: [] };
       for (const run of this.state.runs) if (run.status === 'running' || run.status === 'queued' && run.steeringTo) {
         run.status = 'interrupted'; run.progress = 'Выполнение прервано остановкой сервера'; run.completedAt = new Date().toISOString();
         run.canSteer = undefined; run.steeringTo = undefined;
         run.tool = undefined; run.toolContext = undefined;
         run.response = undefined;
       }
-      for (const project of this.state.projects) for (const chat of project.chats)
+      for (const chat of [...this.state.projects.flatMap(project => project.chats), ...this.state.assistant.chats])
         for (const message of chat.messages) if (message.status === 'running') {
           message.status = 'interrupted';
           chat.sessionId = undefined;
@@ -128,13 +130,22 @@ export class Store {
     const meta = new Map((this.db.prepare('SELECT key,value FROM metadata').all() as { key: string; value: string }[]).map(r => [r.key, JSON.parse(r.value)]));
     const rows = (table: typeof tables[number]) => this.db.prepare(`SELECT id,parent,payload FROM ${table} ORDER BY position`).all() as Row[];
     const projects = rows('projects').map(r => ({ ...JSON.parse(r.payload), chats: [], attachments: [] })) as State['projects'];
+    const assistant: NonNullable<State['assistant']> = { chats: [], attachments: [], settings: meta.get('assistant_settings') };
     const byProject = new Map(projects.map(p => [p.id, p]));
     const byChat = new Map<string, State['projects'][number]['chats'][number]>();
-    for (const r of rows('chats')) { const chat = { ...JSON.parse(r.payload), messages: [] }; byProject.get(r.parent)!.chats.push(chat); byChat.set(r.id, chat); }
+    for (const r of rows('chats')) {
+      const chat = { ...JSON.parse(r.payload), messages: [] };
+      if (r.parent === assistantProjectId) assistant.chats.push(chat);
+      else byProject.get(r.parent)!.chats.push(chat);
+      byChat.set(r.id, chat);
+    }
     for (const r of rows('messages')) byChat.get(r.parent)!.messages.push(JSON.parse(r.payload));
-    for (const r of rows('attachments')) byProject.get(r.parent)!.attachments.push(JSON.parse(r.payload));
+    for (const r of rows('attachments')) {
+      if (r.parent === assistantProjectId) assistant.attachments.push(JSON.parse(r.payload));
+      else byProject.get(r.parent)!.attachments.push(JSON.parse(r.payload));
+    }
     const externalIdentities = (this.db.prepare('SELECT installation_id,external_user_id,user_id FROM external_identities ORDER BY installation_id,external_user_id').all() as { installation_id: string; external_user_id: string; user_id: string }[]).map(r => ({ installationId: r.installation_id, externalUserId: r.external_user_id, userId: r.user_id }));
-    return { schemaVersion: 1, settings: meta.get('settings'), security: meta.get('security'), corporate: meta.get('corporate'), sso: meta.get('sso'), externalIdentities, projects, runs: rows('runs').map(r => JSON.parse(r.payload)), jobs: rows('jobs').map(r => JSON.parse(r.payload)) };
+    return { schemaVersion: 1, settings: meta.get('settings'), security: meta.get('security'), corporate: meta.get('corporate'), sso: meta.get('sso'), externalIdentities, projects, assistant, runs: rows('runs').map(r => JSON.parse(r.payload)), jobs: rows('jobs').map(r => JSON.parse(r.payload)) };
   }
   private snapshotRows(snapshot: State): Rows {
     const rows: Rows = new Map(tables.map(table => [table, new Map()]));
@@ -153,6 +164,12 @@ export class Store {
       });
       attachments.forEach((file, ai) => put('attachments', file.id, project.id, ai, file));
     });
+    snapshot.assistant?.chats.forEach((chat, ci) => {
+      const { messages, ...record } = chat;
+      put('chats', chat.id, assistantProjectId, ci, record);
+      messages.forEach((message, mi) => put('messages', message.id, chat.id, mi, message));
+    });
+    snapshot.assistant?.attachments.forEach((file, ai) => put('attachments', file.id, assistantProjectId, ai, file));
     snapshot.runs.forEach((run, i) => put('runs', run.id, run.chatId ?? '', i, run));
     snapshot.jobs?.forEach((job, i) => put('jobs', job.runId, '', i, job));
     return rows;
@@ -166,6 +183,7 @@ export class Store {
       if (!partial) putMeta.run('settings', JSON.stringify(snapshot.settings));
       if (security) putMeta.run('security', JSON.stringify({ ...security, audit }));
       if (!partial && snapshot.corporate) putMeta.run('corporate', JSON.stringify(snapshot.corporate));
+      if (!partial && snapshot.assistant?.settings) putMeta.run('assistant_settings', JSON.stringify(snapshot.assistant.settings));
       if (snapshot.sso) putMeta.run('sso', JSON.stringify(snapshot.sso));
       const identities = new Map<string, NonNullable<State['externalIdentities']>[number]>();
       const identity = this.db.prepare('INSERT INTO external_identities(installation_id,external_user_id,user_id) VALUES(?,?,?) ON CONFLICT(installation_id,external_user_id) DO UPDATE SET user_id=excluded.user_id');
@@ -219,8 +237,8 @@ export class Store {
     if (job) put('jobs', run.id, '', position, job);
     if (chat && run.projectId) {
       const { messages, ...record } = chat;
-      const project = this.state.projects.find(item => item.id === run.projectId)!;
-      put('chats', chat.id, project.id, project.chats.indexOf(chat), record);
+      const container = run.projectId === assistantProjectId ? this.state.assistant! : this.state.projects.find(item => item.id === run.projectId)!;
+      put('chats', chat.id, run.projectId, container.chats.indexOf(chat), record);
       // New messages for this run are appended and remain at stable positions.
       for (let i = messages.length - 1; i >= 0 && messages[i].runId === messageRunId; i--) {
         put('messages', messages[i].id, chat.id, i, messages[i]);
@@ -265,7 +283,7 @@ export class Store {
     if (this.closed) return Promise.reject(new BridgeError('Хранилище закрыто.', 503));
     let rows: Rows;
     try { rows = this.snapshotRows(this.state); } catch (error) { return Promise.reject(error); }
-    const { settings, corporate } = structuredClone({ settings: this.state.settings, corporate: this.state.corporate });
+    const { settings, corporate, assistantSettings } = structuredClone({ settings: this.state.settings, corporate: this.state.corporate, assistantSettings: this.state.assistant?.settings });
     // Access transactions queued ahead of this write may have published new credentials.
     const save = this.queue.then(() => {
       for (const project of this.state.projects) {
@@ -278,7 +296,8 @@ export class Store {
       }
       const access = this.accessState();
       const security = audit && access.security ? { ...access.security, audit: [audit, ...access.security.audit].slice(0, 1000) } : access.security;
-      this.commit({ ...this.state, settings, corporate, ...access, security }, fileDeletions, rows);
+      const assistant = this.state.assistant ? { ...this.state.assistant, settings: assistantSettings } : undefined;
+      this.commit({ ...this.state, settings, corporate, assistant, ...access, security }, fileDeletions, rows);
       if (audit && access.security && security) access.security.audit = security.audit;
     });
     this.queue = save.catch(() => {}); return save;

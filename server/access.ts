@@ -1,11 +1,12 @@
 import { randomBytes, randomUUID, createHash, scrypt, timingSafeEqual } from 'node:crypto';
 import { promisify } from 'node:util';
 import type { AuditEvent, Chat, ChatSummary, ChatView, Credential, ErpDelegationLoss, ErpSessionEnd, InterfaceScale, Project, ProjectRolePolicy, Security, StoredFastkoreInstallation, TeamUser, User, UserRecord } from '../shared/types.js';
+import { assistantProjectId } from '../shared/types.js';
 import { publishAudit } from './audit-journal.js';
 import { BridgeError, type AccessDraft } from './store.js';
 import type { Workspace } from './workspace.js';
 import type { ErpDelegation, TicketIdentity } from './fastkore.js';
-import { canAccessProject, erpRolesForUser, observeErpRoles, projectAllowsRoles } from './erp-roles.js';
+import { canAccessProject, canUseAssistant, erpRolesForUser, observeErpRoles, projectAllowsRoles } from './erp-roles.js';
 import { fastkoreChatSessionMatches } from './fastkore-chat.js';
 
 const derive = promisify(scrypt);
@@ -345,8 +346,31 @@ export class Access {
     if (user.role !== 'admin' && chat.ownerId !== user.id && chat.visibility !== 'project') throw new BridgeError('Нет доступа к отправке сообщения в этот чат.', 403);
     return chat;
   }
+  canAccessAssistantChat(user: User, chat: Chat, credential?: Credential, allowAdminArchive = false) {
+    if (user.disabled) return false;
+    if (allowAdminArchive && user.role === 'admin' && chat.archivedAt) return true;
+    if (!canUseAssistant(this.workspace.store.state, user, credential)) return false;
+    if (chat.ownerId !== user.id) return false;
+    if (credential?.source === 'fastkore') {
+      return chat.assistantInstallationId === credential.installationId && chat.assistantExternalUserId === credential.externalUserId;
+    }
+    return !chat.assistantInstallationId;
+  }
+  assistantChat(user: User, chatId: string, credential?: Credential, options: { edit?: boolean; allowAdminArchive?: boolean } = {}) {
+    if (!options.allowAdminArchive && !canUseAssistant(this.workspace.store.state, user, credential)) {
+      throw new BridgeError('Помощник Fastis недоступен для вашей роли.', 403);
+    }
+    const chat = this.workspace.assistantChat(chatId);
+    if (!this.canAccessAssistantChat(user, chat, credential, options.allowAdminArchive)) throw new BridgeError('Диалог не найден.', 404);
+    if (options.edit && chat.archivedAt) throw new BridgeError('Восстановите чат из архива, чтобы продолжить диалог.', 409);
+    return chat;
+  }
   run(user: User, id: string, credential?: Credential) {
-    const run = this.workspace.getRun(id); if (run.projectId && run.chatId) this.chat(user, run.projectId, run.chatId, credential); else this.admin(user); return run;
+    const run = this.workspace.getRun(id);
+    if (run.projectId === assistantProjectId && run.chatId) this.assistantChat(user, run.chatId, credential);
+    else if (run.projectId && run.chatId) this.chat(user, run.projectId, run.chatId, credential);
+    else this.admin(user);
+    return run;
   }
   userNameLookup() {
     const authorNames = new Map<string | undefined, string>();
@@ -359,7 +383,7 @@ export class Access {
     };
   }
   viewChat(chat: Chat, session?: Credential): ChatView {
-    const { verifiedOpeningRunId, specialistSessions, knowledgeRevision, fastkoreBinding, fastkoreHistory, titleCustomized, cliWorkspaceProjectId, sessionProvider, historyReplayPending, legacyHistory, ...view } = chat;
+    const { verifiedOpeningRunId, specialistSessions, knowledgeRevision, fastkoreBinding, fastkoreHistory, assistantInstallationId, assistantExternalUserId, titleCustomized, cliWorkspaceProjectId, sessionProvider, historyReplayPending, legacyHistory, ...view } = chat;
     const authorName = this.userNameLookup();
     const messages = chat.messages.map(({ historyScope, renewalScope, libraryHistory, requestScope, ...message }) => {
       if (message.role === 'assistant') return message;

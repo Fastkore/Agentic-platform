@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Download, FileText, Paperclip, Trash2 } from 'lucide-react';
 import type { Attachment } from '../shared/types';
+import { assistantProjectId } from '../shared/types';
 import { SettingsSpinner } from './SettingsSpinner';
 import { WorkspaceDialog } from './WorkspaceDialog';
 
@@ -11,7 +12,9 @@ export function ChatFilesDialog({ projectId, chatId, request, close, attach, cha
   projectId: string; chatId: string; request: Request; close: () => void; attach: (file: Attachment) => void;
   changed: (fileId: string) => Promise<void>; download: (url: string, name: string) => Promise<void>; canAttach: boolean; busy: boolean;
 }) {
-  const endpoint = `/api/projects/${encodeURIComponent(projectId)}/chats/${encodeURIComponent(chatId)}`;
+  const endpoint = projectId === assistantProjectId
+    ? `/api/assistant/chats/${encodeURIComponent(chatId)}`
+    : `/api/projects/${encodeURIComponent(projectId)}/chats/${encodeURIComponent(chatId)}`;
   const [files, setFiles] = useState<StoredFile[]>();
   const [removing, setRemoving] = useState<StoredFile>();
   const [pending, setPending] = useState(false);

@@ -46,11 +46,11 @@ export function editPersonalInstructions(store: Store, userId: string, edit: Per
     text: redact(edit.text.trim()), notes });
 }
 
-export type PersonalContext = Partial<Record<'project' | 'erp', NonNullable<WorkNote['scope']>>> & { component?: InstructionComponent };
+export type PersonalContext = Partial<Record<'project' | 'erp', NonNullable<WorkNote['scope']>>> & { component?: InstructionComponent; allErpComponents?: boolean };
 
 export function applicableInstruction(note: WorkNote, context: PersonalContext) {
   if (note.scope && context[note.scope.kind]?.id !== note.scope.id) return false;
-  if (!note.component) return true;
+  if (!note.component || context.allErpComponents) return true;
   const component = context.component;
   return component?.entitySetId === note.component.entitySetId &&
     (!component.typeIds?.length || !note.component.typeIds?.length || note.component.typeIds.some(id => component.typeIds!.includes(id)));

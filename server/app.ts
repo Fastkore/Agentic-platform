@@ -16,8 +16,8 @@ import { instructionTile, personalInstructionLimits as personalLimits, type Pers
 import { instructionComponent } from './instruction-context.js';
 import { UploadAdmission } from './upload-admission.js';
 import { loadDictation, maxDictationBytes, validateDictation, type TranscribeDictation } from './dictation.js';
-import { maxProjectInstructions, interfaceScales, specialistFileLimits, specialistIcons, unassignedChatsLabel } from '../shared/types.js';
-import type { DictationModelId, FastkoreConnectionCheck, InterfaceScale } from '../shared/types.js';
+import { assistantName, assistantProjectId, maxProjectInstructions, interfaceScales, specialistFileLimits, specialistIcons, unassignedChatsLabel } from '../shared/types.js';
+import type { AssistantSettings, DictationModelId, FastkoreConnectionCheck, InterfaceScale } from '../shared/types.js';
 import { fastkoreChatTitle, fastkoreExecutionContext, parseFastkoreContext } from '../shared/fastkore-context.js';
 import { canReadChatAttachment, chatFileEntries } from '../shared/chat-attachments.js';
 import { chatBinding, fastkoreChatSessionMatches, matchesFastkoreChat, migrateFastkoreChatBindings, parentFastkoreChatBindings } from './fastkore-chat.js';
@@ -26,7 +26,7 @@ import { FastkoreCli, type FastkoreCliTiming } from './fastkore-cli.js';
 import { elapsedMs } from './run-timing.js';
 import { RemoteCodexRunner } from './codex-remote.js';
 import { executionProviders, gigaChatScopes, type ExecutionProvider, type GigaChatScope } from '../shared/execution-accounts.js';
-import { canAccessProject, canRenameProject, creationRoles, projectRoleOptions, erpRoleCatalog, restoreErpRoles, erpRolePermissions, erpCredentialPermissions, erpFileWriteAllowed, internetCredentialPermissions, isErpReadOnly, erpReadOnlyMessage, fastkoreReadCommands } from './erp-roles.js';
+import { canAccessProject, canRenameProject, canUseAssistant, creationRoles, projectRoleOptions, erpRoleCatalog, restoreErpRoles, erpRolePermissions, erpCredentialPermissions, erpFileWriteAllowed, internetCredentialPermissions, isErpReadOnly, erpReadOnlyMessage, fastkoreReadCommands } from './erp-roles.js';
 import { withInternetTools } from './internet-tools.js';
 import { withFastkoreCliDescription } from './codex-tools.js';
 import { formatFastkoreCliResult, withFastkoreCliCommands } from './fastkore-cli-tools.js';
@@ -164,8 +164,9 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
           delegationReason: session.expiresAt && Date.parse(session.expiresAt) <= Date.now() ? 'session_expired' : reason } });
     }).catch(() => console.error(JSON.stringify({ event: 'erp.delegation.audit_failed', sessionId: session.id })));
   };
-  workspace.prepareFastkoreTools = async (credentialId, context, authorize, signal, run) => {
+  workspace.prepareFastkoreTools = async (credentialId, context, authorize, signal, run, options) => {
     if (!sso || !fastkoreMcp) return {};
+    const forceReadOnly = options?.forceReadOnly === true;
     const session = () => {
       authorize();
       return access.authenticateCredential(credentialId).credential;
@@ -190,7 +191,7 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
     const mcpStarted = performance.now();
     const integration = !accessAtStart.mcpProblem ? await fastkoreMcp.prepare(credential, () => { checkPermission('mcp'); }, signal, ({ tool, parameters, ...details }) =>
       audit('erp.mcp.call', tool, { ...details, objectIds: erpAuditIds(parameters) }),
-      () => isErpReadOnly(workspace.store.state, checkPermission('mcp'))).finally(() => {
+      () => forceReadOnly || isErpReadOnly(workspace.store.state, checkPermission('mcp'))).finally(() => {
         if (run?.timing) run.timing.mcpSetupMs ??= elapsedMs(mcpStarted);
       }) : { problem: accessAtStart.mcpProblem };
     const cli = erpToolAccess(session());
@@ -221,8 +222,8 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
           const result = await fastkoreCli.run({ operation: 'execute', command, args, workDirectoryId: run.id, context: fastkoreExecutionContext(context) },
             sso, () => {
               const active = current();
-              if (isErpReadOnly(workspace.store.state, active) && !fastkoreReadCommands.has(command)) {
-                throw new BridgeError(erpReadOnlyMessage, 403);
+              if ((forceReadOnly || isErpReadOnly(workspace.store.state, active)) && !fastkoreReadCommands.has(command)) {
+                throw new BridgeError(forceReadOnly ? 'Помощник Fastis работает с Fastkore в режиме только чтения.' : erpReadOnlyMessage, 403);
               }
               return active;
             }, id => fastkoreMcp.invalidate(id, 'cli_ticket_denied'), callSignal, timing);
@@ -261,7 +262,7 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
   const requestRun = (request: FastifyRequest<{ Params: { runId: string } }>) => {
     const p = principal(request);
     const run = access.run(p.user, request.params.runId, p.credential);
-    if (run.projectId && run.chatId && !chatIdentityMatches(p, workspace.chat(run.projectId, run.chatId))) throw new BridgeError('Задание не найдено.', 404);
+    if (run.projectId && run.projectId !== assistantProjectId && run.chatId && !chatIdentityMatches(p, workspace.chat(run.projectId, run.chatId))) throw new BridgeError('Задание не найдено.', 404);
     return run;
   };
   const admin = (r: FastifyRequest) => { const u = user(r); access.admin(u); return u; };
@@ -502,7 +503,7 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
   app.patch<{ Params: { installationId: string; roleId: string }; Body: FastkoreRolePermissions }>(
     '/api/admin/erp-roles/:installationId/:roleId/permissions', { schema: { body: object({ mcp: { type: 'boolean' }, cli: { type: 'boolean' },
       webSearch: { type: 'boolean' }, webRead: { type: 'boolean' }, webRequests: { type: 'boolean' }, fileWrite: { type: 'boolean' },
-      readOnly: { type: 'boolean' }, createProjects: { type: 'boolean' }, renameProjects: { type: 'boolean' },
+      readOnly: { type: 'boolean' }, createProjects: { type: 'boolean' }, assistant: { type: 'boolean' }, renameProjects: { type: 'boolean' },
       revision: { type: 'integer', minimum: 0 } }, ['mcp', 'cli', 'revision']) } }, async request => {
       admin(request);
       const result = await workspace.store.changeAccess(draft => {
@@ -514,6 +515,7 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
         const value = { installationId, roleId, mcp: request.body.mcp, cli: request.body.cli,
           fileWrite: request.body.fileWrite ?? previous.fileWrite,
           readOnly: request.body.readOnly ?? previous.readOnly, createProjects: request.body.createProjects ?? previous.createProjects,
+          assistant: request.body.assistant ?? previous.assistant,
           webSearch: request.body.webSearch ?? previous.webSearch,
           webRead: request.body.webRead ?? previous.webRead, webRequests: request.body.webRequests ?? previous.webRequests, revision: previous.revision + 1 };
         const index = records.findIndex(item => item.installationId === installationId && item.roleId === roleId);
@@ -521,10 +523,11 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
         draft.security?.audit.unshift({ id: randomUUID(), actorId: actor.id, action: 'erp.role.permissions', targetId: installationId + '/' + roleId, createdAt: new Date().toISOString() });
         draft.security?.audit.splice(1000);
         return { mcp: value.mcp, cli: value.cli, readOnly: value.readOnly, createProjects: value.createProjects,
-          fileWrite: value.fileWrite,
+          assistant: value.assistant, fileWrite: value.fileWrite,
           webSearch: value.webSearch, webRead: value.webRead, webRequests: value.webRequests, revision: value.revision };
       });
       if (!result.fileWrite) workspace.revokeFileWrites();
+      if (!result.assistant) workspace.revokeAssistantRuns();
       return result;
     });
   app.delete<{ Params: { installationId: string; roleId: string } }>('/api/admin/erp-roles/:installationId/:roleId', async request => {
@@ -784,6 +787,7 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
     const visibleRun = (run: Run) => {
       try {
         access.run(u, run.id, credential);
+        if (run.projectId === assistantProjectId) return true;
         return !run.projectId || !run.chatId || chatIdentityMatches({ credential, user: u }, workspace.chat(run.projectId, run.chatId));
       } catch { return false; }
     };
@@ -803,7 +807,15 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
           access.canAccessChat(u, project, chat, credential) && chatIdentityMatches({ user: u, credential }, chat)) unreadChatReplies[chat.id] = replyId;
       }
     }
+    for (const chat of workspace.store.state.assistant?.chats ?? []) {
+      const replyId = chat.lastCompletedReplyId;
+      if (replyId && !chat.archivedAt && u.readChatReplies?.[chat.id] !== replyId &&
+        access.canAccessAssistantChat(u, chat, credential)) unreadChatReplies[chat.id] = replyId;
+    }
+    const assistantAvailable = canUseAssistant(workspace.store.state, u, credential);
+    const assistantDefaults = assistantAvailable ? workspace.assistantSettings() : undefined;
     return { version: '0.6.0', activeRun, activeRuns, queuedRuns, unreadChatReplies, busy: workspace.busy, user: publicUser(u), setupRequired: access.setupRequired, canCreateProject: canCreateProject(u, credential),
+      assistantAvailable, assistantModel: assistantDefaults?.model || undefined, assistantReasoningEffort: assistantDefaults?.reasoningEffort,
       cli: u.role === 'admin' ? cli : cli && { ...cli, path: '', status: '' },
       isolatedCodex: workspace.isolatedCodex, workerFilesAvailable: workspace.workerFilesAvailable, codexLimitsRevision: workspace.codexLimitsRevision,
       settings: { ...settings, cliPath: u.role === 'admin' ? settings.cliPath : '',
@@ -833,6 +845,11 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
     const authorize = () => {
       const { user: actor, credential } = principal(request);
       if (chatId && !projectId) throw new BridgeError('Укажите проект диалога.');
+      if (projectId === assistantProjectId) {
+        if (!canUseAssistant(workspace.store.state, actor, credential)) throw new BridgeError('Помощник Fastis недоступен для вашей роли.', 403);
+        if (chatId) access.assistantChat(actor, chatId, credential, { edit: true });
+        return actor.id;
+      }
       const project = projectId ? access.project(actor, projectId, credential) : undefined;
       if (!project && actor.role !== 'admin' && !workspace.corporate.role(actor)?.operationIds.includes('chat')) {
         throw new BridgeError('Рабочая роль не разрешает работу с чатом.', 403);
@@ -1078,13 +1095,16 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
       .map(chat => ({ ...access.chatSummary(chat, ownerName(chat.ownerId)), projectId: project.id, pinned: pinned.has(chat.id) || undefined })) : [])
       .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   });
-  const archivedChats = (include: (project: ReturnType<Workspace['project']>, chat: ReturnType<Workspace['chat']>) => boolean) =>
-    workspace.store.state.projects.flatMap(project => project.chats.flatMap(chat => chat.archivedAt && include(project, chat)
-      ? [{ ...access.chatSummary(chat), archivedAt: chat.archivedAt, projectId: project.id, projectName: project.deletedAt ? unassignedChatsLabel : project.name }] : []))
-      .sort((a, b) => b.archivedAt.localeCompare(a.archivedAt));
+  const archivedChats = (include: (project: ReturnType<Workspace['project']>, chat: ReturnType<Workspace['chat']>) => boolean,
+    includeAssistant?: (chat: ReturnType<Workspace['chat']>) => boolean) => [
+    ...workspace.store.state.projects.flatMap(project => project.chats.flatMap(chat => chat.archivedAt && include(project, chat)
+      ? [{ ...access.chatSummary(chat), archivedAt: chat.archivedAt, projectId: project.id, projectName: project.deletedAt ? unassignedChatsLabel : project.name }] : [])),
+    ...(includeAssistant ? (workspace.store.state.assistant?.chats ?? []).flatMap(chat => chat.archivedAt && includeAssistant(chat)
+      ? [{ ...access.chatSummary(chat), archivedAt: chat.archivedAt, projectId: assistantProjectId, projectName: assistantName }] : []) : []),
+  ].sort((a, b) => b.archivedAt.localeCompare(a.archivedAt));
   app.get('/api/admin/chats/archive', async request => {
     admin(request);
-    return archivedChats(() => true);
+    return archivedChats(() => true, () => true);
   });
   app.get('/api/chats/archive', async request => {
     const { user: actor, credential } = principal(request);
@@ -1092,7 +1112,8 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
     return archivedChats((project, chat) => chat.ownerId === actor.id &&
       (project.deletedAt ? chatIdentityMatches({ user: actor, credential }, chat) :
         chat.fastkoreBinding?.installationId === credential.installationId && chatIdentityMatches({ user: actor, credential }, chat)) &&
-      access.canAccessChat(actor, project, chat, credential));
+      access.canAccessChat(actor, project, chat, credential),
+      chat => chat.ownerId === actor.id && chat.assistantInstallationId === credential.installationId && chat.assistantExternalUserId === credential.externalUserId);
   });
   const relatedChatContext = (request: FastifyRequest, raw: unknown) => {
     const p = principal(request);
@@ -1317,6 +1338,185 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
     const file = await uploads.receive(request, actorId, (name, data) => workspace.addAttachment(projectId, name, data, authorize));
     return reply.code(201).send(file);
   });
+  app.get('/api/admin/assistant/settings', async request => {
+    settingsAdmin(request);
+    return workspace.assistantSettings();
+  });
+  app.put<{ Body: Partial<Omit<AssistantSettings, 'revision'>> & { revision: number } }>('/api/admin/assistant/settings', {
+    schema: { body: object({ enabled: { type: 'boolean' }, instructions: { type: 'string', maxLength: 8000 }, model: modelSchema,
+      reasoningEffort: { enum: ['low', 'medium', 'high', 'xhigh'] }, revision: { type: 'integer', minimum: 0, maximum: 2147483647 } }, ['revision']) },
+  }, async request => {
+    const saved = await workspace.saveAssistantSettings(request.body, () => settingsAdmin(request));
+    if (!saved.enabled) workspace.revokeAssistantRuns();
+    return saved;
+  });
+  const requireAssistant = (request: FastifyRequest) => {
+    const p = principal(request);
+    if (!canUseAssistant(workspace.store.state, p.user, p.credential)) throw new BridgeError('Помощник Fastis недоступен для вашей роли.', 403);
+    return p;
+  };
+  const requestAssistantChat = (request: FastifyRequest<{ Params: { chatId: string } }>, options: { edit?: boolean; allowAdminArchive?: boolean } = {}) => {
+    const p = principal(request);
+    return access.assistantChat(p.user, request.params.chatId, p.credential, options);
+  };
+  app.get('/api/assistant/chats', { onSend: revalidateJson }, async request => {
+    const p = requireAssistant(request);
+    const pinned = new Set(p.user.pinnedChatIds);
+    const ownerName = access.userNameLookup();
+    return (workspace.store.state.assistant?.chats ?? [])
+      .filter(chat => !chat.archivedAt && access.canAccessAssistantChat(p.user, chat, p.credential))
+      .map(chat => ({ ...access.chatSummary(chat, ownerName(chat.ownerId)), pinned: pinned.has(chat.id) || undefined, archivedAt: chat.archivedAt }));
+  });
+  app.post<{ Body: { title?: string; model?: string } }>('/api/assistant/chats', {
+    schema: { body: object({ title: string(120), model: modelSchema }) },
+  }, async (request, reply) => {
+    const check = () => requireAssistant(request);
+    const p = check();
+    const created = await workspace.addAssistantChat(p.credential, p.user.id, request.body?.title, request.body?.model, check);
+    return reply.code(201).send(access.viewChat(created, p.credential));
+  });
+  const assistantChatPath = '/api/assistant/chats/:chatId';
+  app.get<{ Params: { chatId: string } }>(assistantChatPath, { onSend: revalidateJson }, async request => {
+    const p = principal(request);
+    return viewChat(request, requestAssistantChat(request, { allowAdminArchive: isSettingsAdmin(p) || p.user.role === 'admin' }));
+  });
+  app.patch<{ Params: { chatId: string }; Body: { replyId: string } }>(assistantChatPath + '/read', {
+    schema: { body: object({ replyId: string(36) }, ['replyId']) },
+  }, request => access.markChatRead(request.body.replyId, () => ({ actor: principal(request).user, chat: requestAssistantChat(request) })));
+  app.patch<{ Params: { chatId: string }; Body: { pinned: boolean } }>(assistantChatPath + '/pin', {
+    schema: { body: object({ pinned: { type: 'boolean' } }, ['pinned']) },
+  }, request => access.setChatPinned(request.body.pinned, () => ({ actor: user(request), chat: requestAssistantChat(request, { edit: true }) })));
+  app.patch<{ Params: { chatId: string }; Body: { model?: string; reasoningEffort?: Settings['reasoningEffort'] } }>(assistantChatPath, {
+    schema: { body: { ...object({ model: modelSchema, reasoningEffort: { enum: ['low', 'medium', 'high', 'xhigh'] } }), minProperties: 1 } },
+  }, async request => {
+    const check = () => requestAssistantChat(request, { edit: true }); check();
+    return viewChat(request, await workspace.changeChatModel(assistantProjectId, request.params.chatId, request.body.model, check, request.body.reasoningEffort));
+  });
+  app.patch<{ Params: { chatId: string }; Body: { title: string } }>(assistantChatPath + '/title', {
+    schema: { body: object({ title: string(120) }, ['title']) },
+  }, request => workspace.renameChat(request.body.title, () => ({ actor: user(request), chat: requestAssistantChat(request, { edit: true }) })));
+  app.patch<{ Params: { chatId: string }; Body: { projectId: string; title?: string } }>(assistantChatPath + '/move', {
+    schema: { body: object({ projectId: string(100), title: string(120) }, ['projectId']) },
+  }, async request => {
+    const destinationId = request.body.projectId;
+    const check = () => {
+      requestAssistantChat(request, { edit: true });
+      const p = principal(request);
+      access.project(p.user, destinationId, p.credential);
+      return p;
+    };
+    check();
+    return viewChat(request, await workspace.moveChat(assistantProjectId, request.params.chatId, destinationId, request.body.title, check));
+  });
+  app.patch<{ Params: { chatId: string }; Body: { archived: boolean } }>(assistantChatPath + '/archive', {
+    schema: { body: object({ archived: { type: 'boolean' } }, ['archived']) },
+  }, async request => viewChat(request, await workspace.setChatArchived(assistantProjectId, request.params.chatId, request.body.archived, () => {
+    const p = principal(request);
+    if (request.body.archived) {
+      if (p.user.role === 'admin') return p.user;
+      requestAssistantChat(request, { edit: true });
+      return p.user;
+    }
+    return admin(request);
+  })));
+  app.delete<{ Params: { chatId: string } }>(assistantChatPath, request => workspace.deleteArchivedChat(assistantProjectId, request.params.chatId, () => {
+    const p = principal(request);
+    const chat = requestAssistantChat(request, { allowAdminArchive: p.user.role === 'admin' });
+    if (p.user.role !== 'admin' && (chat.ownerId !== p.user.id || chat.archivedAt || chat.messages.length)) {
+      throw new BridgeError('Удалить можно только свой пустой чат.', 403);
+    }
+    return p.user;
+  }));
+  app.get<{ Params: { chatId: string } }>(assistantChatPath + '/files', request => {
+    const chat = requestAssistantChat(request), actor = user(request);
+    return chatFileEntries(chat, actor).map(({ file, messageId, canDelete }) => ({
+      id: file.id, name: file.name, size: file.size, messageId, canDelete,
+    }));
+  });
+  app.post<{ Params: { chatId: string }; Body: { fileId: string } }>(assistantChatPath + '/files', {
+    schema: { body: object({ fileId: string(100) }, ['fileId']) },
+  }, request => workspace.storeChatFile(assistantProjectId, request.params.chatId, request.body.fileId, () => {
+    requestAssistantChat(request, { edit: true }); return user(request);
+  }));
+  app.get<{ Params: { chatId: string; fileId: string } }>(assistantChatPath + '/files/:fileId', async (request, reply) => {
+    const find = () => {
+      const entry = chatFileEntries(requestAssistantChat(request), user(request)).find(item => item.file.id === request.params.fileId);
+      if (!entry) throw new BridgeError('Файл чата не найден.', 404);
+      return entry.file;
+    };
+    const file = find(), contents = await workspace.files.read(workspace.assistantContainer(), file);
+    find();
+    const name = encodeURIComponent(file.name).replace(/[!'()*]/g, c => '%' + c.charCodeAt(0).toString(16));
+    return reply.type('application/octet-stream').header('Cache-Control', 'private, no-store')
+      .header('Content-Disposition', "attachment; filename*=UTF-8''" + name).send(contents);
+  });
+  app.delete<{ Params: { chatId: string; fileId: string } }>(assistantChatPath + '/files/:fileId', request =>
+    workspace.deleteChatFile(assistantProjectId, request.params.chatId, request.params.fileId, () => { requestAssistantChat(request, { edit: true }); return user(request); }));
+  app.post<{ Params: { chatId: string; fileId: string } }>(assistantChatPath + '/files/:fileId/attach', async request => {
+    const { fileId } = request.params;
+    const find = () => {
+      const chat = requestAssistantChat(request, { edit: true });
+      const entry = chatFileEntries(chat, user(request)).find(item => item.file.id === fileId);
+      if (!entry) throw new BridgeError('Файл чата не найден.', 404);
+      return entry.file;
+    };
+    const file = find(), actor = user(request), container = workspace.assistantContainer();
+    if (file.ownerId === actor.id && container.attachments.some(item => item.id === fileId)) return file;
+    const contents = await workspace.files.read(container, file);
+    find();
+    return workspace.addAttachment(assistantProjectId, file.name, contents, () => { find(); return user(request).id; });
+  });
+  app.get<{ Params: { chatId: string; messageId: string; fileId: string } }>(assistantChatPath + '/messages/:messageId/files/:fileId', async (request, reply) => {
+    const { messageId, fileId } = request.params;
+    const findFile = () => {
+      const p = principal(request);
+      const chat = requestAssistantChat(request, { allowAdminArchive: p.user.role === 'admin' });
+      const message = chat.messages.find(item => item.id === messageId);
+      const file = message?.attachments.find(item => item.id === fileId);
+      if (!message || !file || !canReadChatAttachment(file, message, chat.ownerId, p.user)) {
+        throw new BridgeError('Вложение не найдено.', 404);
+      }
+      return file;
+    };
+    const file = findFile();
+    const contents = await workspace.files.read(workspace.assistantContainer(), file);
+    findFile();
+    const name = encodeURIComponent(file.name).replace(/[!'()*]/g, c => '%' + c.charCodeAt(0).toString(16));
+    return reply.type('application/octet-stream').header('Cache-Control', 'private, no-store')
+      .header('Content-Disposition', "attachment; filename*=UTF-8''" + name).send(contents);
+  });
+  app.post('/api/assistant/attachments', async (request, reply) => {
+    const authorize = () => requireAssistant(request).user.id;
+    const actorId = authorize();
+    const file = await uploads.receive(request, actorId, (name, data) => workspace.addAttachment(assistantProjectId, name, data, authorize));
+    return reply.code(201).send(file);
+  });
+  app.post<{ Params: { chatId: string }; Body: { text: string; attachmentIds?: string[]; clientRequestId?: string; model?: string; fastkoreContext?: unknown } }>(assistantChatPath + '/messages', {
+    schema: { body: object({ text: string(60_000), attachmentIds: { type: 'array', items: string(100), maxItems: 8, uniqueItems: true }, clientRequestId: string(100), model: modelSchema, fastkoreContext: { type: 'object' } }, ['text']) },
+  }, async (request, reply) => {
+    const check = () => {
+      const p = requireAssistant(request);
+      requestAssistantChat(request, { edit: true });
+      const container = workspace.assistantContainer();
+      for (const id of request.body.attachmentIds ?? []) {
+        if (!container.attachments.some(a => a.id === id && !a.libraryUploadedAt && (p.user.role === 'admin' || a.ownerId === p.user.id))) {
+          throw new BridgeError('Вложение не найдено.', 404);
+        }
+      }
+    }; check();
+    const text = request.body.text.trim(); if (!text) throw new BridgeError('Напишите вопрос.');
+    const p = principal(request);
+    const rawContext = request.body.fastkoreContext;
+    if (rawContext !== undefined && p.credential.source !== 'fastkore') throw new BridgeError('Контекст ERP доступен в сеансе Fastkore.', 403);
+    const parsed = parseFastkoreContext(request.body.fastkoreContext);
+    if (rawContext !== undefined && !parsed) throw new BridgeError('Fastkore передал некорректный или неподдерживаемый снимок.');
+    const snapshot = parsed ?? undefined;
+    if (snapshot && snapshot.view !== 'none') delete snapshot.entity_uri;
+    const run = await workspace.send(assistantProjectId, request.params.chatId, text, request.body.attachmentIds ?? [],
+      request.body.clientRequestId ? `${p.user.id}:${request.body.clientRequestId}` : undefined,
+      request.body.model, check, { id: p.user.id, name: p.user.name, credentialId: p.credential.id }, snapshot);
+    return reply.code(202).header('Location', `/api/runs/${run.id}`).send(run);
+  });
   app.get<{ Params: { runId: string } }>('/api/runs/:runId', async request => requestRun(request));
   app.post<{ Params: { runId: string }; Body: { targetRunId: string } }>('/api/runs/:runId/send-now', {
     schema: { body: object({ targetRunId: string(36) }, ['targetRunId']) },
@@ -1325,14 +1525,17 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
       const { user: actor, credential } = principal(request);
       const run = requestRun(request);
       if (!run.projectId || !run.chatId) throw new BridgeError('Уточнение должно быть сообщением чата.', 409);
-      access.postChat(actor, run.projectId, run.chatId, credential);
+      if (run.projectId === assistantProjectId) access.assistantChat(actor, run.chatId, credential, { edit: true });
+      else access.postChat(actor, run.projectId, run.chatId, credential);
     };
     const actor = principal(request);
     return workspace.sendQueuedNow(request.params.runId, request.body.targetRunId, { id: actor.user.id, credentialId: actor.credential.id }, authorize);
   });
   app.post<{ Params: { runId: string } }>('/api/runs/:runId/cancel', async request => {
     const { user, credential } = principal(request), run = requestRun(request);
-    if (run.projectId && run.chatId) {
+    if (run.projectId === assistantProjectId && run.chatId) {
+      access.assistantChat(user, run.chatId, credential, { edit: true });
+    } else if (run.projectId && run.chatId) {
       const chat = access.postChat(user, run.projectId, run.chatId, credential);
       if (chat.visibility === 'project' && user.role !== 'admin' && run.ownerId !== user.id) throw new BridgeError('Отменить запрос может его автор или администратор.', 403);
     }

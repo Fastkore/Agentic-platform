@@ -1,11 +1,12 @@
 import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
+import { mkdirSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, realpath, rename, rm, rmdir, stat, unlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { isDeepStrictEqual } from 'node:util';
 import { performance } from 'node:perf_hooks';
-import type { AgentProfile, Attachment, Chat, CliInfo, CodexLimits, Credential, FastkoreChatBinding, FileStorageProvider, FileStorageStatus, Job, Message, ModelCatalog, Project, ProjectAgentPolicy, ProjectChatDefaults, ProjectRole, Run, Settings, TokenActivityReport, Usage, User } from '../shared/types.js';
-import { sharedChatWaitMessage, specialistFileLimits } from '../shared/types.js';
+import type { AgentProfile, AssistantSettings, Attachment, Chat, CliInfo, CodexLimits, Credential, FastkoreChatBinding, FileStorageProvider, FileStorageStatus, Job, Message, ModelCatalog, Project, ProjectAgentPolicy, ProjectChatDefaults, ProjectRole, Run, Settings, TokenActivityReport, Usage, User } from '../shared/types.js';
+import { assistantName, assistantProjectId, sharedChatWaitMessage, specialistFileLimits } from '../shared/types.js';
 import { fastkoreExecutionContext, fastkoreSelectionChatKey, type FastkoreContext } from '../shared/fastkore-context.js';
 import { fastkorePrompt } from './fastkore-prompt.js';
 import { agentContext, SOURCE_TRUST_INSTRUCTIONS } from './agent-context.js';
@@ -21,7 +22,7 @@ import { FreecadJob } from './freecad.js';
 import { CorporateAccess, projectChatGrantId } from './corporate.js';
 import type { RunLibraryScope } from './library/policy.js';
 import type { Principal } from './access.js';
-import { canAccessProject, erpFileWriteAllowed, erpRolePermissions, erpRolesForUser, isErpReadOnly, projectAllowsRoles } from './erp-roles.js';
+import { canAccessProject, canUseAssistant, erpFileWriteAllowed, erpRolePermissions, erpRolesForUser, isErpReadOnly, projectAllowsRoles } from './erp-roles.js';
 import { KnowledgeBase } from './knowledge.js';
 import { withKnowledge } from './knowledge-tools.js';
 import { canEditInstructionsFromChat, personalInstructionRequest, personalPrompt, personalToolInstructions, sharedPersonalToolInstructions, withPersonalInstructions } from './personal-instructions.js';
@@ -202,7 +203,7 @@ export class Workspace {
       credential.userId === userId && (!credential.expiresAt || Date.parse(credential.expiresAt) > Date.now())) : undefined;
   }
   readonly corporate: CorporateAccess;
-  prepareFastkoreTools?: (credentialId: string, context: FastkoreContext | undefined, authorize: () => void, signal: AbortSignal, run?: Run) => Promise<{ tools?: CodexTools; problem?: string }>;
+  prepareFastkoreTools?: (credentialId: string, context: FastkoreContext | undefined, authorize: () => void, signal: AbortSignal, run?: Run, options?: { forceReadOnly?: boolean }) => Promise<{ tools?: CodexTools; problem?: string }>;
   prepareInternetTools?: (other: CodexTools | undefined, credentialId: string, authorize: () => void) => CodexTools | undefined;
   cli: CliInfo | null = null;
   // Runs execute in parallel lanes: one concurrent run per executor provider, keyed by run id.
@@ -248,6 +249,96 @@ export class Workspace {
   private executionAllowed() { if (this.executionDisabled) throw new BridgeError('Выполнение заданий выключено до проверки среды. Настройки и история доступны.', 503); }
   private async cliPath() { return this.isolatedCodex ? 'codex-worker' : this.store.state.settings.cliPath || await discoverCli(); }
   project(id: string): Project { const p = this.store.state.projects.find(p => p.id === id); if (!p) throw new BridgeError('Проект не найден.', 404); return p; }
+  assistantSettings(): AssistantSettings {
+    const saved = this.store.state.assistant?.settings;
+    return { enabled: saved?.enabled ?? true, instructions: saved?.instructions ?? '', model: saved?.model ?? '', reasoningEffort: saved?.reasoningEffort ?? 'high', revision: saved?.revision ?? 0 };
+  }
+  assistantProfile(): AgentProfile {
+    const settings = this.assistantSettings();
+    return {
+      id: assistantProjectId, name: assistantName,
+      description: 'Общесистемный помощник по Fastkore и регламентам компании',
+      instructions: settings.instructions ?? '',
+      enabled: settings.enabled,
+      toolIds: ['fastkore', 'chat-files'],
+      model: settings.model ?? '',
+      reasoningEffort: settings.reasoningEffort ?? 'high',
+      operationIds: ['chat'], datasetIds: [], skillIds: [], allowWrite: false,
+      revision: settings.revision + 1,
+    };
+  }
+  assistantContainer(): Project {
+    const assistant = this.store.state.assistant ??= { chats: [], attachments: [] };
+    const directory = path.join(this.store.root, 'assistant-files');
+    mkdirSync(directory, { recursive: true, mode: 0o700 });
+    return { id: assistantProjectId, name: assistantName, directory, chats: assistant.chats, attachments: assistant.attachments };
+  }
+  private container(projectId: string): Project {
+    return projectId === assistantProjectId ? this.assistantContainer() : this.project(projectId);
+  }
+  assistantChat(chatId: string): Chat {
+    const chat = this.store.state.assistant?.chats.find(c => c.id === chatId);
+    if (!chat) throw new BridgeError('Диалог не найден.', 404);
+    return chat;
+  }
+  chatIn(projectId: string, chatId: string): Chat {
+    return projectId === assistantProjectId ? this.assistantChat(chatId) : this.chat(projectId, chatId);
+  }
+  saveAssistantSettings(input: Partial<Omit<AssistantSettings, 'revision'>> & { revision: number }, authorize: () => User) {
+    return this.admit(async () => {
+      this.writable();
+      const actor = authorize();
+      const assistant = this.store.state.assistant ??= { chats: [], attachments: [] };
+      const current = this.assistantSettings();
+      if (current.revision !== input.revision) throw new BridgeError('Настройки Fastis изменились. Откройте настройки заново.', 409);
+      const model = input.model !== undefined ? input.model : current.model ?? '';
+      if (model) await this.validateModel(model);
+      this.writable();
+      const previous = assistant.settings;
+      const next: AssistantSettings = {
+        enabled: input.enabled ?? current.enabled,
+        instructions: input.instructions !== undefined ? input.instructions.trim() : current.instructions,
+        model,
+        reasoningEffort: input.reasoningEffort ?? current.reasoningEffort,
+        revision: current.revision + 1,
+      };
+      assistant.settings = next;
+      try {
+        await this.store.save({ audit: { id: randomUUID(), actorId: actor.id, action: 'assistant.settings', targetId: assistantProjectId, createdAt: new Date().toISOString() } });
+      } catch (error) {
+        assistant.settings = previous;
+        throw error;
+      }
+      return next;
+    });
+  }
+  async addAssistantChat(credential: Credential, ownerId: string, title?: string, model = '', authorize?: () => void) {
+    this.writable();
+    if (model) await this.validateModel(model);
+    authorize?.();
+    const assistant = this.store.state.assistant ??= { chats: [], attachments: [] };
+    const defaults = this.assistantSettings();
+    const customTitle = title?.trim();
+    const chat: Chat = {
+      id: randomUUID(),
+      title: customTitle || 'Новый диалог',
+      titleCustomized: customTitle ? true : undefined,
+      updatedAt: new Date().toISOString(),
+      messages: [],
+      model: model || defaults.model || '',
+      reasoningEffort: defaults.reasoningEffort,
+      ownerId,
+      visibility: 'private',
+      ...(credential.source === 'fastkore' ? {
+        assistantInstallationId: credential.installationId,
+        assistantExternalUserId: credential.externalUserId,
+      } : {}),
+    };
+    assistant.chats.unshift(chat);
+    try { await this.store.save(); }
+    catch (error) { assistant.chats = assistant.chats.filter(item => item !== chat); throw error; }
+    return chat;
+  }
   activeProject(id: string): Project {
     const project = this.project(id);
     if (project.deletedAt) throw new BridgeError('Проект не найден.', 404);
@@ -341,7 +432,8 @@ export class Workspace {
     return this.admit(async () => {
       this.writable();
       const ownerId = authorize();
-      const project = this.project(projectId);
+      const project = this.container(projectId);
+      if (library && projectId === assistantProjectId) throw new BridgeError('Библиотека недоступна для общего помощника.', 403);
       this.checkFileBudget(project, ownerId, data.length);
       const file = await this.files.upload(this.fileStorageStatus.provider, project, name, data);
       file.ownerId = ownerId;
@@ -371,7 +463,7 @@ export class Workspace {
       if (projectId === target.id) { projectBytes += file.size; projectFiles++; }
       if (ownerId && file.ownerId === ownerId) { userBytes += file.size; userFiles++; }
     };
-    for (const project of this.store.state.projects) {
+    for (const project of [...this.store.state.projects, ...(this.store.state.assistant ? [{ id: assistantProjectId, attachments: this.store.state.assistant.attachments, chats: this.store.state.assistant.chats }] : [])]) {
       for (const file of project.attachments) count(project.id, file);
       for (const chat of project.chats) for (const message of chat.messages)
         for (const file of message.attachments) count(project.id, file);
@@ -395,9 +487,13 @@ export class Workspace {
       const inQueue = new Set(this.store.state.jobs?.flatMap(job => job.attachmentIds));
       const fileDeletions: { projectId: string; file: Attachment }[] = [];
       const rollback: (() => void)[] = [];
-      for (const project of this.store.state.projects) {
+      const containers = [
+        ...this.store.state.projects.map(project => ({ id: project.id, chats: project.chats, getAttachments: () => project.attachments, setAttachments: (next: Attachment[]) => { project.attachments = next; } })),
+        ...(this.store.state.assistant ? [{ id: assistantProjectId, chats: this.store.state.assistant.chats, getAttachments: () => this.store.state.assistant!.attachments, setAttachments: (next: Attachment[]) => { this.store.state.assistant!.attachments = next; } }] : []),
+      ];
+      for (const project of containers) {
         const inHistory = new Set(project.chats.flatMap(chat => [...(chat.storedFiles ?? []), ...chat.messages.flatMap(message => message.attachments)].map(file => file.id)));
-        const previous = project.attachments;
+        const previous = project.getAttachments();
         const keep = previous.filter(file => {
           if (file.libraryUploadedAt || inQueue.has(file.id) || inHistory.has(file.id)) return true;
           if (!file.uploadedAt) {
@@ -410,8 +506,8 @@ export class Workspace {
           return false;
         });
         if (keep.length !== previous.length) {
-          project.attachments = keep;
-          rollback.push(() => { project.attachments = previous; });
+          project.setAttachments(keep);
+          rollback.push(() => { project.setAttachments(previous); });
         }
       }
       if (!rollback.length) return;
@@ -641,10 +737,10 @@ export class Workspace {
     });
   }
   async changeChatModel(projectId: string, chatId: string, model: string | undefined, authorize?: () => void, reasoningEffort?: Settings['reasoningEffort']) {
-    this.writable(); this.chat(projectId, chatId);
+    this.writable(); this.chatIn(projectId, chatId);
     const assertIdle = () => { if (this.store.state.runs.some(r => r.projectId === projectId && r.chatId === chatId && ['queued', 'running'].includes(r.status))) throw new BridgeError('Дождитесь завершения заданий в этом диалоге.', 409); };
     assertIdle(); if (model !== undefined) await this.validateModel(model); this.writable(); assertIdle();
-    authorize?.(); const chat = this.chat(projectId, chatId);
+    authorize?.(); const chat = this.chatIn(projectId, chatId);
     if (model !== undefined) chat.model = model;
     if (reasoningEffort !== undefined) chat.reasoningEffort = reasoningEffort;
     await this.store.save(); return chat;
@@ -717,11 +813,11 @@ export class Workspace {
   moveChat(projectId: string, chatId: string, destinationId: string, title: string | undefined, authorize: () => Principal) {
     return this.admit(async () => {
       this.writable();
-      const source = this.project(projectId), destination = this.activeProject(destinationId);
-      const chat = this.chat(projectId, chatId), state = this.store.state;
+      const source = this.container(projectId), destination = this.activeProject(destinationId);
+      const chat = this.chatIn(projectId, chatId), state = this.store.state;
       const name = title?.trim();
       if (name !== undefined && (!name || /[\r\n]/.test(name))) throw new BridgeError('Введите название чата в одну строку.');
-      if (source === destination) throw new BridgeError('Выберите другой проект.');
+      if (source.id === destination.id) throw new BridgeError('Выберите другой проект.');
       const check = () => {
         const { user: actor, credential } = authorize();
         this.assertChatIdle(projectId, chatId);
@@ -750,6 +846,7 @@ export class Workspace {
         moved = {
           ...chat, title: name ?? chat.title, titleCustomized: name === undefined ? chat.titleCustomized : true,
           cliWorkspaceProjectId: chat.cliWorkspaceProjectId ?? source.id, verifiedOpeningRunId: undefined,
+          assistantInstallationId: undefined, assistantExternalUserId: undefined,
           sessionId: undefined, sessionScope: undefined, sessionProvider: undefined, historyReplayPending: undefined, legacyHistory: undefined,
           specialistSessions: undefined, knowledgeRevision: undefined,
           storedFiles: chat.storedFiles?.map(file => copies.get(file.id)!),
@@ -808,7 +905,7 @@ export class Workspace {
   setChatArchived(projectId: string, chatId: string, archived: boolean, authorize: () => User) {
     return this.admit(async () => {
       this.writable();
-      const actor = authorize(), chat = this.chat(projectId, chatId);
+      const actor = authorize(), chat = this.chatIn(projectId, chatId);
       if (Boolean(chat.archivedAt) === archived) return chat;
       if (archived) this.assertChatIdle(projectId, chatId);
       const binding = chat.fastkoreBinding;
@@ -828,7 +925,7 @@ export class Workspace {
   deleteArchivedChat(projectId: string, chatId: string, authorize: () => User) {
     return this.admit(async () => {
       this.writable();
-      const actor = authorize(), project = this.project(projectId), chat = this.chat(projectId, chatId);
+      const actor = authorize(), project = this.container(projectId), chat = this.chatIn(projectId, chatId);
       if (!chat.archivedAt && chat.messages.length) throw new BridgeError('Сначала перенесите чат в архив.', 409);
       this.assertChatIdle(projectId, chatId);
       const state = this.store.state, { runs, jobs } = state, { chats } = project;
@@ -845,10 +942,15 @@ export class Workspace {
         return usage && completedAt ? [{ id, projectId, ownerId, status, createdAt, completedAt, usage, progress: '', usageOnly: true }] : [];
       });
       state.jobs = jobs?.filter(job => !removedRuns.has(job.runId));
-      project.chats = remainingChats;
+      if (projectId === assistantProjectId) this.store.state.assistant!.chats = remainingChats;
+      else project.chats = remainingChats;
       try {
         await this.store.save({ fileDeletions, audit: { id: randomUUID(), actorId: actor.id, action: 'chat.delete', targetId: chatId, createdAt: new Date().toISOString() } });
-      } catch (error) { project.chats = chats; state.runs = runs; state.jobs = jobs; throw error; }
+      } catch (error) {
+        if (projectId === assistantProjectId) this.store.state.assistant!.chats = chats;
+        else project.chats = chats;
+        state.runs = runs; state.jobs = jobs; throw error;
+      }
       this.cleanDeletedChatFiles();
       return { ok: true };
     });
@@ -857,7 +959,7 @@ export class Workspace {
   private fileCleanupRetry?: ReturnType<typeof setTimeout>;
   storeChatFile(projectId: string, chatId: string, fileId: string, authorize: () => User) {
     return this.admit(async () => {
-      const actor = authorize(), project = this.project(projectId), chat = this.chat(projectId, chatId);
+      const actor = authorize(), project = this.container(projectId), chat = this.chatIn(projectId, chatId);
       const file = project.attachments.find(item => item.id === fileId && !item.libraryUploadedAt && (item.ownerId === actor.id || actor.role === 'admin'));
       if (!file) throw new BridgeError('Вложение не найдено.', 404);
       if (chat.storedFiles?.some(item => item.id === fileId)) return file;
@@ -871,7 +973,7 @@ export class Workspace {
   deleteChatFile(projectId: string, chatId: string, fileId: string, authorize: () => User) {
     return this.admit(async () => {
       this.writable();
-      const actor = authorize(), project = this.project(projectId), chat = this.chat(projectId, chatId);
+      const actor = authorize(), project = this.container(projectId), chat = this.chatIn(projectId, chatId);
       this.assertChatIdle(projectId, chatId);
       const entry = chatFileEntries(chat, actor).find(item => item.file.id === fileId);
       if (!entry) throw new BridgeError('Файл чата не найден.', 404);
@@ -884,11 +986,20 @@ export class Workspace {
       const referenced = project.chats.some(item => item.storedFiles?.some(file => file.id === fileId) || item.messages.some(message => message.attachments.some(file => file.id === fileId))) ||
         this.store.state.jobs?.some(job => job.attachmentIds.includes(fileId) && this.store.state.runs.some(run => run.id === job.runId && run.projectId === projectId));
       const remove = !referenced && !entry.file.libraryUploadedAt;
-      if (remove) project.attachments = attachments.filter(file => file.id !== fileId);
+      if (remove) {
+        const nextAttachments = attachments.filter(file => file.id !== fileId);
+        if (projectId === assistantProjectId) this.store.state.assistant!.attachments = nextAttachments;
+        else project.attachments = nextAttachments;
+      }
       try {
         await this.store.save({ fileDeletions: remove ? [{ projectId, file: entry.file }] : [],
           audit: { id: randomUUID(), actorId: actor.id, action: 'chat.file.delete', targetId: fileId, createdAt: new Date().toISOString() } });
-      } catch (error) { Object.assign(chat, previous); project.attachments = attachments; throw error; }
+      } catch (error) {
+        Object.assign(chat, previous);
+        if (projectId === assistantProjectId) this.store.state.assistant!.attachments = attachments;
+        else project.attachments = attachments;
+        throw error;
+      }
       this.cleanDeletedChatFiles();
       return { ok: true };
     });
@@ -902,7 +1013,7 @@ export class Workspace {
       for (const { projectId, file } of pending) {
         if (this.stopping) break;
         try {
-          await this.files.remove(this.project(projectId), file).catch(error => {
+          await this.files.remove(this.container(projectId), file).catch(error => {
             if (!(error instanceof BridgeError && error.statusCode === 404) && (error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
           });
           this.store.finishChatFileDeletion(projectId, file.id);
@@ -1113,8 +1224,10 @@ export class Workspace {
     const hash = createHash('sha256').update(JSON.stringify({ projectId, chatId, text, attachmentIds: [...attachmentIds].sort(), model: model ?? null, fastkoreContext: context, recommendedSpecialistId, requiredSpecialistId })).digest('hex');
     return this.admit(async () => {
       this.writable(); authorize?.();
-      const chat = this.chat(projectId, chatId);
-      if (this.project(projectId).deletedAt) throw new BridgeError('Сначала выберите проект для чата.', 409);
+      const isAssistant = projectId === assistantProjectId;
+      const chat = this.chatIn(projectId, chatId);
+      const project = this.container(projectId);
+      if (!isAssistant && project.deletedAt) throw new BridgeError('Сначала выберите проект для чата.', 409);
       if (chat.archivedAt) throw new BridgeError('Восстановите чат из архива, чтобы продолжить диалог.', 409);
       const previous = clientRequestId && this.store.state.runs.find(r => r.clientRequestId === clientRequestId);
       if (previous) {
@@ -1123,16 +1236,20 @@ export class Workspace {
       }
       this.assertSharedChatAvailable(projectId, chat, author?.id ?? chat.ownerId);
       if (this.queuedRuns.length >= 100) throw new BridgeError('Очередь заполнена. Повторите позже.', 429);
-      const project = this.project(projectId);
       const actor = this.store.state.security?.users.find(u => u.id === author?.id);
-      const chatProfile = this.corporate.profile(actor, chat.agentProfileId, project);
-      const chatSpecialists = this.corporate.specialists(actor, project, chatProfile.id);
+      if (isAssistant) {
+        if (recommendedSpecialistId || requiredSpecialistId) throw new BridgeError('В общем помощнике Fastis консультации проектных специалистов недоступны.', 403);
+        const credential = actor ? this.projectCredential(actor.id, author?.credentialId) : undefined;
+        if (actor && !canUseAssistant(this.store.state, actor, credential)) throw new BridgeError('Помощник Fastis недоступен для вашей роли.', 403);
+      }
+      const chatProfile = isAssistant ? this.assistantProfile() : this.corporate.profile(actor, chat.agentProfileId, project);
+      const chatSpecialists = isAssistant ? [] : this.corporate.specialists(actor, project, chatProfile.id);
       const selectedId = requiredSpecialistId ?? recommendedSpecialistId;
       const selected = chatSpecialists.find(item => item.id === selectedId);
       if (selectedId && !selected) throw new BridgeError('Этот агент недоступен для консультации.', 403);
       const profile = requiredSpecialistId ? selected! : chatProfile;
-      const specialists = requiredSpecialistId ? this.corporate.specialists(actor, project, profile.id) : chatSpecialists;
-      const tools = this.corporate.tools(profile, project);
+      const specialists = isAssistant ? [] : (requiredSpecialistId ? this.corporate.specialists(actor, project, profile.id) : chatSpecialists);
+      const tools = isAssistant ? ['fastkore', 'chat-files'] : this.corporate.tools(profile, project);
       if (attachmentIds.length && !tools.includes('chat-files')) throw new BridgeError('Агенту не разрешено читать вложения в этом проекте.', 403);
       const attachments = attachmentIds.map(id => {
         const file = project.attachments.find(a => a.id === id && !a.libraryUploadedAt);
@@ -1149,7 +1266,7 @@ export class Workspace {
       validateChatImages(images, provider);
       const oldModel = chat.model; if (model !== undefined) chat.model = model;
       const run: Run = { id: randomUUID(), projectId, chatId, ownerId: author?.id ?? chat.ownerId,
-        agentProfileId: profile.id === projectChatGrantId ? chat.agentProfileId : profile.id,
+        agentProfileId: isAssistant ? assistantProjectId : (profile.id === projectChatGrantId ? chat.agentProfileId : profile.id),
         profileRevision: profile.revision, status: 'queued', progress: 'Ожидает выполнения', createdAt: new Date().toISOString(), clientRequestId, requestHash: hash, model: resolvedModel || undefined,
         reasoningEffort: modelEffort(resolvedModel) ?? chat.reasoningEffort ?? (profile.model ? profile.reasoningEffort : undefined) ?? this.store.state.settings.reasoningEffort ?? 'high' };
       run.executionProvider = provider;
@@ -1157,7 +1274,7 @@ export class Workspace {
         scope: this.corporate.scope(actor, profile, project),
         fastkoreContext: context,
         specialistScope: this.specialistScope(specialists), recommendedSpecialistId, requiredSpecialistId, specialistName: selected?.name };
-      if (actor) this.library.admitRun(run.id, actor.id, project.id, profile.id, author?.credentialId);
+      if (actor && !isAssistant) this.library.admitRun(run.id, actor.id, project.id, profile.id, author?.credentialId);
       this.store.state.runs.push(run); this.store.state.jobs!.push(job);
       try { await this.store.saveRun(run, chat); }
       catch (error) { this.store.state.runs.splice(this.store.state.runs.indexOf(run), 1); this.store.state.jobs!.splice(this.store.state.jobs!.indexOf(job), 1); chat.model = oldModel; throw error; }
@@ -1201,13 +1318,14 @@ export class Workspace {
   private checkJob(job: Job, run: Run) {
     const security = this.store.state.security;
     const actor = security?.users.find(u => u.id === job.authorId && !u.disabled);
-    const project = run.projectId ? this.project(run.projectId) : undefined;
-    const profile = project && this.corporate.profile(actor, run.agentProfileId, project);
+    const isAssistant = run.projectId === assistantProjectId;
+    const project = run.projectId ? this.container(run.projectId) : undefined;
+    const profile = project && (isAssistant ? this.assistantProfile() : this.corporate.profile(actor, run.agentProfileId, project));
     if (profile && profile.revision !== run.profileRevision) throw new BridgeError('Настройки профиля изменились. Создайте новое задание.', 409);
     if (profile && project && job.scope && job.scope !== this.corporate.scope(actor, profile, project)) {
       throw new BridgeError('Разрешения задания изменились. Отправьте запрос заново.', 403);
     }
-    if (profile && project && job.specialistScope && job.specialistScope !== this.specialistScope(this.corporate.specialists(actor, project, profile.id))) {
+    if (!isAssistant && profile && project && job.specialistScope && job.specialistScope !== this.specialistScope(this.corporate.specialists(actor, project, profile.id))) {
       throw new BridgeError('Доступные агенты изменились. Отправьте запрос заново.', 403);
     }
     if (job.authorId && security) {
@@ -1218,8 +1336,15 @@ export class Workspace {
         throw new BridgeError('Запись файлов отключена разрешениями роли.', 403);
       }
       if (project && run.chatId) {
-        const chat = this.chat(project.id, run.chatId);
-        if (!canAccessProject(actor, project, credential) || !fastkoreChatSessionMatches(chat, credential) ||
+        const chat = this.chatIn(project.id, run.chatId);
+        if (isAssistant) {
+          if (!canUseAssistant(this.store.state, actor, credential) || chat.ownerId !== actor.id ||
+            (credential?.source === 'fastkore'
+              ? (chat.assistantInstallationId !== credential.installationId || chat.assistantExternalUserId !== credential.externalUserId)
+              : !!chat.assistantInstallationId)) {
+            throw new BridgeError('Доступ к заданию отозван.', 403);
+          }
+        } else if (!canAccessProject(actor, project, credential) || !fastkoreChatSessionMatches(chat, credential) ||
           actor.role !== 'admin' && chat.ownerId !== actor.id && chat.visibility !== 'project') throw new BridgeError('Доступ к заданию отозван.', 403);
         if (job.attachmentIds.some(id => !project.attachments.some(a => a.id === id && !a.libraryUploadedAt && (actor.role === 'admin' || a.ownerId === actor.id)))) throw new BridgeError('Доступ к вложению отозван.', 403);
       }
@@ -1323,13 +1448,13 @@ export class Workspace {
       run.error = revoked ? 'Доступ к заданию отозван.' : cancel.signal.reason instanceof ExecutionAccountStopped ? cancel.signal.reason.message : cancel.signal.aborted ? undefined : redact((error as Error).message);
       run.progress = revoked ? 'Доступ отозван' : cancel.signal.aborted ? 'Задание остановлено' : 'Ошибка выполнения';
       if (run.projectId && run.chatId) {
-        const chat = this.chat(run.projectId, run.chatId);
+        const chat = this.chatIn(run.projectId, run.chatId);
         const message = chat.messages.findLast(message => message.runId === run.id && message.role === 'assistant');
         if (message) {
           if (run.status === 'cancelled') chat.sessionId = undefined;
           chat.historyReplayPending = true;
           message.status = run.status; message.text = run.error ?? ''; delete message.visuals;
-          const project = this.project(run.projectId);
+          const project = this.container(run.projectId);
           await Promise.allSettled(message.attachments.splice(0).map(file => this.files.remove(project, file)));
         }
       }
@@ -1345,13 +1470,13 @@ export class Workspace {
       }
       this.steering.delete(run.id);
       this.steeredInstructionEdits.delete(run.id);
-      const chat = run.projectId && run.chatId ? this.chat(run.projectId, run.chatId) : undefined;
+      const chat = run.projectId && run.chatId ? this.chatIn(run.projectId, run.chatId) : undefined;
       const previousReplyId = chat?.lastCompletedReplyId;
       if (chat && run.status === 'complete') {
         const reply = chat.messages.findLast(message => message.runId === run.id && message.role === 'assistant' && message.status === 'complete');
         if (reply) chat.lastCompletedReplyId = reply.id;
       }
-      if (job && chat) rememberFastkoreTurn(this.store.state, chat, job, run.status === 'complete');
+      if (job && chat && run.projectId !== assistantProjectId) rememberFastkoreTurn(this.store.state, chat, job, run.status === 'complete');
       this.store.state.jobs = this.store.state.jobs!.filter(item => item.runId !== run.id);
       this.limitsCache.clear();
       this.limitsRevision++;
@@ -1396,19 +1521,21 @@ export class Workspace {
   private async executeChat(job: Job, run: Run, cliPath: string, signal: AbortSignal, executionAccountId?: string, executionProvider?: CliInfo['provider']) {
     const preparationStarted = performance.now();
     const timing = run.timing!;
-    const project = this.project(run.projectId!), chat = this.chat(project.id, run.chatId!);
+    const isAssistant = run.projectId === assistantProjectId;
+    const project = this.container(run.projectId!), chat = this.chatIn(project.id, run.chatId!);
     const security = this.store.state.security;
     const actor = security?.users.find(u => u.id === job.authorId);
     const erpCredential = security?.credentials.find(c => c.id === job.credentialId && c.userId === job.authorId && c.source === 'fastkore');
     const fastkoreName = erpCredential?.externalDisplayName;
-    const chatProfile = this.corporate.profile(actor, chat.agentProfileId, project);
-    const profile = this.corporate.profile(actor, run.agentProfileId, project);
-    const directSpecialist = Boolean(job.requiredSpecialistId && profile.id === job.requiredSpecialistId);
-    const allowedTools = this.corporate.tools(profile, project);
-    const projectInstructions = project.instructions;
+    const chatProfile = isAssistant ? this.assistantProfile() : this.corporate.profile(actor, chat.agentProfileId, project);
+    const profile = isAssistant ? this.assistantProfile() : this.corporate.profile(actor, run.agentProfileId, project);
+    const directSpecialist = !isAssistant && Boolean(job.requiredSpecialistId && profile.id === job.requiredSpecialistId);
+    const allowedTools = isAssistant ? ['fastkore', 'chat-files'] : this.corporate.tools(profile, project);
+    const projectInstructions = isAssistant ? undefined : project.instructions;
+    const assistantInstructions = isAssistant ? this.assistantSettings().instructions?.trim() || undefined : undefined;
     if (job.attachmentIds.length && !allowedTools.includes('chat-files')) throw new BridgeError('Агенту не разрешено читать вложения в этом проекте.', 403);
     const provider = executionProvider ?? run.executionProvider ?? providerForModel(run.model) ?? 'codex';
-    const sourceRun = actor ? this.library.prepareRun(run.id, actor.id, project.id, profile.id, this.isolatedCodex, provider === 'codex') : undefined;
+    const sourceRun = !isAssistant && actor ? this.library.prepareRun(run.id, actor.id, project.id, profile.id, this.isolatedCodex, provider === 'codex') : undefined;
     const sourcesUsable = !!(actor && sourceRun?.scope.entries.length && sourceRun.toolsSupported);
     const closedSourceRun = sourcesUsable && !!sourceRun?.closed;
     const protectSourceFiles = closedSourceRun;
@@ -1418,11 +1545,11 @@ export class Workspace {
     const erpContext = job.fastkoreContext;
     const bindingKey = chat.fastkoreBinding?.view === 'list' || chat.fastkoreBinding?.externalUserId ? undefined : chat.fastkoreBinding?.key;
     const selectionKey = erpContext && !bindingKey ? fastkoreSelectionChatKey(erpContext) : undefined;
-    const erpScope = erpContext ? ':erp:' + (bindingKey ?? createHash('sha256').update(selectionKey ?? JSON.stringify(erpContext)).digest('hex')) : '';
+    const erpScope = isAssistant ? ':assistant' : (erpContext ? ':erp:' + (bindingKey ?? createHash('sha256').update(selectionKey ?? JSON.stringify(erpContext)).digest('hex')) : '');
     const requestScope = closedSourceRun ? erpScope + ':' + libraryHistory : erpScope;
     const erpStarted = performance.now();
     const integration = !closedSourceRun && this.isolatedCodex && job.credentialId && allowedTools.includes('fastkore') && this.prepareFastkoreTools
-      ? await this.prepareFastkoreTools(job.credentialId, fastkoreContext, () => this.checkJob(job, run), signal, run)
+      ? await this.prepareFastkoreTools(job.credentialId, fastkoreContext, () => this.checkJob(job, run), signal, run, isAssistant ? { forceReadOnly: true } : undefined)
         .finally(() => { timing.erpSetupMs = elapsedMs(erpStarted); }) : undefined;
     this.checkJob(job, run); signal.throwIfAborted();
     const attachments = job.attachmentIds.map(id => project.attachments.find(a => a.id === id)!);
@@ -1452,9 +1579,10 @@ export class Workspace {
     const personalRoleId = roleId === 'sso_pending' ? undefined : roleId;
     const installation = allowedTools.includes('fastkore') ? this.store.state.sso?.installations?.find(item => item.id === erpCredential?.installationId) : undefined;
     const personalContext = {
-      project: { kind: 'project' as const, id: project.id, label: project.name },
+      project: isAssistant ? undefined : { kind: 'project' as const, id: project.id, label: project.name },
       erp: installation ? { kind: 'erp' as const, id: installation.id, label: installation.name } : undefined,
       component: installation ? instructionComponent(fastkoreContext) : undefined,
+      allErpComponents: isAssistant ? true : undefined,
     };
     const instructionRequest = personalInstructionRequest(job.text);
     const explicitPersonalEdit = instructionRequest !== undefined;
@@ -1471,7 +1599,7 @@ export class Workspace {
       tile: instructionTile(fastkoreContext), roleId: personalRoleId, appendOnly: sharedPersonalWrite,
       onSaved: changed => { if (changed || !instructionSave) instructionSave = changed ? 'saved' : 'already-saved'; },
     }) : internetTools;
-    const availableSpecialists = job.specialistScope ? this.corporate.specialists(actor, project, profile.id) : [];
+    const availableSpecialists = !isAssistant && job.specialistScope ? this.corporate.specialists(actor, project, profile.id) : [];
     const specialists = protectSourceFiles ? [] : availableSpecialists.filter(item => !actor || process.env.BRIDGE_LIBRARY_CLOSED_ANALYSIS !== 'verified' ||
       !this.library.policy.runScope(actor.id, project.id, item.id, job.credentialId).entries.some(entry => entry.classification === 'restricted'));
     const globalInstructions = settings.agentInstructions ?? DEFAULT_AGENT_INSTRUCTIONS;
@@ -1521,7 +1649,7 @@ export class Workspace {
     const instructionsScope = ':rules:' + createHash('sha256').update(globalInstructions).digest('hex');
     const chatScope = (workerWrites ? 'isolated-write:' : this.isolatedCodex ? 'isolated:' : '') + this.corporate.scope(actor, profile, project) + erpScope + instructionsScope + (sourceRun?.hashKey ?? '') + (shared ? ':shared' : '');
     const fileScope = chatScope + ':account:' + (executionAccountId ?? 'default') + toolScope;
-    const cadSocket = process.env.BRIDGE_FREECAD_SOCKET;
+    const cadSocket = !isAssistant ? process.env.BRIDGE_FREECAD_SOCKET : undefined;
     const cad = workerWrites && cadSocket ? new FreecadJob(cadSocket, async callSignal => {
       // A published CAD attachment stays readable to members of this chat after re-login.
       // Only files marked here by the CAD service can be reopened as native documents.
@@ -1696,21 +1824,21 @@ export class Workspace {
         JSON.stringify(currentUserName).replace(/</g, '\\u003c').replace(/>/g, '\\u003e');
       const knowledgeUpdate = knowledgeContext && (!chat.sessionId || chat.knowledgeRevision !== knowledgeContext.revision)
         ? 'Актуальная база знаний. При изменении версии используй обновлённые источники. Справочные данные\n' + knowledgeContext.text : '';
-      const attached = chat.consultantIds?.length ? this.corporate.specialists(actor, project, profile.id)
+      const attached = !isAssistant && chat.consultantIds?.length ? this.corporate.specialists(actor, project, profile.id)
         .filter(item => chat.consultantIds?.includes(item.id)).map(({ id, name }) => ({ id, name })) : [];
       const recommendation = [
         attached.length && 'Агенты, подключённые к чату для консультаций: ' + JSON.stringify(attached),
         job.recommendedSpecialistId && 'Рекомендация сотрудника для этого вопроса: ' + JSON.stringify({ id: job.recommendedSpecialistId, name: job.specialistName }),
       ].filter(Boolean).join('\n');
       const personal = personalUserId && personalPrompt(this.store, personalUserId, personalContext, explicitPersonalEdit && canUseInstructionTool, personalRoleId);
-      const environment = agentContext({ project: project.name, projectInstructions, agent: profile.name, purpose: profile.description,
+      const environment = agentContext({ project: isAssistant ? undefined : project.name, projectInstructions, assistantInstructions, agent: profile.name, purpose: profile.description,
         role: actor && this.corporate.role(actor)?.name, erpRoles: erpCredential?.externalRoles?.map(role => role.name),
-        mode: shared ? 'общий чат проекта' : 'личный чат', installation: installation?.name,
-        erpReadOnly: erpCredential && isErpReadOnly(this.store.state, erpCredential), attachments: attachments.map(file => file.name),
+        mode: isAssistant ? 'общесистемный помощник Fastis' : (shared ? 'общий чат проекта' : 'личный чат'), installation: installation?.name,
+        erpReadOnly: erpCredential && (isAssistant || isErpReadOnly(this.store.state, erpCredential)), attachments: attachments.map(file => file.name),
         fileMode: workerWrites ? 'файлы результата в output' : !this.isolatedCodex && writable ? 'запись в папку проекта' : 'ответ в чате',
         folders: projectSourceTools ? sourceRun!.scope.entries : undefined,
         specialists: specialists.map(({ id, name, description }) => ({ id, name, description })) }, tools);
-      const beforeQuestion = [environment, identity, ...drawingNotes, fastkorePrompt(fastkoreContext, projectTools, !!erpCredential && allowedTools.includes('fastkore')), knowledgeUpdate, personal,
+      const beforeQuestion = [environment, identity, ...drawingNotes, fastkorePrompt(fastkoreContext, projectTools, !!erpCredential && allowedTools.includes('fastkore'), isAssistant ? 'reference' : 'bound'), knowledgeUpdate, personal,
         stagedEarlierDocuments.length > 0 && 'Вложения сотрудника из предыдущих сообщений этого чата' + (workerWrites ? ' (ищи в input/earlier)' : '') +
           '\n' + JSON.stringify(stagedEarlierDocuments.map(file => file.name)).replace(/</g, '\\u003c').replace(/>/g, '\\u003e'),
         closedSourceRun && 'Обращения к ERP отключены для этого запроса, поскольку агент работает с закрытыми материалами библиотеки.',
@@ -1930,7 +2058,7 @@ export class Workspace {
       throw new BridgeError('Это сообщение будет выполнено следующим ходом со своими вложениями, моделью или контекстом.', 409);
     }
     this.checkJob(job, queued); this.checkJob(parent, target.run);
-    const chat = this.chat(queued.projectId, queued.chatId);
+    const chat = this.chatIn(queued.projectId, queued.chatId);
     if (chat.visibility === 'project' && canEditInstructionsFromChat(job.text)) {
       throw new BridgeError('Просьба сохранить инструкцию будет выполнена отдельным запросом после текущего ответа.', 409);
     }
@@ -1975,6 +2103,15 @@ export class Workspace {
       const job = this.store.state.jobs?.find(item => item.runId === id && item.fileWrite);
       const credential = job?.authorId && this.projectCredential(job.authorId, job.credentialId);
       if (credential && credential.source === 'fastkore' && !erpFileWriteAllowed(this.store.state, credential)) entry.cancel.abort();
+    }
+  }
+  revokeAssistantRuns() {
+    for (const [id, entry] of this.active) {
+      if (entry.run.projectId !== assistantProjectId) continue;
+      const job = this.store.state.jobs?.find(item => item.runId === id);
+      const actor = job?.authorId ? this.store.state.security?.users.find(u => u.id === job.authorId && !u.disabled) : undefined;
+      const credential = actor ? this.projectCredential(actor.id, job?.credentialId) : undefined;
+      if (!actor || !canUseAssistant(this.store.state, actor, credential)) entry.cancel.abort();
     }
   }
   stopExecutionAccount(id: string) {

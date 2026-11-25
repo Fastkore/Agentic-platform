@@ -579,7 +579,7 @@ test('ERP role permissions require an administrator, reject stale saves and surv
     assert.equal((await f.req('PATCH', route, f.token, payload)).statusCode, 403);
     const saved = await f.req('PATCH', route, f.admin, payload);
     assert.equal(saved.statusCode, 200, saved.body);
-    assert.deepEqual(saved.json(), { mcp: false, cli: true, fileWrite: true, readOnly: false, createProjects: true, webSearch: false, webRead: false, webRequests: false, revision: 1 });
+    assert.deepEqual(saved.json(), { mcp: false, cli: true, fileWrite: true, readOnly: false, createProjects: true, assistant: false, webSearch: false, webRead: false, webRequests: false, revision: 1 });
     assert.equal((await f.req('PATCH', route, f.admin, payload)).statusCode, 409);
     const restricted = await f.req('PATCH', route, f.admin, { ...payload, readOnly: true, revision: 1 });
     assert.equal(restricted.statusCode, 200, restricted.body);

@@ -1,7 +1,7 @@
 import React, { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { Archive, ArrowUp, BarChart3, Bot, Box, Camera, Check, ChevronDown, ChevronRight, ClipboardList, Copy, Database, Download, EllipsisVertical, Eraser, FileText, Folder, History, Link2, LoaderCircle, LockKeyhole, LogOut, Menu, Moon, Network, PanelLeftClose, PanelLeftOpen, Pencil, Pin, Plus, RefreshCw, Search, Settings2, ShieldCheck, Square, SquarePen, Sun, Terminal, Trash2, Users, X } from 'lucide-react';
-import { maxProjectInstructions, interfaceScales, sharedChatWaitMessage, unassignedChatsLabel, type AgentSummary, type Attachment, type Chat, type ChatView, type ChatSummary, type CodexLimits, type FastkoreAuthentication, type FastkoreNavigationTarget, type FileStorageStatus, type InterfaceScale, type ModelCatalog, type ProjectSummary, type RelatedChatSummary, type Run, type Settings, type Status, type UnassignedChatSummary, type User } from '../shared/types';
+import { assistantName, assistantProjectId, maxProjectInstructions, interfaceScales, sharedChatWaitMessage, unassignedChatsLabel, type AgentSummary, type Attachment, type Chat, type ChatView, type ChatSummary, type CodexLimits, type FastkoreAuthentication, type FastkoreNavigationTarget, type FileStorageStatus, type InterfaceScale, type ModelCatalog, type ProjectSummary, type RelatedChatSummary, type Run, type Settings, type Status, type UnassignedChatSummary, type User } from '../shared/types';
 import './style.css';
 import './workspace.css';
 import { ChatFileDrop } from './ChatFileDrop';
@@ -47,6 +47,7 @@ const FastkorePanel = lazy(() => import('./FastkorePanel').then(module => ({ def
 const KnowledgePanel = lazy(() => import('./KnowledgePanel').then(module => ({ default: module.KnowledgePanel })));
 const ChatModelPreview = lazy(() => import('./ChatModelPreview').then(module => ({ default: module.ChatModelPreview })));
 const LibraryPanel = lazy(() => import('./LibraryPanel').then(module => ({ default: module.LibraryPanel })));
+const AssistantSettingsPanel = lazy(() => import('./AssistantSettingsPanel').then(module => ({ default: module.AssistantSettingsPanel })));
 
 let settingsPreloaded = false;
 function preloadSettingsPanels() {
@@ -62,11 +63,15 @@ function preloadSettingsPanels() {
     import('./KnowledgePanel'),
     import('./LibraryPanel'),
     import('./ProjectLibraryDialog'),
+    import('./AssistantSettingsPanel'),
   ]);
 }
 
 let accessKey = sessionStorage.getItem('bridge-key') ?? '';
-const agentsUrl = (projectId: string) => projectId ? '/api/projects/' + encodeURIComponent(projectId) + '/agents' : '/api/agents';
+const agentsUrl = (projectId: string) => projectId && projectId !== assistantProjectId ? '/api/projects/' + encodeURIComponent(projectId) + '/agents' : '/api/agents';
+const chatApiBase = (projectId: string, chatId?: string) => projectId === assistantProjectId
+  ? (chatId ? '/api/assistant/chats/' + encodeURIComponent(chatId) : '/api/assistant/chats')
+  : (chatId ? '/api/projects/' + encodeURIComponent(projectId) + '/chats/' + encodeURIComponent(chatId) : '/api/projects/' + encodeURIComponent(projectId) + '/chats');
 const unassignedChatsUrl = '/api/chats/without-project';
 const unassignedGroupId = 'without-project';
 const settingsSections = {
@@ -76,6 +81,7 @@ const settingsSections = {
   employeeInstructions: { label: 'Инструкции сотрудников', icon: FileText },
   roles: { label: 'Роли', icon: ShieldCheck },
   profiles: { label: 'Агенты', icon: Bot },
+  assistant: { label: assistantName, icon: Bot },
   library: { label: 'Библиотеки', icon: Database },
   agent: { label: 'Общие инструкции', icon: FileText },
   knowledgeFastkore: { label: 'Справка по Fastkore', icon: FileText },
@@ -170,8 +176,9 @@ const clipboardImageExtensions: Record<string, string> = { 'image/png': 'png', '
 async function uploadChatAttachment(projectId: string, file: File, chatId?: string) {
   const form = new FormData();
   form.append('file', file);
-  const uploaded = await api<Attachment>(`/api/projects/${projectId}/attachments`, { method: 'POST', body: form });
-  if (chatId) await api(`/api/projects/${projectId}/chats/${chatId}/files`, { method: 'POST', body: JSON.stringify({ fileId: uploaded.id }) });
+  const uploadUrl = projectId === assistantProjectId ? '/api/assistant/attachments' : `/api/projects/${projectId}/attachments`;
+  const uploaded = await api<Attachment>(uploadUrl, { method: 'POST', body: form });
+  if (chatId) await api(`${chatApiBase(projectId, chatId)}/files`, { method: 'POST', body: JSON.stringify({ fileId: uploaded.id }) });
   return uploaded;
 }
 
@@ -204,6 +211,8 @@ function App() {
   const [chatLists, setChatLists] = useState<Record<string, ChatSummary[]>>({});
   const [unassignedChats, setUnassignedChats] = useState<UnassignedChatSummary[]>([]);
   const [projectsExpanded, setProjectsExpanded] = useState(() => localStorage.getItem('bridge-projects-collapsed') !== '1');
+  const [assistantExpanded, setAssistantExpanded] = useState(false);
+  const [attachScreenContext, setAttachScreenContext] = useState(false);
   const [openProjects, setOpenProjects] = useState<Record<string, boolean>>({});
   const [showAll, setShowAll] = useState<Record<string, boolean>>({});
   const [projectId, setProjectId] = useState(localStorage.getItem('bridge-project') ?? ''), [chatId, setChatId] = useState(embedded ? '' : localStorage.getItem('bridge-chat') ?? '');
@@ -245,12 +254,15 @@ function App() {
   const scroll = useRef<HTMLDivElement>(null), stick = useRef(true), loadingSettings = useRef(false);
   const sending = useRef(false), uploadingAttachments = useRef(false);
   const sendAttempt = useRef<{ chatId: string; content: string; requestId: string } | null>(null);
-  const relatedDraftKey = currentErpContext.current.active && erpChatKey ? 'erp:' + erpChatKey : '';
-  const draftSlot = chatId || relatedDraftKey;
-  const selectedProject = projects.find(p => p.id === projectId), draft = drafts[draftSlot] ?? '', attachments = files[draftSlot] ?? [];
-  const withoutProject = unassignedChats.some(item => item.id === chatId && item.projectId === projectId);
+  const isAssistant = projectId === assistantProjectId;
+  const assistantAvailable = status?.assistantAvailable === true;
+  const assistantChats = chatLists[assistantProjectId] ?? [];
+  const relatedDraftKey = !isAssistant && currentErpContext.current.active && erpChatKey ? 'erp:' + erpChatKey : '';
+  const draftSlot = chatId || (isAssistant ? 'assistant:new' : relatedDraftKey);
+  const selectedProject = isAssistant ? undefined : projects.find(p => p.id === projectId), draft = drafts[draftSlot] ?? '', attachments = files[draftSlot] ?? [];
+  const withoutProject = !isAssistant && unassignedChats.some(item => item.id === chatId && item.projectId === projectId);
   const specialistKey = draftSlot || 'new:' + projectId;
-  const specialistId = specialists[specialistKey];
+  const specialistId = isAssistant ? undefined : specialists[specialistKey];
   const activeRuns = status?.activeRuns ?? (status?.activeRun ? [status.activeRun] : []);
   const runningChats = new Set(activeRuns.filter(run => run.status === 'running').map(run => run.chatId));
   const busy = status?.busy ?? activeRuns.length > 0;
@@ -272,7 +284,7 @@ function App() {
     const replyId = unreadReplyId;
     async function acknowledge() {
       try {
-        await api(`/api/projects/${projectId}/chats/${chatId}/read`, { method: 'PATCH', body: JSON.stringify({ replyId }) });
+        await api(`${chatApiBase(projectId, chatId)}/read`, { method: 'PATCH', body: JSON.stringify({ replyId }) });
         if (disposed) return;
         setStatus(old => {
           if (old?.unreadChatReplies?.[chatId] !== replyId) return old;
@@ -333,24 +345,29 @@ function App() {
       : status.cli?.authentication === 'signed-out' ? 'Требуется вход в аккаунт на исполнителе.' : 'Исполнитель модели недоступен.'
     : '';
   const canCreateProject = status?.canCreateProject ?? (isAdmin && authSource === 'local');
-  const currentAgent = chat?.agentProfileId ? agents.find(agent => agent.id === chat.agentProfileId) : undefined;
+  const currentAgent = !isAssistant && chat?.agentProfileId ? agents.find(agent => agent.id === chat.agentProfileId) : undefined;
+  const assistantAgent: AgentSummary | undefined = isAssistant && assistantAvailable ? {
+    id: assistantProjectId, name: assistantName, description: 'Общесистемный помощник по Fastkore и регламентам компании',
+    available: true, model: status?.assistantModel ?? '', reasoningEffort: status?.assistantReasoningEffort ?? status?.settings.reasoningEffort,
+    allowWrite: false, toolIds: ['fastkore', 'chat-files'],
+  } : undefined;
   const projectChat = selectedProject?.chatCapabilities;
-  const projectChatAvailable = projectChat?.available === true;
-  const leadAgent = chat?.agentProfileId ? currentAgent : projectChat && { ...projectChat, id: '', name: 'Чат проекта' };
-  const selectedSpecialist = availableAgents.find(agent => agent.id === specialistId);
+  const projectChatAvailable = isAssistant ? assistantAvailable : projectChat?.available === true;
+  const leadAgent = isAssistant ? assistantAgent : (chat?.agentProfileId ? currentAgent : projectChat && { ...projectChat, id: '', name: 'Чат проекта' });
+  const selectedSpecialist = isAssistant ? undefined : availableAgents.find(agent => agent.id === specialistId);
   const messageAgent = selectedSpecialist ?? leadAgent;
-  const otherSpecialists = availableAgents.filter(agent => agent.id !== currentAgent?.id);
-  const chatConsultants = otherSpecialists.filter(agent => chat?.consultantIds?.includes(agent.id));
-  const availableConsultants = otherSpecialists.filter(agent => !chatConsultants.includes(agent));
-  const unavailableConsultant = agents.find(agent => agent.id !== currentAgent?.id && !agent.available && agent.unavailableReason);
+  const otherSpecialists = isAssistant ? [] : availableAgents.filter(agent => agent.id !== currentAgent?.id);
+  const chatConsultants = isAssistant ? [] : otherSpecialists.filter(agent => chat?.consultantIds?.includes(agent.id));
+  const availableConsultants = isAssistant ? [] : otherSpecialists.filter(agent => !chatConsultants.includes(agent));
+  const unavailableConsultant = isAssistant ? undefined : agents.find(agent => agent.id !== currentAgent?.id && !agent.available && agent.unavailableReason);
   const canAttach = canEdit && messageAgent?.available === true && messageAgent.toolIds.includes('chat-files');
   const canAttachToDraft = chatId ? canAttach : !projectId || messageAgent?.toolIds.includes('chat-files') === true;
   const canPickFiles = canAttachToDraft && (!projectId || messageAgent?.available === true) && !pending;
   const showScreenshot = inFastkore && !!erpAuth && readySession === erpAuth && hostSupportsScreenshot;
   const canReadFastkore = !!projectId && messageAgent?.toolIds.includes('fastkore') === true;
   const canStartChat = !chatId && projectChatAvailable;
-  const canPromptForProject = !!status && !chatId && !projectId && !(relatedLoading && currentErpContext.current.active);
-  const canSend = !!status && screenshotSlot !== draftSlot && !(relatedLoading && currentErpContext.current.active) && !status.executionDisabled && !codexUnavailable && (!attachments.length || canAttachToDraft)
+  const canPromptForProject = !!status && !isAssistant && !chatId && !projectId && !(relatedLoading && currentErpContext.current.active);
+  const canSend = !!status && screenshotSlot !== draftSlot && !(relatedLoading && currentErpContext.current.active && !isAssistant) && !status.executionDisabled && !codexUnavailable && (!attachments.length || canAttachToDraft)
     && !!messageAgent?.available && (!specialistId || otherSpecialists.some(agent => agent.id === specialistId)) && (chatId ? canEdit : canStartChat);
   const canManageSettings = isAdmin && !inFastkore && (authSource === 'local' || !!erpAuth?.browserSettings);
   const canManageProjects = canManageSettings;
@@ -491,20 +508,25 @@ function App() {
         const previous = currentErpContext.current;
         const unbound = !key && (snapshot?.chat_key === null || snapshot?.view === 'card' || !snapshot);
         const changed = unbound || key !== previous.key || (!key && snapshot?.view !== previous.snapshot?.view);
-        currentErpContext.current = { snapshot, problem, key, active: changed ? Boolean(key || unbound) : previous.active };
+        const inAssistantMode = selected.current.projectId === assistantProjectId;
+        currentErpContext.current = { snapshot, problem, key, active: inAssistantMode ? false : (changed ? Boolean(key || unbound) : previous.active) };
         if (changed) {
           contextNavigation.current++;
           setContextVersion(contextNavigation.current);
-          autoOpenRelated.current = key;
-          preferredRelatedChat.current = selected.current.chatId;
           setErpChatKey(key);
           setRelatedChats(undefined);
-          navigateTo(key ? '' : selected.current.projectId);
-          if (!key) {
-            finishScreenshotRequest('');
-            setDrafts(old => ({ ...old, '': '' }));
-            setFiles(old => ({ ...old, '': [] }));
-            setSpecialists(old => ({ ...old, ['new:' + selected.current.projectId]: undefined }));
+          if (!inAssistantMode) {
+            autoOpenRelated.current = key;
+            preferredRelatedChat.current = selected.current.chatId;
+            navigateTo(key ? '' : selected.current.projectId);
+            if (!key) {
+              finishScreenshotRequest('');
+              setDrafts(old => ({ ...old, '': '' }));
+              setFiles(old => ({ ...old, '': [] }));
+              setSpecialists(old => ({ ...old, ['new:' + selected.current.projectId]: undefined }));
+            }
+          } else {
+            autoOpenRelated.current = undefined;
           }
           setPanel(panel => panel === 'reset-chat' || (!key && panel === 'related') ? null : panel);
         }
@@ -597,9 +619,34 @@ function App() {
   }, [erpChatKey, relatedPanelOpen, contextVersion, chatId, user?.id]);
   async function loadChats(project: string) {
     const credential = accessKey;
-    const list = await api<ChatSummary[]>(`/api/projects/${project}/chats`);
+    const list = await api<ChatSummary[]>(chatApiBase(project));
     if (credential === accessKey) setChatLists(old => ({ ...old, [project]: list }));
     return list;
+  }
+  function openAssistant(conversation?: string) {
+    if (!assistantAvailable) return;
+    currentErpContext.current.active = false;
+    autoOpenRelated.current = undefined;
+    if (conversation !== undefined) {
+      setAssistantExpanded(true);
+      navigateTo(assistantProjectId, conversation);
+      return;
+    }
+    if (selected.current.projectId === assistantProjectId) {
+      if (assistantChats.length) setAssistantExpanded(open => !open);
+      return;
+    }
+    const latest = assistantChats[0]?.id ?? '';
+    if (assistantChats.length) setAssistantExpanded(true);
+    navigateTo(assistantProjectId, latest);
+  }
+  function startAssistantTopic() {
+    if (!assistantAvailable) return;
+    currentErpContext.current.active = false;
+    autoOpenRelated.current = undefined;
+    setAttachScreenContext(false);
+    navigateTo(assistantProjectId, '');
+    requestAnimationFrame(() => input.current?.focus());
   }
   function toggleProject(project: string) {
     if (project === unassignedGroupId) {
@@ -614,7 +661,10 @@ function App() {
     setSearchQuery('');
     setPanel('search');
     setSearchLoading(true);
-    void Promise.all(projects.map(project => loadChats(project.id)))
+    void Promise.all([
+      ...projects.map(project => loadChats(project.id)),
+      ...(assistantAvailable ? [loadChats(assistantProjectId)] : []),
+    ])
       .catch(fail)
       .finally(() => setSearchLoading(false));
   }
@@ -630,6 +680,7 @@ function App() {
     let consecutiveFailures = 0;
     const projectSnapshot: JsonSnapshot<ProjectSummary[]> = {};
     const unassignedSnapshot: JsonSnapshot<UnassignedChatSummary[]> = {};
+    const assistantListSnapshot: JsonSnapshot<ChatSummary[]> = {};
     const agentSnapshot: JsonSnapshot<AgentSummary[]> = {};
     const chatListSnapshot: JsonSnapshot<ChatSummary[]> = {};
     const chatSnapshot: JsonSnapshot<ChatView> = {};
@@ -643,23 +694,39 @@ function App() {
         ]);
         if (disposed) return;
         setStatus(state); setUser(state.user); setUnassignedChats(unassigned);
+        let assistantConversations: ChatSummary[] = [];
+        if (state.assistantAvailable) {
+          assistantConversations = await api<ChatSummary[]>('/api/assistant/chats', { revalidate: assistantListSnapshot });
+          if (disposed) return;
+          setChatLists(old => old[assistantProjectId] === assistantConversations ? old : { ...old, [assistantProjectId]: assistantConversations });
+        } else {
+          setChatLists(old => assistantProjectId in old ? { ...old, [assistantProjectId]: [] } : old);
+        }
+        const selectedAssistant = selected.current.projectId === assistantProjectId && state.assistantAvailable === true;
         const activeProjectExists = list.some(p => p.id === selected.current.projectId);
         const selectedUnassigned = unassigned.some(item => item.id === selected.current.chatId && item.projectId === selected.current.projectId);
         if (activeProjectExists || projectAtStart === selected.current.projectId) setProjects(list);
-        if (!activeProjectExists && !selectedUnassigned && projectAtStart === selected.current.projectId) {
+        if (!selectedAssistant && !activeProjectExists && !selectedUnassigned && projectAtStart === selected.current.projectId) {
           const awaitingContextProject = currentErpContext.current.active && !!currentErpContext.current.key;
           if (awaitingContextProject ? projectAtStart : projectAtStart || list.length) {
             navigateTo(awaitingContextProject ? '' : list[0]?.id ?? '');
           }
         }
         const p = selected.current.projectId;
-        if (!p || list.some(project => project.id === p)) {
+        if (p !== assistantProjectId && (!p || list.some(project => project.id === p))) {
           const allowedAgents = await api<AgentSummary[]>(agentsUrl(p), { revalidate: agentSnapshot });
           if (disposed || selected.current.projectId !== p) return;
           setAgentCatalog(old => old?.projectId === p && old.list === allowedAgents ? old : { projectId: p, list: allowedAgents });
         }
         const previousChat = selected.current.chatId;
-        if (p && list.some(project => project.id === p)) {
+        if (p === assistantProjectId && state.assistantAvailable) {
+          if (previousChat && !assistantConversations.some(c => c.id === previousChat)) navigateTo(assistantProjectId, assistantConversations[0]?.id ?? '');
+          const c = selected.current.chatId;
+          if (c && assistantConversations.some(item => item.id === c)) {
+            const detail = await api<ChatView>(chatApiBase(assistantProjectId, c), { revalidate: chatSnapshot });
+            if (!disposed && selected.current.projectId === assistantProjectId && selected.current.chatId === c) setChat(detail);
+          }
+        } else if (p && list.some(project => project.id === p)) {
           const conversations = await api<ChatSummary[]>(`/api/projects/${p}/chats`, { revalidate: chatListSnapshot });
           if (disposed || selected.current.projectId !== p) return;
           if (selected.current.chatId !== previousChat) return;
@@ -700,14 +767,14 @@ function App() {
     return () => { disposed = true; };
   }, [projectId, loggedIn, !!selectedProject]);
   useEffect(() => {
-    if (!loggedIn || !user || setupRequired || !projectId || !chatId || (!selectedProject && !withoutProject)) return;
+    if (!loggedIn || !user || setupRequired || !projectId || !chatId || (!selectedProject && !withoutProject && !(isAssistant && assistantAvailable))) return;
     let disposed = false;
     const stillSelected = () => !disposed && selected.current.projectId === projectId && selected.current.chatId === chatId;
-    api<Chat>(`/api/projects/${projectId}/chats/${chatId}`).then(detail => { if (stillSelected()) setChat(detail); }).catch(error => {
+    api<Chat>(chatApiBase(projectId, chatId)).then(detail => { if (stillSelected()) setChat(detail); }).catch(error => {
       if (stillSelected() && !(error instanceof ApiError && error.transient)) fail(error);
     });
     return () => { disposed = true; };
-  }, [chatId, projectId, loggedIn, !!selectedProject, withoutProject]);
+  }, [chatId, projectId, loggedIn, !!selectedProject, withoutProject, isAssistant, assistantAvailable]);
   useEffect(() => { if (stick.current) end.current?.scrollIntoView({ behavior: 'smooth' }); },
     [chat?.messages.length, chat?.messages.at(-1)?.text, chat?.messages.at(-1)?.visuals?.length, chatId]);
   useEffect(() => {
@@ -746,28 +813,30 @@ function App() {
   async function changeModel(model: string) {
     const p = projectId, c = chatId;
     await action(async () => {
-      const updated = await api<Chat>(`/api/projects/${p}/chats/${c}`, { method: 'PATCH', body: JSON.stringify({ model }) });
+      const updated = await api<Chat>(chatApiBase(p, c), { method: 'PATCH', body: JSON.stringify({ model }) });
       if (selected.current.projectId === p && selected.current.chatId === c) setChat(updated);
     });
   }
   async function changeReasoning(reasoningEffort: Settings['reasoningEffort']) {
     const p = projectId, c = chatId;
     await action(async () => {
-      const updated = await api<Chat>(`/api/projects/${p}/chats/${c}`, { method: 'PATCH', body: JSON.stringify({ reasoningEffort }) });
+      const updated = await api<Chat>(chatApiBase(p, c), { method: 'PATCH', body: JSON.stringify({ reasoningEffort }) });
       if (selected.current.projectId === p && selected.current.chatId === c) setChat(updated);
     });
   }
   useEffect(() => {
-    if (!loggedIn || !user || setupRequired || panel || (projectId && !selectedProject)) return;
+    if (!loggedIn || !user || setupRequired || panel || isAssistant || (projectId && !selectedProject)) return;
     let alive = true;
     api<AgentSummary[]>(agentsUrl(projectId)).then(list => {
       if (alive) setAgentCatalog({ projectId, list });
     }).catch(error => { if (alive) fail(error); });
     return () => { alive = false; };
-  }, [loggedIn, !!user, setupRequired, user?.roleId, panel, projectId, !!selectedProject]);
+  }, [loggedIn, !!user, setupRequired, user?.roleId, panel, projectId, !!selectedProject, isAssistant]);
   async function createChat(project: string, context?: FastkoreContext, fresh = false, profileId?: string) {
-    const result = context ? await post<{ projectId: string; chat: Chat }>('/api/fastkore/chats', { projectId: project, context, fresh, agentProfileId: profileId })
-      : { projectId: project, chat: await post<Chat>(`/api/projects/${project}/chats`, { agentProfileId: profileId }) };
+    const result = project === assistantProjectId
+      ? { projectId: assistantProjectId, chat: await post<Chat>('/api/assistant/chats', {}) }
+      : context ? await post<{ projectId: string; chat: Chat }>('/api/fastkore/chats', { projectId: project, context, fresh, agentProfileId: profileId })
+        : { projectId: project, chat: await post<Chat>(`/api/projects/${project}/chats`, { agentProfileId: profileId }) };
     const { id, title, updatedAt, ownerId, ownerName, visibility, messages, linkedToFastkore } = result.chat;
     const summary: ChatSummary = { id, title, updatedAt, ownerId, ownerName, visibility, linkedToFastkore, messageCount: messages.length };
     const p = result.projectId;
@@ -850,7 +919,7 @@ function App() {
   }
   async function moveChatToProject(source: string, conversation: string, destination: string, title?: string) {
     if (files[conversation]?.length) throw new Error('Перед переносом отправьте или уберите файлы из черновика.');
-    const moved = await api<Chat>(`/api/projects/${source}/chats/${conversation}/move`, {
+    const moved = await api<Chat>(`${chatApiBase(source, conversation)}/move`, {
       method: 'PATCH', body: JSON.stringify({ projectId: destination, title }),
     });
     const { id, title: newTitle, updatedAt, messages, ownerId, ownerName, visibility, linkedToFastkore } = moved;
@@ -869,7 +938,7 @@ function App() {
       navigateTo(destination, conversation);
       setChat(moved);
     }
-    void Promise.all([loadChats(destination), projects.some(project => project.id === source) ? loadChats(source) : undefined]).catch(fail);
+    void Promise.all([loadChats(destination), (source === assistantProjectId || projects.some(project => project.id === source)) ? loadChats(source) : undefined]).catch(fail);
   }
   async function renameChat() {
     if (!renameDraft || pending) return;
@@ -882,7 +951,7 @@ function App() {
         setRenameDraft(undefined);
         return;
       }
-      const updated = await api<{ title: string }>(`/api/projects/${p}/chats/${c}/title`, {
+      const updated = await api<{ title: string }>(`${chatApiBase(p, c)}/title`, {
         method: 'PATCH', body: JSON.stringify({ title: title.trim() }),
       });
       setChat(old => old?.id === c ? { ...old, title: updated.title } : old);
@@ -908,7 +977,7 @@ function App() {
     if (pending) return;
     const conversation = summary.id;
     await action(async () => {
-      const { pinned } = await api<{ pinned: boolean }>(`/api/projects/${project}/chats/${conversation}/pin`, {
+      const { pinned } = await api<{ pinned: boolean }>(`${chatApiBase(project, conversation)}/pin`, {
         method: 'PATCH', body: JSON.stringify({ pinned: !summary.pinned }),
       });
       setChatLists(old => ({ ...old, [project]: (old[project] ?? []).map(item => item.id === conversation ? { ...item, pinned } : item) }));
@@ -917,24 +986,24 @@ function App() {
   }
   async function archiveChat(p = projectId, c = chatId) {
     await action(async () => {
-      await api(`/api/projects/${p}/chats/${c}/archive`, { method: 'PATCH', body: JSON.stringify({ archived: true }) });
+      await api(`${chatApiBase(p, c)}/archive`, { method: 'PATCH', body: JSON.stringify({ archived: true }) });
       setChatLists(old => ({ ...old, [p]: (old[p] ?? []).filter(item => item.id !== c) }));
       setUnassignedChats(old => old.filter(item => item.id !== c));
       setRelatedChats(old => old && { ...old, list: old.list.filter(item => item.id !== c) });
-      const projectExists = projects.some(project => project.id === p);
+      const projectExists = p === assistantProjectId || projects.some(project => project.id === p);
       if (selected.current.projectId === p && selected.current.chatId === c) navigateTo(projectExists ? p : '');
       if (projectExists) await loadChats(p);
     });
   }
   async function deleteEmptyChat(p = projectId, c = chatId) {
     await action(async () => {
-      await api(`/api/projects/${p}/chats/${c}`, { method: 'DELETE' });
+      await api(chatApiBase(p, c), { method: 'DELETE' });
       finishScreenshotRequest(c);
       setFiles(old => ({ ...old, [c]: [] }));
       setChatLists(old => ({ ...old, [p]: (old[p] ?? []).filter(item => item.id !== c) }));
       setUnassignedChats(old => old.filter(item => item.id !== c));
       setRelatedChats(old => old && { ...old, list: old.list.filter(item => item.id !== c) });
-      const projectExists = projects.some(project => project.id === p);
+      const projectExists = p === assistantProjectId || projects.some(project => project.id === p);
       if (selected.current.projectId === p && selected.current.chatId === c) navigateTo(projectExists ? p : '');
       if (projectExists) await loadChats(p);
     });
@@ -972,9 +1041,11 @@ function App() {
       projectPicker.current?.open();
       return;
     }
-    const link = relatedDraftKey ? currentErpContext.current : undefined;
-    const { snapshot, problem } = currentErpContext.current.active || matchesErpChat || (!chat?.linkedToFastkore &&
-      (canReadFastkore || otherSpecialists.some(agent => agent.toolIds.includes('fastkore')))) ? currentErpContext.current : {};
+    const link = !isAssistant && relatedDraftKey ? currentErpContext.current : undefined;
+    const { snapshot } = isAssistant
+      ? { snapshot: attachScreenContext && currentErpContext.current.snapshot?.view !== 'none' ? currentErpContext.current.snapshot : undefined }
+      : (currentErpContext.current.active || matchesErpChat || (!chat?.linkedToFastkore &&
+          (canReadFastkore || otherSpecialists.some(agent => agent.toolIds.includes('fastkore')))) ? currentErpContext.current : {});
     if (!canSend) return;
     if (attachments.length > maxDraftAttachments) { setError(draftAttachmentLimit); return; }
     sending.current = true;
@@ -987,7 +1058,7 @@ function App() {
           project = p;
           conversation = created.id;
           const pSelected = selected.current.projectId;
-          const shouldOpen = contextNavigation.current === navigation && (pSelected === projectId || pSelected === targetProject) && !selected.current.chatId
+          const shouldOpen = (project === assistantProjectId || contextNavigation.current === navigation) && (pSelected === projectId || pSelected === targetProject) && !selected.current.chatId
             && (!link || currentErpContext.current.key === link.key && currentErpContext.current.active);
           setDrafts(old => ({
             ...old,
@@ -998,6 +1069,7 @@ function App() {
           if (shouldOpen) {
             moveDraftAttachments(draftSlot, conversation);
             attachmentSlot = conversation;
+            if (project === assistantProjectId) setAssistantExpanded(true);
             navigateTo(project, conversation);
             setChat(created);
           }
@@ -1012,12 +1084,14 @@ function App() {
           setFiles(old => ({ ...old, [attachmentSlot]: (old[attachmentSlot] ?? []).map(item => item.id === id
             ? { ...item, local: { ...local, uploaded: uploadedRef } } : item) }));
         }
-        const message = { text, attachmentIds, fastkoreContext: snapshot, requiredSpecialistId: specialistId };
+        const message = project === assistantProjectId
+          ? { text, attachmentIds, fastkoreContext: snapshot }
+          : { text, attachmentIds, fastkoreContext: snapshot, requiredSpecialistId: specialistId };
         const content = JSON.stringify(message);
         const previous = sendAttempt.current;
         const id = previous?.chatId === conversation && previous.content === content ? previous.requestId : requestId();
         sendAttempt.current = { chatId: conversation, content, requestId: id };
-        const run = await post<Run>(`/api/projects/${project}/chats/${conversation}/messages`, { ...message, clientRequestId: id });
+        const run = await post<Run>(`${chatApiBase(project, conversation)}/messages`, { ...message, clientRequestId: id });
         sendAttempt.current = null;
         setDrafts(old => old[conversation]?.trim() === text ? { ...old, [conversation]: '' } : old);
         setSpecialists(old => old[conversation] === specialistId ? { ...old, [conversation]: undefined } : old);
@@ -1139,7 +1213,11 @@ function App() {
   const navigationChats = (group: string): UnassignedChatSummary[] => group === unassignedGroupId
     ? unassignedChats : (chatLists[group] ?? []).map(item => ({ ...item, projectId: group }));
   const query = searchQuery.trim().toLocaleLowerCase('ru-RU');
-  const searchable = panel === 'search' ? navigationGroups.flatMap(project => {
+  const searchableGroups: ProjectSummary[] = [
+    ...(assistantAvailable && assistantChats.length ? [{ id: assistantProjectId, name: assistantName, directory: '', chatCount: assistantChats.length }] : []),
+    ...navigationGroups,
+  ];
+  const searchable = panel === 'search' ? searchableGroups.flatMap(project => {
     const matchesProject = project.name.toLocaleLowerCase('ru-RU').includes(query);
     const matchingChats = navigationChats(project.id).filter(item => matchesProject || item.title.toLocaleLowerCase('ru-RU').includes(query));
     return matchesProject || matchingChats.length ? [{ project, matchingChats }] : [];
@@ -1168,15 +1246,17 @@ function App() {
       const role = tools?.erpRoles?.[kind];
       const reason = kind === 'cli' ? tools?.cliUnavailableReason : tools?.mcpUnavailableReason;
       const problem = reason ?? (messageAgent?.closedAnalysis ? 'Агент работает с закрытыми материалами библиотеки. В этом режиме обращения к ERP отключены.' : undefined);
-      return { name: 'Fastkore ' + name, enabled: tools?.[kind] && !problem,
+      const readonlyHint = isAssistant && !problem ? 'В помощнике Fastis действует режим только чтения.' : undefined;
+      return { name: 'Fastkore ' + name + (isAssistant ? ' (чтение)' : ''), enabled: tools?.[kind] && !problem,
         label: role === false ? 'Запрещено ролью' : undefined,
-        description: role && problem ? 'Ваша роль разрешает ' + name + '. ' + problem : problem };
+        description: role && problem ? 'Ваша роль разрешает ' + name + '. ' + problem : problem ?? readonlyHint };
     }
     const permissions: { name: string; enabled?: boolean; label?: string; description?: string }[] = [
       { name: 'Запись файлов', enabled: writeMode, description: !writeMode ? fileWriteProblems.join(' ') : status.isolatedCodex
         ? 'Файлы сохраняются в папке задания.'
         : 'Файлы сохраняются в папке проекта.' },
       erpRow('cli'), erpRow('mcp'),
+      ...(isAssistant ? [{ name: 'Проектные библиотеки', enabled: false, label: 'Отключены', description: 'Fastis работает вне проектов и не читает закрытые или проектные библиотеки.' }] : []),
       { name: 'Веб-поиск', enabled: canUseChatTools && status.toolPermissions?.webSearch,
         description: 'Поиск в интернете.' },
       { name: 'Чтение страниц', enabled: canUseChatTools && status.toolPermissions?.webRead,
@@ -1266,7 +1346,7 @@ function App() {
           if (!canReadChatAttachment(file, message, conversation.ownerId, user)) {
             return <span key={file.id}><FileText size={16} />{file.name}</span>;
           }
-          const url = `/api/projects/${encodeURIComponent(project)}/chats/${encodeURIComponent(conversation.id)}/messages/${encodeURIComponent(message.id)}/files/${encodeURIComponent(file.id)}`;
+          const url = `${chatApiBase(project, conversation.id)}/messages/${encodeURIComponent(message.id)}/files/${encodeURIComponent(file.id)}`;
           const format = previewModelFormat(file.name);
           const download = () => void action(() => downloadChatFile(url, file.name));
           if (format) return <React.Fragment key={file.id}>
@@ -1324,7 +1404,7 @@ function App() {
       : <p className="composer-status" role="alert">Чат доступен для чтения</p>)}
     {codexNotice && draftEditable && <p className="composer-status" role="status">{codexNotice} Можно подготовить черновик.</p>}
     {canReadFastkore && contextProblem && <p className="composer-status" role="alert">{contextProblem}</p>}
-    {canReadFastkore && erpAuth && erpFilter && (currentErpContext.current.active || matchesErpChat || !chat?.linkedToFastkore) &&
+    {canReadFastkore && erpAuth && erpFilter && (isAssistant ? attachScreenContext : (currentErpContext.current.active || matchesErpChat || !chat?.linkedToFastkore)) &&
       <details className="composer-status">
         <summary>{erpFilter.display.complete ? 'Фильтр Fastkore' : 'Фильтр Fastkore · частично'}{erpFilter.folder && ' · ' + erpFilter.folder}</summary>
         <div style={{ overflowWrap: 'anywhere', maxHeight: '8em', overflow: 'auto' }}>{formatFilterNode(erpFilter.display.root)}</div>
@@ -1356,7 +1436,17 @@ function App() {
         : <span className="sr-only">Ответ готовится</span>}</span>
       {(isAdmin || canPostToChat && (chat?.visibility !== 'project' || run.ownerId === user.id)) && <button onClick={() => void action(async () => { await post('/api/runs/' + run.id + '/cancel'); })}><Square size={12} />Остановить</button>}
     </div>)}
-    {(!hasMessages || withoutProject || currentAgent || availableAgents.length > 0 || showChatConsultants) && <div className="composer-project">
+    {isAssistant && inFastkore && erpAuth && currentErpContext.current.snapshot && currentErpContext.current.snapshot.view !== 'none' && <div className="composer-project fastis-context-bar">
+      <button type="button" className={'fastis-screen-chip' + (attachScreenContext ? ' is-active' : '')}
+        aria-pressed={attachScreenContext} disabled={pending}
+        title={attachScreenContext ? 'Убрать контекст открытого экрана Fastkore' : 'Приложить открытый экран Fastkore как справочный контекст'}
+        onClick={() => setAttachScreenContext(current => !current)}>
+        {attachScreenContext ? <Check size={13} aria-hidden="true" /> : <Plus size={13} aria-hidden="true" />}
+        <span>{attachScreenContext ? 'Экран: ' : 'Приложить экран: '}{fastkoreChatTitle(currentErpContext.current.snapshot) ?? 'Открытое окно Fastkore'}</span>
+        {attachScreenContext && <X size={13} aria-hidden="true" />}
+      </button>
+    </div>}
+    {!isAssistant && (!hasMessages || withoutProject || currentAgent || availableAgents.length > 0 || showChatConsultants) && <div className="composer-project">
       {(!hasMessages || withoutProject) && <div className="composer-project-picker">
         <Folder size={17} aria-hidden="true" />
         <Select ref={projectPicker} label="Проект" placeholder="Выберите проект" value={withoutProject ? '' : projectId}
@@ -1410,8 +1500,8 @@ function App() {
         </span>;
       })}</div>}
       <ComposerInput key={specialistKey} input={input} draft={draft}
-        placeholder={hasMessages ? 'Продолжить разговор…' : 'Напишите сообщение…'}
-        editable={draftEditable} pickerEnabled={draftEditable && !pending && (chatId ? canEdit : !!selectedProject)}
+        placeholder={isAssistant ? (hasMessages ? 'Продолжить разговор с Fastis…' : 'Спросите Fastis о заказах, бухгалтерии, сотрудниках или регламентах…') : (hasMessages ? 'Продолжить разговор…' : 'Напишите сообщение…')}
+        editable={draftEditable} pickerEnabled={!isAssistant && draftEditable && !pending && (chatId ? canEdit : !!selectedProject)}
         agents={otherSpecialists} specialistId={specialistId}
         onDraft={text => setDrafts(old => ({ ...old, [draftSlot]: text }))}
         onSpecialist={id => setSpecialists(old => ({ ...old, [specialistKey]: id }))}
@@ -1470,7 +1560,7 @@ function App() {
         </div>
       </div>} />
     </div>
-    {!chatId && canCreate && <button className="empty-new-chat" onClick={() => void newChat()}><SquarePen size={15} />Создать чат</button>}
+    {!chatId && !isAssistant && canCreate && <button className="empty-new-chat" onClick={() => void newChat()}><SquarePen size={15} />Создать чат</button>}
   </div>;
 
   return <div className="workspace-shell" data-theme={theme} data-fastkore={inFastkore ? '' : undefined}
@@ -1484,6 +1574,63 @@ function App() {
           onClick={() => changeSidebarCollapsed(true)}><PanelLeftClose size={18} /></button>
         <button type="button" className="workspace-icon workspace-mobile-close" aria-label="Закрыть боковую панель" onClick={() => setSidebarOpen(false)}><X size={18} /></button>
       </div>
+      {assistantAvailable && (() => {
+        const pinnedAssistant = assistantChats.filter(item => item.pinned);
+        const recentAssistant = assistantChats.filter(item => !item.pinned);
+        const visibleAssistant = [...pinnedAssistant, ...(showAll[assistantProjectId] ? recentAssistant : recentAssistant.slice(0, 5))];
+        const assistantRunning = assistantChats.some(item => runningChats.has(item.id));
+        const assistantUnread = assistantChats.some(item => !!status?.unreadChatReplies?.[item.id] && (!pageVisible || item.id !== chatId));
+        return <div className="fastis-nav">
+          <div className="project-line fastis-line">
+            <button type="button" className="workspace-row fastis-entry"
+              aria-current={isAssistant && !chatId ? 'page' : undefined}
+              aria-expanded={assistantChats.length ? assistantExpanded : undefined}
+              aria-controls={assistantChats.length ? 'chats-fastis' : undefined}
+              onClick={() => openAssistant()}>
+              <img src="/icons/fastis-robot.png" alt="" className="fastis-avatar-sm" />
+              <span>{assistantName}</span>
+              {(assistantRunning || assistantUnread) && <span className="fastis-entry-state" aria-hidden="true">
+                {assistantRunning ? <LoaderCircle size={13} className="spin" /> : <span className="chat-row-unread-dot" />}
+              </span>}
+              {assistantChats.length > 0 && (assistantExpanded ? <ChevronDown size={12} aria-hidden="true" /> : <ChevronRight size={12} aria-hidden="true" />)}
+            </button>
+            <button type="button" className="workspace-icon fastis-new-chat" title="Новая тема с Fastis" aria-label="Новая тема с Fastis"
+              disabled={pending} onClick={startAssistantTopic}><SquarePen size={16} /></button>
+          </div>
+          {assistantExpanded && assistantChats.length > 0 && <div className="project-chat-list fastis-chat-list" id="chats-fastis">
+            {visibleAssistant.map((item, index) => {
+              const running = runningChats.has(item.id);
+              const unread = !!status?.unreadChatReplies?.[item.id] && (!pageVisible || item.id !== chatId);
+              return <React.Fragment key={item.id}>
+                {pinnedAssistant.length > 0 && index === pinnedAssistant.length && <hr className="project-chat-divider" />}
+                <div className="chat-row-container">
+                  <button type="button" className="workspace-row chat-row" aria-current={isAssistant && item.id === chatId ? 'page' : undefined}
+                    aria-description={running ? 'Выполняется' : unread ? 'Непрочитанный ответ' : undefined}
+                    onClick={() => openAssistant(item.id)} title={chatTooltip(item)}>
+                    {(running || unread) && <span className="chat-row-state" aria-hidden="true">
+                      {running ? <LoaderCircle size={13} className="spin" /> : <span className="chat-row-unread-dot" />}
+                    </span>}
+                    <span>{item.title}</span>
+                    {item.pinned && <Pin size={13} className="chat-row-pin" aria-label="Закреплённый чат" />}
+                    <span className="chat-row-time"><time dateTime={item.updatedAt}>{shortDate(item.updatedAt)}</time></span>
+                  </button>
+                  <div className="chat-row-actions">
+                    <button type="button" className="workspace-icon" title={item.pinned ? 'Открепить чат' : 'Закрепить чат'}
+                      aria-label={(item.pinned ? 'Открепить чат «' : 'Закрепить чат «') + item.title + '»'} aria-pressed={!!item.pinned}
+                      disabled={pending} onClick={() => void toggleChatPin(assistantProjectId, item)}><Pin size={14} /></button>
+                    <button type="button" className="workspace-icon" title={item.messageCount === 0 ? 'Удалить пустой чат' : 'Архивировать чат'}
+                      aria-label={(item.messageCount === 0 ? 'Удалить пустой чат «' : 'Архивировать чат «') + item.title + '»'}
+                      disabled={pending || [...activeRuns, ...queuedRuns].some(run => run.projectId === assistantProjectId && run.chatId === item.id)}
+                      onClick={() => void (item.messageCount === 0 ? deleteEmptyChat(assistantProjectId, item.id) : archiveChat(assistantProjectId, item.id))}>
+                      {item.messageCount === 0 ? <Trash2 size={14} /> : <Archive size={14} />}</button>
+                  </div>
+                </div>
+              </React.Fragment>;
+            })}
+            {recentAssistant.length > 5 && <button className="workspace-row show-chats" onClick={() => setShowAll(old => ({ ...old, [assistantProjectId]: !old[assistantProjectId] }))}>{showAll[assistantProjectId] ? 'Свернуть' : 'Показать ещё'}</button>}
+          </div>}
+        </div>;
+      })()}
       <div className="projects-heading">
         <button type="button" className="workspace-row projects-toggle" aria-expanded={projectsExpanded} aria-controls="workspace-projects" onClick={() => {
           const expanded = !projectsExpanded;
@@ -1601,7 +1748,8 @@ function App() {
           aria-label="Открыть проекты" aria-controls="workspace-sidebar" aria-expanded={sidebarOpen}><Menu size={20} /></button>
         {chat && <>
           <div className="workspace-chat-title">
-            <Folder size={17} aria-label={withoutProject ? unassignedChatsLabel : selectedProject?.name} />
+            {isAssistant ? <img src="/icons/fastis-robot.png" alt={assistantName} className="fastis-avatar-header" />
+              : <Folder size={17} aria-label={withoutProject ? unassignedChatsLabel : selectedProject?.name} />}
             <h1 title={chatTooltip(chat)}>{chat.title}</h1>
             {canEditChatDetails && <button type="button" className="workspace-icon chat-rename-button"
               aria-label="Переименовать чат" title="Переименовать чат" disabled={pending} onClick={() => {
@@ -1611,20 +1759,22 @@ function App() {
               }}><Pencil size={15} /></button>}
           </div>
           <div className="chat-access" title={dateTooltip(chat.updatedAt, chat.ownerName)}>
-            {canEditChatDetails && !withoutProject ? <Select label="Видимость чата" value={chat.visibility ?? 'private'} disabled={pending || chatBusy}
+            {canEditChatDetails && !withoutProject && !isAssistant ? <Select label="Видимость чата" value={chat.visibility ?? 'private'} disabled={pending || chatBusy}
               onChange={visibility => {
                 if (visibility === 'project' && chat.visibility !== 'project') { setError(''); setPanel('share-chat'); }
                 else if (visibility === 'private') void changeVisibility('private');
               }}
               options={[{ value: 'private', label: 'Личный' }, { value: 'project', label: 'Общий' }]} />
-              : <span><LockKeyhole size={13} />{chat.visibility === 'project' ? 'Общий' : 'Личный'}</span>}
+              : <span><LockKeyhole size={13} />{isAssistant ? 'Личный · Чтение ERP' : (chat.visibility === 'project' ? 'Общий' : 'Личный')}</span>}
           </div>
-          {isAdmin && !matchesErpChat && !chat.archivedAt && <button type="button" className="workspace-icon chat-archive-button" aria-label="Перенести чат в архив" title="Перенести чат в архив"
+          {isAssistant && <button type="button" className="workspace-icon" aria-label="Новая тема с Fastis" title="Новая тема с Fastis"
+            disabled={pending} onClick={startAssistantTopic}><SquarePen size={17} /></button>}
+          {(isAdmin || isAssistant) && !matchesErpChat && !chat.archivedAt && <button type="button" className="workspace-icon chat-archive-button" aria-label="Перенести чат в архив" title="Перенести чат в архив"
             disabled={pending || chatBusy} onClick={() => void archiveChat()}><Archive size={17} /></button>}
         </>}
         {chat && <button type="button" className="workspace-icon" title="Файлы чата" aria-label="Файлы чата"
           onClick={() => setPanel('chat-files')}><Folder size={18} /></button>}
-        {erpChatKey && <div className="related-chat-actions">
+        {erpChatKey && !isAssistant && <div className="related-chat-actions">
           <button type="button" className="workspace-icon" title="Связанные чаты" aria-label="Связанные чаты" onClick={() => { setError(''); setPanel('related'); }}><History size={18} /></button>
           {canReset && <button type="button" className="workspace-icon" title="Очистить чат" aria-label="Очистить чат"
             disabled={pending || chatBusy} onClick={() => { setError(''); setPanel('reset-chat'); }}><Eraser size={17} /></button>}
@@ -1653,8 +1803,12 @@ function App() {
         </div>
         <div className="conversation-lane conversation-footer">{composer}</div>
       </> : <div className="workspace-welcome">
-        <h2>{relatedDraftKey && !chatId ? fastkoreChatTitle(currentErpContext.current.snapshot) ?? 'Новый чат'
-          : selectedProject ? 'Новый чат' : 'Выберите проект'}</h2>
+        {isAssistant ? <div className="fastis-welcome-header">
+          <img src="/icons/fastis-robot.png" alt={assistantName} className="fastis-avatar-welcome" />
+          <h2>{assistantName}</h2>
+          <p className="fastis-welcome-subtitle">Общесистемный помощник по Fastkore и регламентам компании · только чтение ERP</p>
+        </div> : <h2>{relatedDraftKey && !chatId ? fastkoreChatTitle(currentErpContext.current.snapshot) ?? 'Новый чат'
+          : selectedProject ? 'Новый чат' : 'Выберите проект'}</h2>}
         {composer}
       </div>}
     </ChatFileDrop>
@@ -1663,7 +1817,7 @@ function App() {
       attach={file => setFiles(old => ({ ...old, [draftSlot]: [...(old[draftSlot] ?? []).filter(item => item.id !== file.id), file] }))}
       changed={async fileId => {
         setFiles(old => ({ ...old, [draftSlot]: (old[draftSlot] ?? []).filter(file => file.id !== fileId && file.local?.uploaded?.id !== fileId) }));
-        const updated = await api<ChatView>(`/api/projects/${projectId}/chats/${chat.id}`);
+        const updated = await api<ChatView>(chatApiBase(projectId, chat.id));
         if (selected.current.projectId === projectId && selected.current.chatId === chat.id) setChat(updated);
       }} />}
     {screenshotPreview && <WorkspaceDialog title={screenshotPreview.file.name} className="draft-screenshot-dialog" close={() => setScreenshotPreview(undefined)}>
@@ -1692,7 +1846,8 @@ function App() {
         <label htmlFor="chat-project">Проект</label>
         <select id="chat-project" value={renameDraft.destinationId ?? renameDraft.projectId} disabled={pending}
           onChange={e => setRenameDraft({ ...renameDraft, destinationId: e.target.value })}>
-          {!projects.some(project => project.id === renameDraft.projectId) && <option value={renameDraft.projectId}>{unassignedChatsLabel}</option>}
+          {renameDraft.projectId === assistantProjectId && <option value={assistantProjectId}>{assistantName}</option>}
+          {renameDraft.projectId !== assistantProjectId && !projects.some(project => project.id === renameDraft.projectId) && <option value={renameDraft.projectId}>{unassignedChatsLabel}</option>}
           {projects.map(project => <option key={project.id} value={project.id}>{project.name}</option>)}
         </select>
         {error && <div className="inline-error" role="alert">{error}</div>}
@@ -1711,7 +1866,7 @@ function App() {
       </div>
     </WorkspaceDialog>}
     {panel === 'archive' && (isAdmin || erpAuth) && <ChatArchiveDialog request={api} close={closePanel} renderChat={renderHistory} manage={isAdmin}
-      onRestore={project => void (projects.some(item => item.id === project) ? loadChats(project) : api<UnassignedChatSummary[]>(unassignedChatsUrl).then(setUnassignedChats)).catch(fail)} />}
+      onRestore={project => void (project === assistantProjectId || projects.some(item => item.id === project) ? loadChats(project) : api<UnassignedChatSummary[]>(unassignedChatsUrl).then(setUnassignedChats)).catch(fail)} />}
     {relatedPanelOpen && erpChatKey && <WorkspaceDialog title="Связанные чаты" className="related-chats-dialog" close={closePanel}>
       {error && <p className="inline-error" role="alert">{error}</p>}
       {relatedLoading ? <SettingsSpinner label="Загрузка чатов…" /> : <div className="archive-list">
@@ -1729,8 +1884,9 @@ function App() {
       <div className="search-results">
         {searchable.map(({ project, matchingChats }) => <div key={project.id}>
           {project.id === unassignedGroupId ? <div className="workspace-row search-project"><Folder size={16} />{project.name}</div> :
+            project.id === assistantProjectId ? <button className="workspace-row search-project" onClick={() => { openAssistant(); closePanel(); }}><img src="/icons/fastis-robot.png" alt="" className="fastis-avatar-sm" />{project.name}</button> :
             <button className="workspace-row search-project" onClick={() => { navigateWorkspace(project.id); closePanel(); }}><Folder size={16} />{project.name}</button>}
-          {matchingChats.map(item => <button key={item.id} className="workspace-row chat-row" title={chatTooltip(item)} onClick={() => { navigateWorkspace(item.projectId, item.id); closePanel(); }}><span>{item.title}</span><time dateTime={item.updatedAt}>{shortDate(item.updatedAt)}</time></button>)}
+          {matchingChats.map(item => <button key={item.id} className="workspace-row chat-row" title={chatTooltip(item)} onClick={() => { if (item.projectId === assistantProjectId) openAssistant(item.id); else navigateWorkspace(item.projectId, item.id); closePanel(); }}><span>{item.title}</span><time dateTime={item.updatedAt}>{shortDate(item.updatedAt)}</time></button>)}
         </div>)}
         {searchLoading && <SettingsSpinner inline label="Загрузка…" />}
         {!searchLoading && !searchable.length && <p className="composer-status">Ничего не найдено</p>}
@@ -1809,6 +1965,8 @@ function App() {
             {!settingsProjects.length && <li className="help">{projects.length ? 'Проекты не найдены.' : 'Проектов пока нет.'}</li>}
           </ul></>}
           {settingsSection === 'roles' && <ErpRolesPanel request={api} />}
+          {settingsSection === 'assistant' && <AssistantSettingsPanel request={api} models={serverModels}
+            onChanged={() => { void api<Status>('/api/status').then(setStatus).catch(() => {}); }} />}
           {settingsSection === 'library' && <LibraryPanel request={api} isAdmin={isAdmin} />}
           {settingsSection === 'profiles' && <SpecialistsPanel request={api} initialProfileId={initialSpecialistId} />}
           {settingsSection === 'audit' && <AuditPanel request={api} />}

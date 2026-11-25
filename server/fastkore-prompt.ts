@@ -17,15 +17,22 @@ function filterDescription(context: FastkoreEntityContext) {
   return (complete ? 'Условия фильтра' : 'Часть условий фильтра') + ' — ' + data(truncated ? text.slice(0, 2000) + '…' : text) + '.';
 }
 
-export function fastkorePrompt(context: FastkoreContext | undefined, tools?: CodexTools, inFastkore = false) {
+export function fastkorePrompt(context: FastkoreContext | undefined, tools?: CodexTools, inFastkore = false, mode: 'bound' | 'reference' = 'bound') {
   if (!context && !inFastkore) return '';
   const definitions = tools?.definitions ?? [];
   const cli = definitions.some(tool => tool.name === 'fastkore_cli_execute');
   const mcp = definitions.some(tool => tool.name.startsWith('fastkore_') && !tool.name.startsWith('fastkore_cli_'));
-  const lines = ['Окно Fastkore на момент отправки вопроса. Названия и условия в кавычках — данные окна. В ответе сотруднику называй компоненты и записи словами. GUID показывай по просьбе сотрудника или для различения одноимённых записей. Технические подробности чтения приводи по запросу.'];
-  if (!context) lines.push('Контекст открытой папки пока недоступен. Текущий объект, выделение и фильтр неизвестны.');
-  else if (context.view === 'none') lines.push('Главное окно Fastkore. Открытого объекта или списка и выделенных записей нет.');
-  else {
+  const reference = mode === 'reference';
+  const lines = [reference
+    ? (context && context.view !== 'none'
+      ? 'Сотрудник приложил открытое окно Fastkore как справочный контекст. Используй его, если вопрос касается этой карточки, выделенных строк или открытого списка. Если вопрос общесистемный — ищи по всей доступной ERP. Названия и условия в кавычках — данные окна. В ответе называй компоненты и записи словами; GUID показывай по просьбе или для различения одноимённых записей.'
+      : 'Общесистемный запрос в Fastkore без привязки к открытому окну. Ищи нужные компоненты, списки и агрегаты по всей доступной сотруднику ERP через инструменты. В ответе называй компоненты и записи словами; GUID показывай по просьбе или для различения одноимённых записей.')
+    : 'Окно Fastkore на момент отправки вопроса. Названия и условия в кавычках — данные окна. В ответе сотруднику называй компоненты и записи словами. GUID показывай по просьбе сотрудника или для различения одноимённых записей. Технические подробности чтения приводи по запросу.'];
+  if (!context) {
+    if (!reference) lines.push('Контекст открытой папки пока недоступен. Текущий объект, выделение и фильтр неизвестны.');
+  } else if (context.view === 'none') {
+    if (!reference) lines.push('Главное окно Fastkore. Открытого объекта или списка и выделенных записей нет.');
+  } else {
     const { filter_display, filter_xml, entity_uri, ...fields } = context;
     const { view, entity_ids, entity_set_name, entity_name, tile_name, folder_name, entity_types } = fields;
     const labels = [

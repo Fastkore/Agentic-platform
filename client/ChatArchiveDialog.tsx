@@ -1,6 +1,7 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { ArrowLeft, ArchiveRestore, Trash2 } from 'lucide-react';
 import type { ArchivedChatSummary, Chat } from '../shared/types';
+import { assistantProjectId } from '../shared/types';
 import { WorkspaceDialog } from './WorkspaceDialog';
 import { SettingsSpinner } from './SettingsSpinner';
 import { chatTooltip, shortDate } from './chat-date';
@@ -18,7 +19,9 @@ export function ChatArchiveDialog({ request, close, renderChat, onRestore, manag
   const [error, setError] = useState('');
   const [pending, setPending] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
-  const url = selected && `/api/projects/${selected.projectId}/chats/${selected.id}`;
+  const url = selected && (selected.projectId === assistantProjectId
+    ? `/api/assistant/chats/${selected.id}`
+    : `/api/projects/${selected.projectId}/chats/${selected.id}`);
 
   useEffect(() => {
     const controller = new AbortController();

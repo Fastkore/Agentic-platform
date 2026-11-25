@@ -41,7 +41,16 @@ export function erpRolePermissions(state: RoleState, installationId: string, rol
     webSearch: saved?.webSearch ?? saved?.webRead ?? false,
     webRequests: saved?.webRequests ?? false, readOnly: saved?.readOnly ?? false,
     createProjects: saved?.createProjects ?? projectCreationRoles.has(roleName?.trim().toLocaleLowerCase('ru-RU') ?? ''),
+    assistant: saved?.assistant ?? false,
     revision: saved?.revision ?? 0 };
+}
+
+export function canUseAssistant(state: Pick<State, 'sso' | 'assistant'>, user: User, credential?: Credential) {
+  if (user.disabled) return false;
+  if (state.assistant?.settings?.enabled === false) return false;
+  if (user.role === 'admin') return true;
+  if (credential?.source !== 'fastkore' || !credential.installationId || credential.userId !== user.id) return false;
+  return credential.externalRoles?.some(role => erpRolePermissions(state, credential.installationId!, role.id).assistant) ?? false;
 }
 
 export const erpReadOnlyMessage = 'Роль Fastkore разрешает только чтение. Эта операция заблокирована.';
