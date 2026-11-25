@@ -1,19 +1,23 @@
-import { useEffect, useState } from 'react';
-import { Search, ShieldCheck, Users } from 'lucide-react';
+import { useEffect, useId, useState } from 'react';
+import { Search, Settings2, ShieldCheck, Users } from 'lucide-react';
 import { assistantAvatars, assistantAvatarSrc, assistantName, defaultAssistantAvatar, type AssistantSettings, type FastkoreRolePermissions, type FastkoreRoleSummary, type ReasoningEffort } from '../shared/types';
 import { hasAdjustableEffort } from '../shared/execution-accounts';
-import { PermissionSwitch } from './PermissionSwitch';
 import { Select } from './Select';
 import { SettingsSpinner } from './SettingsSpinner';
+import { SettingsTabStrip } from './SettingsTabs';
 import { reasoningOptions } from './ChatModelControls';
 
 type Request = <T>(url: string, init?: RequestInit) => Promise<T>;
+const assistantTabs = [['general', 'Настройки', Settings2], ['permissions', 'Разрешения', ShieldCheck]] as const;
+type AssistantTab = typeof assistantTabs[number][0];
 
 export function AssistantSettingsPanel({ request, models, onChanged }: {
   request: Request;
   models: { value: string; label: string }[];
   onChanged?: () => void;
 }) {
+  const tabId = useId();
+  const [tab, setTab] = useState<AssistantTab>('general');
   const [settings, setSettings] = useState<AssistantSettings>();
   const [roles, setRoles] = useState<FastkoreRoleSummary[]>();
   const [instructions, setInstructions] = useState('');
@@ -109,65 +113,27 @@ export function AssistantSettingsPanel({ request, models, onChanged }: {
             <h3>{assistantName}</h3>
             <p className="help">Общесистемный помощник вне проектов. Работает по правам сотрудника в Fastkore в режиме только чтения, с общей базой знаний и без доступа к проектным библиотекам.</p>
           </div>
-          <label className="erp-role-permission fastis-master-switch">
-            <PermissionSwitch name={'Включить ' + assistantName} checked={settings.enabled} disabled={busy}
-              onChange={enabled => void saveSettings({ enabled })} />
-            <span>{settings.enabled ? 'Включён' : 'Отключён'}</span>
+          <label className={'check-setting account-active-status' + (settings.enabled ? ' active' : ' inactive')}>
+            <input type="checkbox" checked={settings.enabled} disabled={busy}
+              aria-label={'Активен · ' + assistantName}
+              onChange={e => void saveSettings({ enabled: e.target.checked })} />
+            {settings.enabled ? 'Активен' : 'Неактивен'}
           </label>
         </div>
-        <div className="fastis-avatar-picker" role="radiogroup" aria-label="Аватар Финиста">
-          <span className="help">Иконка в интерфейсе:</span>
-          <div className="fastis-avatar-options">
-            {assistantAvatars.map(option => {
-              const selected = (settings.avatar ?? defaultAssistantAvatar) === option.id;
-              return <button key={option.id} type="button" role="radio" aria-checked={selected}
-                className={'fastis-avatar-option' + (selected ? ' is-selected' : '')}
-                disabled={busy} title={option.label}
-                onClick={() => { if (!selected) void saveSettings({ avatar: option.id }); }}>
-                <img src={option.src} alt="" />
-                <span>{option.label}</span>
-              </button>;
-            })}
-          </div>
-        </div>
       </section>
 
-      <section className="setting-section">
-        <div className="fastis-roles-heading">
-          <h3>Доступ по ролям Fastkore</h3>
-          {roles && roles.length > 0 && <span className="help">Выбрано ролей: {enabledCount} из {roles.length}</span>}
-        </div>
-        <p className="help">Выберите роли, которым показывать {assistantName} в боковой панели. Администраторам платформы помощник доступен, пока включён выше.</p>
-        {roles && roles.length > 4 && <div className="roles-filters">
-          <div className="audit-search"><Search size={18} aria-hidden="true" /><input aria-label="Поиск по ролям" placeholder="Поиск по ролям…" value={search} onChange={e => setSearch(e.target.value)} /></div>
-        </div>}
-        {!roles && !error && <SettingsSpinner label="Загрузка ролей…" />}
-        {filteredRoles && !filteredRoles.length && <p role="status" className="help">{roles?.length ? 'По выбранным условиям ролей нет.' : 'Роли появятся после входа сотрудников из Fastkore.'}</p>}
-        {filteredRoles && filteredRoles.length > 0 && <ul className="erp-role-cards fastis-role-cards" aria-label="Роли с доступом к Финисту">
-          {filteredRoles.map(role => {
-            const allowed = role.permissions?.assistant === true;
-            return <li key={role.installationId + '/' + role.id}>
-              <div className="erp-role-heading">
-                <span className="erp-role-icon"><ShieldCheck size={22} aria-hidden="true" /></span>
-                <div>
-                  <h3>{role.name}</h3>
-                  {legacySources && <p>{role.installationName}</p>}
-                </div>
-                <span className="fastis-role-users"><Users size={15} aria-hidden="true" />{role.userCount}</span>
-                <label className="erp-role-permission">
-                  <PermissionSwitch name={'Показывать ' + assistantName + ' · ' + role.name} checked={allowed} disabled={busy || !settings.enabled}
-                    onChange={enabled => void toggleRole(role, enabled)} />
-                  <span>{allowed ? 'Показывать' : 'Скрыт'}</span>
-                </label>
-              </div>
-            </li>;
-          })}
-        </ul>}
-      </section>
+      <SettingsTabStrip sections={assistantTabs} value={tab} select={setTab} id={tabId} label="Разделы настроек Финиста"
+        counts={roles ? { permissions: enabledCount } : undefined}
+        panelId={key => tabId + key + '-panel'} className="server-settings-tabs" />
 
-      <section className="setting-section">
-        <h3>Инструкции и модель</h3>
+      {tab === 'general' && <section className="setting-section" role="tabpanel" id={tabId + 'general-panel'} aria-labelledby={tabId + 'general'}>
         <form className="fastis-settings-form" onSubmit={e => { e.preventDefault(); if (formDirty) void saveSettings({ instructions, model, reasoningEffort }); }}>
+          <div className="settings-model-row">
+            <label htmlFor="fastis-avatar">Иконка для всех</label>
+            <Select id="fastis-avatar" className="settings-select" value={settings.avatar ?? defaultAssistantAvatar} disabled={busy}
+              options={assistantAvatars.map(option => ({ value: option.id, label: option.label, image: option.src }))}
+              onChange={value => { if (value !== (settings.avatar ?? defaultAssistantAvatar)) void saveSettings({ avatar: value as AssistantSettings['avatar'] }); }} />
+          </div>
           <div className="settings-model-row">
             <label htmlFor="fastis-model">Модель по умолчанию</label>
             <Select id="fastis-model" className="settings-select" value={model} options={modelChoices} disabled={busy}
@@ -188,7 +154,39 @@ export function AssistantSettingsPanel({ request, models, onChanged }: {
             <button type="submit" className="primary" disabled={busy || !formDirty}>Сохранить</button>
           </div>
         </form>
-      </section>
+      </section>}
+
+      {tab === 'permissions' && <section className="setting-section" role="tabpanel" id={tabId + 'permissions-panel'} aria-labelledby={tabId + 'permissions'}>
+        <div className="fastis-roles-heading">
+          <h3>Доступ по ролям Fastkore</h3>
+          {roles && roles.length > 0 && <span className="help">Активно: {enabledCount} из {roles.length}</span>}
+        </div>
+        <p className="help">Выберите роли, которым показывать {assistantName} в боковой панели. Администраторам платформы помощник доступен, пока включён выше.</p>
+        {roles && roles.length > 4 && <div className="roles-filters">
+          <div className="audit-search"><Search size={18} aria-hidden="true" /><input aria-label="Поиск по ролям" placeholder="Поиск по ролям…" value={search} onChange={e => setSearch(e.target.value)} /></div>
+        </div>}
+        {!roles && !error && <SettingsSpinner label="Загрузка ролей…" />}
+        {filteredRoles && !filteredRoles.length && <p role="status" className="help">{roles?.length ? 'По выбранным условиям ролей нет.' : 'Роли появятся после входа сотрудников из Fastkore.'}</p>}
+        {filteredRoles && filteredRoles.length > 0 && <ul className="settings-records fastis-role-list" aria-label="Роли с доступом к Финисту">
+          {filteredRoles.map(role => {
+            const allowed = role.permissions?.assistant === true;
+            return <li key={role.installationId + '/' + role.id}>
+              <div className="fastis-role-row-main">
+                <span className="fastis-role-row-icon"><ShieldCheck size={16} aria-hidden="true" /></span>
+                <strong>{role.name}</strong>
+                {legacySources && <span className="fastis-role-row-meta">{role.installationName}</span>}
+                <span className="fastis-role-users" title="Сотрудников с ролью"><Users size={13} aria-hidden="true" />{role.userCount}</span>
+              </div>
+              <label className={'check-setting account-active-status' + (allowed ? ' active' : ' inactive')}>
+                <input type="checkbox" checked={allowed} disabled={busy || !settings.enabled}
+                  aria-label={'Активен · ' + role.name}
+                  onChange={e => void toggleRole(role, e.target.checked)} />
+                {allowed ? 'Активен' : 'Неактивен'}
+              </label>
+            </li>;
+          })}
+        </ul>}
+      </section>}
     </>}
   </div>;
 }

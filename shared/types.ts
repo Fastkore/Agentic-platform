@@ -39,10 +39,10 @@ export interface ExternalIdentity { installationId: string; externalUserId: stri
 export const assistantProjectId = '__fastis__';
 export const assistantName = 'Финист';
 export const assistantAvatars = [
-  { id: 'falcon-helmet', label: 'Сокол в каске', src: '/icons/finist-falcon-helmet.png' },
-  { id: 'bird-helmet', label: 'Финист в каске', src: '/icons/finist-bird-helmet.png' },
-  { id: 'bird-hat', label: 'Финист в котелке', src: '/icons/finist-bird-hat.png' },
-  { id: 'crystal-falcon', label: 'Кристальный сокол', src: '/icons/finist-crystal-falcon.png' },
+  { id: 'falcon-helmet', label: 'Сокол в каске', src: '/icons/finist-falcon-helmet.jpg' },
+  { id: 'bird-helmet', label: 'Финист в каске', src: '/icons/finist-bird-helmet.jpg' },
+  { id: 'bird-hat', label: 'Финист в котелке', src: '/icons/finist-bird-hat.jpg' },
+  { id: 'crystal-falcon', label: 'Кристальный сокол', src: '/icons/finist-crystal-falcon.jpg' },
 ] as const;
 export type AssistantAvatarId = typeof assistantAvatars[number]['id'];
 export const defaultAssistantAvatar: AssistantAvatarId = 'falcon-helmet';

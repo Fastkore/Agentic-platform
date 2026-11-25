@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom';
 import { Check, ChevronDown, type LucideIcon } from 'lucide-react';
 import { interfaceScale } from './interface-scale';
 
-export interface SelectOption { value: string; label: string; icon?: LucideIcon; disabled?: boolean; detail?: string; detailTitle?: string }
+export interface SelectOption { value: string; label: string; icon?: LucideIcon; image?: string; disabled?: boolean; detail?: string; detailTitle?: string }
 export interface SelectHandle { open(): void }
 interface SelectProps {
   options: SelectOption[];
@@ -21,7 +21,12 @@ interface SelectProps {
 
 function OptionLabel({ option, fallback }: { option?: SelectOption; fallback?: string }) {
   const Icon = option?.icon;
-  return <span className={Icon ? 'select-label-icon' : undefined}>{Icon && <Icon size={16} aria-hidden="true" />}{option?.label ?? fallback}</span>;
+  const hasMedia = !!(Icon || option?.image);
+  return <span className={hasMedia ? 'select-label-icon' : undefined}>
+    {option?.image && <img src={option.image} alt="" className="select-option-thumb" />}
+    {!option?.image && Icon && <Icon size={16} aria-hidden="true" />}
+    {option?.label ?? fallback}
+  </span>;
 }
 
 export function Select({ options, value, onChange, id, label, className = '', placeholder, title, disabled, fitContent, ref }: SelectProps) {

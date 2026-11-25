@@ -229,27 +229,31 @@
 .fastis-settings-summary { flex: 1 1 240px; min-width: 0; }
 .fastis-settings-summary h3 { margin: 0 0 4px; }
 .fastis-settings-summary p { margin: 0; }
-.fastis-master-switch { margin-left: auto; }
-.fastis-avatar-picker {
-  margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border);
-  display: grid; gap: 8px;
+.fastis-header-controls {
+  display: flex; align-items: center; gap: 10px; margin-left: auto; flex-wrap: wrap;
 }
-.fastis-avatar-options { display: flex; flex-wrap: wrap; gap: 8px; }
-.fastis-avatar-option {
-  display: inline-flex; align-items: center; gap: 8px; padding: 6px 10px 6px 6px;
-  border: 1px solid var(--control-border); border-radius: 10px; background: var(--surface);
-  color: var(--text-secondary); font-size: 12.5px;
-}
-.fastis-avatar-option:hover:not(:disabled) { background: var(--selected); color: var(--text); }
-.fastis-avatar-option.is-selected {
-  border-color: var(--accent); background: var(--accent-soft); color: var(--text); font-weight: 600;
-}
-.fastis-avatar-option img {
-  width: 34px; height: 34px; border-radius: 8px; object-fit: cover; flex: 0 0 auto;
+.fastis-avatar-select { width: auto; min-width: 190px; margin: 0; }
+.select-option-thumb {
+  width: 20px; height: 20px; border-radius: 5px; object-fit: cover; flex: none;
 }
 .fastis-roles-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
-.fastis-role-cards .erp-role-heading { align-items: center; }
-.fastis-role-users { display: inline-flex; align-items: center; gap: 5px; margin-left: auto; color: var(--text-muted); font-size: 12px; }
+.fastis-role-list { margin-top: 10px; }
+.fastis-role-list > li { padding: 9px 14px; gap: 12px; }
+.fastis-role-row-main {
+  display: flex; align-items: center; gap: 8px; flex: 1 1 auto; min-width: 0;
+}
+.fastis-role-row-icon { color: var(--accent-strong); flex: none; display: inline-flex; align-items: center; }
+.fastis-role-row-main strong { font-size: 14px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fastis-role-row-meta { color: var(--text-muted); font-size: 12px; white-space: nowrap; }
+.fastis-role-users { display: inline-flex; align-items: center; gap: 4px; color: var(--text-muted); font-size: 12px; white-space: nowrap; flex: none; }
+.fastis-settings-panel label.account-active-status {
+  display: inline-flex; align-items: center; flex: none; gap: 7px; min-width: 112px; margin: 0; padding: 5px 10px;
+  border-radius: var(--settings-badge-radius); background: var(--control); font-size: 12px; white-space: nowrap;
+}
+.fastis-settings-panel .account-active-status.inactive { color: var(--text-muted); }
+.fastis-settings-panel .account-active-status.active { color: var(--success); background: color-mix(in srgb, var(--success) 10%, var(--surface)); }
+.fastis-settings-panel .account-active-status input { position: static; opacity: 1; margin: 0; flex: 0 0 16px; }
+.fastis-settings-panel .account-active-status.active input { accent-color: var(--success); }
 .fastis-settings-form { display: grid; gap: 10px; }
 .fastis-settings-form textarea {
   width: 100%; min-height: 110px; padding: 10px 12px; border: 1px solid var(--control-border);
