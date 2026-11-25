@@ -46,13 +46,14 @@ test('a private ERP chat keeps its actual opening and replays published turns on
     // Historical Nordmile shape: source-free opening, old profile revision, a new credential and an empty native thread.
     for (const message of chat.messages) { delete message.renewalScope; delete message.libraryHistory; }
     delete chat.verifiedOpeningRunId;
+    chat.messages[0].attachments = [{ id: randomUUID(), name: 'private-original-image.png', size: 12 }];
     f.project.chatDefaults = { instructions: 'Проверяй единицы.', model: '', reasoningEffort: 'high', revision: 4 };
     cookie = await login();
     const recovered = await send('С чего и когда мы начали?');
     assert.equal(recovered.call.sessionId, undefined);
     assert.equal(recovered.timeline.первое_сообщение_UTC, first.run.createdAt);
     assert.equal(recovered.timeline.начало_первого_вопроса, 'Что на экране?');
-    assert.doesNotMatch(recovered.call.prompt, /Опубликованный итог/);
+    assert.doesNotMatch(recovered.call.prompt, /Опубликованный итог|private-original-image/);
     // Positive provenance for the original question never admits a restricted or different-selection question.
     chat.messages[1].libraryHistory = 'restricted:test';
     const bounded = await send('Когда начали?');

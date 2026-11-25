@@ -1381,7 +1381,7 @@ export class Workspace {
     const binding = chat.fastkoreBinding;
     const ownErpOpening = libraryFree && libraryHistory === 'open' && chat.visibility !== 'project' && !chat.cliWorkspaceProjectId &&
       authorId && chat.ownerId === authorId && binding?.externalUserId && binding.externalUserId === credential?.externalUserId &&
-      binding.installationId === credential.installationId && !first.attachments.length && !first.specialistName && !answer.consultedSpecialists?.length;
+      binding.installationId === credential.installationId && !first.specialistName && !answer.consultedSpecialists?.length;
     if (!sameScope && !ownErpOpening) return facts;
     if (!sameScope && chat.verifiedOpeningRunId !== first.runId) {
       const originalRun = this.store.state.runs.find(r => r.id === first.runId);
@@ -1389,6 +1389,7 @@ export class Workspace {
           !this.library.policy.wasLibraryFree(first.runId, first.createdAt, run.projectId!, authorId!)) return facts;
       chat.verifiedOpeningRunId = first.runId;
     }
+    // Only the typed text describes the opening; attachment names, previews and contents stay out of these facts.
     facts.начало_первого_вопроса = first.text.length > 360 ? first.text.slice(0, 360) + '…' : first.text;
     return facts;
   }
