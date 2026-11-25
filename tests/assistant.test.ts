@@ -122,7 +122,7 @@ test('Fastis is opt-in per ERP role, can be completely disabled by role or globa
   } finally { await f.app.close(); }
 });
 
-test('Fastis enforces read-only ERP tools, reference screen context, zero project libraries, and survives restart + move', async () => {
+test('Fastis inherits employee ERP role permissions, uses reference screen context, zero project libraries, and survives restart + move', async () => {
   const captured: CodexRequest[] = [];
   const forceReadOnlyCalls: boolean[] = [];
   const f = await fixture(async (input, events) => {
@@ -152,10 +152,9 @@ test('Fastis enforces read-only ERP tools, reference screen context, zero projec
     });
     assert.equal(r1.statusCode, 202);
     await waitIdle(f.workspace);
-    assert.equal(forceReadOnlyCalls[0], true, 'Fastis must force read-only ERP tools');
+    assert.equal(forceReadOnlyCalls[0], false, 'Fastis inherits employee ERP role CLI/MCP permissions');
     assert.match(captured[0].prompt, /общесистемный помощник Финист/);
     assert.match(captured[0].prompt, /Исключай отменённые заказы/);
-    assert.match(captured[0].prompt, /режим только чтения/);
     assert.doesNotMatch(captured[0].prompt, /library_list|Контекст открытой папки пока недоступен/);
 
     // 2) Question WITH optional attached screen context in reference mode.
@@ -170,7 +169,7 @@ test('Fastis enforces read-only ERP tools, reference screen context, zero projec
     });
     assert.equal(r2.statusCode, 202);
     await waitIdle(f.workspace);
-    assert.equal(forceReadOnlyCalls[1], true);
+    assert.equal(forceReadOnlyCalls[1], false);
     assert.match(captured[1].prompt, /приложил открытое окно Fastkore как справочный контекст/);
     assert.match(captured[1].prompt, /Заказ #142/);
 

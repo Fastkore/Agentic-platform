@@ -1550,7 +1550,7 @@ export class Workspace {
     const requestScope = closedSourceRun ? erpScope + ':' + libraryHistory : erpScope;
     const erpStarted = performance.now();
     const integration = !closedSourceRun && this.isolatedCodex && job.credentialId && allowedTools.includes('fastkore') && this.prepareFastkoreTools
-      ? await this.prepareFastkoreTools(job.credentialId, fastkoreContext, () => this.checkJob(job, run), signal, run, isAssistant ? { forceReadOnly: true } : undefined)
+      ? await this.prepareFastkoreTools(job.credentialId, fastkoreContext, () => this.checkJob(job, run), signal, run)
         .finally(() => { timing.erpSetupMs = elapsedMs(erpStarted); }) : undefined;
     this.checkJob(job, run); signal.throwIfAborted();
     const attachments = job.attachmentIds.map(id => project.attachments.find(a => a.id === id)!);
@@ -1835,7 +1835,7 @@ export class Workspace {
       const environment = agentContext({ project: isAssistant ? undefined : project.name, projectInstructions, assistantInstructions, agent: profile.name, purpose: profile.description,
         role: actor && this.corporate.role(actor)?.name, erpRoles: erpCredential?.externalRoles?.map(role => role.name),
         mode: isAssistant ? 'общесистемный помощник Финист' : (shared ? 'общий чат проекта' : 'личный чат'), installation: installation?.name,
-        erpReadOnly: erpCredential && (isAssistant || isErpReadOnly(this.store.state, erpCredential)), attachments: attachments.map(file => file.name),
+        erpReadOnly: erpCredential && isErpReadOnly(this.store.state, erpCredential), attachments: attachments.map(file => file.name),
         fileMode: workerWrites ? 'файлы результата в output' : !this.isolatedCodex && writable ? 'запись в папку проекта' : 'ответ в чате',
         folders: projectSourceTools ? sourceRun!.scope.entries : undefined,
         specialists: specialists.map(({ id, name, description }) => ({ id, name, description })) }, tools);

@@ -1247,10 +1247,9 @@ function App() {
       const role = tools?.erpRoles?.[kind];
       const reason = kind === 'cli' ? tools?.cliUnavailableReason : tools?.mcpUnavailableReason;
       const problem = reason ?? (messageAgent?.closedAnalysis ? 'Агент работает с закрытыми материалами библиотеки. В этом режиме обращения к ERP отключены.' : undefined);
-      const readonlyHint = isAssistant && !problem ? 'В помощнике Финист действует режим только чтения.' : undefined;
-      return { name: 'Fastkore ' + name + (isAssistant ? ' (чтение)' : ''), enabled: tools?.[kind] && !problem,
+      return { name: 'Fastkore ' + name, enabled: tools?.[kind] && !problem,
         label: role === false ? 'Запрещено ролью' : undefined,
-        description: role && problem ? 'Ваша роль разрешает ' + name + '. ' + problem : problem ?? readonlyHint };
+        description: role && problem ? 'Ваша роль разрешает ' + name + '. ' + problem : problem };
     }
     const permissions: { name: string; enabled?: boolean; label?: string; description?: string }[] = [
       { name: 'Запись файлов', enabled: writeMode, description: !writeMode ? fileWriteProblems.join(' ') : status.isolatedCodex

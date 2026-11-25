@@ -1,5 +1,5 @@
 import { useEffect, useId, useState } from 'react';
-import { Search, Settings2, ShieldCheck, Users } from 'lucide-react';
+import { FileText, Search, Settings2, ShieldCheck, Users } from 'lucide-react';
 import { assistantAvatars, assistantAvatarSrc, assistantName, defaultAssistantAvatar, type AssistantSettings, type FastkoreRolePermissions, type FastkoreRoleSummary, type ReasoningEffort } from '../shared/types';
 import { hasAdjustableEffort } from '../shared/execution-accounts';
 import { Select } from './Select';
@@ -8,7 +8,11 @@ import { SettingsTabStrip } from './SettingsTabs';
 import { reasoningOptions } from './ChatModelControls';
 
 type Request = <T>(url: string, init?: RequestInit) => Promise<T>;
-const assistantTabs = [['general', 'Настройки', Settings2], ['permissions', 'Разрешения', ShieldCheck]] as const;
+const assistantTabs = [
+  ['general', 'Настройки', Settings2],
+  ['instructions', 'Инструкция', FileText],
+  ['permissions', 'Разрешения', ShieldCheck],
+] as const;
 type AssistantTab = typeof assistantTabs[number][0];
 
 export function AssistantSettingsPanel({ request, models, onChanged }: {
@@ -96,11 +100,7 @@ export function AssistantSettingsPanel({ request, models, onChanged }: {
     ...(model && !models.some(item => item.value === model) ? [{ value: model, label: model }] : []),
     ...models,
   ];
-  const formDirty = !!settings && (
-    instructions.trim() !== (settings.instructions ?? '').trim() ||
-    model !== (settings.model ?? '') ||
-    reasoningEffort !== (settings.reasoningEffort ?? 'high')
-  );
+  const instructionsDirty = !!settings && instructions.trim() !== (settings.instructions ?? '').trim();
 
   return <div className="settings-server fastis-settings-panel">
     {!settings && !error && <SettingsSpinner label="Загрузка настроек Финиста…" />}
@@ -108,44 +108,44 @@ export function AssistantSettingsPanel({ request, models, onChanged }: {
     {settings && <>
       <div className="fastis-panel-intro">
         <img src={assistantAvatarSrc(settings.avatar)} alt="" className="fastis-settings-avatar" />
-        <p className="help">Общесистемный помощник вне проектов. Работает по правам сотрудника в Fastkore в режиме только чтения, с общей базой знаний и без доступа к проектным библиотекам.</p>
+        <p className="help">Общесистемный помощник вне проектов. Работает по правам и разрешениям CLI/MCP роли сотрудника в Fastkore, с общей базой знаний и без доступа к проектным библиотекам.</p>
       </div>
 
       <SettingsTabStrip sections={assistantTabs} value={tab} select={setTab} id={tabId} label="Разделы настроек Финиста"
         counts={roles ? { permissions: enabledCount } : undefined}
         panelId={key => tabId + key + '-panel'} className="server-settings-tabs" />
 
-      {tab === 'general' && <form className="fastis-settings-form" role="tabpanel" id={tabId + 'general-panel'} aria-labelledby={tabId + 'general'}
-        onSubmit={e => { e.preventDefault(); if (formDirty) void saveSettings({ instructions, model, reasoningEffort }); }}>
-        <section className="setting-section settings-models">
-          <h3>Внешний вид и модель</h3>
-          <div className="settings-model-row">
-            <label htmlFor="fastis-avatar">Иконка для всех</label>
-            <Select id="fastis-avatar" className="settings-select" value={settings.avatar ?? defaultAssistantAvatar} disabled={busy}
-              options={assistantAvatars.map(option => ({ value: option.id, label: option.label, image: option.src }))}
-              onChange={value => { if (value !== (settings.avatar ?? defaultAssistantAvatar)) void saveSettings({ avatar: value as AssistantSettings['avatar'] }); }} />
-          </div>
-          <div className="settings-model-row">
-            <label htmlFor="fastis-model">Модель по умолчанию</label>
-            <Select id="fastis-model" className="settings-select" value={model} options={modelChoices} disabled={busy}
-              onChange={value => { setSaved(false); setModel(value); }} />
-          </div>
-          {(!model || hasAdjustableEffort(model)) && <div className="settings-model-row">
-            <label htmlFor="fastis-reasoning">Рассуждение</label>
-            <Select id="fastis-reasoning" className="settings-select" value={reasoningEffort} options={reasoningOptions} disabled={busy}
-              onChange={value => { setSaved(false); setReasoningEffort(value as ReasoningEffort); }} />
-          </div>}
-        </section>
+      {tab === 'general' && <section className="setting-section settings-models" role="tabpanel" id={tabId + 'general-panel'} aria-labelledby={tabId + 'general'}>
+        <h3>Внешний вид и модель</h3>
+        <div className="settings-model-row">
+          <label htmlFor="fastis-avatar">Иконка для всех</label>
+          <Select id="fastis-avatar" className="settings-select" value={settings.avatar ?? defaultAssistantAvatar} disabled={busy}
+            options={assistantAvatars.map(option => ({ value: option.id, label: option.label, image: option.src }))}
+            onChange={value => { if (value !== (settings.avatar ?? defaultAssistantAvatar)) void saveSettings({ avatar: value as AssistantSettings['avatar'] }); }} />
+        </div>
+        <div className="settings-model-row">
+          <label htmlFor="fastis-model">Модель по умолчанию</label>
+          <Select id="fastis-model" className="settings-select" value={model} options={modelChoices} disabled={busy}
+            onChange={value => { setModel(value); if (value !== (settings.model ?? '')) void saveSettings({ model: value }); }} />
+        </div>
+        {(!model || hasAdjustableEffort(model)) && <div className="settings-model-row">
+          <label htmlFor="fastis-reasoning">Рассуждение</label>
+          <Select id="fastis-reasoning" className="settings-select" value={reasoningEffort} options={reasoningOptions} disabled={busy}
+            onChange={value => { const next = value as ReasoningEffort; setReasoningEffort(next); if (next !== (settings.reasoningEffort ?? 'high')) void saveSettings({ reasoningEffort: next }); }} />
+        </div>}
+      </section>}
 
+      {tab === 'instructions' && <form className="fastis-settings-form" role="tabpanel" id={tabId + 'instructions-panel'} aria-labelledby={tabId + 'instructions'}
+        onSubmit={e => { e.preventDefault(); if (instructionsDirty) void saveSettings({ instructions }); }}>
         <section className="setting-section fastis-instructions-section">
           <h3><label htmlFor="fastis-instructions">Дополнительные правила для Финиста</label></h3>
           <p className="help" id="fastis-instructions-help">Например, бизнес-определения метрик, ограничения тематики или формат сводок. Действуют поверх общих инструкций платформы.</p>
-          <textarea id="fastis-instructions" aria-describedby="fastis-instructions-help" rows={5} maxLength={8000}
+          <textarea id="fastis-instructions" aria-describedby="fastis-instructions-help" rows={10} maxLength={8000}
             value={instructions} disabled={busy} placeholder="Например: при подсчёте просроченных заказов исключай отменённые и черновики…"
             onChange={e => { setSaved(false); setInstructions(e.target.value); }} />
           <div className="settings-instructions-actions">
-            {saved && <span role="status" className="help">Настройки сохранены.</span>}
-            <button type="submit" className="primary" disabled={busy || !formDirty}>Сохранить</button>
+            {saved && <span role="status" className="help">Инструкция сохранена.</span>}
+            <button type="submit" className="primary" disabled={busy || !instructionsDirty}>Сохранить</button>
           </div>
         </section>
       </form>}
