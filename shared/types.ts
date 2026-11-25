@@ -37,7 +37,7 @@ export type FastkoreNavigationTarget = { installationId: string } & ({ entityUri
 export type ChatView = Chat & { fastkoreNavigation?: FastkoreNavigationTarget };
 export interface ExternalIdentity { installationId: string; externalUserId: string; userId: string }
 export const assistantProjectId = '__fastis__';
-export const assistantName = 'Fastis';
+export const assistantName = 'Финист';
 export interface AssistantSettings { enabled: boolean; instructions?: string; model?: string; reasoningEffort?: ReasoningEffort; revision: number }
 export interface AssistantState { chats: Chat[]; attachments: Attachment[]; settings?: AssistantSettings }
 export interface Chat { verifiedOpeningRunId?: string; storedFiles?: Attachment[]; reasoningEffort?: ReasoningEffort; id: string; title: string; titleCustomized?: true; sessionId?: string; sessionScope?: string; sessionProjectInstructionsHash?: string; sessionProvider?: CliInfo['provider']; historyReplayPending?: true; legacyHistory?: { lastAnswerId: string; scope: string; turns: number }; cliWorkspaceProjectId?: string; consultantIds?: string[]; knowledgeRevision?: string; specialistSessions?: Record<string, Pick<Chat, 'sessionId' | 'sessionScope' | 'knowledgeRevision'>>; updatedAt: string; archivedAt?: string; messages: Message[]; lastCompletedReplyId?: string; model?: string; agentProfileId?: string; erpContext?: ErpContext; fastkoreBinding?: FastkoreChatBinding; fastkoreHistory?: { binding: FastkoreChatBinding; turns: number } | null; linkedToFastkore?: true; assistantInstallationId?: string; assistantExternalUserId?: string; ownerId?: string; ownerName?: string; visibility?: 'private' | 'project' }

@@ -1246,7 +1246,7 @@ function App() {
       const role = tools?.erpRoles?.[kind];
       const reason = kind === 'cli' ? tools?.cliUnavailableReason : tools?.mcpUnavailableReason;
       const problem = reason ?? (messageAgent?.closedAnalysis ? 'Агент работает с закрытыми материалами библиотеки. В этом режиме обращения к ERP отключены.' : undefined);
-      const readonlyHint = isAssistant && !problem ? 'В помощнике Fastis действует режим только чтения.' : undefined;
+      const readonlyHint = isAssistant && !problem ? 'В помощнике Финист действует режим только чтения.' : undefined;
       return { name: 'Fastkore ' + name + (isAssistant ? ' (чтение)' : ''), enabled: tools?.[kind] && !problem,
         label: role === false ? 'Запрещено ролью' : undefined,
         description: role && problem ? 'Ваша роль разрешает ' + name + '. ' + problem : problem ?? readonlyHint };
@@ -1256,7 +1256,7 @@ function App() {
         ? 'Файлы сохраняются в папке задания.'
         : 'Файлы сохраняются в папке проекта.' },
       erpRow('cli'), erpRow('mcp'),
-      ...(isAssistant ? [{ name: 'Проектные библиотеки', enabled: false, label: 'Отключены', description: 'Fastis работает вне проектов и не читает закрытые или проектные библиотеки.' }] : []),
+      ...(isAssistant ? [{ name: 'Проектные библиотеки', enabled: false, label: 'Отключены', description: 'Финист работает вне проектов и не читает закрытые или проектные библиотеки.' }] : []),
       { name: 'Веб-поиск', enabled: canUseChatTools && status.toolPermissions?.webSearch,
         description: 'Поиск в интернете.' },
       { name: 'Чтение страниц', enabled: canUseChatTools && status.toolPermissions?.webRead,
@@ -1500,7 +1500,7 @@ function App() {
         </span>;
       })}</div>}
       <ComposerInput key={specialistKey} input={input} draft={draft}
-        placeholder={isAssistant ? (hasMessages ? 'Продолжить разговор с Fastis…' : 'Спросите Fastis о заказах, бухгалтерии, сотрудниках или регламентах…') : (hasMessages ? 'Продолжить разговор…' : 'Напишите сообщение…')}
+        placeholder={isAssistant ? (hasMessages ? 'Продолжить разговор с Финистом…' : 'Спросите Финиста о заказах, бухгалтерии, сотрудниках или регламентах…') : (hasMessages ? 'Продолжить разговор…' : 'Напишите сообщение…')}
         editable={draftEditable} pickerEnabled={!isAssistant && draftEditable && !pending && (chatId ? canEdit : !!selectedProject)}
         agents={otherSpecialists} specialistId={specialistId}
         onDraft={text => setDrafts(old => ({ ...old, [draftSlot]: text }))}
@@ -1594,7 +1594,7 @@ function App() {
               </span>}
               {assistantChats.length > 0 && (assistantExpanded ? <ChevronDown size={12} aria-hidden="true" /> : <ChevronRight size={12} aria-hidden="true" />)}
             </button>
-            <button type="button" className="workspace-icon fastis-new-chat" title="Новая тема с Fastis" aria-label="Новая тема с Fastis"
+            <button type="button" className="workspace-icon fastis-new-chat" title="Новая тема с Финистом" aria-label="Новая тема с Финистом"
               disabled={pending} onClick={startAssistantTopic}><SquarePen size={16} /></button>
           </div>
           {assistantExpanded && assistantChats.length > 0 && <div className="project-chat-list fastis-chat-list" id="chats-fastis">
@@ -1767,7 +1767,7 @@ function App() {
               options={[{ value: 'private', label: 'Личный' }, { value: 'project', label: 'Общий' }]} />
               : <span><LockKeyhole size={13} />{isAssistant ? 'Личный · Чтение ERP' : (chat.visibility === 'project' ? 'Общий' : 'Личный')}</span>}
           </div>
-          {isAssistant && <button type="button" className="workspace-icon" aria-label="Новая тема с Fastis" title="Новая тема с Fastis"
+          {isAssistant && <button type="button" className="workspace-icon" aria-label="Новая тема с Финистом" title="Новая тема с Финистом"
             disabled={pending} onClick={startAssistantTopic}><SquarePen size={17} /></button>}
           {(isAdmin || isAssistant) && !matchesErpChat && !chat.archivedAt && <button type="button" className="workspace-icon chat-archive-button" aria-label="Перенести чат в архив" title="Перенести чат в архив"
             disabled={pending || chatBusy} onClick={() => void archiveChat()}><Archive size={17} /></button>}

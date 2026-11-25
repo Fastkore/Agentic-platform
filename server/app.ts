@@ -227,7 +227,7 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
             sso, () => {
               const active = current();
               if ((forceReadOnly || isErpReadOnly(workspace.store.state, active)) && !fastkoreReadCommands.has(command)) {
-                throw new BridgeError(forceReadOnly ? 'Помощник Fastis работает с Fastkore в режиме только чтения.' : erpReadOnlyMessage, 403);
+                throw new BridgeError(forceReadOnly ? 'Помощник Финист работает с Fastkore в режиме только чтения.' : erpReadOnlyMessage, 403);
               }
               return active;
             }, id => fastkoreMcp.invalidate(id, 'cli_ticket_denied'), callSignal, timing);
@@ -863,7 +863,7 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
       const { user: actor, credential } = principal(request);
       if (chatId && !projectId) throw new BridgeError('Укажите проект диалога.');
       if (projectId === assistantProjectId) {
-        if (!canUseAssistant(workspace.store.state, actor, credential)) throw new BridgeError('Помощник Fastis недоступен для вашей роли.', 403);
+        if (!canUseAssistant(workspace.store.state, actor, credential)) throw new BridgeError('Помощник Финист недоступен для вашей роли.', 403);
         if (chatId) access.assistantChat(actor, chatId, credential, { edit: true });
         return actor.id;
       }
@@ -1369,7 +1369,7 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
   });
   const requireAssistant = (request: FastifyRequest) => {
     const p = principal(request);
-    if (!canUseAssistant(workspace.store.state, p.user, p.credential)) throw new BridgeError('Помощник Fastis недоступен для вашей роли.', 403);
+    if (!canUseAssistant(workspace.store.state, p.user, p.credential)) throw new BridgeError('Помощник Финист недоступен для вашей роли.', 403);
     return p;
   };
   const requestAssistantChat = (request: FastifyRequest<{ Params: { chatId: string } }>, options: { edit?: boolean; allowAdminArchive?: boolean } = {}) => {

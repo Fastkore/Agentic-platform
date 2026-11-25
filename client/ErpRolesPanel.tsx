@@ -13,7 +13,7 @@ const permissionColumns = [
     { key: 'fileWrite', name: 'Запись файлов', icon: FilePenLine }],
   [{ key: 'createProjects', name: 'Создание проектов, изменение названия и инструкции', icon: FolderPlus },
     { key: 'readOnly', name: 'Только чтение в Fastkore', icon: LockKeyhole },
-    { key: 'assistant', name: 'Помощник Fastis', icon: Bot }],
+    { key: 'assistant', name: 'Помощник Финист', icon: Bot }],
 ] as const;
 
 export function ErpRolesPanel({ request }: { request: Request }) {

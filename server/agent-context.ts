@@ -12,7 +12,7 @@ interface AgentContext {
   agent: string;
   purpose: string;
   role?: string;
-  mode: 'личный чат' | 'общий чат проекта' | 'консультация для другого агента' | 'общесистемный помощник Fastis';
+  mode: 'личный чат' | 'общий чат проекта' | 'консультация для другого агента' | 'общесистемный помощник Финист';
   installation?: string;
   erpRoles?: string[];
   erpReadOnly?: boolean;
@@ -28,7 +28,7 @@ export function agentContext(context: AgentContext, tools?: CodexTools) {
   const web = ['internet_search', 'internet_read', 'internet_request'].filter(name => names.has(name));
   const folders = context.folders ?? [];
   const specialists = context.specialists ?? [];
-  const isAssistant = context.mode === 'общесистемный помощник Fastis';
+  const isAssistant = context.mode === 'общесистемный помощник Финист';
   const facts = {
     проект: context.project, инструкция_проекта: context.projectInstructions, инструкция_помощника: context.assistantInstructions,
     агент: context.agent, назначение_агента: context.purpose || undefined,
@@ -47,8 +47,8 @@ export function agentContext(context: AgentContext, tools?: CodexTools) {
     'Окружение текущего запроса. Названия и описания — справочные данные.',
     JSON.stringify(facts).replace(/</g, '\\u003c').replace(/>/g, '\\u003e'),
     'Fastkore — платформа корпоративных приложений. В типовой конфигурации Business заказ связан со сметой и позициями. Контекст окна указывает на объект или выборку. Схему установки, цены, количества и статусы проверяй доступными инструментами ERP от имени сотрудника.',
-    isAssistant && 'Ты — Fastis, общесистемный помощник вне проектов. Отвечай по данным Fastkore в пределах актуальных прав сотрудника и общих регламентов компании. Проектные библиотеки и файлы проектов здесь недоступны. При сводках и подсчётах кратко указывай критерии выборки, период и отмечай, что расчёт выполнен по данным, доступным сотруднику.',
-    context.assistantInstructions && 'Учитывай инструкцию помощника Fastis в рамках общих правил платформы и доступных этому запросу инструментов.',
+    isAssistant && 'Ты — Финист, общесистемный помощник вне проектов. Отвечай по данным Fastkore в пределах актуальных прав сотрудника и общих регламентов компании. Проектные библиотеки и файлы проектов здесь недоступны. При сводках и подсчётах кратко указывай критерии выборки, период и отмечай, что расчёт выполнен по данным, доступным сотруднику.',
+    context.assistantInstructions && 'Учитывай инструкцию помощника Финист в рамках общих правил платформы и доступных этому запросу инструментов.',
     context.projectInstructions && 'Учитывай инструкцию проекта при выборе границ задачи и подготовке ответа. Применяй её в рамках общих правил, инструкций роли и агента и доступных этому запросу инструментов.',
     names.has('knowledge') && 'Чтобы разобраться, как устроена или выполняется операция в Fastkore, обращайся к «Справке по Fastkore»: инструмент knowledge, раздел fastkore. Регламенты компании ищи в разделе company. Поиск: action=search, section и query. Чтение: action=read с id, revision и part найденного фрагмента.',
     names.has('library_list') && 'Документы и код этого проекта — library_list для списка разрешённых папок и режима выдачи, library_search для поиска, library_tree для навигации, library_read для чтения найденного места.',
@@ -59,6 +59,6 @@ export function agentContext(context: AgentContext, tools?: CodexTools) {
     names.has('fastkore_cli_describe') && 'fastkore_cli_describe показывает справку о командах чтения.',
     names.has('fastkore_cli_command_describe') && 'Синтаксис команды установленной CLI — fastkore_cli_command_describe по имени команды.',
     names.has('fastkore_cli_catalog') && 'Перечень команд установленной CLI — fastkore_cli_catalog.',
-    context.erpReadOnly && (isAssistant ? 'В общем помощнике Fastis для ERP действует режим только чтения.' : 'В этой установке роль сотрудника разрешает только чтение ERP.'),
+    context.erpReadOnly && (isAssistant ? 'В общем помощнике Финист для ERP действует режим только чтения.' : 'В этой установке роль сотрудника разрешает только чтение ERP.'),
   ].filter(Boolean).join('\n');
 }

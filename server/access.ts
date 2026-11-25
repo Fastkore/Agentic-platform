@@ -358,7 +358,7 @@ export class Access {
   }
   assistantChat(user: User, chatId: string, credential?: Credential, options: { edit?: boolean; allowAdminArchive?: boolean } = {}) {
     if (!options.allowAdminArchive && !canUseAssistant(this.workspace.store.state, user, credential)) {
-      throw new BridgeError('Помощник Fastis недоступен для вашей роли.', 403);
+      throw new BridgeError('Помощник Финист недоступен для вашей роли.', 403);
     }
     const chat = this.workspace.assistantChat(chatId);
     if (!this.canAccessAssistantChat(user, chat, credential, options.allowAdminArchive)) throw new BridgeError('Диалог не найден.', 404);

@@ -290,7 +290,7 @@ export class Workspace {
       const actor = authorize();
       const assistant = this.store.state.assistant ??= { chats: [], attachments: [] };
       const current = this.assistantSettings();
-      if (current.revision !== input.revision) throw new BridgeError('Настройки Fastis изменились. Откройте настройки заново.', 409);
+      if (current.revision !== input.revision) throw new BridgeError('Настройки Финиста изменились. Откройте настройки заново.', 409);
       const model = input.model !== undefined ? input.model : current.model ?? '';
       if (model) await this.validateModel(model);
       this.writable();
@@ -1238,9 +1238,9 @@ export class Workspace {
       if (this.queuedRuns.length >= 100) throw new BridgeError('Очередь заполнена. Повторите позже.', 429);
       const actor = this.store.state.security?.users.find(u => u.id === author?.id);
       if (isAssistant) {
-        if (recommendedSpecialistId || requiredSpecialistId) throw new BridgeError('В общем помощнике Fastis консультации проектных специалистов недоступны.', 403);
+        if (recommendedSpecialistId || requiredSpecialistId) throw new BridgeError('В общем помощнике Финист консультации проектных специалистов недоступны.', 403);
         const credential = actor ? this.projectCredential(actor.id, author?.credentialId) : undefined;
-        if (actor && !canUseAssistant(this.store.state, actor, credential)) throw new BridgeError('Помощник Fastis недоступен для вашей роли.', 403);
+        if (actor && !canUseAssistant(this.store.state, actor, credential)) throw new BridgeError('Помощник Финист недоступен для вашей роли.', 403);
       }
       const chatProfile = isAssistant ? this.assistantProfile() : this.corporate.profile(actor, chat.agentProfileId, project);
       const chatSpecialists = isAssistant ? [] : this.corporate.specialists(actor, project, chatProfile.id);
@@ -1833,7 +1833,7 @@ export class Workspace {
       const personal = personalUserId && personalPrompt(this.store, personalUserId, personalContext, explicitPersonalEdit && canUseInstructionTool, personalRoleId);
       const environment = agentContext({ project: isAssistant ? undefined : project.name, projectInstructions, assistantInstructions, agent: profile.name, purpose: profile.description,
         role: actor && this.corporate.role(actor)?.name, erpRoles: erpCredential?.externalRoles?.map(role => role.name),
-        mode: isAssistant ? 'общесистемный помощник Fastis' : (shared ? 'общий чат проекта' : 'личный чат'), installation: installation?.name,
+        mode: isAssistant ? 'общесистемный помощник Финист' : (shared ? 'общий чат проекта' : 'личный чат'), installation: installation?.name,
         erpReadOnly: erpCredential && (isAssistant || isErpReadOnly(this.store.state, erpCredential)), attachments: attachments.map(file => file.name),
         fileMode: workerWrites ? 'файлы результата в output' : !this.isolatedCodex && writable ? 'запись в папку проекта' : 'ответ в чате',
         folders: projectSourceTools ? sourceRun!.scope.entries : undefined,

@@ -99,7 +99,7 @@ export function AssistantSettingsPanel({ request, models, onChanged }: {
   );
 
   return <div className="erp-roles-panel fastis-settings-panel">
-    {!settings && !error && <SettingsSpinner label="Загрузка настроек Fastis…" />}
+    {!settings && !error && <SettingsSpinner label="Загрузка настроек Финиста…" />}
     {error && <p className="inline-error" role="alert">{error}</p>}
     {settings && <>
       <section className="setting-section fastis-settings-card">
@@ -128,7 +128,7 @@ export function AssistantSettingsPanel({ request, models, onChanged }: {
         </div>}
         {!roles && !error && <SettingsSpinner label="Загрузка ролей…" />}
         {filteredRoles && !filteredRoles.length && <p role="status" className="help">{roles?.length ? 'По выбранным условиям ролей нет.' : 'Роли появятся после входа сотрудников из Fastkore.'}</p>}
-        {filteredRoles && filteredRoles.length > 0 && <ul className="erp-role-cards fastis-role-cards" aria-label={'Роли с доступом к ' + assistantName}>
+        {filteredRoles && filteredRoles.length > 0 && <ul className="erp-role-cards fastis-role-cards" aria-label="Роли с доступом к Финисту">
           {filteredRoles.map(role => {
             const allowed = role.permissions?.assistant === true;
             return <li key={role.installationId + '/' + role.id}>
@@ -163,13 +163,13 @@ export function AssistantSettingsPanel({ request, models, onChanged }: {
             <Select id="fastis-reasoning" className="settings-select" value={reasoningEffort} options={reasoningOptions} disabled={busy}
               onChange={value => { setSaved(false); setReasoningEffort(value as ReasoningEffort); }} />
           </div>}
-          <label htmlFor="fastis-instructions">Дополнительные правила для {assistantName}</label>
+          <label htmlFor="fastis-instructions">Дополнительные правила для Финиста</label>
           <p className="help" id="fastis-instructions-help">Например, бизнес-определения метрик, ограничения тематики или формат сводок. Действуют поверх общих инструкций платформы.</p>
           <textarea id="fastis-instructions" aria-describedby="fastis-instructions-help" rows={5} maxLength={8000}
             value={instructions} disabled={busy} placeholder="Например: при подсчёте просроченных заказов исключай отменённые и черновики…"
             onChange={e => { setSaved(false); setInstructions(e.target.value); }} />
           <div className="settings-instructions-actions">
-            {saved && <span role="status" className="help">Настройки {assistantName} сохранены.</span>}
+            {saved && <span role="status" className="help">Настройки Финиста сохранены.</span>}
             <button type="submit" className="primary" disabled={busy || !formDirty}>Сохранить</button>
           </div>
         </form>

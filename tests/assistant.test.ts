@@ -149,7 +149,7 @@ test('Fastis enforces read-only ERP tools, reference screen context, zero projec
     assert.equal(r1.statusCode, 202);
     await waitIdle(f.workspace);
     assert.equal(forceReadOnlyCalls[0], true, 'Fastis must force read-only ERP tools');
-    assert.match(captured[0].prompt, /общесистемный помощник Fastis/);
+    assert.match(captured[0].prompt, /общесистемный помощник Финист/);
     assert.match(captured[0].prompt, /Исключай отменённые заказы/);
     assert.match(captured[0].prompt, /режим только чтения/);
     assert.doesNotMatch(captured[0].prompt, /library_list|Контекст открытой папки пока недоступен/);
