@@ -144,6 +144,7 @@
 .library-drive-permissions :is(p, ul) { margin: 0; }
 .library-drive-permissions ul { padding-inline-start: 1.4em; }
 .settings-records.library-drive-folders { border-radius: 8px; overflow: hidden; }
+.library-drive-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .settings-records.library-drive-folders > li { display: block; padding: 0; }
 .library-drive-folders button {
   display: flex; align-items: center; justify-content: space-between; gap: 8px;
