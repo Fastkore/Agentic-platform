@@ -6,7 +6,7 @@ import { CloudDrive, entryPath, type DriveEntry } from './cloud-drive.js';
 import { DriveAuth } from './drive-auth.js';
 import type { FolderRow, LibraryRegistry, StateFileRow } from './registry.js';
 
-interface Source { provider: ExternalProvider; remote_id: string; identity: string; credentials: string; name: string; checked_at: string | null; error: string | null; lease_until: number | null }
+interface Source { provider: ExternalProvider; remote_id: string; identity: string; account_id: string; name: string; checked_at: string | null; error: string | null; lease_until: number | null }
 type ExternalFile = DriveEntry & { path: string };
 type Prepared = Omit<StateFileRow, 'content' | 'state_id'>;
 const changed = () => new BridgeError('Папка на диске изменилась. Дождитесь синхронизации и повторите запрос.', 409);
@@ -28,7 +28,7 @@ export class ExternalLibraries {
     return this.running.get(id);
   }
   constructor(private registry: LibraryRegistry) {
-    this.auth = new DriveAuth(registry.settings, () => !!this.db.prepare("SELECT 1 FROM external_sources WHERE provider='dropbox' LIMIT 1").get());
+    this.auth = new DriveAuth(registry.settings, registry.db);
   }
   private get db() { return this.registry.db; }
   has(id: string) { return !!this.db.prepare('SELECT 1 FROM external_sources WHERE folder_id=?').get(id); }
@@ -41,21 +41,19 @@ export class ExternalLibraries {
       preparingFiles: preparing?.total_files, syncing: this.running.has(id) || (row.lease_until ?? 0) > Date.now() || !!preparing };
   }
   attach(owner: string, id: string, selection: ExternalSelection) {
-    const { provider, name, identity, sealed } = this.auth.selected(owner, selection);
-    this.db.prepare('INSERT INTO external_sources(folder_id,provider,remote_id,identity,name,credentials) VALUES (?,?,?,?,?,?)').run(id, provider, selection.folder, identity, name, sealed);
+    const { provider, name, identity, account } = this.auth.selected(owner, selection);
+    this.db.prepare("INSERT INTO external_sources(folder_id,provider,remote_id,identity,name,account_id,credentials) VALUES (?,?,?,?,?,?,'')").run(id, provider, selection.folder, identity, name, account);
   }
   reconnect(owner: string, id: string, selection: ExternalSelection) {
     const next = this.auth.selected(owner, selection), old = this.source(id);
     if (!old || old.provider !== next.provider || old.identity !== next.identity) throw new BridgeError('Для восстановления связи выберите исходную папку библиотеки.');
-    this.db.prepare('UPDATE external_sources SET credentials=?,remote_id=?,name=?,error=NULL WHERE folder_id=?').run(next.sealed, selection.folder, next.name, id);
+    this.db.prepare('UPDATE external_sources SET account_id=?,remote_id=?,name=?,error=NULL WHERE folder_id=?').run(next.account, selection.folder, next.name, id);
     this.auth.discard(selection.connection);
   }
   private drive(id: string, source: Source) {
     const existing = this.opening.get(id);
     if (existing) return existing;
-    const task = this.auth.open(source.provider, source.credentials, sealed => {
-      this.db.prepare('UPDATE external_sources SET credentials=? WHERE folder_id=? AND credentials=?').run(sealed, id, source.credentials);
-    }, this.signal(id)).finally(() => this.opening.delete(id));
+    const task = this.auth.openAccount(source.provider,source.account_id,this.signal(id)).finally(() => this.opening.delete(id));
     this.opening.set(id, task);
     return task;
   }

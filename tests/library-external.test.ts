@@ -56,6 +56,71 @@ test('Dropbox app folder root can be selected and synced, but a full Dropbox roo
   assert.equal((await f.req('POST', '/api/library/' + id + '/external/reconnect', f.admin, { connection: other.connection, folder: '' })).statusCode, 400);
 });
 
+test('existing drive libraries retain their own encrypted credentials after the account migration', async t => {
+  const root = await mkdtemp(path.join(tmpdir(), 'library-account-migration-'));
+  const before = new LibraryRegistry(root,{});
+  const folder = before.createFolder(admin,{name:'Old docs'});
+  const sealed = before.settings.seal({access:'old-access',expires:Date.now()+3600_000});
+  before.db.exec('DROP INDEX external_sources_account; ALTER TABLE external_sources DROP COLUMN account_id; DROP TABLE drive_accounts; PRAGMA user_version=4');
+  before.db.prepare('INSERT INTO external_sources(folder_id,provider,remote_id,identity,name,credentials) VALUES (?,?,?,?,?,?)')
+    .run(folder.id,'google','docs','docs','Docs',sealed);
+  before.close();
+  const after = new LibraryRegistry(root,{});
+  t.after(async () => { after.close(); await rm(root,{recursive:true,force:true}); });
+  assert.deepEqual(after.external.auth.accounts().map(a=>({...a})),[{id:folder.id,provider:'google',name:'Old docs',libraries:1}]);
+  assert.equal(after.db.prepare('SELECT credentials FROM drive_accounts WHERE id=?').get(folder.id)?.credentials,sealed);
+  assert.equal(after.db.prepare('SELECT credentials FROM external_sources WHERE folder_id=?').get(folder.id)?.credentials,'');
+});
+
+test('named accounts are reusable across libraries, isolated by provider and restricted to administrators', async t => {
+  const { fixture } = await import('./library-app.js');
+  process.env.BRIDGE_PUBLIC_ORIGIN = 'https://platform.example';
+  const f = await fixture();
+  t.after(() => f.app.close());
+  const registry = f.workspace.library.registry;
+  for (const provider of ['dropbox','yandex'] as const) registry.settings.write(provider,{ id: 'test', secret: 'private' });
+  let logins = 0;
+  t.mock.method(globalThis,'fetch',async (url: string, init: RequestInit) => {
+    if (url === providers.dropbox.token || url === providers.yandex.token) {
+      logins++;
+      return Response.json({ access_token: (init.body as URLSearchParams).get('code'), expires_in: 3600 });
+    }
+    const account = new Headers(init.headers).get('authorization')!.split(' ')[1];
+    if (url === providers.dropbox.authorize) throw Error('unexpected login');
+    if (url.includes('cloud-api.yandex.net')) return Response.json({ type:'dir', _embedded:{ total:1,items:[{type:'dir',resource_id:account,path:'disk:/docs',name:account}] } });
+    return Response.json({entries:JSON.parse(String(init.body)).path ? [] : [{'.tag':'folder',id:'id:docs',name:account,path_display:'/docs'}],has_more:false});
+  });
+  const base = '/api/library/external';
+  for (const [provider,name] of [['dropbox','Sales'],['dropbox','Support'],['yandex','Office']]) {
+    const {state,url} = (await f.req('POST',base+'/authorize',f.admin,{provider,accountName:name,switchAccount:true})).json();
+    assert.ok(new URL(url).searchParams.has(provider === 'yandex' ? 'force_confirm' : 'force_reauthentication'));
+    assert.equal((await f.req('POST',base+'/authorize/finish',f.admin,{state,code:name})).statusCode,200);
+  }
+  assert.equal((await f.req('GET',base+'/accounts',f.token)).statusCode,403);
+  const listed = (await f.req('GET',base+'/accounts',f.admin)).json() as {id:string;name:string;provider:string;libraries:number}[];
+  assert.equal(listed.length,3);
+  for (const account of listed) {
+    assert.deepEqual(Object.keys(account).sort(),['id','libraries','name','provider']);
+    const use = await f.req('POST',base+'/accounts/use',f.admin,{provider:account.provider,account:account.id});
+    const connection = use.json().state;
+    const folders = (await f.req('POST',base+'/folders',f.admin,{connection})).json();
+    assert.equal(folders[0].name,account.name);
+    if (account.name === 'Sales') {
+      assert.equal((await f.req('POST','/api/library',f.admin,{name:'Docs',external:{connection,folder:folders[0].id}})).statusCode,201);
+      assert.equal((await f.req('DELETE',base+'/accounts/'+account.id,f.admin)).statusCode,409);
+      assert.equal((await f.req('POST',base+'/accounts/use',f.admin,{provider:'yandex',account:account.id})).statusCode,404);
+      const again = (await f.req('POST',base+'/accounts/use',f.admin,{provider:'dropbox',account:account.id})).json().state;
+      assert.notEqual(again,connection);
+      assert.equal((await f.req('POST',base+'/folders',f.admin,{connection:again})).json()[0].name,'Sales');
+    } else {
+      assert.equal((await f.req('DELETE',base+'/accounts/'+account.id,f.admin)).statusCode,200);
+      assert.equal((await f.req('POST',base+'/folders',f.admin,{connection})).statusCode,410);
+    }
+  }
+  assert.equal(logins,3);
+  assert.equal((await f.req('GET',base+'/accounts',f.admin)).json()[0].libraries,1);
+});
+
 test('Dropbox account switching and replacing application keys are separate flows', async t => {
   const root = await mkdtemp(path.join(tmpdir(), 'dropbox-replace-'));
   const registry = new LibraryRegistry(root, {});
@@ -94,9 +159,9 @@ test('Dropbox account switching and replacing application keys are separate flow
 
 test('Yandex API apps use the verification page and exchange the displayed code with PKCE', async t => {
   const root = await mkdtemp(path.join(tmpdir(), 'yandex-library-'));
-  t.after(() => rm(root, { recursive: true, force: true }));
-  const settings = new LibrarySettings(root);
-  const auth = new DriveAuth(settings);
+  const registry = new LibraryRegistry(root,{});
+  t.after(async () => { registry.close(); await rm(root,{ recursive: true, force: true }); });
+  const settings = registry.settings, auth = registry.external.auth;
   const keys = { id: 'test-client', secret: 'test-secret' };
   const redirect = 'https://oauth.yandex.ru/verification_code';
   assert.equal(auth.status('yandex').redirectUri, redirect);
@@ -118,7 +183,7 @@ test('Yandex API apps use the verification page and exchange the displayed code 
   await assert.rejects(auth.finish('other', login.state, '0123456'));
   await auth.finish('owner', login.state, '0123456');
   await assert.rejects(auth.finish('owner', login.state, '0123456'));
-  const reopened = new DriveAuth(settings);
+  const reopened = new DriveAuth(settings,registry.db);
   assert.equal(new URL(reopened.begin('owner','yandex').url).searchParams.get('redirect_uri'), redirect);
   settings.write('yandex', keys);
   process.env.BRIDGE_PUBLIC_ORIGIN = 'https://platform.example';
@@ -337,7 +402,7 @@ test('external HTTP connection uses regular project grants and checks remote acc
   assert.equal((await f.req('POST',base+'/authorize/finish',f.admin,{state:started.state,code:'code'})).statusCode,200);
   assert.deepEqual((await f.req('GET',statusUrl,f.admin)).json(),{configured:true, redirectUri});
   const dataDir = path.join(f.root, 'data');
-  const fresh = new DriveAuth(new LibrarySettings(dataDir));
+  const fresh = new DriveAuth(new LibrarySettings(dataDir),f.workspace.library.registry.db);
   assert.equal(new URL(fresh.begin('owner', 'dropbox').url).searchParams.get('client_id'),setup.id);
   assert.ok(!(await readFile(path.join(dataDir, 'dropbox.env'), 'utf8')).includes(setup.secret));
   const selection = {connection:started.state,folder:(await f.req('POST',base+'/folders',f.admin,{connection:started.state})).json()[0].id};

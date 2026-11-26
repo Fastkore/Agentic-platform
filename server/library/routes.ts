@@ -50,15 +50,22 @@ export function libraryRoutes(app: FastifyInstance, deps: LibraryRouteDeps) {
     return { ok: true };
   });
   const selection = obj({ connection: anyId, folder: { type: 'string', maxLength: 4096 } }, ['connection', 'folder']);
+  app.get(base + '/external/accounts', async request => { admin(request); return registry.external.auth.accounts(); });
+  app.delete<{ Params: { id: string } }>(base + '/external/accounts/:id', async request => {
+    admin(request); registry.external.auth.removeAccount(request.params.id); return { ok: true };
+  });
+  app.post<{ Body: { provider: ExternalProvider; account: string } }>(base + '/external/accounts/use', { schema: { body: obj({
+    provider: { enum: externalProviders }, account: anyId,
+  }, ['provider','account']) } }, async request => registry.external.auth.useAccount(admin(request).id,request.body.provider,request.body.account));
   app.get<{ Params: { provider: ExternalProvider } }>(base + '/external/status/:provider', {
     schema: { params: obj({ provider: { enum: externalProviders } }, ['provider']) },
   }, async request => {
     admin(request);
     return registry.external.auth.status(request.params.provider);
   });
-  app.post<{ Body: { provider: ExternalProvider; setup?: DriveKeys; replaceDropbox?: boolean; switchAccount?: boolean } }>(base + '/external/authorize', { schema: { body: obj({
+  app.post<{ Body: { provider: ExternalProvider; setup?: DriveKeys; replaceDropbox?: boolean; switchAccount?: boolean; accountName?: string } }>(base + '/external/authorize', { schema: { body: obj({
     provider: { enum: externalProviders }, setup: obj({ id: credential, secret: credential }, ['id', 'secret']),
-    replaceDropbox: { type: 'boolean' }, switchAccount: { type: 'boolean' },
+    replaceDropbox: { type: 'boolean' }, switchAccount: { type: 'boolean' }, accountName: { type: 'string', maxLength: 100 },
   }, ['provider']) } }, async request => registry.external.auth.begin(admin(request).id, request.body.provider, request.body.setup, request.body));
   app.post<{ Body: { state: string; code: string } }>(base + '/external/authorize/finish', { schema: { body: obj({ state: anyId, code: { type: 'string', minLength: 1, maxLength: 4096 } }, ['state','code']) } },
     async request => registry.external.auth.finish(admin(request).id, request.body.state, request.body.code));

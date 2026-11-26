@@ -2,6 +2,7 @@
 export const externalProviders = ['dropbox', 'google', 'yandex'] as const;
 export type ExternalProvider = typeof externalProviders[number];
 export const externalLabels = { dropbox: 'Dropbox', google: 'Google Drive', yandex: 'Яндекс Диск' };
+export interface DriveAccount { id: string; provider: ExternalProvider; name: string; libraries: number }
 export interface ExternalSelection { connection: string; folder: string }
 export interface ExternalFolder { id: string; name: string }
 export interface ExternalSummary { provider: ExternalProvider; folder: string; checkedAt?: string; error?: string; syncing: boolean; preparingFiles?: number }

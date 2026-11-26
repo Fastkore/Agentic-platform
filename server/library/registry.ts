@@ -51,7 +51,7 @@ const upgradedDocuments = ['xlsx', 'docx'];
 const upToDate = `(c.processor >= (CASE WHEN ${upgradedDocuments.map(e => `lower(f.path) LIKE '%.${e}'`).join(' OR ')} THEN 2 ELSE 1 END)
   AND NOT (c.state='unsupported_encoding' AND c.processor < 2))`;
 
-const schemaVersion = 4;
+const schemaVersion = 5;
 const migrations: Record<number, string> = {
   1: `
 CREATE TABLE folders (id TEXT PRIMARY KEY, name TEXT NOT NULL, description TEXT NOT NULL, profile TEXT NOT NULL CHECK(profile IN ('code','documents')),
@@ -101,6 +101,13 @@ CREATE TABLE imports (key TEXT PRIMARY KEY, done_at TEXT NOT NULL, report TEXT N
   2: `
 CREATE TABLE chunk_refs (content TEXT NOT NULL, chunk_rowid INTEGER NOT NULL, PRIMARY KEY(content,chunk_rowid)) WITHOUT ROWID;
 INSERT INTO chunk_refs (content,chunk_rowid) SELECT content,rowid FROM chunks;
+`,
+  5: `
+CREATE TABLE drive_accounts(id TEXT PRIMARY KEY, provider TEXT NOT NULL, name TEXT NOT NULL, credentials TEXT NOT NULL);
+ALTER TABLE external_sources ADD COLUMN account_id TEXT REFERENCES drive_accounts(id);
+CREATE INDEX external_sources_account ON external_sources(account_id);
+INSERT INTO drive_accounts SELECT e.folder_id,e.provider,f.name,e.credentials FROM external_sources e JOIN folders f ON f.id=e.folder_id;
+UPDATE external_sources SET account_id=folder_id,credentials='';
 `,
   4: `
 CREATE TABLE external_sources(folder_id TEXT PRIMARY KEY REFERENCES folders(id), provider TEXT NOT NULL, remote_id TEXT NOT NULL,
@@ -163,7 +170,6 @@ export class LibraryRegistry {
     this.externalCache = new FilesystemLibraryBlobStore(path.join(root, 'drive-cache'));
     mkdirSync(root, { recursive: true, mode: 0o700 });
     this.settings = new LibrarySettings(root);
-    this.external = new ExternalLibraries(this);
     const saved = this.settings.read<StorageInput>('s3');
     if (saved) {
       this.storage = storageFromInput(saved);
@@ -175,6 +181,7 @@ export class LibraryRegistry {
       chmodSync(file, 0o600);
       this.db.exec('PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000; PRAGMA secure_delete=ON;');
       this.migrate();
+      this.external = new ExternalLibraries(this);
       this.db.exec(`
         CREATE INDEX IF NOT EXISTS blobs_folder_usage ON blobs(folder_id, size) WHERE kind='original' AND state IN ('verified','pending');
         CREATE INDEX IF NOT EXISTS blobs_orphan ON blobs(orphaned_at) WHERE state='orphan';

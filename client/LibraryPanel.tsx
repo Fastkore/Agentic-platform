@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState, useId } from 'react';
-import { ChevronLeft, Cloud, Database, Folder, HardDrive, Layers, Trash2 } from 'lucide-react';
+import { ChevronLeft, Cloud, Database, Folder, HardDrive, Users, Layers, Trash2 } from 'lucide-react';
 import type { LibraryFolderSummary, LibraryProfile, OutputPolicy } from '../shared/library';
-import { externalLabels, type ExternalProvider, type ExternalSelection } from '../shared/library';
+import { externalLabels, type DriveAccount, type ExternalProvider, type ExternalSelection } from '../shared/library';
 import { LibraryStorageSetup, type StorageStatus } from './LibraryStorageSetup';
 import { ExternalLibraryPicker, driveSessionExpired } from './ExternalLibraryPicker';
 import { PermissionSwitch } from './PermissionSwitch';
@@ -71,7 +71,7 @@ export function libraryTabCounts(folders: LibraryFolderSummary[]) {
   const external = folders.filter(folder => folder.external).length;
   return { s3: folders.length - external, external };
 }
-const adminLibraryTabs = [...libraryTabs, ['storage', 'MinIO / S3', HardDrive]] as const;
+const adminLibraryTabs = [...libraryTabs, ['accounts', 'Аккаунты', Users], ['storage', 'MinIO / S3', HardDrive]] as const;
 export function LibraryCreateButtons({ kind, select, disabled }: { kind?: LibraryKind; select: (kind?: LibraryKind) => void; disabled: boolean }) {
   return <span className="library-create-actions">{kinds.map(value =>
     <button key={value} type="button" className="secondary" disabled={disabled} aria-expanded={kind === value}
@@ -153,14 +153,23 @@ export function LibraryPanel({ request, isAdmin }: { request: Request; isAdmin: 
   const [folderSearch, setFolderSearch] = useState('');
   const [projectSearch, setProjectSearch] = useState('');
   const tabId = useId();
-  const [tab, setTab] = useState<LibraryKind | 'storage'>('s3');
+  const [tab, setTab] = useState<LibraryKind | 'accounts' | 'storage'>('s3');
   const [creating, setCreating] = useState<LibraryKind>();
+  const [accounts, setAccounts] = useState<DriveAccount[]>();
+  const [addAccount, setAddAccount] = useState(false);
+  const [accountProvider, setAccountProvider] = useState<ExternalProvider>('dropbox');
+  const [removeAccount, setRemoveAccount] = useState<DriveAccount>();
   const [storageSetup, setStorageSetup] = useState(false);
   const [editing, setEditing] = useState<{ draft: FolderDraft; revision: number }>();
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [storageCheck, setStorageCheck] = useState<{ message: string; failed?: boolean }>();
   const [pending, setPending] = useState(false);
+  const loadAccounts = useCallback(async () => {
+    try { setAccounts(await request<DriveAccount[]>('/api/library/external/accounts')); }
+    catch (e) { setError((e as Error).message); }
+  }, [request]);
+  useEffect(() => { if (isAdmin) void loadAccounts(); }, [loadAccounts, isAdmin, tab, creating]);
   const loadStorage = useCallback(async () => {
     if (!isAdmin) return;
     setStorageLoading(true);
@@ -267,14 +276,14 @@ export function LibraryPanel({ request, isAdmin }: { request: Request; isAdmin: 
     {notice && <p className="help" role="status">{notice}</p>}
     <div className="library-folders-heading">
       <SettingsTabStrip sections={isAdmin ? adminLibraryTabs : libraryTabs} value={tab} id={tabId} label="Библиотеки"
-        counts={folders && libraryTabCounts(folders)}
+        counts={{ ...(folders && libraryTabCounts(folders)), accounts: accounts?.length }}
         className="library-tabs" panelId={key => tabId + key + '-panel'} disabled={pending}
         select={key => { setTab(key); setCreating(undefined); setFolderSearch(''); setNotice(''); }} />
-      {isAdmin && tab !== 'storage' && <LibraryCreateButtons kind={creating} select={value => {
+      {(tab === 's3' || tab === 'external') && isAdmin && <LibraryCreateButtons kind={creating} select={value => {
         setError(''); setCreating(value); if (value) setTab(value);
       }} disabled={pending} />}
     </div>
-    {tab !== 'storage' && <section className="library-folders" role="tabpanel" aria-labelledby={tabId + tab} id={tabId + tab + '-panel'}>
+    {(tab === 's3' || tab === 'external') && <section className="library-folders" role="tabpanel" aria-labelledby={tabId + tab} id={tabId + tab + '-panel'}>
       {creating && <CreateLibraryForm key={creating} kind={creating} error={error} storageChanged={reload} request={request} pending={pending} cancel={() => setCreating(undefined)} submit={create => void act(async () => {
         const created = await create();
         setCreating(undefined);
@@ -291,6 +300,27 @@ export function LibraryPanel({ request, isAdmin }: { request: Request; isAdmin: 
         </div>
         <button type="button" className="secondary" onClick={() => { setNotice(''); setProjectSearch(''); setSelected(f.id); }}>Открыть</button>
       </li>)}</ul> : folders && <p className="help">{folderSearch.trim() ? 'Папки не найдены.' : tab === 'external' ? 'Внешних библиотек пока нет.' : 'Обычных библиотек пока нет.'}</p>}
+    </section>}
+    {tab === 'accounts' && isAdmin && <section className="library-panel" role="tabpanel" id={tabId + tab + '-panel'} aria-labelledby={tabId + tab}>
+      <div className="settings-actions"><button type="button" className="primary" onClick={() => setAddAccount(true)}>Подключить аккаунт</button></div>
+      {!accounts && !error && <SettingsSpinner label="Загрузка аккаунтов…" />}
+      {accounts && (accounts.length ? <ul className="settings-records">{accounts.map(a => <li key={a.id}>
+        <div><strong>{a.name}</strong><small>{externalLabels[a.provider]} · Библиотек: {a.libraries}</small></div>
+        <button type="button" className="secondary" disabled={pending || a.libraries > 0} title={a.libraries ? 'Сначала отключите связанные библиотеки' : undefined}
+          onClick={() => setRemoveAccount(a)}>Отключить</button>
+      </li>)}</ul> : <p className="help">Подключите первый аккаунт, чтобы выбирать его папки при создании библиотек.</p>)}
+      {removeAccount && <LibraryRemovalDialog title="Отключить аккаунт" name={removeAccount.name} description="Чтобы снова выбирать папки этого аккаунта, потребуется войти в сервис."
+        cancel={() => setRemoveAccount(undefined)} confirm={() => { setRemoveAccount(undefined); void act(async () => {
+          await request('/api/library/external/accounts/' + removeAccount.id, { method: 'DELETE' }); await loadAccounts();
+        }, 'Аккаунт отключён.'); }} />}
+      {addAccount && <WorkspaceDialog title="Подключить аккаунт" className="external-library-dialog" closeOnBackdrop={false} close={() => setAddAccount(false)}>
+        <div className="library-form"><label htmlFor="account-provider">Сервис</label>
+          <Select id="account-provider" className="settings-select" options={options(externalLabels)} value={accountProvider} onChange={v => setAccountProvider(v as ExternalProvider)} />
+          <ExternalLibraryPicker key={accountProvider} provider={accountProvider} request={request} onSelect={() => {}} accountSaved={() => {
+            setAddAccount(false); void loadAccounts(); setNotice('Аккаунт подключён.');
+          }} />
+        </div>
+      </WorkspaceDialog>}
     </section>}
     {tab === 'storage' && isAdmin && <section className="library-storage" role="tabpanel" id={tabId + tab + '-panel'} aria-labelledby={tabId + tab}>
       {storage ? <>

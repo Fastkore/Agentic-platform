@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { ChevronRight, RefreshCw } from 'lucide-react';
-import { externalLabels, type ExternalFolder, type ExternalProvider, type ExternalSelection } from '../shared/library';
+import { externalLabels, type DriveAccount, type ExternalFolder, type ExternalProvider, type ExternalSelection } from '../shared/library';
 import type { Request } from './library-upload';
 import { SettingsSpinner } from './SettingsSpinner';
 
@@ -44,8 +44,8 @@ export function driveSessionExpired(error: unknown) {
   return typeof error === 'object' && error !== null && 'status' in error && error.status === 410;
 }
 
-export function ExternalLibraryPicker({ provider, request, onSelect, selectionConfirmed }: {
-  selectionConfirmed?: boolean; provider: ExternalProvider; request: Request; onSelect: (selection?: ExternalSelection, folderName?: string) => void;
+export function ExternalLibraryPicker({ provider, request, onSelect, selectionConfirmed, accountSaved }: {
+  accountSaved?: () => void; selectionConfirmed?: boolean; provider: ExternalProvider; request: Request; onSelect: (selection?: ExternalSelection, folderName?: string) => void;
 }) {
   const [busy, setBusy] = useState(false), [error, setError] = useState('');
   const [connection, setConnection] = useState(''), [authUrl, setAuthUrl] = useState('');
@@ -63,15 +63,20 @@ export function ExternalLibraryPicker({ provider, request, onSelect, selectionCo
   const [code, setCode] = useState('');
   const finishLogin = useRef<((code?: string) => Promise<void>) | null>(null);
   const screenCode = provider === 'yandex' && redirect === 'https://oauth.yandex.ru/verification_code';
+  const [accounts, setAccounts] = useState<DriveAccount[]>([]);
+  const [adding, setAdding] = useState(false);
+  const [accountName, setAccountName] = useState('');
   const guide = guides[provider];
   useEffect(() => {
     const abort = new AbortController();
     setAvailability('checking');
-    request<{ configured: boolean; redirectUri: string }>('/api/library/external/status/' + provider, { signal: abort.signal })
-      .then(result => {
+    Promise.all([
+      request<{ configured: boolean; redirectUri: string }>('/api/library/external/status/' + provider, { signal: abort.signal }),
+      request<DriveAccount[]>('/api/library/external/accounts', { signal: abort.signal }),
+    ]).then(([result, list]) => {
         if (abort.signal.aborted) return;
         setAvailability(result.configured ? 'ready' : 'missing');
-        setRedirect(result.redirectUri);
+        setRedirect(result.redirectUri); setAccounts(list.filter(a => a.provider === provider));
       })
       .catch(() => { if (!abort.signal.aborted) setAvailability('failed'); });
     return () => abort.abort();
@@ -97,6 +102,23 @@ export function ExternalLibraryPicker({ provider, request, onSelect, selectionCo
     }
     finally { if (!signal?.aborted) setBusy(false); }
   }
+  async function useSaved(account: DriveAccount) {
+    controller.current?.abort();
+    const flow = new AbortController(); controller.current = flow;
+    setBusy(true); setError('');
+    try {
+      const { state } = await post<{state: string}>('accounts/use', { provider, account: account.id });
+      if (flow.signal.aborted) return;
+      setAccountName(account.name); setConnection(state);
+      await browse(state, [], flow.signal);
+    } catch (e) { if (!flow.signal.aborted) { setError((e as Error).message); setBusy(false); } }
+  }
+  function chooseAccount() {
+    controller.current?.abort(); setConnection(''); setTrail([]); setFolders([]); setChosen(false); onSelect(undefined);
+    setAdding(false); setAccountName(''); setError(''); setCheck(n => n + 1);
+  }
+  const nameField = <label>Название аккаунта<input value={accountName} maxLength={100} onChange={e => setAccountName(e.target.value)}
+    placeholder="Например, Рабочий диск" /></label>;
   function replaceDropbox() {
     controller.current?.abort();
     setConnection(''); setFolders([]); setTrail([]);
@@ -104,7 +126,7 @@ export function ExternalLibraryPicker({ provider, request, onSelect, selectionCo
     setClientId(''); setSecret(''); setError('');
     setStep('keys'); setReplacingDropbox(true);
   }
-  async function connect(switchAccount = false) {
+  async function connect() {
     controller.current?.abort();
     const flow = new AbortController(); controller.current = flow;
     const popup = window.open('about:blank', '_blank');
@@ -115,7 +137,7 @@ export function ExternalLibraryPicker({ provider, request, onSelect, selectionCo
     setCode(''); setChosen(false); setBusy(true); setAuthUrl(''); setConnection(''); setTrail([]); setFolders([]); setError(''); onSelect(undefined);
     try {
       const setup = availability === 'missing' || replacingDropbox ? { id: clientId.trim(), secret: secret.trim() } : undefined;
-      const { state, url } = await post<{state: string; url: string}>('authorize', { provider, setup, replaceDropbox: replacingDropbox, switchAccount });
+      const { state, url } = await post<{state: string; url: string}>('authorize', { provider, setup, replaceDropbox: replacingDropbox, switchAccount: true, accountName: accountName.trim() });
       if (flow.signal.aborted) { popup?.close(); return; }
       const channel = screenCode ? undefined : new BroadcastChannel('library-oauth-' + state);
       const timeout = window.setTimeout(() => {
@@ -130,6 +152,7 @@ export function ExternalLibraryPicker({ provider, request, onSelect, selectionCo
           await post('authorize/finish', { state, code: confirmation });
           if (flow.signal.aborted) return;
           setSecret(''); setAvailability('ready'); setStep('start'); setReplacingDropbox(false);
+          if (accountSaved) { accountSaved(); return; }
           setConnection(state);
           await browse(state, [], flow.signal);
         } catch (e) { if (!flow.signal.aborted) { setError((e as Error).message); setBusy(false); } }
@@ -190,13 +213,14 @@ export function ExternalLibraryPicker({ provider, request, onSelect, selectionCo
       {replacingDropbox && <label>Адрес возврата для нового приложения<input readOnly value={redirect}
         onFocus={event => event.currentTarget.select()} /></label>}
       <p className="help">В кабинете {name} откройте «{guide.location}». Скопируйте два значения из карточки приложения.</p>
+      {nameField}
       <label>{guide.id}<input autoComplete="off" spellCheck={false} value={clientId} onChange={e => setClientId(e.target.value)} maxLength={2048} /></label>
       <label>{guide.secret}<input autoComplete="new-password" type="password" value={secret} onChange={e => setSecret(e.target.value)} maxLength={2048} /></label>
       <p className="help">{replacingDropbox
         ? 'Новые ключи сохранятся после успешного входа. Если с прежними ключами связаны библиотеки, их нужно сначала отключить.'
         : 'Подтвердите чтение файлов в окне сервиса. После входа ключи сохранятся для этой платформы.'}</p>
       <div className="settings-actions">
-        <button type="button" className="primary" disabled={!clientId.trim() || !secret.trim()} onClick={() => void connect()}>{signIn}</button>
+        <button type="button" className="primary" disabled={!accountName.trim() || !clientId.trim() || !secret.trim()} onClick={() => void connect()}>{signIn}</button>
         <button type="button" className="secondary" onClick={() => {
           setStep(replacingDropbox ? 'start' : 'register');
           if (replacingDropbox) { setReplacingDropbox(false); setSecret(''); }
@@ -208,13 +232,21 @@ export function ExternalLibraryPicker({ provider, request, onSelect, selectionCo
   </div>;
 
   return <div className="library-form">
-    {!connection && !authUrl && !busy && <>
+    {!connection && !authUrl && !busy && !adding && !accountSaved && accounts.length > 0 ? <>
+      <strong>Выберите аккаунт {name}</strong>
+      <ul className="settings-records library-drive-folders">{accounts.map(account => <li key={account.id}>
+        <button type="button" onClick={() => void useSaved(account)}>{account.name}<ChevronRight size={15} aria-hidden="true" /></button>
+      </li>)}</ul>
+      <button type="button" className="secondary" onClick={() => { setAccountName(''); setAdding(true); setError(''); }}>Подключить новый аккаунт</button>
+    </> : !connection && !authUrl && !busy && <>
       <strong>Подключите аккаунт</strong>
+      {!accountSaved && !accounts.length && <p className="help">Сохранённых аккаунтов {name} пока нет. Дайте аккаунту название и войдите в сервис. Затем выберите папку.</p>}
+      {nameField}
       <p className="help">В отдельном окне разрешите чтение файлов. После входа вы выберете папку для библиотеки.</p>
       <div className="settings-actions">
-        <button type="button" className="primary" disabled={busy} onClick={() => void connect()}>{signIn}</button>
+        <button type="button" className="primary" disabled={busy || !accountName.trim()} onClick={() => void connect()}>{signIn}</button>
+        {adding && <button type="button" className="secondary" onClick={chooseAccount}>К списку аккаунтов</button>}
         {provider === 'dropbox' && <>
-          <button type="button" className="secondary" onClick={() => void connect(true)}>Сменить аккаунт</button>
           <button type="button" className="secondary" onClick={replaceDropbox}>Настроить Dropbox заново</button>
         </>}
       </div>
@@ -250,12 +282,13 @@ export function ExternalLibraryPicker({ provider, request, onSelect, selectionCo
           aria-label="Обновить список папок" title="Обновить список папок"
           onClick={() => void browse(connection, trail, controller.current?.signal)}><RefreshCw size={16} aria-hidden="true" /></button>}
       </div>
+      <p className="help">Аккаунт: {accountName}</p>
       <p className="help">{appFolder?.name ?? [name, ...trail.map(folder => folder.name)].join(' / ')}</p>
       {chosen ? <>
         <p className="help" role="status">Агенты с доступом к библиотеке смогут искать и читать файлы в папке «{selectedFolder?.name}» и её подпапках.</p>
         {selectionConfirmed === undefined && <div className="settings-actions">
           <button type="button" className="secondary" onClick={() => { setChosen(false); onSelect(undefined); }}>Изменить выбор</button>
-          <button type="button" className="secondary" onClick={() => void connect(true)}>Сменить аккаунт</button>
+          <button type="button" className="secondary" onClick={chooseAccount}>Сменить аккаунт</button>
         </div>}
       </> : <>
         {subfolders.length > 0 && <ul className="settings-records library-drive-folders">{subfolders.map(folder => <li key={folder.id}>
@@ -274,7 +307,7 @@ export function ExternalLibraryPicker({ provider, request, onSelect, selectionCo
           </>}
           {appFolder && <button type="button" className="primary" disabled={busy}
             onClick={() => chooseFolder(appFolder)}>Выбрать папку приложения</button>}
-          <button type="button" className="secondary" disabled={busy} onClick={() => void connect(true)}>Сменить аккаунт</button>
+          <button type="button" className="secondary" disabled={busy} onClick={chooseAccount}>Сменить аккаунт</button>
           {provider === 'dropbox' && <button type="button" className="secondary" disabled={busy} onClick={replaceDropbox}>Настроить Dropbox заново</button>}
         </div>
       </>}
