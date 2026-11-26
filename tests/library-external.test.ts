@@ -106,7 +106,11 @@ test('named accounts are reusable across libraries, isolated by provider and res
     const folders = (await f.req('POST',base+'/folders',f.admin,{connection})).json();
     assert.equal(folders[0].name,account.name);
     if (account.name === 'Sales') {
-      assert.equal((await f.req('POST','/api/library',f.admin,{name:'Docs',external:{connection,folder:folders[0].id}})).statusCode,201);
+      const created = await f.req('POST','/api/library',f.admin,{name:'Docs',external:{connection,folder:folders[0].id}});
+      assert.equal(created.statusCode,201);
+      assert.equal(created.json().external.accountName,'Sales');
+      const libraries = (await f.req('GET','/api/library',f.admin)).json() as {id:string;external?:{accountName:string}}[];
+      assert.equal(libraries.find(f => f.id === created.json().id)?.external?.accountName,'Sales');
       assert.equal((await f.req('DELETE',base+'/accounts/'+account.id,f.admin)).statusCode,409);
       assert.equal((await f.req('POST',base+'/accounts/use',f.admin,{provider:'yandex',account:account.id})).statusCode,404);
       const again = (await f.req('POST',base+'/accounts/use',f.admin,{provider:'dropbox',account:account.id})).json().state;

@@ -7,6 +7,7 @@ import { ExternalLibraryPicker, driveSessionExpired } from './ExternalLibraryPic
 import { PermissionSwitch } from './PermissionSwitch';
 import { SettingsSpinner } from './SettingsSpinner';
 import { SettingsTabStrip } from './SettingsTabs';
+import { DriveProviderIcon } from './DriveProviderIcon';
 import { PlatformIcon } from './PlatformIcon';
 import { WorkspaceDialog } from './WorkspaceDialog';
 import { Select } from './Select';
@@ -55,14 +56,6 @@ export function LibraryRemovalDialog({ title, name, description, cancel, confirm
 }
 
 export type LibraryKind = 's3' | 'external';
-export function LibrarySearch({ value, onChange }: { value: string; onChange: (value: string) => void }) {
-  return <div className="library-search">
-    <PlatformIcon name="search" />
-    <input type="search" aria-label="Поиск библиотеки" placeholder="Поиск библиотеки"
-      value={value} onChange={event => onChange(event.target.value)} />
-  </div>;
-}
-const kinds = ['s3', 'external'] as const;
 export function LibraryKindIcon({ external }: { external: boolean }) {
   return <span className={external ? 'library-icon-external' : 'library-icon-ordinary'}><PlatformIcon name={external ? 'cloud' : 'folder'} /></span>;
 }
@@ -72,11 +65,19 @@ export function libraryTabCounts(folders: LibraryFolderSummary[]) {
   return { s3: folders.length - external, external };
 }
 const adminLibraryTabs = [...libraryTabs, ['accounts', 'Аккаунты', Users], ['storage', 'MinIO / S3', HardDrive]] as const;
-export function LibraryCreateButtons({ kind, select, disabled }: { kind?: LibraryKind; select: (kind?: LibraryKind) => void; disabled: boolean }) {
-  return <span className="library-create-actions">{kinds.map(value =>
-    <button key={value} type="button" className="secondary" disabled={disabled} aria-expanded={kind === value}
-      onClick={() => select(kind === value ? undefined : value)}><LibraryKindIcon external={value === 'external'} />{value === 's3' ? 'Обычная библиотека' : 'Внешняя библиотека'}</button>
-  )}</span>;
+export function LibraryToolbar({ kind, search, setSearch, creating, toggleCreate, pending }: {
+  kind: LibraryKind; search: string; setSearch: (value: string) => void; creating: boolean; toggleCreate?: () => void; pending: boolean;
+}) {
+  return <div className="library-toolbar">
+    <div className="library-search">
+      <PlatformIcon name="search" />
+      <input type="search" aria-label="Поиск библиотеки" placeholder="Поиск библиотеки" value={search}
+        onChange={event => setSearch(event.target.value)} />
+    </div>
+    {toggleCreate && <button type="button" className="secondary" disabled={pending} aria-expanded={creating} onClick={toggleCreate}>
+      <LibraryKindIcon external={kind === 'external'} />Создать библиотеку
+    </button>}
+  </div>;
 }
 export function CreateLibraryForm({ kind, request, pending, submit, cancel, project, storageChanged, error }: {
   kind: LibraryKind; request: Request; pending: boolean; submit: (create: () => Promise<LibraryFolderSummary>) => void; cancel: () => void; project?: boolean; storageChanged?: () => void; error?: string;
@@ -279,18 +280,16 @@ export function LibraryPanel({ request, isAdmin }: { request: Request; isAdmin: 
         counts={{ ...(folders && libraryTabCounts(folders)), accounts: accounts?.length }}
         className="library-tabs" panelId={key => tabId + key + '-panel'} disabled={pending}
         select={key => { setTab(key); setCreating(undefined); setFolderSearch(''); setNotice(''); }} />
-      {(tab === 's3' || tab === 'external') && isAdmin && <LibraryCreateButtons kind={creating} select={value => {
-        setError(''); setCreating(value); if (value) setTab(value);
-      }} disabled={pending} />}
     </div>
     {(tab === 's3' || tab === 'external') && <section className="library-folders" role="tabpanel" aria-labelledby={tabId + tab} id={tabId + tab + '-panel'}>
+      <LibraryToolbar kind={tab} search={folderSearch} setSearch={setFolderSearch} creating={!!creating} pending={pending}
+        toggleCreate={isAdmin ? () => { setError(''); setCreating(creating ? undefined : tab); } : undefined} />
       {creating && <CreateLibraryForm key={creating} kind={creating} error={error} storageChanged={reload} request={request} pending={pending} cancel={() => setCreating(undefined)} submit={create => void act(async () => {
         const created = await create();
         setCreating(undefined);
         if (created.external) { setTab('external'); setFolderSearch(''); }
         else setSelected(created.id);
       }, creating === 'external' ? 'Создана внешняя библиотека.' : 'Папка создана. Загрузите в неё материалы.')} />}
-      {tabFolders && tabFolders.length > 0 && <LibrarySearch value={folderSearch} onChange={setFolderSearch} />}
       {!folders && !error && <SettingsSpinner label="Загрузка библиотек…" />}
       {visibleFolders?.length ? <ul className="settings-records">{visibleFolders.map(f => <li key={f.id}>
         <div>
@@ -298,14 +297,19 @@ export function LibraryPanel({ request, isAdmin }: { request: Request; isAdmin: 
           <small>{statusLabel(f.active)} · {profileLabels[f.profile]} · {outputModes[f.outputPolicy]}</small>
           <small>{folderLine(f)}{f.projects.length ? ' · проекты: ' + f.projects.map(p => p.name ?? p.id).join(', ') : ' · не подключена'}</small>
         </div>
-        <button type="button" className="secondary" onClick={() => { setNotice(''); setProjectSearch(''); setSelected(f.id); }}>Открыть</button>
+        <div className="library-row-actions">
+          {f.external?.accountName && <span className="library-account-label" title={'Аккаунт: ' + f.external.accountName}>
+            <DriveProviderIcon provider={f.external.provider} /><span>Аккаунт: {f.external.accountName}</span>
+          </span>}
+          <button type="button" className="secondary" onClick={() => { setNotice(''); setProjectSearch(''); setSelected(f.id); }}>Открыть</button>
+        </div>
       </li>)}</ul> : folders && <p className="help">{folderSearch.trim() ? 'Папки не найдены.' : tab === 'external' ? 'Внешних библиотек пока нет.' : 'Обычных библиотек пока нет.'}</p>}
     </section>}
     {tab === 'accounts' && isAdmin && <section className="library-panel" role="tabpanel" id={tabId + tab + '-panel'} aria-labelledby={tabId + tab}>
       <div className="settings-actions"><button type="button" className="primary" onClick={() => setAddAccount(true)}>Подключить аккаунт</button></div>
       {!accounts && !error && <SettingsSpinner label="Загрузка аккаунтов…" />}
       {accounts && (accounts.length ? <ul className="settings-records">{accounts.map(a => <li key={a.id}>
-        <div><strong>{a.name}</strong><small>{externalLabels[a.provider]} · Библиотек: {a.libraries}</small></div>
+        <div><strong><DriveProviderIcon provider={a.provider} />{a.name}</strong><small>{externalLabels[a.provider]} · Библиотек: {a.libraries}</small></div>
         <button type="button" className="secondary" disabled={pending || a.libraries > 0} title={a.libraries ? 'Сначала отключите связанные библиотеки' : undefined}
           onClick={() => setRemoveAccount(a)}>Отключить</button>
       </li>)}</ul> : <p className="help">Подключите первый аккаунт, чтобы выбирать его папки при создании библиотек.</p>)}

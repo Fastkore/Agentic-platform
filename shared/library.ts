@@ -5,7 +5,7 @@ export const externalLabels = { dropbox: 'Dropbox', google: 'Google Drive', yand
 export interface DriveAccount { id: string; provider: ExternalProvider; name: string; libraries: number }
 export interface ExternalSelection { connection: string; folder: string }
 export interface ExternalFolder { id: string; name: string }
-export interface ExternalSummary { provider: ExternalProvider; folder: string; checkedAt?: string; error?: string; syncing: boolean; preparingFiles?: number }
+export interface ExternalSummary { accountName?: string; provider: ExternalProvider; folder: string; checkedAt?: string; error?: string; syncing: boolean; preparingFiles?: number }
 export type LibraryProfile = 'code' | 'documents';
 export type LibraryClassification = 'shared' | 'restricted';
 export type OutputPolicy = 'explanation_only' | 'excerpts_allowed';

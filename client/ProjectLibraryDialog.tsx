@@ -9,7 +9,7 @@ import { Select } from './Select';
 import { PermissionSwitch } from './PermissionSwitch';
 import { formatFileCount, type Request } from './library-upload';
 import { folderLine, LibraryFolderCard, useLibraryRefresh } from './LibraryFolderCard';
-import { CreateLibraryForm, LibraryCreateButtons, LibraryRemovalDialog, LibrarySearch, libraryTabCounts, libraryTabs, LibraryKindIcon, type LibraryKind, outputModes, profileLabels } from './LibraryPanel';
+import { CreateLibraryForm, LibraryToolbar, LibraryRemovalDialog, libraryTabCounts, libraryTabs, LibraryKindIcon, type LibraryKind, outputModes, profileLabels } from './LibraryPanel';
 import './specialists.css';
 import './library.css';
 
@@ -65,7 +65,6 @@ export function ProjectLibraryPanel({ project, request, section, isAdmin, initia
         select={key => { setTab(key); setCreating(undefined); setSearch(''); }} /> : <strong>Доступ агентов к папкам</strong>}
       <span className="project-specialist-actions">
         <button type="button" className="workspace-icon" title="Обновить" aria-label="Обновить" disabled={pending} onClick={() => void load()}><RefreshCw size={16} /></button>
-        {section === 'folders' && isAdmin && <LibraryCreateButtons kind={creating} select={value => { setError(''); setCreating(value); if (value) setTab(value); }} disabled={pending} />}
       </span>
     </div>
     {error && <p className="inline-error" role="alert">{error}</p>}
@@ -73,6 +72,8 @@ export function ProjectLibraryPanel({ project, request, section, isAdmin, initia
     {view && <div className="library-panel">
 
       {section === 'folders' && <div className="library-panel" role="tabpanel" id={tabId + tab + '-panel'} aria-labelledby={tabId + tab}>
+        <LibraryToolbar kind={tab} search={search} setSearch={setSearch} creating={!!creating} pending={pending}
+          toggleCreate={isAdmin ? () => { setError(''); setCreating(creating ? undefined : tab); } : undefined} />
         {creating && <CreateLibraryForm key={creating} kind={creating} error={error} request={request} pending={pending} project cancel={() => setCreating(undefined)} submit={create => void act(async () => {
           const created = await create();
           setCreating(undefined);
@@ -80,7 +81,6 @@ export function ProjectLibraryPanel({ project, request, section, isAdmin, initia
           if (created.external) { setTab('external'); setExpanded(undefined); setSearch(''); }
           else setExpanded(created.id);
         })} />}
-        <LibrarySearch value={search} onChange={setSearch} />
         {connections.length || available.length ? <ul className="settings-records project-library-connections">{connections.map(c => {
           const folder = foldersById.get(c.folderId);
           const assigned = view.cells.filter(cell => cell.folderId === c.folderId && cell.granted).map(cell => view.profiles.find(p => p.id === cell.profileId)?.name).filter(Boolean);

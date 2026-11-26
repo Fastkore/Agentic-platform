@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { ChevronRight, RefreshCw } from 'lucide-react';
 import { externalLabels, type DriveAccount, type ExternalFolder, type ExternalProvider, type ExternalSelection } from '../shared/library';
 import type { Request } from './library-upload';
+import { DriveProviderIcon } from './DriveProviderIcon';
 import { SettingsSpinner } from './SettingsSpinner';
 
 const guides = {
@@ -235,7 +236,7 @@ export function ExternalLibraryPicker({ provider, request, onSelect, selectionCo
     {!connection && !authUrl && !busy && !adding && !accountSaved && accounts.length > 0 ? <>
       <strong>Выберите аккаунт {name}</strong>
       <ul className="settings-records library-drive-folders">{accounts.map(account => <li key={account.id}>
-        <button type="button" onClick={() => void useSaved(account)}>{account.name}<ChevronRight size={15} aria-hidden="true" /></button>
+        <button type="button" onClick={() => void useSaved(account)}><span className="library-account-label"><DriveProviderIcon provider={account.provider} />{account.name}</span><ChevronRight size={15} aria-hidden="true" /></button>
       </li>)}</ul>
       <button type="button" className="secondary" onClick={() => { setAccountName(''); setAdding(true); setError(''); }}>Подключить новый аккаунт</button>
     </> : !connection && !authUrl && !busy && <>

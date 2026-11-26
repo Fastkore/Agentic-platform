@@ -34,10 +34,12 @@ export class ExternalLibraries {
   has(id: string) { return !!this.db.prepare('SELECT 1 FROM external_sources WHERE folder_id=?').get(id); }
   private source(id: string) { return this.db.prepare('SELECT * FROM external_sources WHERE folder_id=?').get(id) as Source | undefined; }
   summary(id: string): ExternalSummary | undefined {
-    const row = this.source(id);
+    const row = this.db.prepare(`SELECT e.provider,e.name,e.checked_at,e.error,e.lease_until,a.name AS accountName
+      FROM external_sources e JOIN drive_accounts a ON a.id=e.account_id WHERE e.folder_id=?`).get(id) as
+      (Pick<Source, 'provider' | 'name' | 'checked_at' | 'error' | 'lease_until'> & { accountName: string }) | undefined;
     if (!row) return;
     const preparing = this.db.prepare("SELECT total_files FROM states WHERE folder_id=? AND status='preparing'").get(id) as { total_files: number } | undefined;
-    return { provider: row.provider, folder: row.name, checkedAt: row.checked_at ?? undefined, error: row.error ?? undefined,
+    return { provider: row.provider, folder: row.name, accountName: row.accountName, checkedAt: row.checked_at ?? undefined, error: row.error ?? undefined,
       preparingFiles: preparing?.total_files, syncing: this.running.has(id) || (row.lease_until ?? 0) > Date.now() || !!preparing };
   }
   attach(owner: string, id: string, selection: ExternalSelection) {

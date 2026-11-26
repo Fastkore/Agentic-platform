@@ -73,7 +73,6 @@
   border-image: linear-gradient(var(--border), var(--border)) 0 0 1 / 0 0 1px / 0 100vw;
 }
 .library-folders-heading > .library-tabs { padding-bottom: 0; border-bottom: 0; }
-.library-folders-heading .secondary { flex: none; white-space: nowrap; }
 .library-storage { display: grid; gap: 6px; padding-top: 8px; border-top: 1px solid var(--border); }
 .library-storage-row strong { display: inline-flex; align-items: center; gap: 6px; }
 .library-storage-row .secondary { min-height: 32px; padding: 5px 10px; font-size: 12px; }
@@ -129,9 +128,12 @@
 }
 
 .library-source-fields { display: grid; gap: .6rem; padding: 0; border: 0; min-width: 0; }
-.library-create-actions, .project-library-settings .project-specialist-actions { display: flex; flex-wrap: wrap; gap: 6px; max-width: 100%; }
-.library-create-actions .secondary { display: inline-flex; gap: 6px; align-items: center; }
-.library-create-actions [aria-expanded="true"] { border-color: var(--accent); }
+.project-library-settings .project-specialist-actions { display: flex; flex-wrap: wrap; gap: 6px; max-width: 100%; }
+.library-toolbar { display: flex; align-items: center; gap: 8px; }
+.library-toolbar .library-search { flex: 1; min-width: 0; }
+.library-toolbar > .secondary { display: inline-flex; align-items: center; gap: 6px; }
+.library-folders > .library-toolbar + .library-form { margin-block-start: 10px; }
+.library-toolbar > [aria-expanded="true"] { border-color: var(--accent); }
 .library-source-fields label:has(input:not([type="checkbox"])), .library-setup label:has(select) { display: grid; gap: 4px; }
 .workspace-dialog .library-setup { align-content: start; gap: 12px; }
 .workspace-dialog .library-setup :is(label, input, select, p, ol, .settings-actions) { margin-block: 0; }
@@ -172,3 +174,12 @@
 .library-icon-ordinary, .library-icon-external { display: inline-flex; flex: none; }
 .library-icon-ordinary { color: var(--success); }
 .library-icon-external { color: var(--accent-strong); }
+
+.drive-provider-icon { flex: none; object-fit: contain; }
+.library-account-label, .library-row-actions { display: inline-flex; align-items: center; gap: 7px; min-width: 0; }
+.library-row-actions { justify-content: flex-end; gap: 12px; }
+.library-row-actions .library-account-label { color: var(--text-muted); font-size: 13px; overflow-wrap: anywhere; }
+@media (max-width: 640px) {
+  .library-folders .settings-records > li:has(.library-row-actions) { flex-wrap: wrap; }
+  .library-row-actions { flex-wrap: wrap; justify-content: flex-start; }
+}
