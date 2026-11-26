@@ -158,6 +158,8 @@
   color: var(--text); font: inherit; text-align: start; overflow-wrap: anywhere;
 }
 .library-drive-folders button svg { flex: none; color: var(--text-muted); }
+.library-drive-folder-name { display: inline-flex; align-items: center; gap: 8px; min-width: 0; }
+.library-drive-folders .library-drive-folder-name svg { color: var(--accent-strong); }
 .library-drive-folders button:enabled:is(:hover, :focus-visible) { background: var(--selected); color: var(--accent-strong); }
 .library-drive-folders button:focus-visible { outline: 2px solid var(--accent-strong); outline-offset: -2px; }
 

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { ChevronRight, RefreshCw } from 'lucide-react';
+import { ChevronRight, Folder, RefreshCw } from 'lucide-react';
 import { externalLabels, type DriveAccount, type ExternalFolder, type ExternalProvider, type ExternalSelection } from '../shared/library';
 import type { Request } from './library-upload';
 import { DriveProviderIcon } from './DriveProviderIcon';
@@ -295,7 +295,8 @@ export function ExternalLibraryPicker({ provider, request, onSelect, selectionCo
         {subfolders.length > 0 && <ul className="settings-records library-drive-folders">{subfolders.map(folder => <li key={folder.id}>
           <button type="button" disabled={busy} aria-label={'Открыть папку «' + folder.name + '»'}
             onClick={() => void browse(connection, [...trail, folder], controller.current?.signal)}>
-            <span>{folder.name}</span><ChevronRight size={15} aria-hidden="true" />
+            <span className="library-drive-folder-name"><Folder size={17} aria-hidden="true" />{folder.name}</span>
+            <ChevronRight size={15} aria-hidden="true" />
           </button>
         </li>)}</ul>}
         {!busy && !error && !subfolders.length && <p className="help">{selectedFolder ? 'Вложенных папок нет.' : 'Нет доступных папок. Создайте папку на диске и обновите список.'}</p>}
