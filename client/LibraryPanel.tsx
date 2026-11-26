@@ -27,28 +27,27 @@ const statusLabel = (active: boolean) => active ? 'Активна' : 'Неакт
 export function FolderForm({ draft, setDraft, isAdmin, disabled, compact = false }: {
   draft: FolderDraft; setDraft: (draft: FolderDraft) => void; isAdmin: boolean; disabled?: boolean; compact?: boolean;
 }) {
-  const name = <div><label htmlFor="library-name">Название</label><input id="library-name" required maxLength={120} value={draft.name} disabled={disabled} autoFocus={compact} onChange={e => setDraft({ ...draft, name: e.target.value })}
+  const name = <div><label htmlFor="library-name">Название</label><input id="library-name" type="text" required maxLength={120} value={draft.name} disabled={disabled} autoFocus={compact} onChange={e => setDraft({ ...draft, name: e.target.value })}
       placeholder="Например, Договоры" /></div>;
-  const optionsGrid = <>
+  return <div className="library-form-grid">
+    {compact ? <div className="library-wide library-name-row">
+      {name}
+      {isAdmin && <label className="library-active-pill">
+        <input type="checkbox" checked={draft.active} disabled={disabled} onChange={event => setDraft({ ...draft, active: event.target.checked })} />
+        Активная
+      </label>}
+    </div> : name}
     <div><label htmlFor="library-profile">Содержимое</label><Select id="library-profile" className="settings-select" value={draft.profile} options={options(profileLabels)} disabled={disabled}
       onChange={value => setDraft({ ...draft, profile: value as LibraryProfile })} /></div>
     <div><label htmlFor="library-output">Выдача агентом</label><Select id="library-output" className="settings-select" value={draft.outputPolicy} options={options(outputModes)} disabled={disabled}
       onChange={value => setDraft({ ...draft, outputPolicy: value as OutputPolicy })} /></div>
-    {isAdmin && <div className="library-active-field"><span>Доступ</span><label>
+    {isAdmin && !compact && <div className="library-active-field"><span>Доступ</span><label>
       <PermissionSwitch name="Активная" checked={draft.active} disabled={disabled} onChange={active => setDraft({ ...draft, active })} />
       Активная
     </label></div>}
     <div className="library-wide"><label htmlFor="library-description">Назначение</label><input id="library-description" maxLength={2000} value={draft.description} disabled={disabled}
       onChange={e => setDraft({ ...draft, description: e.target.value })} placeholder="Что здесь лежит и для каких вопросов" /></div>
-  </>;
-  if (compact) return <>
-    <div className="library-form-grid">{name}</div>
-    <details className="library-advanced-settings">
-      <summary>Дополнительные настройки</summary>
-      <div className="library-form-grid">{optionsGrid}</div>
-    </details>
-  </>;
-  return <div className="library-form-grid">{name}{optionsGrid}</div>;
+  </div>;
 }
 
 export function LibraryRemovalDialog({ title, name, description, cancel, confirm }: {
