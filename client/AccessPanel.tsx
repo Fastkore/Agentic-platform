@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Folder, Trash2 } from 'lucide-react';
+import { ActiveStatusChip } from './ActiveStatusChip';
 import { SettingsAction } from './SettingsAction';
 import { SettingsSpinner } from './SettingsSpinner';
 import { shortUserName, userInitials } from './user-name';
@@ -112,15 +113,9 @@ export function TeamPanel({ request, self, manageAdministrators }: { request: Re
             </small>}
           </div></td>
           <td><div className="team-access-actions">
-            <label className={"check-setting active-status-chip" + (user.disabled ? "" : " active")}>
-              <input type="checkbox" checked={!user.disabled} disabled={busy || user.id === self.id || (user.role === 'admin' && !manageAdministrators)}
-                aria-label={'Активен · ' + user.name}
-                onChange={e => {
-                  const disabled = !e.target.checked;
-                  void run(() => updateUser(user, { disabled }));
-                }} />
-              {user.disabled ? 'Неактивен' : 'Активен'}
-            </label>
+            <ActiveStatusChip checked={!user.disabled} disabled={busy || user.id === self.id || (user.role === 'admin' && !manageAdministrators)}
+              label={user.disabled ? 'Неактивен' : 'Активен'} accessibleLabel={'Активность · ' + user.name}
+              onChange={checked => { void run(() => updateUser(user, { disabled: !checked })); }} />
             {user.id !== self.id && <button type="button" className="workspace-icon"
               aria-label={'Удалить учётную запись · ' + user.name} title="Удалить учётную запись" disabled={busy}
               onClick={() => { setError(''); setRemoving(user); }}><Trash2 size={16} aria-hidden="true" /></button>}

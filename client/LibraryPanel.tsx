@@ -4,7 +4,7 @@ import type { LibraryFolderSummary, LibraryProfile, OutputPolicy } from '../shar
 import { externalLabels, type DriveAccount, type ExternalProvider, type ExternalSelection } from '../shared/library';
 import { LibraryStorageSetup, type StorageStatus } from './LibraryStorageSetup';
 import { ExternalLibraryPicker, driveSessionExpired } from './ExternalLibraryPicker';
-import { PermissionSwitch } from './PermissionSwitch';
+import { ActiveStatusChip } from './ActiveStatusChip';
 import { SettingsSpinner } from './SettingsSpinner';
 import { SettingsTabStrip } from './SettingsTabs';
 import { DriveProviderIcon } from './DriveProviderIcon';
@@ -29,26 +29,22 @@ export function FolderForm({ draft, setDraft, isAdmin, disabled, compact = false
 }) {
   const name = <input id="library-name" type="text" required maxLength={120} value={draft.name} disabled={disabled} autoFocus={compact}
     onChange={e => setDraft({ ...draft, name: e.target.value })} placeholder="Например, Договоры" />;
+  const activeStatus = isAdmin && <ActiveStatusChip checked={draft.active} disabled={disabled}
+    label={statusLabel(draft.active)} accessibleLabel="Активность библиотеки"
+    onChange={active => setDraft({ ...draft, active })} />;
   return <div className="library-form-grid">
     {compact ? <div className="library-wide library-name-row">
       <label htmlFor="library-name">Название</label>
       <div className="library-name-controls">
         {name}
-        {isAdmin && <label className={'check-setting active-status-chip' + (draft.active ? ' active' : '')}>
-          <input type="checkbox" aria-label="Активность библиотеки" checked={draft.active} disabled={disabled}
-            onChange={event => setDraft({ ...draft, active: event.target.checked })} />
-          {statusLabel(draft.active)}
-        </label>}
+        {activeStatus}
       </div>
     </div> : <div><label htmlFor="library-name">Название</label>{name}</div>}
     <div><label htmlFor="library-profile">Содержимое</label><Select id="library-profile" className="settings-select" value={draft.profile} options={options(profileLabels)} disabled={disabled}
       onChange={value => setDraft({ ...draft, profile: value as LibraryProfile })} /></div>
     <div><label htmlFor="library-output">Выдача агентом</label><Select id="library-output" className="settings-select" value={draft.outputPolicy} options={options(outputModes)} disabled={disabled}
       onChange={value => setDraft({ ...draft, outputPolicy: value as OutputPolicy })} /></div>
-    {isAdmin && !compact && <div className="library-active-field"><span>Доступ</span><label>
-      <PermissionSwitch name="Активная" checked={draft.active} disabled={disabled} onChange={active => setDraft({ ...draft, active })} />
-      Активная
-    </label></div>}
+    {isAdmin && !compact && <div className="library-active-field"><span>Доступ</span>{activeStatus}</div>}
     <div className="library-wide"><label htmlFor="library-description">Назначение</label><input id="library-description" maxLength={2000} value={draft.description} disabled={disabled}
       onChange={e => setDraft({ ...draft, description: e.target.value })} placeholder="Что здесь лежит и для каких вопросов" /></div>
   </div>;
@@ -90,8 +86,8 @@ export function LibraryToolbar({ kind, search, setSearch, creating, toggleCreate
     </button>}
   </div>;
 }
-export function CreateLibraryForm({ kind, request, pending, submit, cancel, project, storageChanged, error, openAccounts }: {
-  kind: LibraryKind; request: Request; pending: boolean; submit: (create: () => Promise<LibraryFolderSummary>) => void; cancel: () => void; project?: boolean; storageChanged?: () => void; error?: string; openAccounts?: (provider: ExternalProvider) => void;
+export function CreateLibraryForm({ kind, request, pending, submit, cancel, project, storageChanged, error, clearError, openAccounts }: {
+  kind: LibraryKind; request: Request; pending: boolean; submit: (create: () => Promise<LibraryFolderSummary>) => void; cancel: () => void; project?: boolean; storageChanged?: () => void; error?: string; clearError: () => void; openAccounts?: (provider: ExternalProvider) => void;
 }) {
   const [draft, setDraft] = useState(emptyFolderDraft);
   const [provider, setProvider] = useState<ExternalProvider>('dropbox');
@@ -112,6 +108,13 @@ export function CreateLibraryForm({ kind, request, pending, submit, cancel, proj
   const suggestedName = useRef('');
   const showDetails = kind === 's3' ? !!storage?.configured : !!selection;
   const ready = !!draft.name.trim() && showDetails;
+  async function checkSelection(external: ExternalSelection, folderName: string, nameOverride: string | undefined, signal?: AbortSignal) {
+    const name = nameOverride ?? (draft.name.trim() && draft.name !== suggestedName.current ? draft.name.trim() : folderName.slice(0, 120).trim());
+    const { nameTaken } = await request<{ nameTaken: boolean }>('/api/library/external/check', {
+      method: 'POST', body: JSON.stringify({ external, name }), signal,
+    });
+    return { name, nameTaken };
+  }
   async function create() {
     try {
       return await request<LibraryFolderSummary>('/api/library', { method: 'POST', body: JSON.stringify({ ...draft, external: selection }) });
@@ -124,21 +127,20 @@ export function CreateLibraryForm({ kind, request, pending, submit, cancel, proj
     {kind === 's3' && <strong>Обычная библиотека</strong>}
     <fieldset disabled={pending} className="library-source-fields">
       {kind === 'external' ? <>
-        <ExternalLibraryPicker key={provider + attempt} selectionConfirmed={!!selection} onFolderStepChange={setFolderStep}
+        <ExternalLibraryPicker key={provider + attempt} selectionConfirmed={!!selection} onFolderStepChange={setFolderStep} checkSelection={checkSelection}
           openAccounts={openAccounts} provider={provider} request={request}
           providerPicker={<>
             <label htmlFor="library-provider">Внешний диск</label>
             <Select id="library-provider" className="settings-select" options={options(externalLabels)} value={provider}
               onChange={value => setProvider(value as ExternalProvider)} />
           </>}
-          onSelect={(next, name) => {
-          setSelection(next);
-          if (name) {
-            const previous = suggestedName.current, suggestion = name.slice(0,120);
-            suggestedName.current = suggestion;
-            setDraft(current => !current.name.trim() || current.name === previous ? { ...current, name: suggestion } : current);
-          }
-        }} />
+          onSelect={(next, folderName, checkedName) => {
+            setSelection(next);
+            if (checkedName !== undefined && folderName) {
+              suggestedName.current = folderName.slice(0, 120).trim();
+              setDraft(current => ({ ...current, name: checkedName }));
+            }
+          }} />
       </> : storage?.configured ? <p className="help">Назовите библиотеку и нажмите «{project ? 'Создать и подключить' : 'Создать'}». Затем нажмите «Загрузить папку» и выберите файлы на компьютере.</p>
         : storage ? <LibraryStorageSetup request={request} onSaved={() => { setReloadStorage(n => n + 1); storageChanged?.(); }} />
         : storageError ? <><p role="alert">{storageError}</p><button type="button" className="secondary" onClick={() => setReloadStorage(n => n + 1)}>Проверить ещё раз</button></>
@@ -148,11 +150,11 @@ export function CreateLibraryForm({ kind, request, pending, submit, cancel, proj
       <FolderForm draft={draft} setDraft={setDraft} isAdmin disabled={pending} compact={kind === 'external'} />
     </>}
     {showDetails && project && <p className="help">Библиотека подключится к этому проекту. Доступ агентам можно назначить на вкладке прав.</p>}
-    {kind === 'external' && error && <p className="inline-error" role="alert">{error}</p>}
+    {kind === 'external' && selection && error && <p className="inline-error" role="alert">{error}</p>}
     {(showDetails || kind === 's3') && <div className="settings-actions">{showDetails && <button type="submit" className="primary" disabled={pending || !ready}>{project ? 'Создать и подключить' : 'Создать'}</button>}
       {kind === 's3'
         ? <button type="button" className="secondary" disabled={pending} onClick={cancel}>Отмена</button>
-        : <button type="button" className="secondary" disabled={pending} onClick={() => setSelection(undefined)}>Назад</button>}</div>}
+        : <button type="button" className="secondary" disabled={pending} onClick={() => { setSelection(undefined); clearError(); }}>Назад</button>}</div>}
   </form>;
   return kind === 'external'
     ? <WorkspaceDialog title={folderStep ? 'Выберите папку' : 'Внешняя библиотека'} className="external-library-dialog" closeOnBackdrop={false} close={() => { if (!pending) cancel(); }}>{form}</WorkspaceDialog>
@@ -303,7 +305,7 @@ export function LibraryPanel({ request, isAdmin, initialAccountsProvider }: { re
     {(tab === 's3' || tab === 'external') && <section className="library-folders" role="tabpanel" aria-labelledby={tabId + tab} id={tabId + tab + '-panel'}>
       <LibraryToolbar kind={tab} search={folderSearch} setSearch={setFolderSearch} creating={!!creating} pending={pending}
         toggleCreate={isAdmin ? () => { setError(''); setCreating(creating ? undefined : tab); } : undefined} />
-      {creating && <CreateLibraryForm key={creating} kind={creating} error={error} openAccounts={openAccounts} storageChanged={reload} request={request} pending={pending} cancel={() => setCreating(undefined)} submit={create => void act(async () => {
+      {creating && <CreateLibraryForm key={creating} kind={creating} error={error} clearError={() => setError('')} openAccounts={openAccounts} storageChanged={reload} request={request} pending={pending} cancel={() => setCreating(undefined)} submit={create => void act(async () => {
         const created = await create();
         setCreating(undefined);
         if (created.external) { setTab('external'); setFolderSearch(''); }

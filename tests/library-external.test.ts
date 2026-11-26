@@ -47,12 +47,26 @@ test('Dropbox app folder root can be selected and synced, but a full Dropbox roo
 
   const scoped = await connect('scoped');
   assert.deepEqual(scoped.folders, [{ id: '', name: 'Папка приложения Dropbox' }]);
-  const created = await f.req('POST', '/api/library', f.admin, { name: 'App Folder', external: { connection: scoped.connection, folder: '' } });
+  const external = { connection: scoped.connection, folder: '' };
+  const check = (name: string, source = external) => f.req('POST', api + '/check', f.admin, { name, external: source });
+  assert.equal((await f.req('POST', '/api/library', f.admin, { name: 'Taken name' })).statusCode, 201);
+  assert.deepEqual((await check(' TAKEN NAME ')).json(), { nameTaken: true });
+  assert.deepEqual((await check('App Folder')).json(), { nameTaken: false });
+  const created = await f.req('POST', '/api/library', f.admin, { name: 'App Folder', external });
   assert.equal(created.statusCode, 201, created.body);
   const id = created.json().id;
   await registry.external.sync(id);
   assert.equal(registry.db.prepare('SELECT total_files FROM states WHERE folder_id=?').get(id)?.total_files, 1);
+  const account = registry.external.auth.accounts().find(account => account.libraries === 1)!;
+  const reopened = (await f.req('POST', api + '/accounts/use', f.admin, { provider: 'dropbox', account: account.id })).json();
+  assert.equal((await f.req('POST', api + '/folders', f.admin, { connection: reopened.state, includeAppFolder: true })).statusCode, 200);
+  const existing = { connection: reopened.state, folder: '' };
+  const conflict = await check('New name', existing);
+  assert.equal(conflict.statusCode, 409);
+  assert.match(conflict.body, /App Folder/);
+  assert.equal((await f.req('POST', '/api/library', f.admin, { name: 'New name', external: existing })).statusCode, 409);
   const other = await connect('different-account');
+  assert.deepEqual((await check('Other folder', { connection: other.connection, folder: '' })).json(), { nameTaken: false });
   assert.equal((await f.req('POST', '/api/library/' + id + '/external/reconnect', f.admin, { connection: other.connection, folder: '' })).statusCode, 400);
 });
 

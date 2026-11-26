@@ -72,6 +72,9 @@ export function libraryRoutes(app: FastifyInstance, deps: LibraryRouteDeps) {
   app.post<{ Body: { connection: string; parent?: string; includeAppFolder?: boolean } }>(base + '/external/folders', { schema: { body: obj({
     connection: anyId, parent: { type: 'string', maxLength: 4096 }, includeAppFolder: { type: 'boolean' },
   }, ['connection']) } }, async request => registry.external.auth.folders(admin(request).id, request.body.connection, request.body.parent, request.body.includeAppFolder));
+  app.post<{ Body: { name: string; external: ExternalSelection } }>(base + '/external/check', { schema: { body: obj({
+    name: { type: 'string', minLength: 1, maxLength: 120 }, external: selection,
+  }, ['name', 'external']) } }, async request => registry.checkExternalFolder(admin(request).id, request.body.external, request.body.name));
   app.post<{ Params: {folderId: string}; Body: ExternalSelection }>(base + '/:folderId/external/reconnect', { schema: { params: folderParams, body: selection } },
     async request => {
       const owner = admin(request).id;

@@ -1221,9 +1221,16 @@
 .person-cell small { display: block; margin-top: 4px; color: var(--text-muted); font-size: 12px; }
 .person-avatar { display: grid; place-items: center; flex: 0 0 38px; width: 38px; height: 38px; border-radius: 50%; background: var(--avatar); color: var(--avatar-ink); font-size: 13px; font-weight: 600; border: 1px solid var(--control-border); }
 .team-access-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
-.active-status-chip { display: inline-flex; align-items: center; padding: 5px 10px; gap: 7px; border-radius: var(--settings-badge-radius); background: var(--control); font-size: 12px; white-space: nowrap; }
+label.active-status-chip {
+  display: inline-flex; align-items: center; flex: none; gap: 7px; margin: 0; padding: 5px 10px;
+  border-radius: var(--settings-badge-radius); background: var(--control);
+  color: var(--text-secondary); font-size: 12px; font-weight: 500; white-space: nowrap;
+}
 .active-status-chip.active { background: color-mix(in srgb, var(--success) 10%, var(--surface)); }
+.active-status-chip > input[type="checkbox"] { flex: none; width: 16px; height: 16px; margin: 0; }
 .active-status-chip.active input { accent-color: var(--success); }
+.active-status-chip:has(input:enabled) { cursor: pointer; }
+.active-status-chip:has(input:focus-visible) { outline: 2px solid var(--accent-strong); outline-offset: 1px; }
 .settings-records, .agent-card, .config-checks, .agent-advanced, .dictation-model-row { border-color: var(--border); background: var(--surface); }
 .settings-records > li { padding: 16px 18px; }
 .settings-server .setting-section { padding: 18px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); }

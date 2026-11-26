@@ -74,7 +74,7 @@ export function ProjectLibraryPanel({ project, request, section, isAdmin, initia
       {section === 'folders' && <div className="library-panel" role="tabpanel" id={tabId + tab + '-panel'} aria-labelledby={tabId + tab}>
         <LibraryToolbar kind={tab} search={search} setSearch={setSearch} creating={!!creating} pending={pending}
           toggleCreate={isAdmin ? () => { setError(''); setCreating(creating ? undefined : tab); } : undefined} />
-        {creating && <CreateLibraryForm key={creating} kind={creating} error={error} openAccounts={openAccounts} request={request} pending={pending} project cancel={() => setCreating(undefined)} submit={create => void act(async () => {
+        {creating && <CreateLibraryForm key={creating} kind={creating} error={error} clearError={() => setError('')} openAccounts={openAccounts} request={request} pending={pending} project cancel={() => setCreating(undefined)} submit={create => void act(async () => {
           const created = await create();
           setCreating(undefined);
           await request(base, { method: 'POST', body: JSON.stringify({ folderId: created.id }) });

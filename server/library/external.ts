@@ -42,8 +42,19 @@ export class ExternalLibraries {
     return { provider: row.provider, folder: row.name, accountName: row.accountName, checkedAt: row.checked_at ?? undefined, error: row.error ?? undefined,
       preparingFiles: preparing?.total_files, syncing: this.running.has(id) || (row.lease_until ?? 0) > Date.now() || !!preparing };
   }
+  requireUnusedSource(owner: string, selection: ExternalSelection) {
+    const source = this.auth.selected(owner, selection);
+    const { provider, identity, account } = source;
+    // App Folder roots and Yandex paths without a resource ID are scoped to the saved account.
+    const accountScoped = selection.folder === '' || (provider === 'yandex' && identity === selection.folder);
+    const existing = this.db.prepare(`SELECT f.name FROM external_sources e JOIN folders f ON f.id=e.folder_id
+      WHERE e.provider=? AND e.identity=? AND (e.account_id=? OR ?=0) AND f.deleted_at IS NULL LIMIT 1`)
+      .get(provider, identity, account, Number(accountScoped));
+    if (existing) throw new BridgeError(`Эта папка уже подключена как библиотека «${existing.name}».`, 409);
+    return source;
+  }
   attach(owner: string, id: string, selection: ExternalSelection) {
-    const { provider, name, identity, account } = this.auth.selected(owner, selection);
+    const { provider, name, identity, account } = this.requireUnusedSource(owner, selection);
     this.db.prepare("INSERT INTO external_sources(folder_id,provider,remote_id,identity,name,account_id,credentials) VALUES (?,?,?,?,?,?,'')").run(id, provider, selection.folder, identity, name, account);
   }
   reconnect(owner: string, id: string, selection: ExternalSelection) {

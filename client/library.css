@@ -13,9 +13,7 @@
 .library-form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
 .library-form-grid > div, .library-field-row { display: grid; gap: 6px; min-width: 0; }
 .library-active-field > span { color: var(--text-secondary); font-size: 12px; font-weight: 500; }
-.library-form .library-active-field > label {
-  display: flex; align-items: center; gap: 8px; min-height: max(40px, 2.75rem); font-size: 14px; margin: 0;
-}
+.library-active-field > .active-status-chip { justify-self: start; }
 .project-library-settings :is(.library-form-grid, .library-field-row, .library-upload) label:not(.agent-tool-choice) { margin: 0; }
 .project-library-settings :is(.library-form-grid, .library-field-row) input:not([type="checkbox"]) { margin: 0; min-height: 40px; padding: 8px 10px; font-size: 14px; }
 .library-field-row { max-width: 420px; }
@@ -191,10 +189,6 @@
 .library-source-summary small { color: var(--text-muted); }
 .library-name-controls { display: flex; align-items: center; gap: 10px; }
 .workspace-dialog .library-name-controls input[type="text"] { flex: 1; margin: 0; min-width: 0; block-size: max(40px, 2.75rem); }
-.library-name-controls .active-status-chip { flex: none; margin: 0; }
-.library-name-controls .active-status-chip:has(input:enabled) { cursor: pointer; }
-.library-name-controls .active-status-chip:has(input:focus-visible) { outline: 2px solid var(--accent-strong); outline-offset: 1px; }
-.library-name-controls .active-status-chip input { margin: 0; }
 .library-path, .library-path > span { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; min-width: 0; overflow-wrap: anywhere; }
 .library-path button { color: var(--accent-strong); padding: 2px 3px; text-decoration: underline; }
 .library-folder-tree { max-height: 34dvh; overflow: auto; border: 1px solid var(--border); border-radius: 8px; padding: 4px; }

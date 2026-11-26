@@ -46,12 +46,16 @@ export function driveSessionExpired(error: unknown) {
   return typeof error === 'object' && error !== null && 'status' in error && error.status === 410;
 }
 
-export function ExternalLibraryPicker({ provider, request, onSelect, selectionConfirmed, accountSaved, openAccounts, providerPicker, onFolderStepChange }: {
+export function ExternalLibraryPicker({ provider, request, onSelect, checkSelection, selectionConfirmed, accountSaved, openAccounts, providerPicker, onFolderStepChange }: {
   providerPicker?: ReactNode;
   onFolderStepChange?: (visible: boolean) => void;
-  accountSaved?: () => void; openAccounts?: (provider: ExternalProvider) => void; selectionConfirmed?: boolean; provider: ExternalProvider; request: Request; onSelect: (selection?: ExternalSelection, folderName?: string) => void;
+  accountSaved?: () => void; openAccounts?: (provider: ExternalProvider) => void; selectionConfirmed?: boolean; provider: ExternalProvider; request: Request;
+  onSelect: (selection?: ExternalSelection, folderName?: string, checkedName?: string) => void;
+  checkSelection?: (selection: ExternalSelection, folderName: string, nameOverride: string | undefined, signal?: AbortSignal) => Promise<{ name: string; nameTaken: boolean }>;
 }) {
   const [busy, setBusy] = useState(false), [error, setError] = useState('');
+  const [nameConflict, setNameConflict] = useState<{ folder: string; name: string }>();
+  const replacementNameId = useId();
   const [connection, setConnection] = useState(''), [authUrl, setAuthUrl] = useState('');
   const [levels, setLevels] = useState<ExternalFolder[][]>([]), [trail, setTrail] = useState<ExternalFolder[]>([]);
   const [availability, setAvailability] = useState<'checking' | 'ready' | 'missing' | 'failed'>('checking');
@@ -128,7 +132,7 @@ export function ExternalLibraryPicker({ provider, request, onSelect, selectionCo
   }
   function backToAccount() {
     controller.current?.abort(); setConnection(''); setTrail([]); setLevels([]); setChosen(false); onSelect(undefined);
-    setAccountName(''); setError('');
+    setAccountName(''); setError(''); setNameConflict(undefined); setBusy(false);
   }
   const nameField = <label>Название аккаунта<input value={accountName} maxLength={100} onChange={e => setAccountName(e.target.value)}
     placeholder="Например, Рабочий диск" /></label>;
@@ -180,12 +184,39 @@ export function ExternalLibraryPicker({ provider, request, onSelect, selectionCo
   const appFolder = provider === 'dropbox' ? folders.find(folder => folder.id === '') : undefined;
   const subfolders = folders.filter(folder => folder.id !== '');
   const selectedFolder = current ?? appFolder;
-  function chooseFolder(folder: ExternalFolder) {
-    onSelect({ connection, folder: folder.id }, folder.name);
+  async function chooseFolder(folder: ExternalFolder) {
+    const selection = { connection, folder: folder.id };
+    let checkedName: string | undefined;
+    if (checkSelection) {
+      const signal = controller.current?.signal;
+      const nameOverride = nameConflict?.folder === folder.id ? nameConflict.name.trim() : undefined;
+      if (busy || nameOverride === '') return;
+      setBusy(true); setError('');
+      try {
+        const result = await checkSelection(selection, folder.name, nameOverride, signal);
+        if (signal?.aborted) return;
+        if (result.nameTaken) {
+          setNameConflict({ folder: folder.id, name: result.name });
+          return;
+        }
+        checkedName = result.name;
+      } catch (e) {
+        if (signal?.aborted) return;
+        if (driveSessionExpired(e)) backToAccount();
+        setNameConflict(undefined);
+        setError((e as Error).message);
+        return;
+      } finally {
+        if (!signal?.aborted) setBusy(false);
+      }
+    }
+    setNameConflict(undefined);
+    onSelect(selection, folder.name, checkedName);
     setChosen(true);
   }
 
   function navigate(path: ExternalFolder[]) {
+    setNameConflict(undefined);
     if (path.length < trail.length && path.every((folder, depth) => folder.id === trail[depth].id)) {
       setTrail(path);
       setLevels(previous => previous.slice(0, path.length + 1));
@@ -346,10 +377,17 @@ export function ExternalLibraryPicker({ provider, request, onSelect, selectionCo
         </div>
         {levels[0]?.some(f => f.id) && <div className="library-folder-tree">{branch(0)}</div>}
         {!error && !subfolders.length && <p className="help">{selectedFolder ? 'Вложенных папок нет.' : 'Нет доступных папок. Создайте папку на диске и обновите список.'}</p>}
+        {nameConflict && <div className="library-field-row">
+          <p className="inline-error" role="alert">Библиотека с таким названием уже есть. Укажите другое название.</p>
+          <label htmlFor={replacementNameId}>Название библиотеки</label>
+          <input id={replacementNameId} type="text" value={nameConflict.name} maxLength={120} disabled={busy}
+            onChange={event => setNameConflict({ ...nameConflict, name: event.target.value })} />
+        </div>}
         <div className="settings-actions library-folder-actions">
-          {current && <button type="button" className="primary" disabled={busy} onClick={() => chooseFolder(current)}>Далее</button>}
-          {appFolder && <button type="button" className="primary" disabled={busy}
-            onClick={() => chooseFolder(appFolder)}>Выбрать папку приложения</button>}
+          {current && <button type="button" className="primary" disabled={busy || (nameConflict?.folder === current.id && !nameConflict.name.trim())}
+            onClick={() => void chooseFolder(current)}>Далее</button>}
+          {appFolder && <button type="button" className="primary" disabled={busy || (nameConflict?.folder === appFolder.id && !nameConflict.name.trim())}
+            onClick={() => void chooseFolder(appFolder)}>Выбрать папку приложения</button>}
           <span className="library-account-label library-folder-account" title={name}>
             <DriveProviderIcon provider={provider} /><span>Аккаунт: <strong>{accountName}</strong></span>
           </span>
