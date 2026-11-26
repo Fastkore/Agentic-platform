@@ -11,6 +11,51 @@ import { LibraryReader } from '../server/library/reader.js';
 import { CloudDrive, providers } from '../server/library/cloud-drive.js';
 import { admin, startOperation } from './library-helpers.js';
 
+test('Dropbox app folder root can be selected and synced, but a full Dropbox root cannot', async t => {
+  const { fixture } = await import('./library-app.js');
+  process.env.BRIDGE_PUBLIC_ORIGIN = 'https://platform.example';
+  const f = await fixture();
+  t.after(() => f.app.close());
+  const registry = f.workspace.library.registry;
+  registry.settings.write('dropbox', { id: 'test-client', secret: 'test-secret' });
+  const file = { '.tag': 'file', id: 'id:file', name: 'manual.txt', size: 6, rev: 'example', path_display: '/manual.txt' };
+  t.mock.method(globalThis, 'fetch', async (url: string, init: RequestInit) => {
+    if (url === providers.dropbox.token) {
+      const code = (init.body as URLSearchParams).get('code');
+      return Response.json({ access_token: code, account_id: 'dbid:' + code, expires_in: 3600 });
+    }
+    if (url.endsWith('/files/download')) return new Response('manual');
+    assert.ok(url.endsWith('/files/list_folder'));
+    assert.equal(JSON.parse(String(init.body)).path, '');
+    const headers = new Headers(init.headers);
+    if (headers.has('Dropbox-API-Path-Root') && headers.get('Authorization') !== 'Bearer full') {
+      return new Response('Error in call to API function "files/list_folder": Path root is not supported for sandbox app.', { status: 400 });
+    }
+    return Response.json({ entries: [file], has_more: false });
+  });
+  const api = '/api/library/external';
+  async function connect(code: string) {
+    const started = (await f.req('POST', api + '/authorize', f.admin, { provider: 'dropbox' })).json();
+    assert.equal((await f.req('POST', api + '/authorize/finish', f.admin, { state: started.state, code })).statusCode, 200);
+    const folders = await f.req('POST', api + '/folders', f.admin, { connection: started.state, includeAppFolder: true });
+    assert.equal(folders.statusCode, 200);
+    return { connection: started.state, folders: folders.json() };
+  }
+  const full = await connect('full');
+  assert.deepEqual(full.folders, []);
+  assert.equal((await f.req('POST', '/api/library', f.admin, { name: 'Full', external: { connection: full.connection, folder: '' } })).statusCode, 400);
+
+  const scoped = await connect('scoped');
+  assert.deepEqual(scoped.folders, [{ id: '', name: 'Папка приложения Dropbox' }]);
+  const created = await f.req('POST', '/api/library', f.admin, { name: 'App Folder', external: { connection: scoped.connection, folder: '' } });
+  assert.equal(created.statusCode, 201, created.body);
+  const id = created.json().id;
+  await registry.external.sync(id);
+  assert.equal(registry.db.prepare('SELECT total_files FROM states WHERE folder_id=?').get(id)?.total_files, 1);
+  const other = await connect('different-account');
+  assert.equal((await f.req('POST', '/api/library/' + id + '/external/reconnect', f.admin, { connection: other.connection, folder: '' })).statusCode, 400);
+});
+
 test('Dropbox account switching and replacing application keys are separate flows', async t => {
   const root = await mkdtemp(path.join(tmpdir(), 'dropbox-replace-'));
   const registry = new LibraryRegistry(root, {});

@@ -4,7 +4,7 @@ import type { ExternalProvider, ExternalSelection } from '../../shared/library.j
 import { BridgeError } from '../store.js';
 import { CloudDrive, providers } from './cloud-drive.js';
 
-interface Tokens { access: string; refresh?: string; expires: number }
+interface Tokens { access: string; refresh?: string; expires: number; accountId?: string; appFolder?: boolean }
 export interface DriveKeys { id: string; secret: string }
 type AppKeys = DriveKeys & { screenCode?: boolean };
 interface Draft { redirect: string; keys: AppKeys; setup?: AppKeys; replacing?: AppKeys; owner: string; provider: ExternalProvider; expires: number; verifier?: string; tokens?: Tokens; folders: Map<string, { name: string; identity: string }> }
@@ -29,9 +29,10 @@ async function exchange(provider: ExternalProvider, { id, secret }: DriveKeys, b
       body: new URLSearchParams({ client_id: id, client_secret: secret, ...body }) });
   } catch { signal?.throwIfAborted(); throw new BridgeError('Сервис авторизации временно недоступен.', 503); }
   if (!response.ok) throw new BridgeError('Сервис отклонил авторизацию. Подключите аккаунт повторно.', 403);
-  const result = await response.json() as { access_token?: string; refresh_token?: string; expires_in?: number };
+  const result = await response.json() as { access_token?: string; refresh_token?: string; expires_in?: number; account_id?: string };
   if (typeof result.access_token !== 'string' || !result.access_token) throw expired();
-  return { access: result.access_token, refresh: result.refresh_token || previous, expires: result.expires_in ? Date.now() + Number(result.expires_in) * 1000 : Number.MAX_SAFE_INTEGER };
+  return { access: result.access_token, refresh: result.refresh_token || previous, expires: result.expires_in ? Date.now() + Number(result.expires_in) * 1000 : Number.MAX_SAFE_INTEGER,
+    accountId: provider === 'dropbox' && typeof result.account_id === 'string' ? result.account_id : undefined };
 }
 export class DriveAuth {
   private drafts = new Map<string, Draft>();
@@ -51,11 +52,13 @@ export class DriveAuth {
     let tokens = this.settings.unseal<Tokens>(sealed);
     if (tokens.expires < Date.now() + 60_000) {
       if (!tokens.refresh) throw expired();
-      tokens = await exchange(provider, this.requireKeys(provider), { grant_type: 'refresh_token', refresh_token: tokens.refresh }, tokens.refresh, signal);
+      const refreshed = await exchange(provider, this.requireKeys(provider), { grant_type: 'refresh_token', refresh_token: tokens.refresh }, tokens.refresh, signal);
       signal?.throwIfAborted();
+      if (tokens.accountId && refreshed.accountId && tokens.accountId !== refreshed.accountId) throw expired();
+      tokens = { ...refreshed, accountId: refreshed.accountId ?? tokens.accountId, appFolder: tokens.appFolder };
       save(this.settings.seal(tokens));
     }
-    return new CloudDrive(provider, tokens.access, signal);
+    return new CloudDrive(provider, tokens.access, signal, tokens.appFolder ? tokens.accountId : undefined);
   }
   status(provider: ExternalProvider) {
     const keys = this.keys(provider);
@@ -109,7 +112,7 @@ export class DriveAuth {
     draft.expires = Math.min(tokens.expires, Date.now() + draftLifetime);
     return { ok: true };
   }
-  async folders(owner: string, id: string, parent?: string) {
+  async folders(owner: string, id: string, parent?: string, includeAppFolder = false) {
     const draft = this.draft(owner, id);
     if (!draft.tokens || parent !== undefined && !draft.folders.has(parent)) throw expiredDraft();
     const drive = new CloudDrive(draft.provider, draft.tokens.access);
@@ -118,6 +121,14 @@ export class DriveAuth {
       folders.push({ id: entry.id, name: entry.name });
       draft.folders.set(entry.id, { name: entry.name, identity: entry.identity ?? entry.id });
       if (draft.folders.size > 50000) throw new BridgeError('Слишком много папок для выбора.', 413);
+    }
+    if (includeAppFolder && draft.provider === 'dropbox' && parent === undefined && draft.tokens.accountId) {
+      draft.tokens.appFolder ??= await drive.isDropboxAppFolder().catch(() => undefined);
+      if (draft.tokens.appFolder) {
+        const name = 'Папка приложения Dropbox';
+        draft.folders.set('', { name, identity: 'dropbox-app-folder:' + draft.tokens.accountId });
+        folders.push({ id: '', name });
+      }
     }
     draft.expires = Math.min(draft.tokens.expires, Date.now() + draftLifetime);
     return folders.sort((a,b) => a.name.localeCompare(b.name, 'ru'));

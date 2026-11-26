@@ -6,7 +6,7 @@ import { SettingsSpinner } from './SettingsSpinner';
 
 const guides = {
   dropbox: { url: 'https://www.dropbox.com/developers/apps/create', id: 'App key', secret: 'App secret', location: 'Settings', redirect: 'OAuth 2 → Redirect URIs',
-    steps: ['Создайте приложение с типом Scoped access и доступом Full Dropbox.'] },
+    steps: ['Создайте приложение с типом Scoped access. Выберите App Folder для отдельной папки приложения или Full Dropbox для выбора существующих папок на Диске.'] },
   google: { url: 'https://console.cloud.google.com/apis/credentials', id: 'Client ID', secret: 'Client secret', location: 'Клиенты OAuth', redirect: 'Authorized redirect URIs',
     steps: ['Выберите проект в Google Cloud и включите Google Drive API.', 'Настройте экран согласия в Google Auth Platform. В разделе Data Access добавьте разрешение https://www.googleapis.com/auth/drive.readonly.', 'Откройте Clients → Create client и выберите Web application.'] },
   yandex: { url: 'https://oauth.yandex.ru/client/new/', id: 'ClientID', secret: 'Client secret', location: 'Карточка приложения', redirect: 'Redirect URI',
@@ -84,7 +84,7 @@ export function ExternalLibraryPicker({ provider, request, onSelect, selectionCo
     setBusy(true); setError(''); setChosen(false); onSelect(undefined);
     try {
       const current = path.at(-1);
-      const list = await post<ExternalFolder[]>('folders', { connection: id, parent: current?.id });
+      const list = await post<ExternalFolder[]>('folders', { connection: id, parent: current?.id, includeAppFolder: provider === 'dropbox' });
       if (signal?.aborted) return;
       setFolders(list); setTrail(path); setConnection(id);
     } catch (e) {
@@ -142,9 +142,11 @@ export function ExternalLibraryPicker({ provider, request, onSelect, selectionCo
   const name = externalLabels[provider];
   const signIn = { google: 'Войти через Google', dropbox: 'Войти в Dropbox', yandex: 'Войти через Яндекс ID' }[provider];
   const current = trail.at(-1);
-  function chooseFolder() {
-    if (!current) return;
-    onSelect({ connection, folder: current.id }, current.name);
+  const appFolder = provider === 'dropbox' ? folders.find(folder => folder.id === '') : undefined;
+  const subfolders = folders.filter(folder => folder.id !== '');
+  const selectedFolder = current ?? appFolder;
+  function chooseFolder(folder: ExternalFolder) {
+    onSelect({ connection, folder: folder.id }, folder.name);
     setChosen(true);
   }
 
@@ -248,28 +250,30 @@ export function ExternalLibraryPicker({ provider, request, onSelect, selectionCo
           aria-label="Обновить список папок" title="Обновить список папок"
           onClick={() => void browse(connection, trail, controller.current?.signal)}><RefreshCw size={16} aria-hidden="true" /></button>}
       </div>
-      <p className="help">{[name, ...trail.map(folder => folder.name)].join(' / ')}</p>
+      <p className="help">{appFolder?.name ?? [name, ...trail.map(folder => folder.name)].join(' / ')}</p>
       {chosen ? <>
-        <p className="help" role="status">Агенты с доступом к библиотеке смогут искать и читать файлы в папке «{current?.name}» и её подпапках.</p>
+        <p className="help" role="status">Агенты с доступом к библиотеке смогут искать и читать файлы в папке «{selectedFolder?.name}» и её подпапках.</p>
         {selectionConfirmed === undefined && <div className="settings-actions">
           <button type="button" className="secondary" onClick={() => { setChosen(false); onSelect(undefined); }}>Изменить выбор</button>
           <button type="button" className="secondary" onClick={() => void connect(true)}>Сменить аккаунт</button>
         </div>}
       </> : <>
-        {folders.length > 0 && <ul className="settings-records library-drive-folders">{folders.map(folder => <li key={folder.id}>
+        {subfolders.length > 0 && <ul className="settings-records library-drive-folders">{subfolders.map(folder => <li key={folder.id}>
           <button type="button" disabled={busy} aria-label={'Открыть папку «' + folder.name + '»'}
             onClick={() => void browse(connection, [...trail, folder], controller.current?.signal)}>
             <span>{folder.name}</span><ChevronRight size={15} aria-hidden="true" />
           </button>
         </li>)}</ul>}
-        {!busy && !error && !folders.length && <p className="help">{current ? 'Вложенных папок нет.' : 'Нет доступных папок. Создайте папку на диске и обновите список.'}</p>}
+        {!busy && !error && !subfolders.length && <p className="help">{selectedFolder ? 'Вложенных папок нет.' : 'Нет доступных папок. Создайте папку на диске и обновите список.'}</p>}
         {current && selectionConfirmed !== undefined && <p className="help">На следующем шаге можно изменить название библиотеки.</p>}
         <div className="settings-actions">
           {current && <>
-            <button type="button" className="primary" disabled={busy} onClick={chooseFolder}>Далее</button>
+            <button type="button" className="primary" disabled={busy} onClick={() => chooseFolder(current)}>Далее</button>
             <button type="button" className="secondary" disabled={busy}
               onClick={() => void browse(connection, trail.slice(0, -1), controller.current?.signal)}>На уровень выше</button>
           </>}
+          {appFolder && <button type="button" className="primary" disabled={busy}
+            onClick={() => chooseFolder(appFolder)}>Выбрать папку приложения</button>}
           <button type="button" className="secondary" disabled={busy} onClick={() => void connect(true)}>Сменить аккаунт</button>
           {provider === 'dropbox' && <button type="button" className="secondary" disabled={busy} onClick={replaceDropbox}>Настроить Dropbox заново</button>}
         </div>

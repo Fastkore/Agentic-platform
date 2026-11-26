@@ -49,7 +49,7 @@ export function libraryRoutes(app: FastifyInstance, deps: LibraryRouteDeps) {
     await registry.configureStorage(request.body);
     return { ok: true };
   });
-  const selection = obj({ connection: anyId, folder: { type: 'string', minLength: 1, maxLength: 4096 } }, ['connection', 'folder']);
+  const selection = obj({ connection: anyId, folder: { type: 'string', maxLength: 4096 } }, ['connection', 'folder']);
   app.get<{ Params: { provider: ExternalProvider } }>(base + '/external/status/:provider', {
     schema: { params: obj({ provider: { enum: externalProviders } }, ['provider']) },
   }, async request => {
@@ -62,8 +62,9 @@ export function libraryRoutes(app: FastifyInstance, deps: LibraryRouteDeps) {
   }, ['provider']) } }, async request => registry.external.auth.begin(admin(request).id, request.body.provider, request.body.setup, request.body));
   app.post<{ Body: { state: string; code: string } }>(base + '/external/authorize/finish', { schema: { body: obj({ state: anyId, code: { type: 'string', minLength: 1, maxLength: 4096 } }, ['state','code']) } },
     async request => registry.external.auth.finish(admin(request).id, request.body.state, request.body.code));
-  app.post<{ Body: { connection: string; parent?: string } }>(base + '/external/folders', { schema: { body: obj({ connection: anyId, parent: { type: 'string', maxLength: 4096 } }, ['connection']) } },
-    async request => registry.external.auth.folders(admin(request).id, request.body.connection, request.body.parent));
+  app.post<{ Body: { connection: string; parent?: string; includeAppFolder?: boolean } }>(base + '/external/folders', { schema: { body: obj({
+    connection: anyId, parent: { type: 'string', maxLength: 4096 }, includeAppFolder: { type: 'boolean' },
+  }, ['connection']) } }, async request => registry.external.auth.folders(admin(request).id, request.body.connection, request.body.parent, request.body.includeAppFolder));
   app.post<{ Params: {folderId: string}; Body: ExternalSelection }>(base + '/:folderId/external/reconnect', { schema: { params: folderParams, body: selection } },
     async request => {
       const owner = admin(request).id;

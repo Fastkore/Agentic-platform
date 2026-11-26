@@ -22,6 +22,7 @@ interface DiskPage {
 }
 const googleDrive = 'https://www.googleapis.com/drive/v3/files';
 const disk = 'https://cloud-api.yandex.net/v1/disk/resources';
+const dropboxFolders = 'https://api.dropboxapi.com/2/files/list_folder';
 const exportsByMime: Record<string, [string, string]> = {
   'application/vnd.google-apps.document': ['.docx', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'],
   'application/vnd.google-apps.spreadsheet': ['.xlsx', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'],
@@ -49,13 +50,27 @@ async function cloudRequest(url: string, init: RequestInit = {}, downloadHost?: 
   return res;
 }
 export class CloudDrive {
-  constructor(readonly provider: ExternalProvider, private token: string, private signal?: AbortSignal) {}
+  constructor(readonly provider: ExternalProvider, private token: string, private signal?: AbortSignal, private dropboxAppAccount?: string) {}
   private request(url: string, init: RequestInit, downloadHost?: (host: string) => boolean) {
     this.signal?.throwIfAborted();
     return cloudRequest(url, { ...init, signal: this.signal }, downloadHost);
   }
   private get headers() { return { Authorization: (this.provider === 'yandex' ? 'OAuth ' : 'Bearer ') + this.token }; }
   root() { return this.provider === 'google' ? 'root' : this.provider === 'yandex' ? 'disk:/' : ''; }
+  async isDropboxAppFolder(): Promise<boolean | undefined> {
+    // Only App Folder tokens reject a valid Path-Root header with this specific error.
+    const response = await fetch(dropboxFolders, {
+      method: 'POST', redirect: 'error', signal: AbortSignal.timeout(5000),
+      headers: { ...this.headers, 'Content-Type': 'application/json', 'Dropbox-API-Path-Root': '{".tag":"home"}' },
+      body: JSON.stringify({ path: '', limit: 1 }),
+    });
+    if (response.status === 400) {
+      if (/Path root is not supported for sandbox app\.?\s*$/.test(await response.text())) return true;
+      return undefined;
+    }
+    await response.body?.cancel();
+    return response.ok ? false : undefined;
+  }
   private google(folder: string) {
     if (!/^[\w-]+$/.test(folder)) throw invalid();
     return googleDrive + '/' + folder;
@@ -71,6 +86,10 @@ export class CloudDrive {
       const row = await (await this.request(disk + '?' + new URLSearchParams({ path: folder, fields: 'type,resource_id' }), { headers: this.headers })).json() as {type: string; resource_id: string};
       if (row.type !== 'dir' || !row.resource_id) throw invalid();
       return String(row.resource_id);
+    }
+    if (folder === '') {
+      if (!this.dropboxAppAccount) throw new BridgeError('Корень можно подключить только для приложения Dropbox с доступом App Folder.', 403);
+      return 'dropbox-app-folder:' + this.dropboxAppAccount;
     }
     return folder; // Dropbox folder IDs survive moves. list_folder verifies access.
   }
@@ -93,13 +112,14 @@ export class CloudDrive {
         }
         cursor = page.nextPageToken ?? '';
       } else if (this.provider === 'dropbox') {
-        const url = 'https://api.dropboxapi.com/2/files/list_folder' + (cursor ? '/continue' : '');
+        const url = dropboxFolders + (cursor ? '/continue' : '');
         const page = await (await this.request(url, { method: 'POST', headers: { ...this.headers, 'Content-Type': 'application/json' },
           body: JSON.stringify(cursor ? { cursor } : { path: folder, recursive: false, include_non_downloadable_files: false }) })).json() as DropboxPage;
         if (!Array.isArray(page.entries) || (page.has_more && !page.cursor)) throw invalid();
         for (const f of page.entries) {
           if (!['file','folder'].includes(f['.tag']) || f.is_downloadable === false) continue;
-          yield { id: f.id, name: f.name, dir: f['.tag'] === 'folder', revision: f.rev, size: f.size, link: 'https://www.dropbox.com/home' + f.path_display.split('/').map(encodeURIComponent).join('/') };
+          yield { id: f.id, name: f.name, dir: f['.tag'] === 'folder', revision: f.rev, size: f.size,
+            link: this.dropboxAppAccount ? undefined : 'https://www.dropbox.com/home' + f.path_display.split('/').map(encodeURIComponent).join('/') };
         }
         cursor = page.has_more ? page.cursor : '';
       } else {
