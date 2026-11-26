@@ -24,12 +24,12 @@ export const emptyFolderDraft: FolderDraft = { name: '', description: '', profil
 const statusLabel = (active: boolean) => active ? 'Активна' : 'Неактивна';
 
 /** Folder settings form shared by creation and editing. */
-export function FolderForm({ draft, setDraft, isAdmin, disabled }: {
-  draft: FolderDraft; setDraft: (draft: FolderDraft) => void; isAdmin: boolean; disabled?: boolean;
+export function FolderForm({ draft, setDraft, isAdmin, disabled, compact = false }: {
+  draft: FolderDraft; setDraft: (draft: FolderDraft) => void; isAdmin: boolean; disabled?: boolean; compact?: boolean;
 }) {
-  return <div className="library-form-grid">
-    <div><label htmlFor="library-name">Название</label><input id="library-name" required maxLength={120} value={draft.name} disabled={disabled} onChange={e => setDraft({ ...draft, name: e.target.value })}
-      placeholder="Например, Договоры" /></div>
+  const name = <div><label htmlFor="library-name">Название</label><input id="library-name" required maxLength={120} value={draft.name} disabled={disabled} autoFocus={compact} onChange={e => setDraft({ ...draft, name: e.target.value })}
+      placeholder="Например, Договоры" /></div>;
+  const optionsGrid = <>
     <div><label htmlFor="library-profile">Содержимое</label><Select id="library-profile" className="settings-select" value={draft.profile} options={options(profileLabels)} disabled={disabled}
       onChange={value => setDraft({ ...draft, profile: value as LibraryProfile })} /></div>
     <div><label htmlFor="library-output">Выдача агентом</label><Select id="library-output" className="settings-select" value={draft.outputPolicy} options={options(outputModes)} disabled={disabled}
@@ -40,7 +40,15 @@ export function FolderForm({ draft, setDraft, isAdmin, disabled }: {
     </label></div>}
     <div className="library-wide"><label htmlFor="library-description">Назначение</label><input id="library-description" maxLength={2000} value={draft.description} disabled={disabled}
       onChange={e => setDraft({ ...draft, description: e.target.value })} placeholder="Что здесь лежит и для каких вопросов" /></div>
-  </div>;
+  </>;
+  if (compact) return <>
+    <div className="library-form-grid">{name}</div>
+    <details className="library-advanced-settings">
+      <summary>Дополнительные настройки</summary>
+      <div className="library-form-grid">{optionsGrid}</div>
+    </details>
+  </>;
+  return <div className="library-form-grid">{name}{optionsGrid}</div>;
 }
 
 export function LibraryRemovalDialog({ title, name, description, cancel, confirm }: {
@@ -112,9 +120,11 @@ export function CreateLibraryForm({ kind, request, pending, submit, cancel, proj
     {kind === 's3' && <strong>Обычная библиотека</strong>}
     <fieldset disabled={pending} className="library-source-fields">
       {kind === 'external' ? <>
-        <label htmlFor="library-provider">Внешний диск</label>
-        <Select id="library-provider" className="settings-select" options={options(externalLabels)} value={provider}
-          onChange={value => { setProvider(value as ExternalProvider); setSelection(undefined); }} />
+        {!selection && <>
+          <label htmlFor="library-provider">Внешний диск</label>
+          <Select id="library-provider" className="settings-select" options={options(externalLabels)} value={provider}
+            onChange={value => setProvider(value as ExternalProvider)} />
+        </>}
         <ExternalLibraryPicker key={provider + attempt} selectionConfirmed={!!selection} provider={provider} request={request} onSelect={(next, name) => {
           setSelection(next);
           if (name) {
@@ -129,15 +139,14 @@ export function CreateLibraryForm({ kind, request, pending, submit, cancel, proj
         : <SettingsSpinner inline label="Проверяем хранилище…" />}
     </fieldset>
     {showDetails && <>
-      {kind === 'external' && <p className="help">Проверьте название и нажмите «{project ? 'Создать и подключить' : 'Создать'}». После этого начнётся загрузка папки в поисковый индекс.</p>}
-      <FolderForm draft={draft} setDraft={setDraft} isAdmin disabled={pending} />
+      <FolderForm draft={draft} setDraft={setDraft} isAdmin disabled={pending} compact={kind === 'external'} />
     </>}
     {showDetails && project && <p className="help">Библиотека подключится к этому проекту. Доступ агентам можно назначить на вкладке прав.</p>}
     {kind === 'external' && error && <p className="inline-error" role="alert">{error}</p>}
     {(showDetails || kind === 's3') && <div className="settings-actions">{showDetails && <button type="submit" className="primary" disabled={pending || !ready}>{project ? 'Создать и подключить' : 'Создать'}</button>}
       {kind === 's3'
         ? <button type="button" className="secondary" disabled={pending} onClick={cancel}>Отмена</button>
-        : <button type="button" className="secondary" disabled={pending} onClick={() => setSelection(undefined)}>Изменить выбор</button>}</div>}
+        : <button type="button" className="secondary" disabled={pending} onClick={() => setSelection(undefined)}>Изменить папку</button>}</div>}
   </form>;
   return kind === 'external'
     ? <WorkspaceDialog title="Внешняя библиотека" className="external-library-dialog" closeOnBackdrop={false} close={() => { if (!pending) cancel(); }}>{form}</WorkspaceDialog>

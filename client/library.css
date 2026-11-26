@@ -158,8 +158,6 @@
   color: var(--text); font: inherit; text-align: start; overflow-wrap: anywhere;
 }
 .library-drive-folders button svg { flex: none; color: var(--text-muted); }
-.library-drive-folder-name { display: inline-flex; align-items: center; gap: 8px; min-width: 0; }
-.library-drive-folders .library-drive-folder-name svg { color: var(--accent-strong); }
 .library-drive-folders button:enabled:is(:hover, :focus-visible) { background: var(--selected); color: var(--accent-strong); }
 .library-drive-folders button:focus-visible { outline: 2px solid var(--accent-strong); outline-offset: -2px; }
 
@@ -190,3 +188,22 @@
   .library-folders .settings-records > li:has(.library-row-actions) { flex-wrap: wrap; }
   .library-row-actions { flex-wrap: wrap; justify-content: flex-start; }
 }
+
+.library-source-summary { display: flex; align-items: center; gap: 12px; min-width: 0; padding: 12px 14px; border: 1px solid var(--border); border-radius: 9px; background: var(--control); }
+.library-source-summary > img { width: 26px; height: 26px; }
+.library-source-summary > div { display: grid; gap: 2px; min-width: 0; overflow-wrap: anywhere; }
+.library-source-summary small { color: var(--text-muted); }
+.library-advanced-settings { border-block: 1px solid var(--border); padding-block: 10px; }
+.library-advanced-settings summary { cursor: pointer; font-weight: 550; }
+.library-advanced-settings[open] .library-form-grid { margin-top: 12px; }
+.library-path, .library-path > span { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; min-width: 0; overflow-wrap: anywhere; }
+.library-path button { color: var(--accent-strong); padding: 2px 3px; text-decoration: underline; }
+.library-folder-tree { max-height: 34dvh; overflow: auto; border: 1px solid var(--border); border-radius: 8px; padding: 4px; }
+.library-folder-tree ul { margin: 0; padding: 0; list-style: none; }
+.library-folder-tree ul ul { margin-inline-start: 13px; padding-inline-start: 6px; border-inline-start: 1px solid var(--border); }
+.library-folder-tree li + li { margin: 0; }
+.library-folder-tree button { width: 100%; display: flex; align-items: center; gap: 7px; padding: 5px 7px; min-height: 32px; border-radius: 5px; text-align: start; overflow-wrap: anywhere; }
+.library-folder-tree svg { flex: none; color: var(--accent-strong); }
+.library-folder-tree button:enabled:hover { background: var(--hover); }
+.library-folder-tree button[aria-current="true"] { background: var(--selected); }
+.library-folder-tree button:focus-visible, .library-path button:focus-visible { outline: 2px solid var(--accent-strong); outline-offset: -2px; }
