@@ -120,12 +120,13 @@ export function CreateLibraryForm({ kind, request, pending, submit, cancel, proj
     {kind === 's3' && <strong>Обычная библиотека</strong>}
     <fieldset disabled={pending} className="library-source-fields">
       {kind === 'external' ? <>
-        {!selection && <>
-          <label htmlFor="library-provider">Внешний диск</label>
-          <Select id="library-provider" className="settings-select" options={options(externalLabels)} value={provider}
-            onChange={value => setProvider(value as ExternalProvider)} />
-        </>}
-        <ExternalLibraryPicker key={provider + attempt} selectionConfirmed={!!selection} openAccounts={openAccounts} provider={provider} request={request} onSelect={(next, name) => {
+        <ExternalLibraryPicker key={provider + attempt} selectionConfirmed={!!selection} openAccounts={openAccounts} provider={provider} request={request}
+          providerPicker={<>
+            <label htmlFor="library-provider">Внешний диск</label>
+            <Select id="library-provider" className="settings-select" options={options(externalLabels)} value={provider}
+              onChange={value => setProvider(value as ExternalProvider)} />
+          </>}
+          onSelect={(next, name) => {
           setSelection(next);
           if (name) {
             const previous = suggestedName.current, suggestion = name.slice(0,120);

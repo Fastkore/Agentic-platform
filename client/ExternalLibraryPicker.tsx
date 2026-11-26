@@ -3,7 +3,7 @@ import { ChevronDown, ChevronRight, Folder, FolderOpen, RefreshCw } from 'lucide
 import { externalLabels, type DriveAccount, type ExternalFolder, type ExternalProvider, type ExternalSelection } from '../shared/library';
 import type { Request } from './library-upload';
 import { DriveProviderIcon } from './DriveProviderIcon';
-import { SettingsSpinner } from './SettingsSpinner';
+import { ProgressRing, SettingsSpinner } from './SettingsSpinner';
 
 const guides = {
   dropbox: { url: 'https://www.dropbox.com/developers/apps/create', id: 'App key', secret: 'App secret', location: 'Settings', redirect: 'OAuth 2 → Redirect URIs',
@@ -45,7 +45,8 @@ export function driveSessionExpired(error: unknown) {
   return typeof error === 'object' && error !== null && 'status' in error && error.status === 410;
 }
 
-export function ExternalLibraryPicker({ provider, request, onSelect, selectionConfirmed, accountSaved, openAccounts }: {
+export function ExternalLibraryPicker({ provider, request, onSelect, selectionConfirmed, accountSaved, openAccounts, providerPicker }: {
+  providerPicker?: ReactNode;
   accountSaved?: () => void; openAccounts?: (provider: ExternalProvider) => void; selectionConfirmed?: boolean; provider: ExternalProvider; request: Request; onSelect: (selection?: ExternalSelection, folderName?: string) => void;
 }) {
   const [busy, setBusy] = useState(false), [error, setError] = useState('');
@@ -117,7 +118,7 @@ export function ExternalLibraryPicker({ provider, request, onSelect, selectionCo
     try {
       const { state } = await post<{state: string}>('accounts/use', { provider, account: account.id });
       if (flow.signal.aborted) return;
-      setAccountName(account.name); setConnection(state);
+      setAccountName(account.name);
       await browse(state, [], flow.signal);
     } catch (e) { if (!flow.signal.aborted) { setError((e as Error).message); setBusy(false); } }
   }
@@ -207,8 +208,9 @@ export function ExternalLibraryPicker({ provider, request, onSelect, selectionCo
       </li>;
     })}</ul>;
   }
-  if (availability === 'checking') return <SettingsSpinner inline label={`Проверяем подключение к ${name}…`} />;
+  if (availability === 'checking') return <>{providerPicker}<SettingsSpinner inline label={`Проверяем подключение к ${name}…`} /></>;
   if (availability === 'failed') return <div className="library-form">
+    {providerPicker}
     <p role="alert">Не удалось проверить, доступен ли {name}.</p>
     <button className="secondary" type="button" onClick={() => setCheck(n => n + 1)}>Проверить ещё раз</button>
   </div>;
@@ -266,7 +268,8 @@ export function ExternalLibraryPicker({ provider, request, onSelect, selectionCo
   </div>;
 
   return <div className="library-form">
-    {!connection && !authUrl && !busy && (accountSaved ? <>
+    {!connection && providerPicker}
+    {!connection && !authUrl && (!busy || !configuring) && (accountSaved ? <>
       <strong>Подключите аккаунт</strong>
       {nameField}
       <p className="help">В отдельном окне войдите в аккаунт и разрешите чтение файлов.</p>
@@ -276,17 +279,17 @@ export function ExternalLibraryPicker({ provider, request, onSelect, selectionCo
       </div>
     </> : accounts.length ? <>
       <strong id={accountGroup}>Выберите аккаунт {name}</strong>
-      <div role="radiogroup" aria-labelledby={accountGroup}>
+      <div role="radiogroup" aria-labelledby={accountGroup} aria-busy={busy}>
         <ul className="settings-records library-drive-folders">{accounts.map(account => <li key={account.id}>
           <label className="library-account-option">
             <span className="library-account-label"><DriveProviderIcon provider={account.provider} />{account.name}</span>
-            <input type="radio" name={accountGroup} checked={selectedAccountId === account.id}
+            <input type="radio" name={accountGroup} checked={selectedAccountId === account.id} disabled={busy}
               onChange={() => { setSelectedAccountId(account.id); setError(''); }} />
           </label>
         </li>)}</ul>
       </div>
       <div className="settings-actions">
-        <button type="button" className="primary" disabled={!selectedAccount}
+        <button type="button" className="primary" disabled={busy || !selectedAccount} aria-busy={busy}
           onClick={() => { if (selectedAccount) void useSaved(selectedAccount); }}>Далее</button>
         {error && openAccounts && <button type="button" className="secondary" onClick={() => openAccounts(provider)}>Перейти в «Аккаунты»</button>}
       </div>
@@ -316,7 +319,7 @@ export function ExternalLibraryPicker({ provider, request, onSelect, selectionCo
       <summary>Google показал ошибку 403 о тестировщиках?</summary>
       <GoogleTestUsers />
     </details>}
-    {busy && !authUrl && <SettingsSpinner label={accountSaved ? 'Подключаем аккаунт…' : 'Загружаем папки…'} />}
+    {busy && !authUrl && configuring && <SettingsSpinner inline label="Подключаем аккаунт…" />}
     {error && <p className="inline-error" role="alert">{error}</p>}
     {connection && <>
       {chosen ? <>
@@ -333,10 +336,10 @@ export function ExternalLibraryPicker({ provider, request, onSelect, selectionCo
         </div>}
       </> : <>
         <div className="library-drive-heading"><strong>Выберите папку</strong>
-          <button type="button" className="workspace-icon" disabled={busy} aria-label="Обновить список папок" title="Обновить список папок"
-            onClick={() => navigate(trail)}><RefreshCw size={16} aria-hidden="true" /></button>
+          <button type="button" className="workspace-icon" disabled={busy} aria-busy={busy} aria-label="Обновить список папок" title="Обновить список папок"
+            onClick={() => navigate(trail)}>{busy ? <ProgressRing size={16} /> : <RefreshCw size={16} aria-hidden="true" />}</button>
         </div>
-        <small className="help">Аккаунт: {accountName}</small>
+        <small className="help library-account-label"><DriveProviderIcon provider={provider} />{name} · {accountName}</small>
         <nav className="library-path" aria-label="Путь к папке">
           {[{ id: '', name: levels[0]?.find(f => !f.id)?.name ?? name }, ...trail].map((f, i) => <span key={f.id}>
             {i > 0 && <ChevronRight size={13} aria-hidden="true" />}
@@ -345,7 +348,7 @@ export function ExternalLibraryPicker({ provider, request, onSelect, selectionCo
           </span>)}
         </nav>
         {levels[0]?.some(f => f.id) && <div className="library-folder-tree">{branch(0)}</div>}
-        {!busy && !error && !subfolders.length && <p className="help">{selectedFolder ? 'Вложенных папок нет.' : 'Нет доступных папок. Создайте папку на диске и обновите список.'}</p>}
+        {!error && !subfolders.length && <p className="help">{selectedFolder ? 'Вложенных папок нет.' : 'Нет доступных папок. Создайте папку на диске и обновите список.'}</p>}
         <div className="settings-actions">
           {current && <button type="button" className="primary" disabled={busy} onClick={() => chooseFolder(current)}>Далее</button>}
           {appFolder && <button type="button" className="primary" disabled={busy}
