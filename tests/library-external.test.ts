@@ -50,8 +50,8 @@ test('Dropbox app folder root can be selected and synced, but a full Dropbox roo
   const external = { connection: scoped.connection, folder: '' };
   const check = (name: string, source = external) => f.req('POST', api + '/check', f.admin, { name, external: source });
   assert.equal((await f.req('POST', '/api/library', f.admin, { name: 'Taken name' })).statusCode, 201);
-  assert.deepEqual((await check(' TAKEN NAME ')).json(), { nameTaken: true });
-  assert.deepEqual((await check('App Folder')).json(), { nameTaken: false });
+  assert.deepEqual((await check(' TAKEN NAME ')).json(), { connected: false, nameTaken: true });
+  assert.deepEqual((await check('App Folder')).json(), { connected: false, nameTaken: false });
   const created = await f.req('POST', '/api/library', f.admin, { name: 'App Folder', external });
   assert.equal(created.statusCode, 201, created.body);
   const id = created.json().id;
@@ -59,14 +59,15 @@ test('Dropbox app folder root can be selected and synced, but a full Dropbox roo
   assert.equal(registry.db.prepare('SELECT total_files FROM states WHERE folder_id=?').get(id)?.total_files, 1);
   const account = registry.external.auth.accounts().find(account => account.libraries === 1)!;
   const reopened = (await f.req('POST', api + '/accounts/use', f.admin, { provider: 'dropbox', account: account.id })).json();
-  assert.equal((await f.req('POST', api + '/folders', f.admin, { connection: reopened.state, includeAppFolder: true })).statusCode, 200);
+  const listing = await f.req('POST', api + '/folders', f.admin, { connection: reopened.state, includeAppFolder: true, includeConnected: true });
+  assert.deepEqual(listing.json(), { folders: scoped.folders, connected: [''] });
   const existing = { connection: reopened.state, folder: '' };
-  const conflict = await check('New name', existing);
-  assert.equal(conflict.statusCode, 409);
-  assert.match(conflict.body, /App Folder/);
+  assert.deepEqual((await check('New name', existing)).json(), { connected: true, nameTaken: false });
   assert.equal((await f.req('POST', '/api/library', f.admin, { name: 'New name', external: existing })).statusCode, 409);
   const other = await connect('different-account');
-  assert.deepEqual((await check('Other folder', { connection: other.connection, folder: '' })).json(), { nameTaken: false });
+  assert.deepEqual((await f.req('POST', api + '/folders', f.admin, { connection: other.connection, includeAppFolder: true, includeConnected: true })).json(),
+    { folders: scoped.folders, connected: [] });
+  assert.deepEqual((await check('Other folder', { connection: other.connection, folder: '' })).json(), { connected: false, nameTaken: false });
   assert.equal((await f.req('POST', '/api/library/' + id + '/external/reconnect', f.admin, { connection: other.connection, folder: '' })).statusCode, 400);
 });
 
@@ -437,6 +438,10 @@ test('external HTTP connection uses regular project grants and checks remote acc
   assert.equal(latest.external.syncing, false);
   assert.equal(latest.current?.files, 1, 'saving starts both import and indexing without a manual sync');
   assert.equal(refreshes,1);
+  const browsing = (await f.req('POST',base+'/accounts/use',f.admin,{provider:'dropbox',account:registry.external.auth.accounts()[0].id})).json();
+  const list = (parent?: string) => f.req('POST',base+'/folders',f.admin,{connection:browsing.state,parent,includeConnected:true});
+  assert.deepEqual((await list()).json(),{folders:[{id:'id:docs',name:'Docs'}],connected:['id:docs']});
+  assert.deepEqual((await list('id:docs')).json(),{folders:[],connected:['id:docs']});
   assert.equal((await f.req('POST','/api/library/'+folder.id+'/remove-files',f.admin,{paths:['help.txt']})).statusCode,403);
   const project = '/api/projects/'+f.project.id;
   const conn = await f.req('POST',project+'/library',f.admin,{folderId:folder.id});

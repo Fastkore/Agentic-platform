@@ -206,5 +206,10 @@ export class DriveAuth {
     if (!draft.savedId || !draft.tokens || !folder) throw new BridgeError('Выберите папку подключённого диска.');
     return { provider: draft.provider, ...folder, account: draft.savedId };
   }
+  browsedFolders(owner: string, id: string) {
+    const { provider, savedId, folders } = this.draft(owner, id);
+    if (!savedId) throw expiredDraft();
+    return { provider, account: savedId, folders };
+  }
   discard(id: string) { this.drafts.delete(id); }
 }

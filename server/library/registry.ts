@@ -374,10 +374,10 @@ export class LibraryRegistry {
   }
   getFolder(actor: LibraryActor, id: string) { return this.summary(this.visibleFolder(actor, id), actor); }
   checkExternalFolder(owner: string, selection: ExternalSelection, proposedName: string) {
-    this.external.requireUnusedSource(owner, selection);
+    if (this.external.inspectSelection(owner, selection).existing) return { connected: true, nameTaken: false };
     const name = proposedName.trim();
     if (!name || name.length > 120) throw new BridgeError('Укажите название папки до 120 символов.');
-    return { nameTaken: !!this.db.prepare('SELECT 1 FROM folders WHERE lower(name)=lower(?) AND deleted_at IS NULL').get(name) };
+    return { connected: false, nameTaken: !!this.db.prepare('SELECT 1 FROM folders WHERE lower(name)=lower(?) AND deleted_at IS NULL').get(name) };
   }
   createFolder(actor: LibraryActor, input: { name: string; description?: string; profile?: LibraryProfile; classification?: LibraryClassification; outputPolicy?: OutputPolicy;
     active?: boolean; quotaBytes?: number; managers?: { userId: string; actions: LibraryAction[] }[]; origin?: string; external?: ExternalSelection }) {

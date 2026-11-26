@@ -110,10 +110,10 @@ export function CreateLibraryForm({ kind, request, pending, submit, cancel, proj
   const ready = !!draft.name.trim() && showDetails;
   async function checkSelection(external: ExternalSelection, folderName: string, nameOverride: string | undefined, signal?: AbortSignal) {
     const name = nameOverride ?? (draft.name.trim() && draft.name !== suggestedName.current ? draft.name.trim() : folderName.slice(0, 120).trim());
-    const { nameTaken } = await request<{ nameTaken: boolean }>('/api/library/external/check', {
+    const result = await request<{ nameTaken: boolean; connected: boolean }>('/api/library/external/check', {
       method: 'POST', body: JSON.stringify({ external, name }), signal,
     });
-    return { name, nameTaken };
+    return { ...result, name };
   }
   async function create() {
     try {

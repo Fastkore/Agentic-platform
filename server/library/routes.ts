@@ -69,9 +69,14 @@ export function libraryRoutes(app: FastifyInstance, deps: LibraryRouteDeps) {
   }, ['provider']) } }, async request => registry.external.auth.begin(admin(request).id, request.body.provider, request.body.setup, request.body));
   app.post<{ Body: { state: string; code: string } }>(base + '/external/authorize/finish', { schema: { body: obj({ state: anyId, code: { type: 'string', minLength: 1, maxLength: 4096 } }, ['state','code']) } },
     async request => registry.external.auth.finish(admin(request).id, request.body.state, request.body.code));
-  app.post<{ Body: { connection: string; parent?: string; includeAppFolder?: boolean } }>(base + '/external/folders', { schema: { body: obj({
-    connection: anyId, parent: { type: 'string', maxLength: 4096 }, includeAppFolder: { type: 'boolean' },
-  }, ['connection']) } }, async request => registry.external.auth.folders(admin(request).id, request.body.connection, request.body.parent, request.body.includeAppFolder));
+  app.post<{ Body: { connection: string; parent?: string; includeAppFolder?: boolean; includeConnected?: boolean } }>(base + '/external/folders', { schema: { body: obj({
+    connection: anyId, parent: { type: 'string', maxLength: 4096 }, includeAppFolder: { type: 'boolean' }, includeConnected: { type: 'boolean' },
+  }, ['connection']) } }, async request => {
+    const owner = admin(request).id;
+    const { connection, parent, includeAppFolder, includeConnected } = request.body;
+    const folders = await registry.external.auth.folders(owner, connection, parent, includeAppFolder);
+    return includeConnected ? { folders, connected: registry.external.connectedFolderIds(owner, connection) } : folders;
+  });
   app.post<{ Body: { name: string; external: ExternalSelection } }>(base + '/external/check', { schema: { body: obj({
     name: { type: 'string', minLength: 1, maxLength: 120 }, external: selection,
   }, ['name', 'external']) } }, async request => registry.checkExternalFolder(admin(request).id, request.body.external, request.body.name));

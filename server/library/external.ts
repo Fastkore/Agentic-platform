@@ -11,6 +11,11 @@ type ExternalFile = DriveEntry & { path: string };
 type Prepared = Omit<StateFileRow, 'content' | 'state_id'>;
 const changed = () => new BridgeError('Папка на диске изменилась. Дождитесь синхронизации и повторите запрос.', 409);
 const message = (e: unknown) => e instanceof BridgeError ? e.message : 'Не удалось прочитать внешний диск. Повторите подключение или синхронизацию.';
+function sourceKey(provider: ExternalProvider, folder: string, identity: string, account: string) {
+  // App Folder roots and Yandex paths without a resource ID are scoped to the saved account.
+  const accountScoped = folder === '' || (provider === 'yandex' && identity === folder);
+  return JSON.stringify([identity, accountScoped ? account : null]);
+}
 export class ExternalLibraries {
   readonly auth: DriveAuth;
   private running = new Map<string, Promise<void>>();
@@ -42,19 +47,26 @@ export class ExternalLibraries {
     return { provider: row.provider, folder: row.name, accountName: row.accountName, checkedAt: row.checked_at ?? undefined, error: row.error ?? undefined,
       preparingFiles: preparing?.total_files, syncing: this.running.has(id) || (row.lease_until ?? 0) > Date.now() || !!preparing };
   }
-  requireUnusedSource(owner: string, selection: ExternalSelection) {
+  private connectedSources(provider: ExternalProvider) {
+    const rows = this.db.prepare(`SELECT e.remote_id, e.identity, e.account_id, f.name FROM external_sources e
+      JOIN folders f ON f.id=e.folder_id WHERE e.provider=? AND f.deleted_at IS NULL`).all(provider) as
+      Pick<Source, 'remote_id' | 'identity' | 'account_id' | 'name'>[];
+    return new Map(rows.map(row => [sourceKey(provider, row.remote_id, row.identity, row.account_id), row.name]));
+  }
+  connectedFolderIds(owner: string, connection: string) {
+    const { provider, account, folders } = this.auth.browsedFolders(owner, connection);
+    const connected = this.connectedSources(provider);
+    return [...folders].filter(([id, folder]) => connected.has(sourceKey(provider, id, folder.identity, account))).map(([id]) => id);
+  }
+  inspectSelection(owner: string, selection: ExternalSelection) {
     const source = this.auth.selected(owner, selection);
     const { provider, identity, account } = source;
-    // App Folder roots and Yandex paths without a resource ID are scoped to the saved account.
-    const accountScoped = selection.folder === '' || (provider === 'yandex' && identity === selection.folder);
-    const existing = this.db.prepare(`SELECT f.name FROM external_sources e JOIN folders f ON f.id=e.folder_id
-      WHERE e.provider=? AND e.identity=? AND (e.account_id=? OR ?=0) AND f.deleted_at IS NULL LIMIT 1`)
-      .get(provider, identity, account, Number(accountScoped));
-    if (existing) throw new BridgeError(`Эта папка уже подключена как библиотека «${existing.name}».`, 409);
-    return source;
+    const existing = this.connectedSources(provider).get(sourceKey(provider, selection.folder, identity, account));
+    return { source, existing };
   }
   attach(owner: string, id: string, selection: ExternalSelection) {
-    const { provider, name, identity, account } = this.requireUnusedSource(owner, selection);
+    const { source: { provider, name, identity, account }, existing } = this.inspectSelection(owner, selection);
+    if (existing) throw new BridgeError(`Эта папка уже подключена как библиотека «${existing}».`, 409);
     this.db.prepare("INSERT INTO external_sources(folder_id,provider,remote_id,identity,name,account_id,credentials) VALUES (?,?,?,?,?,?,'')").run(id, provider, selection.folder, identity, name, account);
   }
   reconnect(owner: string, id: string, selection: ExternalSelection) {
