@@ -112,7 +112,7 @@ export function TeamPanel({ request, self, manageAdministrators }: { request: Re
             </small>}
           </div></td>
           <td><div className="team-access-actions">
-            <label className={"check-setting team-access" + (user.disabled ? " inactive" : " active")}>
+            <label className={"check-setting active-status-chip" + (user.disabled ? "" : " active")}>
               <input type="checkbox" checked={!user.disabled} disabled={busy || user.id === self.id || (user.role === 'admin' && !manageAdministrators)}
                 aria-label={'Активен · ' + user.name}
                 onChange={e => {

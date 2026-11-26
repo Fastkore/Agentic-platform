@@ -1221,9 +1221,9 @@
 .person-cell small { display: block; margin-top: 4px; color: var(--text-muted); font-size: 12px; }
 .person-avatar { display: grid; place-items: center; flex: 0 0 38px; width: 38px; height: 38px; border-radius: 50%; background: var(--avatar); color: var(--avatar-ink); font-size: 13px; font-weight: 600; border: 1px solid var(--control-border); }
 .team-access-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
-.team-table .team-access { display: inline-flex; align-items: center; padding: 5px 10px; gap: 7px; border-radius: var(--settings-badge-radius); background: var(--control); font-size: 12px; white-space: nowrap; }
-.team-table .team-access.active { background: color-mix(in srgb, var(--success) 10%, var(--surface)); }
-.team-table .team-access.active input { accent-color: var(--success); }
+.active-status-chip { display: inline-flex; align-items: center; padding: 5px 10px; gap: 7px; border-radius: var(--settings-badge-radius); background: var(--control); font-size: 12px; white-space: nowrap; }
+.active-status-chip.active { background: color-mix(in srgb, var(--success) 10%, var(--surface)); }
+.active-status-chip.active input { accent-color: var(--success); }
 .settings-records, .agent-card, .config-checks, .agent-advanced, .dictation-model-row { border-color: var(--border); background: var(--surface); }
 .settings-records > li { padding: 16px 18px; }
 .settings-server .setting-section { padding: 18px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); }

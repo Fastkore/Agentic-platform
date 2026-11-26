@@ -27,16 +27,20 @@ const statusLabel = (active: boolean) => active ? 'Активна' : 'Неакт
 export function FolderForm({ draft, setDraft, isAdmin, disabled, compact = false }: {
   draft: FolderDraft; setDraft: (draft: FolderDraft) => void; isAdmin: boolean; disabled?: boolean; compact?: boolean;
 }) {
-  const name = <div><label htmlFor="library-name">Название</label><input id="library-name" type="text" required maxLength={120} value={draft.name} disabled={disabled} autoFocus={compact} onChange={e => setDraft({ ...draft, name: e.target.value })}
-      placeholder="Например, Договоры" /></div>;
+  const name = <input id="library-name" type="text" required maxLength={120} value={draft.name} disabled={disabled} autoFocus={compact}
+    onChange={e => setDraft({ ...draft, name: e.target.value })} placeholder="Например, Договоры" />;
   return <div className="library-form-grid">
     {compact ? <div className="library-wide library-name-row">
-      {name}
-      {isAdmin && <label className="library-active-pill">
-        <input type="checkbox" checked={draft.active} disabled={disabled} onChange={event => setDraft({ ...draft, active: event.target.checked })} />
-        Активная
-      </label>}
-    </div> : name}
+      <label htmlFor="library-name">Название</label>
+      <div className="library-name-controls">
+        {name}
+        {isAdmin && <label className={'check-setting active-status-chip' + (draft.active ? ' active' : '')}>
+          <input type="checkbox" aria-label="Активность библиотеки" checked={draft.active} disabled={disabled}
+            onChange={event => setDraft({ ...draft, active: event.target.checked })} />
+          {statusLabel(draft.active)}
+        </label>}
+      </div>
+    </div> : <div><label htmlFor="library-name">Название</label>{name}</div>}
     <div><label htmlFor="library-profile">Содержимое</label><Select id="library-profile" className="settings-select" value={draft.profile} options={options(profileLabels)} disabled={disabled}
       onChange={value => setDraft({ ...draft, profile: value as LibraryProfile })} /></div>
     <div><label htmlFor="library-output">Выдача агентом</label><Select id="library-output" className="settings-select" value={draft.outputPolicy} options={options(outputModes)} disabled={disabled}

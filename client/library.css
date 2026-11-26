@@ -189,22 +189,12 @@
 .library-source-summary > img { width: 26px; height: 26px; }
 .library-source-summary > div { display: grid; gap: 2px; min-width: 0; overflow-wrap: anywhere; }
 .library-source-summary small { color: var(--text-muted); }
-.library-form .library-form-grid > .library-name-row {
-  display: flex; align-items: flex-end; gap: 10px;
-}
-.library-name-row > div { flex: 1; display: grid; min-width: 0; gap: 6px; }
-.workspace-dialog .library-name-row input[type="text"] {
-  margin: 0; min-width: 0; block-size: max(40px, 2.75rem);
-}
-.library-name-row > .library-active-pill {
-  display: inline-flex; align-items: center; flex: none; gap: 8px; min-height: max(40px, 2.75rem);
-  margin: 0; padding-inline: 10px; border: 1px solid var(--control-border); border-radius: 9px;
-  color: var(--text-secondary); background: var(--control); cursor: pointer;
-}
-.library-active-pill:has(input:checked) { background: var(--accent-soft); }
-.library-active-pill:has(input:focus-visible) { outline: 2px solid var(--accent-strong); outline-offset: 1px; }
-.library-active-pill input { flex: none; margin: 0; accent-color: var(--accent); }
-.library-active-pill:has(input:disabled) { cursor: default; opacity: .65; }
+.library-name-controls { display: flex; align-items: center; gap: 10px; }
+.workspace-dialog .library-name-controls input[type="text"] { flex: 1; margin: 0; min-width: 0; block-size: max(40px, 2.75rem); }
+.library-name-controls .active-status-chip { flex: none; margin: 0; }
+.library-name-controls .active-status-chip:has(input:enabled) { cursor: pointer; }
+.library-name-controls .active-status-chip:has(input:focus-visible) { outline: 2px solid var(--accent-strong); outline-offset: 1px; }
+.library-name-controls .active-status-chip input { margin: 0; }
 .library-path, .library-path > span { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; min-width: 0; overflow-wrap: anywhere; }
 .library-path button { color: var(--accent-strong); padding: 2px 3px; text-decoration: underline; }
 .library-folder-tree { max-height: 34dvh; overflow: auto; border: 1px solid var(--border); border-radius: 8px; padding: 4px; }
