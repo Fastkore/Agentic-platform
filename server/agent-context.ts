@@ -59,6 +59,6 @@ export function agentContext(context: AgentContext, tools?: CodexTools) {
     names.has('fastkore_cli_describe') && 'fastkore_cli_describe показывает справку о командах чтения.',
     names.has('fastkore_cli_command_describe') && 'Синтаксис команды установленной CLI — fastkore_cli_command_describe по имени команды.',
     names.has('fastkore_cli_catalog') && 'Перечень команд установленной CLI — fastkore_cli_catalog.',
-    context.erpReadOnly && (isAssistant ? 'В общем помощнике Финист для ERP действует режим только чтения.' : 'В этой установке роль сотрудника разрешает только чтение ERP.'),
+    context.erpReadOnly && 'В этой установке роль сотрудника разрешает только чтение ERP.',
   ].filter(Boolean).join('\n');
 }
