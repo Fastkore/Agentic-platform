@@ -2,7 +2,8 @@ import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } f
 import { ChevronDown, ChevronRight, Folder, FolderOpen, RefreshCw } from 'lucide-react';
 import { externalLabels, type DriveAccount, type ExternalFolder, type ExternalProvider, type ExternalSelection } from '../shared/library';
 import type { Request } from './library-upload';
-import { DriveProviderIcon } from './DriveProviderIcon';
+import { DriveProviderIcon, driveProviderIcons } from './DriveProviderIcon';
+import { Select } from './Select';
 import { ProgressRing, SettingsSpinner } from './SettingsSpinner';
 
 const guides = {
@@ -282,14 +283,9 @@ export function ExternalLibraryPicker({ provider, request, onSelect, selectionCo
       </div>
     </> : accounts.length ? <>
       <label htmlFor={accountFieldId}>Аккаунт {name}</label>
-      <div className="library-account-control">
-        <DriveProviderIcon provider={provider} />
-        <select id={accountFieldId} className="library-drive-select" disabled={busy}
-          value={selectedAccount?.id ?? ''} onChange={event => { setSelectedAccountId(event.target.value); setError(''); }}>
-          {accounts.length > 1 && <option value="" disabled>Выберите аккаунт</option>}
-          {accounts.map(account => <option key={account.id} value={account.id}>{account.name}</option>)}
-        </select>
-      </div>
+      <Select id={accountFieldId} className="settings-select" placeholder="Выберите аккаунт" disabled={busy}
+        options={accounts.map(account => ({ value: account.id, label: account.name, image: driveProviderIcons[account.provider] }))}
+        value={selectedAccount?.id ?? ''} onChange={id => { setSelectedAccountId(id); setError(''); }} />
       <div className="settings-actions">
         <button type="button" className="primary" disabled={busy || !selectedAccount} aria-busy={busy}
           onClick={() => { if (selectedAccount) void useSaved(selectedAccount); }}>Далее</button>

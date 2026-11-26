@@ -1,10 +1,12 @@
-import { useState } from 'react';
+import { useId, useState } from 'react';
+import { Select } from './Select';
 import type { ProjectChatDefaults } from '../shared/types';
 
 export function ChatDefaultsEditor({ value, save }: {
   value: ProjectChatDefaults;
   save: (draft: ProjectChatDefaults) => Promise<ProjectChatDefaults>;
 }) {
+  const effortId = useId();
   const [draft, setDraft] = useState(value);
   const [pending, setPending] = useState(false);
   const [message, setMessage] = useState('');
@@ -26,10 +28,12 @@ export function ChatDefaultsEditor({ value, save }: {
           i === index ? { ...item, text: event.target.value } : item) })} /></label>)}
       <label>Модель обычного чата<input value={draft.model} placeholder="Модель по умолчанию"
         onChange={event => setDraft({ ...draft, model: event.target.value })} /></label>
-      {draft.model && <label>Глубина рассуждения<select value={draft.reasoningEffort}
-        onChange={event => setDraft({ ...draft, reasoningEffort: event.target.value as ProjectChatDefaults['reasoningEffort'] })}>
-        {['low', 'medium', 'high', 'xhigh'].map(level => <option key={level}>{level}</option>)}
-      </select></label>}
+      {draft.model && <div className="project-instructions-form">
+        <label htmlFor={effortId}>Глубина рассуждения</label>
+        <Select id={effortId} className="settings-select" value={draft.reasoningEffort}
+          options={['low', 'medium', 'high', 'xhigh'].map(level => ({ value: level, label: level }))}
+          onChange={value => setDraft({ ...draft, reasoningEffort: value as ProjectChatDefaults['reasoningEffort'] })} />
+      </div>}
       <div className="settings-dialog-actions"><button className="primary" disabled={pending}>Сохранить настройки чата</button></div>
       {message && <p role="status">{message}</p>}
     </form>

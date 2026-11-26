@@ -90,12 +90,20 @@ export function Select({ options, value, onChange, id, label, className = '', pl
   }
 
   useLayoutEffect(() => {
-    if (!expanded) return;
+    if (!expanded) {
+      setPlacement(undefined);
+      return;
+    }
     const button = trigger.current;
     if (!button) return;
     const measure = (event?: Event) => {
       if (event?.target === menu.current) return;
       const rect = button.getBoundingClientRect();
+      const dialog = button.closest('dialog')?.getBoundingClientRect();
+      if (rect.bottom <= Math.max(0, dialog?.top ?? 0) || rect.top >= Math.min(innerHeight, dialog?.bottom ?? innerHeight)) {
+        setOpen(false);
+        return;
+      }
       const scale = interfaceScale(button);
       const viewportWidth = innerWidth / scale, viewportHeight = innerHeight / scale;
       const width = Math.min(Math.max(fitContent ? 340 : 180, rect.width / scale), viewportWidth - 16);
@@ -119,7 +127,13 @@ export function Select({ options, value, onChange, id, label, className = '', pl
   }, [expanded, options.length, fitContent, !!placement]);
 
   useEffect(() => {
-    if (expanded) menu.current?.children[active]?.scrollIntoView({ block: 'nearest' });
+    const list = menu.current;
+    const option = list?.children[active];
+    if (!expanded || !list || !option) return;
+    const listRect = list.getBoundingClientRect();
+    const optionRect = option.getBoundingClientRect();
+    const delta = optionRect.top < listRect.top ? optionRect.top - listRect.top : Math.max(0, optionRect.bottom - listRect.bottom);
+    if (delta) list.scrollTop += delta / interfaceScale(list);
   }, [expanded, active, placement]);
 
   useEffect(() => {

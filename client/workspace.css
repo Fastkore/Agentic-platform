@@ -811,7 +811,7 @@
 .settings-nav { display: grid; align-content: start; gap: 5px; overflow: auto; padding: 22px 14px; border-right: 1px solid var(--border); }
 .settings-nav .workspace-row { min-height: 44px; gap: 13px; padding-inline: 16px; text-align: left; font-size: 15px; border: 1px solid transparent; }
 .settings-nav svg { flex: none; color: var(--text-muted); }
-.settings-section-picker { display: none; }
+.workspace-select.settings-section-picker { display: none; }
 .settings-content { min-width: 0; padding: 28px 32px 27px; background: var(--canvas); scrollbar-gutter: stable; }
 .settings-pane { max-width: 1140px; margin-inline: auto; }
 .settings-personal .settings-pane { display: flex; flex-direction: column; min-height: 100%; }
@@ -908,7 +908,7 @@
 .personal-editor-actions .workspace-icon:disabled { opacity: .55; }
 .personal-fields { display: grid; gap: 6px 12px; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
 .personal-fields label { display: grid; gap: 5px; margin: 0; }
-.personal-fields select, .personal-sidebar-top > select { min-width: 0; padding: 8px; border: 1px solid var(--control-border); border-radius: 8px; background: var(--surface); }
+.personal-fields .workspace-select, .personal-sidebar-top > .workspace-select { min-width: 0; padding: 8px; border: 1px solid var(--control-border); border-radius: 8px; background: var(--surface); }
 .personal-reload { align-self: flex-start; }
 .workspace-dialog .personal-text, .personal-editor .personal-preview {
   flex: 1; width: 100%; min-height: 120px; margin: 0; padding: 14px;
@@ -977,7 +977,7 @@
 .personal-instructions-compact .personal-editor-actions { gap: 4px; }
 .personal-instructions-compact .personal-editor-actions .workspace-icon { width: 32px; height: 32px; }
 .personal-instructions-compact .personal-editor-actions .workspace-icon svg { width: 17px; height: 17px; }
-.personal-instructions-compact .personal-fields select { font-size: 12px; }
+.personal-instructions-compact .personal-fields .workspace-select { font-size: 12px; }
 .personal-instructions-compact :is(.personal-text, .personal-preview) { font-size: 13px; }
 @container workspace-settings (width <= 680px) {
   .settings-personal .settings-pane { height: 100%; min-height: 0; }
@@ -1245,7 +1245,7 @@
 .workspace-dialog::backdrop { backdrop-filter: blur(4px); }
 .workspace-dialog.personal-instructions-compact { border: 0; border-radius: 7px; box-shadow: none; }
 .personal-instructions-compact :is(.personal-file-icon, .personal-search, .personal-text, .personal-title-input,
-  .personal-preview, .personal-fields select, .workspace-row, .workspace-icon, .secondary) { border-radius: 4px; }
+  .personal-preview, .personal-fields .workspace-select, .workspace-row, .workspace-icon, .secondary) { border-radius: 4px; }
 .workspace-dialog.personal-instructions-compact::backdrop { background: var(--canvas); backdrop-filter: none; }
 .audit-panel .audit-intro { margin: -4px 0 18px; color: var(--text-muted); font-size: 14px; }
 .audit-summary { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 14px; margin-bottom: 24px; }
@@ -1403,7 +1403,7 @@
   .workspace-settings > header { padding-inline: 14px; }
   .settings-layout { grid-template: auto minmax(0, 1fr) / minmax(0, 1fr); }
   .settings-nav { display: none; }
-  .settings-section-picker { display: block; min-width: 0; margin: 10px 14px; padding: 8px 10px; border: 1px solid var(--control-border); border-radius: 7px; background: var(--control); color: var(--text); }
+  .workspace-select.settings-section-picker { display: flex; min-width: 0; margin: 10px 14px; padding: 8px 10px; border: 1px solid var(--control-border); border-radius: 7px; background: var(--control); color: var(--text); }
   .settings-content { padding: 14px 14px; scrollbar-gutter: auto; }
   .workspace-settings .settings-pane > h2 { margin-bottom: 16px; }
   :where(.workspace-shell:not([data-fastkore])) .workspace-settings .settings-pane > h2 { font-size: 21px; }

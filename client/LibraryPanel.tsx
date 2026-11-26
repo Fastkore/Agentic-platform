@@ -125,10 +125,8 @@ export function CreateLibraryForm({ kind, request, pending, submit, cancel, proj
           openAccounts={openAccounts} provider={provider} request={request}
           providerPicker={<>
             <label htmlFor="library-provider">Внешний диск</label>
-            <select id="library-provider" className="library-drive-select" value={provider}
-              onChange={event => setProvider(event.target.value as ExternalProvider)}>
-              {options(externalLabels).map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
-            </select>
+            <Select id="library-provider" className="settings-select" options={options(externalLabels)} value={provider}
+              onChange={value => setProvider(value as ExternalProvider)} />
           </>}
           onSelect={(next, name) => {
           setSelection(next);

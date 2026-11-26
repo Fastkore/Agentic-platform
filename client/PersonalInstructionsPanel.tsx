@@ -1,3 +1,4 @@
+import { Select } from './Select';
 import { useEffect, useId, useRef, useState } from 'react';
 import { ArrowLeft, Check, ChevronRight, Download, FileText, Folder, Layers, Menu, Plus, Search, Trash2, Undo2, Upload, Users } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
@@ -212,13 +213,12 @@ export function PersonalInstructionsPanel({ request, project, erp, context, admi
           <h2>Инструкции сотрудников</h2>
           {draft && <span className="personal-badge">{notes.length + 1}</span>}
         </div>}
-        {administration ? <select aria-label="Сотрудник" value={authorId} disabled={busy || !authors.length} onChange={event => {
-          if (dirty && !window.confirm('Перейти к другому сотруднику и сбросить правки?')) return;
-          setDraft(undefined); setSaved(undefined); setAuthorId(event.target.value);
-        }}>
-          {!authors.length && <option value="">Сотрудники</option>}
-          {authors.map(author => <option key={author.id} value={author.id}>{author.name}{author.role ? ' · ' + author.role : ''}</option>)}
-        </select> : <div className="personal-add-actions">
+        {administration ? <Select label="Сотрудник" className="settings-select" value={authorId} placeholder="Сотрудники"
+          disabled={busy || !authors.length} options={authors.map(author => ({ value: author.id, label: author.name + (author.role ? ' · ' + author.role : '') }))}
+          onChange={id => {
+            if (dirty && !window.confirm('Перейти к другому сотруднику и сбросить правки?')) return;
+            setDraft(undefined); setSaved(undefined); setAuthorId(id);
+          }} /> : <div className="personal-add-actions">
           <button type="button" className="secondary" disabled={busy || !draft || draft.notes.length >= limits.notes} onClick={() => addNote()}>
             <Plus size={17} aria-hidden="true" />Добавить
           </button>
@@ -309,11 +309,13 @@ export function PersonalInstructionsPanel({ request, project, erp, context, admi
       {draft && (canEdit ? <>
         {note && !note.id && <div className="personal-fields">
           <label>Применение
-            <select value={note.pendingScope ?? ''} disabled={busy} onChange={event => updateNote({ pendingScope: event.target.value as Scope || undefined })}>
-              <option value="">Все личные чаты</option>
-              {project && <option value="project">Проект · {project.name}</option>}
-              {erp && <option value="erp">{currentComponent ?? 'Текущая установка Fastkore'}</option>}
-            </select></label>
+            <Select label="Применение" className="settings-select" value={note.pendingScope ?? ''} disabled={busy}
+              onChange={value => updateNote({ pendingScope: value as Scope || undefined })} options={[
+                { value: '', label: 'Все личные чаты' },
+                ...(project ? [{ value: 'project', label: 'Проект · ' + project.name }] : []),
+                ...(erp ? [{ value: 'erp', label: currentComponent ?? 'Текущая установка Fastkore' }] : []),
+              ]} />
+          </label>
         </div>}
         <textarea className="personal-text" aria-label={textLabel} value={text} maxLength={textLimit} disabled={busy}
           onChange={event => note ? updateNote({ text: event.target.value }) : change({ ...draft, text: event.target.value })} />

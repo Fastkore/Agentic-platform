@@ -1,4 +1,5 @@
 import { useId, useState } from 'react';
+import { Select } from './Select';
 import type { Request } from './library-upload';
 
 export interface StorageLocation { endpoint: string; bucket: string; region: string; forcePathStyle: boolean }
@@ -42,9 +43,9 @@ export function LibraryStorageSetup({ request, location, onSaved, cancel }: {
       </div>
     </> : <>
       <strong>Шаг 1. Укажите хранилище для файлов</strong>
-      <label>Сервис<select value={aws ? 'aws' : 'minio'} onChange={e => setAws(e.target.value === 'aws')}>
-        <option value="minio">MinIO или другой S3-сервис</option><option value="aws">Amazon S3</option>
-      </select></label>
+      <label htmlFor={hintId + '-service'}>Сервис</label>
+      <Select id={hintId + '-service'} className="settings-select" value={aws ? 'aws' : 'minio'} onChange={value => setAws(value === 'aws')}
+        options={[{ value: 'minio', label: 'MinIO или другой S3-сервис' }, { value: 'aws', label: 'Amazon S3' }]} />
       {!aws && <div className="storage-field"><label>Адрес S3 API<input aria-describedby={hintId + '-endpoint'} type="url" value={endpoint} onChange={e => setEndpoint(e.target.value)} placeholder="http://minio:9000" /></label>
         <p className="help" id={hintId + '-endpoint'}>Если хранилище в соседнем контейнере, подключите оба сервиса к общей Docker-сети. Укажите имя сервиса и внутренний порт API, например http://minio:9000.</p></div>}
       <div className="storage-field"><label>Название бакета<input aria-describedby={hintId + '-bucket'} value={bucket} onChange={e => setBucket(e.target.value)} placeholder="Например, project-library" /></label>

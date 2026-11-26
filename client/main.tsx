@@ -1851,10 +1851,9 @@ function App() {
           {!sharedContextHistory && <button type="button" className="workspace-icon" title="Создать новый чат по этому контексту" aria-label="Создать новый чат по этому контексту"
             disabled={pending || relatedLoading || !projectChatAvailable || (!projectId && !canCreateProject)} onClick={() => void newChat(projectId, true)}><SquarePen size={17} /></button>}
         </div>}
-        <select className="workspace-scale" aria-label="Масштаб интерфейса" title="Масштаб интерфейса"
-          value={interfaceScale} disabled={savingScale} onChange={event => void changeInterfaceScale(Number(event.currentTarget.value) as InterfaceScale)}>
-          {interfaceScales.map(scale => <option key={scale} value={scale}>{scale}%</option>)}
-        </select>
+        <Select className="workspace-scale" label="Масштаб интерфейса" title="Масштаб интерфейса"
+          value={String(interfaceScale)} disabled={savingScale} onChange={value => void changeInterfaceScale(Number(value) as InterfaceScale)}
+          options={interfaceScales.map(scale => ({ value: String(scale), label: scale + '%' }))} />
         {inFastkore && <button type="button" className="workspace-icon" aria-label="Обновить панель"
           title="Обновить панель (F5)" aria-keyshortcuts="F5 Control+F5" disabled={refreshDisabled} onClick={refreshPanel}>
           <RefreshCw size={16} aria-hidden="true" />
@@ -2020,10 +2019,9 @@ function App() {
               onClick={() => chooseSettingsSection(section)}><Icon size={16} aria-hidden="true" />{label}</button>;
           })}
         </nav>
-        <select className="settings-section-picker" aria-label="Раздел настроек" value={settingsSection}
-          onChange={event => chooseSettingsSection(event.target.value as SettingsSection)}>
-          {visibleSettingsSections.map(id => <option key={id} value={id}>{settingsSections[id].label}</option>)}
-        </select>
+        <Select className="settings-section-picker" label="Раздел настроек" value={settingsSection}
+          onChange={value => chooseSettingsSection(value as SettingsSection)}
+          options={visibleSettingsSections.map(id => ({ value: id, label: settingsSections[id].label }))} />
         <section key={settingsSection} className={'panel-body settings-content' + (!inFastkore && settingsSection === 'employeeInstructions' ? ' settings-employee-instructions' : '') + (settingsSection === 'server' ? ' settings-server' : instructionSettings ? ' settings-personal' : '')}
           aria-labelledby="settings-section-title">
           <div className={'settings-pane' + (settingsSection === 'agent' ? ' settings-pane-instructions' : '')}>
