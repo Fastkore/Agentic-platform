@@ -1,5 +1,5 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
-import { ChevronDown, ChevronLeft, ChevronRight, Folder, FolderOpen, RefreshCw } from 'lucide-react';
+import { ArrowLeft, ArrowRight, ChevronDown, ChevronRight, Folder, FolderOpen, RefreshCw } from 'lucide-react';
 import { externalLabels, type DriveAccount, type ExternalFolder, type ExternalProvider, type ExternalSelection } from '../shared/library';
 import type { Request } from './library-upload';
 import { DriveProviderIcon, driveProviderIcons } from './DriveProviderIcon';
@@ -364,8 +364,8 @@ export function ExternalLibraryPicker({ provider, request, onSelect, checkSelect
           try { await navigator.clipboard.writeText(redirect); setCopied(true); setError(''); }
           catch { setError('Выделите адрес в поле выше и скопируйте его.'); }
         }}>{copied ? 'Адрес скопирован' : 'Скопировать адрес'}</button>}
-        <button type="button" className="primary library-action-button" onClick={() => { setError(''); setStep('keys'); }}>
-          Далее — ввести ключи <ChevronRight size={16} aria-hidden="true" />
+        <button type="button" className="secondary library-action-button" onClick={() => { setError(''); setStep('keys'); }}>
+          Далее — ввести ключи <ArrowRight size={16} aria-hidden="true" />
         </button>
       </div>
     </>}
@@ -388,7 +388,7 @@ export function ExternalLibraryPicker({ provider, request, onSelect, checkSelect
           setStep(replacingDropbox ? 'start' : 'register');
           if (replacingDropbox) { setReplacingDropbox(false); setSecret(''); }
           setError('');
-        }}><ChevronLeft size={16} aria-hidden="true" /> Назад</button>
+        }}><ArrowLeft size={16} aria-hidden="true" /> Назад</button>
       </div>
     </>}
     {error && <p role="alert" className="inline-error">{error}</p>}
@@ -412,8 +412,8 @@ export function ExternalLibraryPicker({ provider, request, onSelect, checkSelect
           value={selectedAccount?.id ?? ''} onChange={id => { setSelectedAccountId(id); setError(''); }} />
       </div>
       <div className="settings-actions">
-        <button type="button" className="primary library-action-button" disabled={busy || !selectedAccount} aria-busy={busy}
-          onClick={() => { if (selectedAccount) void useSaved(selectedAccount); }}>Далее <ChevronRight size={16} aria-hidden="true" /></button>
+        <button type="button" className="secondary library-action-button" disabled={busy || !selectedAccount} aria-busy={busy}
+          onClick={() => { if (selectedAccount) void useSaved(selectedAccount); }}>Далее <ArrowRight size={16} aria-hidden="true" /></button>
         {error && openAccounts && <button type="button" className="secondary" onClick={() => openAccounts(provider)}>Перейти в «Аккаунты»</button>}
       </div>
     </> : <>
@@ -435,7 +435,7 @@ export function ExternalLibraryPicker({ provider, request, onSelect, checkSelect
         <a className="library-provider-link" href={authUrl} target="_blank" rel="noopener noreferrer">Открыть окно входа</a>
         <button type="button" className="secondary library-action-button" onClick={() => {
           controller.current?.abort(); setCode(''); setAuthUrl(''); setBusy(false);
-        }}><ChevronLeft size={16} aria-hidden="true" /> Назад</button>
+        }}><ArrowLeft size={16} aria-hidden="true" /> Назад</button>
       </div>
     </>}
     {authUrl && provider === 'google' && <details>
@@ -455,7 +455,7 @@ export function ExternalLibraryPicker({ provider, request, onSelect, checkSelect
         <p className="help">Агенты с доступом смогут читать файлы в этой папке и её подпапках.</p>
         {selectionConfirmed === undefined && <div className="settings-actions">
           <button type="button" className="secondary library-action-button" onClick={() => { setChosen(false); onSelect(undefined); }}>
-            <ChevronLeft size={16} aria-hidden="true" /> Назад
+            <ArrowLeft size={16} aria-hidden="true" /> Назад
           </button>
         </div>}
       </> : <>
@@ -483,16 +483,16 @@ export function ExternalLibraryPicker({ provider, request, onSelect, checkSelect
             onChange={event => setNameConflict({ ...nameConflict, name: event.target.value })} />
         </div>}
         <div className="settings-actions library-folder-actions">
-          {current && <button type="button" className="primary library-action-button" disabled={folderChoiceDisabled(current)}
-            onClick={() => void chooseFolder(current)}>Далее <ChevronRight size={16} aria-hidden="true" /></button>}
-          {appFolder && <button type="button" className="primary" disabled={folderChoiceDisabled(appFolder)}
-            onClick={() => void chooseFolder(appFolder)}>Выбрать папку приложения</button>}
+          {current && <button type="button" className="secondary library-action-button" disabled={folderChoiceDisabled(current)}
+            onClick={() => void chooseFolder(current)}>Далее <ArrowRight size={16} aria-hidden="true" /></button>}
+          {appFolder && <button type="button" className="secondary library-action-button" disabled={folderChoiceDisabled(appFolder)}
+            onClick={() => void chooseFolder(appFolder)}>Выбрать папку приложения <ArrowRight size={16} aria-hidden="true" /></button>}
           {appFolderConnected && <small className="library-folder-status">Подключена</small>}
           <span className="library-account-label library-folder-account" title={name}>
             <DriveProviderIcon provider={provider} /><span>Аккаунт: <strong>{accountName}</strong></span>
           </span>
           <button type="button" className="secondary library-action-button" disabled={busy} onClick={backToAccount}>
-            <ChevronLeft size={16} aria-hidden="true" /> Назад
+            <ArrowLeft size={16} aria-hidden="true" /> Назад
           </button>
         </div>
       </>}

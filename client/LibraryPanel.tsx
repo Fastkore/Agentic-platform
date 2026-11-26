@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, useId } from 'react';
-import { ChevronLeft, Cloud, Database, Folder, HardDrive, Users, UserPlus, Layers, Trash2 } from 'lucide-react';
+import { ArrowLeft, ChevronLeft, Cloud, Database, Folder, HardDrive, Users, UserPlus, Layers, Save, Trash2 } from 'lucide-react';
 import type { LibraryFolderSummary, LibraryProfile, OutputPolicy } from '../shared/library';
 import { externalLabels, type DriveAccount, type ExternalProvider, type ExternalSelection } from '../shared/library';
 import { LibraryStorageSetup, type StorageStatus } from './LibraryStorageSetup';
@@ -155,7 +155,7 @@ export function CreateLibraryForm({ kind, request, pending, submit, cancel, proj
       {kind === 's3'
         ? <button type="button" className="secondary" disabled={pending} onClick={cancel}>Отмена</button>
         : <button type="button" className="secondary library-action-button" disabled={pending} onClick={() => { setSelection(undefined); clearError(); }}>
-          <ChevronLeft size={16} aria-hidden="true" /> Назад
+          <ArrowLeft size={16} aria-hidden="true" /> Назад
         </button>}</div>}
   </form>;
   return kind === 'external'
@@ -275,7 +275,9 @@ export function LibraryPanel({ request, isAdmin, initialAccountsProvider }: { re
           setDraft={next => setEditing({ draft: next, revision: editing?.revision ?? folder.revision })} />
         {folder.classification === 'restricted' && editDraft.active && <p className="help">Для этой папки также действуют правила закрытого анализа.</p>}
         <div className="settings-actions">
-          <button type="submit" className="primary" disabled={pending || !editing || !editDraft.name.trim()}>Сохранить</button>
+          <button type="submit" className="secondary library-action-button" disabled={pending || !editing || !editDraft.name.trim()}>
+            <Save size={16} aria-hidden="true" /> Сохранить
+          </button>
           <button type="button" className="secondary" disabled={pending || !editing} onClick={() => setEditing(undefined)}>Отмена</button>
           {folder.canDelete && <button type="button" className="secondary library-danger" disabled={pending}
             onClick={() => setConfirmRemoval(true)}><Trash2 size={16} aria-hidden="true" />{folder.external ? 'Отключить библиотеку' : 'Удалить папку'}</button>}
