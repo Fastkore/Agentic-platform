@@ -1126,12 +1126,15 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
   });
   app.get('/api/chats/archive', async request => {
     const { user: actor, credential } = principal(request);
-    if (credential.source !== 'fastkore' || !credential.installationId) throw new BridgeError('Личный архив доступен в сеансе Fastkore.', 403);
-    return archivedChats((project, chat) => chat.ownerId === actor.id &&
+    const inErp = credential.source === 'fastkore' && !!credential.installationId;
+    if (!inErp && !canUseAssistant(workspace.store.state, actor, credential)) {
+      throw new BridgeError('Личный архив доступен в сеансе Fastkore.', 403);
+    }
+    return archivedChats((project, chat) => inErp && chat.ownerId === actor.id &&
       (project.deletedAt ? chatIdentityMatches({ user: actor, credential }, chat) :
         chat.fastkoreBinding?.installationId === credential.installationId && chatIdentityMatches({ user: actor, credential }, chat)) &&
       access.canAccessChat(actor, project, chat, credential),
-      chat => chat.ownerId === actor.id && chat.assistantInstallationId === credential.installationId && chat.assistantExternalUserId === credential.externalUserId);
+      chat => access.canAccessAssistantChat(actor, chat, credential));
   });
   const relatedChatContext = (request: FastifyRequest, raw: unknown) => {
     const p = principal(request);
@@ -1430,12 +1433,9 @@ export async function createApp(workspace: Workspace, options: AppOptions = {}) 
     schema: { body: object({ archived: { type: 'boolean' } }, ['archived']) },
   }, async request => viewChat(request, await workspace.setChatArchived(assistantProjectId, request.params.chatId, request.body.archived, () => {
     const p = principal(request);
-    if (request.body.archived) {
-      if (p.user.role === 'admin') return p.user;
-      requestAssistantChat(request, { edit: true });
-      return p.user;
-    }
-    return admin(request);
+    if (p.user.role === 'admin') return p.user;
+    requestAssistantChat(request, request.body.archived ? { edit: true } : {});
+    return p.user;
   })));
   app.delete<{ Params: { chatId: string } }>(assistantChatPath, request => workspace.deleteArchivedChat(assistantProjectId, request.params.chatId, () => {
     const p = principal(request);

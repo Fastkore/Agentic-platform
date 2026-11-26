@@ -275,7 +275,7 @@
 }
 .project-line { display: flex; align-items: center; gap: 2px; margin-inline-end: -5px; }
 .project-row { flex: 1; width: auto; gap: 6px; padding-inline: 8px 3px; color: var(--nav-muted); }
-.project-tree :is(.project-row, .chat-row, .show-chats) { min-height: 30px; }
+:is(.project-tree, .fastis-nav) :is(.project-row, .chat-row, .show-chats) { min-height: 30px; }
 .project-row > span { flex: 1; }
 .project-row > svg:last-child { opacity: .65; }
 .project-new-chat { width: 28px; opacity: 0; }
@@ -1334,7 +1334,7 @@
   .workspace-brand { height: 58px; padding-inline: 18px; }
   .workspace-start { padding-bottom: 14px; }
   .new-conversation { min-height: 39px; }
-  .project-tree :is(.project-row, .chat-row, .show-chats) { min-height: 27px; }
+  :is(.project-tree, .fastis-nav) :is(.project-row, .chat-row, .show-chats) { min-height: 27px; }
   .workspace-top { flex-basis: 52px; gap: 12px; padding-inline: 15px; }
   :where(.workspace-shell:not([data-fastkore])) .workspace-top h1 { font-size: 13.5px; }
   :where(.workspace-shell:not([data-fastkore])) .workspace-welcome h2 { font-size: clamp(21.6px, 1.62vw, 28.8px); }

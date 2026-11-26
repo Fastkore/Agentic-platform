@@ -223,7 +223,7 @@ function App() {
   useEffect(() => { setProjectRequested(false); }, [projectId, chatId, contextVersion]);
   const [drafts, setDrafts] = useState<Record<string, string>>({}), [files, setFiles] = useState<Record<string, DraftAttachment[]>>({});
   const [specialists, setSpecialists] = useState<Record<string, string | undefined>>({});
-  const [panel, setPanel] = useState<'settings' | 'project' | 'project-settings' | 'project-instructions' | 'search' | 'archive' | 'related' | 'rename-chat' | 'reset-chat' | 'share-chat' | 'chat-files' | null>(null);
+  const [panel, setPanel] = useState<'settings' | 'project' | 'project-settings' | 'project-instructions' | 'search' | 'archive' | 'assistant-archive' | 'related' | 'rename-chat' | 'reset-chat' | 'share-chat' | 'chat-files' | null>(null);
   const [renameDraft, setRenameDraft] = useState<{ projectId: string; chatId: string; title: string; destinationId?: string }>();
   const [modelPreview, setModelPreview] = useState<{ name: string; url: string; format: PreviewModelFormat }>();
   const [screenshotPreview, setScreenshotPreview] = useState<{ file: File; preview: string }>();
@@ -1649,6 +1649,8 @@ function App() {
               </span>}
               {assistantChats.length > 0 && (assistantExpanded ? <ChevronDown size={12} aria-hidden="true" /> : <ChevronRight size={12} aria-hidden="true" />)}
             </button>
+            <button type="button" className="workspace-icon fastis-new-chat" title="Закрытые чаты Финиста" aria-label="Закрытые чаты Финиста"
+              disabled={pending} onClick={() => { setError(''); setSidebarOpen(false); setPanel('assistant-archive'); }}><History size={16} /></button>
             <button type="button" className="workspace-icon fastis-new-chat" title="Новая тема с Финистом" aria-label="Новая тема с Финистом"
               disabled={pending} onClick={startAssistantTopic}><SquarePen size={16} /></button>
           </div>
@@ -1683,6 +1685,7 @@ function App() {
               </React.Fragment>;
             })}
             {recentAssistant.length > 5 && <button className="workspace-row show-chats" onClick={() => setShowAll(old => ({ ...old, [assistantProjectId]: !old[assistantProjectId] }))}>{showAll[assistantProjectId] ? 'Свернуть' : 'Показать ещё'}</button>}
+            <button type="button" className="workspace-row show-chats" onClick={() => { setError(''); setSidebarOpen(false); setPanel('assistant-archive'); }}><Archive size={13} aria-hidden="true" />Закрытые чаты</button>
           </div>}
         </div>;
       })()}
@@ -1813,22 +1816,30 @@ function App() {
                 setPanel('rename-chat');
               }}><Pencil size={15} /></button>}
           </div>
-          <div className="chat-access" title={dateTooltip(chat.updatedAt, chat.ownerName)}>
-            {canEditChatDetails && !withoutProject && !isAssistant ? <Select label="Видимость чата" value={chat.visibility ?? 'private'} disabled={pending || chatBusy}
+          {!isAssistant && <div className="chat-access" title={dateTooltip(chat.updatedAt, chat.ownerName)}>
+            {canEditChatDetails && !withoutProject ? <Select label="Видимость чата" value={chat.visibility ?? 'private'} disabled={pending || chatBusy}
               onChange={visibility => {
                 if (visibility === 'project' && chat.visibility !== 'project') { setError(''); setPanel('share-chat'); }
                 else if (visibility === 'private') void changeVisibility('private');
               }}
               options={[{ value: 'private', label: 'Личный' }, { value: 'project', label: 'Общий' }]} />
-              : <span><LockKeyhole size={13} />{isAssistant ? 'Личный · Чтение ERP' : (chat.visibility === 'project' ? 'Общий' : 'Личный')}</span>}
-          </div>
-          {isAssistant && <button type="button" className="workspace-icon" aria-label="Новая тема с Финистом" title="Новая тема с Финистом"
-            disabled={pending} onClick={startAssistantTopic}><SquarePen size={17} /></button>}
-          {(isAdmin || isAssistant) && !matchesErpChat && !chat.archivedAt && <button type="button" className="workspace-icon chat-archive-button" aria-label="Перенести чат в архив" title="Перенести чат в архив"
+              : <span><LockKeyhole size={13} />{chat.visibility === 'project' ? 'Общий' : 'Личный'}</span>}
+          </div>}
+          {isAdmin && !isAssistant && !matchesErpChat && !chat.archivedAt && <button type="button" className="workspace-icon chat-archive-button" aria-label="Перенести чат в архив" title="Перенести чат в архив"
             disabled={pending || chatBusy} onClick={() => void archiveChat()}><Archive size={17} /></button>}
         </>}
-        {chat && <button type="button" className="workspace-icon" title="Файлы чата" aria-label="Файлы чата"
+        {chat && !isAssistant && <button type="button" className="workspace-icon" title="Файлы чата" aria-label="Файлы чата"
           onClick={() => setPanel('chat-files')}><Folder size={18} /></button>}
+        {isAssistant && <div className="related-chat-actions">
+          <button type="button" className="workspace-icon" title="Закрытые чаты Финиста" aria-label="Закрытые чаты Финиста"
+            disabled={pending} onClick={() => { setError(''); setPanel('assistant-archive'); }}><History size={18} /></button>
+          {chat && <button type="button" className="workspace-icon" aria-label="Новая тема с Финистом" title="Новая тема с Финистом"
+            disabled={pending} onClick={startAssistantTopic}><SquarePen size={17} /></button>}
+          {chat && !chat.archivedAt && <button type="button" className="workspace-icon chat-archive-button" aria-label="Перенести чат в архив" title="Перенести чат в архив"
+            disabled={pending || chatBusy} onClick={() => void archiveChat()}><Archive size={17} /></button>}
+          {chat && <button type="button" className="workspace-icon" title="Файлы чата" aria-label="Файлы чата"
+            onClick={() => setPanel('chat-files')}><Folder size={18} /></button>}
+        </div>}
         {erpChatKey && !isAssistant && <div className="related-chat-actions">
           <button type="button" className="workspace-icon" title="Связанные чаты" aria-label="Связанные чаты" onClick={() => { setError(''); setPanel('related'); }}><History size={18} /></button>
           {canReset && <button type="button" className="workspace-icon" title="Очистить чат" aria-label="Очистить чат"
@@ -1921,7 +1932,11 @@ function App() {
       </div>
     </WorkspaceDialog>}
     {panel === 'archive' && (isAdmin || erpAuth) && <ChatArchiveDialog request={api} close={closePanel} renderChat={renderHistory} manage={isAdmin}
-      onRestore={project => void (project === assistantProjectId || projects.some(item => item.id === project) ? loadChats(project) : api<UnassignedChatSummary[]>(unassignedChatsUrl).then(setUnassignedChats)).catch(fail)} />}
+      onOpenChat={(project, id) => { closePanel(); if (project === assistantProjectId) openAssistant(id); else navigateWorkspace(project, id); }}
+      onRestore={project => (project === assistantProjectId || projects.some(item => item.id === project) ? loadChats(project) : api<UnassignedChatSummary[]>(unassignedChatsUrl).then(setUnassignedChats)).catch(fail)} />}
+    {panel === 'assistant-archive' && assistantAvailable && <ChatArchiveDialog assistantOnly request={api} close={closePanel} renderChat={renderHistory} manage={isAdmin}
+      onOpenChat={(_project, id) => { closePanel(); openAssistant(id); }}
+      onRestore={() => loadChats(assistantProjectId).catch(fail)} />}
     {relatedPanelOpen && erpChatKey && <WorkspaceDialog title="Связанные чаты" className="related-chats-dialog" close={closePanel}>
       {error && <p className="inline-error" role="alert">{error}</p>}
       {relatedLoading ? <SettingsSpinner label="Загрузка чатов…" /> : <div className="archive-list">

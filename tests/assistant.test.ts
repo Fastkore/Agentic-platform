@@ -182,11 +182,13 @@ test('Fastis inherits employee ERP role permissions, uses reference screen conte
     assert.equal((await f.req('GET', '/api/assistant/chats', alice2.cookie)).json().length, 0);
     assert.equal((await f.req('GET', `/api/assistant/chats/${chat.id}`, alice2.cookie)).statusCode, 404);
 
-    // 4) Archive shows Fastis chat under Fastis name, and restore brings it back.
+    // 4) Archive shows Finist chat in both personal and admin archive, and the employee can restore it directly.
     assert.equal((await f.req('PATCH', `/api/assistant/chats/${chat.id}/archive`, alice.token, { archived: true })).statusCode, 200);
+    const aliceArchive = (await f.req('GET', '/api/chats/archive', alice.token)).json() as { id: string; projectId: string; projectName: string }[];
+    assert.ok(aliceArchive.some(item => item.id === chat.id && item.projectId === assistantProjectId && item.projectName === assistantName));
     const archiveList = (await f.req('GET', '/api/admin/chats/archive', f.admin)).json() as { id: string; projectId: string; projectName: string }[];
     assert.ok(archiveList.some(item => item.id === chat.id && item.projectId === assistantProjectId && item.projectName === assistantName));
-    assert.equal((await f.req('PATCH', `/api/assistant/chats/${chat.id}/archive`, f.admin, { archived: false })).statusCode, 200);
+    assert.equal((await f.req('PATCH', `/api/assistant/chats/${chat.id}/archive`, alice.token, { archived: false })).statusCode, 200);
 
     // 5) Move Fastis chat into an accessible project cleanly.
     await f.erp.setProjectRoles(f.app, f.admin, f.project.id, alice.projectRoles);
