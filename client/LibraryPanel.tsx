@@ -309,7 +309,10 @@ export function LibraryPanel({ request, isAdmin }: { request: Request; isAdmin: 
       <div className="settings-actions"><button type="button" className="primary" onClick={() => setAddAccount(true)}>Подключить аккаунт</button></div>
       {!accounts && !error && <SettingsSpinner label="Загрузка аккаунтов…" />}
       {accounts && (accounts.length ? <ul className="settings-records">{accounts.map(a => <li key={a.id}>
-        <div><strong><DriveProviderIcon provider={a.provider} />{a.name}</strong><small>{externalLabels[a.provider]} · Библиотек: {a.libraries}</small></div>
+        <div className="library-account-identity">
+          <DriveProviderIcon provider={a.provider} />
+          <div><strong>{a.name}</strong><small>{externalLabels[a.provider]} · Библиотек: {a.libraries}</small></div>
+        </div>
         <button type="button" className="secondary" disabled={pending || a.libraries > 0} title={a.libraries ? 'Сначала отключите связанные библиотеки' : undefined}
           onClick={() => setRemoveAccount(a)}>Отключить</button>
       </li>)}</ul> : <p className="help">Подключите первый аккаунт, чтобы выбирать его папки при создании библиотек.</p>)}
