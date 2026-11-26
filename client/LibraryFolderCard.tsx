@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { FilePlus2, FileText, Folder, FolderOpen, ListX, RefreshCw, Trash2, Upload } from 'lucide-react';
+import { Check, FilePlus2, FileText, Folder, FolderOpen, Link2, ListX, RefreshCw, Trash2, Upload, X } from 'lucide-react';
 import type { LibraryFolderSummary, OperationMode } from '../shared/library';
 import { externalLabels, type ExternalProvider, type ExternalSelection } from '../shared/library';
 import { ExternalLibraryPicker, driveSessionExpired } from './ExternalLibraryPicker';
@@ -105,11 +105,11 @@ export function LibraryFolderCard({ request, folder, isAdmin, reload, openAccoun
       {folder.external.error && <p className="inline-error" role="alert">{folder.external.error}</p>}
       {preparing && <SettingsSpinner inline label="Идёт синхронизация и подготовка к поиску…" />}
       <div className="settings-actions library-sync-actions">
-        {canManage && <button type="button" className="secondary" disabled={pending || preparing} onClick={() => void act(() => post(base + '/external/sync'))}>Синхронизировать</button>}
-        {isAdmin && <button type="button" className="secondary" onClick={() => { setReconnecting(!reconnecting); setSelection(undefined); }}> {reconnecting ? 'Отмена' : 'Восстановить связь'}</button>}
+        {canManage && <button type="button" className="secondary" disabled={pending || preparing} onClick={() => void act(() => post(base + '/external/sync'))}><RefreshCw size={16} aria-hidden="true" />Синхронизировать</button>}
+        {isAdmin && <button type="button" className="secondary" onClick={() => { setReconnecting(!reconnecting); setSelection(undefined); }}>{reconnecting ? <X size={16} aria-hidden="true" /> : <Link2 size={16} aria-hidden="true" />}{reconnecting ? 'Отмена' : 'Восстановить связь'}</button>}
       </div>
       {reconnecting && <><ExternalLibraryPicker key={attempt} provider={folder.external.provider} openAccounts={openAccounts} request={request} onSelect={setSelection} />
-        <button type="button" className="secondary" disabled={pending || !selection} onClick={() => void act(async () => { await post(base + '/external/reconnect', selection); setReconnecting(false); }, 'Связь восстановлена.')}>Подключить исходную папку</button></>}
+        <button type="button" className="secondary" disabled={pending || !selection} onClick={() => void act(async () => { await post(base + '/external/reconnect', selection); setReconnecting(false); }, 'Связь восстановлена.')}><Check size={16} aria-hidden="true" />Подключить исходную папку</button></>}
     </div>}
     {upload && !folder.external ? <LibraryUploadPanel request={request} folder={folder} mode={upload} canDecideSecrets={canManage} close={() => setUpload(undefined)} done={reload} /> : <>
       {folder.failed && !folder.operation && <p className="library-warning" role="status">
@@ -131,9 +131,9 @@ export function LibraryFolderCard({ request, folder, isAdmin, reload, openAccoun
           aria-expanded={!!problems?.failed} onClick={() => problems?.failed ? setView(undefined) : void showProblems(true)}><ListX size={16} aria-hidden="true" />Что не обработано</button>}
         {(folder.canUpload || folder.external && canManage) && !preparing && !folder.operation && (folder.failed || folder.current?.errors) ? <button type="button" className="secondary" disabled={pending}
           onClick={() => void act(() => post(`${base}/retry`), 'Повторная обработка запущена.')}><RefreshCw size={16} aria-hidden="true" />Повторить обработку</button> : null}
-        {canManage && folder.failed?.failure === 'partial_index' && !folder.operation && <button type="button" className="secondary" disabled={pending} onClick={() => {
+        {canManage && folder.failed?.failure === 'partial_index' && !folder.operation && <button type="button" className="secondary" onClick={() => {
           if (confirm('Опубликовать обновление с необработанными файлами? Агент будет предупреждён о неполном покрытии.')) void act(() => post(`${base}/accept-coverage`), 'Обновление опубликовано с неполным покрытием.');
-        }}>Принять с неполным покрытием</button>}
+        }} disabled={pending}><Check size={16} aria-hidden="true" />Принять с неполным покрытием</button>}
       </div>
     </>}
     {error && <p className="inline-error" role="alert">{error}</p>}

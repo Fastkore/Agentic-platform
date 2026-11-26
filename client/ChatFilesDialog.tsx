@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Download, FileText, Paperclip, Trash2 } from 'lucide-react';
+import { Download, FileText, Paperclip, Trash2, X } from 'lucide-react';
 import type { Attachment } from '../shared/types';
 import { assistantProjectId } from '../shared/types';
 import { SettingsSpinner } from './SettingsSpinner';
@@ -36,13 +36,13 @@ export function ChatFilesDialog({ projectId, chatId, request, close, attach, cha
     {removing ? <>
       <p>Удалить «{removing.name}» из хранилища и сообщений этого чата навсегда? Восстановление недоступно.</p>
       <div className="settings-dialog-actions">
-        <button type="button" className="secondary" disabled={pending} onClick={() => setRemoving(undefined)}>Отмена</button>
-        <button type="button" className="primary" disabled={pending || busy} onClick={() => void run(async () => {
+        <button type="button" className="secondary" disabled={pending} onClick={() => setRemoving(undefined)}><X size={16} aria-hidden="true" />Отмена</button>
+        <button type="button" className="primary archive-danger" disabled={pending || busy} onClick={() => void run(async () => {
           await request(endpoint + '/files/' + removing.id, { method: 'DELETE' });
           setFiles(items => items?.filter(file => file.id !== removing.id));
           setRemoving(undefined);
           await changed(removing.id);
-        })}>Удалить навсегда</button>
+        })}><Trash2 size={16} aria-hidden="true" />Удалить навсегда</button>
       </div>
     </> : <>
       <p className="help">Загруженные файлы, изображения и результаты этого чата. Сохраняются после остановки задания и перезапуска.</p>

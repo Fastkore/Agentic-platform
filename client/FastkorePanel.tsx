@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Check, Link2, Plus, X } from 'lucide-react';
+import { Check, KeyRound, Link2, Pause, Play, Plus, RefreshCw, Save, Settings2, ShieldCheck, X } from 'lucide-react';
 import { SettingsAction } from './SettingsAction';
 import { SettingsSpinner } from './SettingsSpinner';
 import { normalizeFastkoreTicketUrl } from '../shared/fastkore-url';
@@ -35,7 +35,7 @@ function ConnectionChecks({ request, url, installation }: { request: Request; ur
     </div>)}
     {loading && <SettingsSpinner inline label="Проверяем настройки подключения…" />}
     {error && <p role="alert" className="inline-error">{error}</p>}
-    <button type="button" className="secondary" disabled={loading} onClick={() => setRefresh(value => value + 1)}>Проверить настройки</button>
+    <button type="button" className="secondary" disabled={loading} onClick={() => setRefresh(value => value + 1)}><RefreshCw size={15} aria-hidden="true" />Проверить настройки</button>
   </div>;
 }
 
@@ -100,7 +100,7 @@ function FastkoreMcpSettings({ request }: { request: Request }) {
       {saved ? <p role="status">Адрес сохранён. Откройте помощника заново из Fastkore.</p> : <>
         <p className="help">Смена адреса завершит текущие сеансы этой установки.</p>
         <p className="help">Новый домен MCP указывается при локальном входе администратора.</p>
-        <div className="settings-dialog-actions"><button className="primary" disabled={busy || url.trim() === (installation.mcpUrl ?? '')}>Сохранить</button></div>
+        <div className="settings-dialog-actions"><button className="primary" disabled={busy || url.trim() === (installation.mcpUrl ?? '')}><Save size={16} aria-hidden="true" />Сохранить</button></div>
       </>}
     </form> : !error && <SettingsSpinner label="Загрузка настроек…" />}
     {error && <p role="alert" className="inline-error">{error}</p>}
@@ -245,9 +245,9 @@ function FastkoreConnection({ request, installation, reload }: {
             onChange={e => { setUrl(e.target.value); setCertificate(null); setError(''); }} maxLength={2048} placeholder="erp.example.ru" required />
           {certificate && <TlsFingerprint certificate={certificate} />}
           <div className="settings-dialog-actions">
-            <button type="button" className="secondary" disabled={busy} onClick={closeRegistration}>Отмена</button>
-            {certificate && <button type="button" className="secondary" disabled={busy} onClick={() => void checkTls(url)}>Проверить заново</button>}
-            <button className="primary" disabled={busy || !url.trim()}>{certificate ? 'Отпечаток совпадает' : busy ? 'Проверяем TLS…' : 'Проверить подключение'}</button>
+            <button type="button" className="secondary" disabled={busy} onClick={closeRegistration}><X size={16} aria-hidden="true" />Отмена</button>
+            {certificate && <button type="button" className="secondary" disabled={busy} onClick={() => void checkTls(url)}><RefreshCw size={16} aria-hidden="true" />Проверить заново</button>}
+            <button className="primary" disabled={busy || !url.trim()}>{certificate ? <Check size={16} aria-hidden="true" /> : <ShieldCheck size={16} aria-hidden="true" />}{certificate ? 'Отпечаток совпадает' : busy ? 'Проверяем TLS…' : 'Проверить подключение'}</button>
           </div>
           {error && <div className="inline-error" role="alert">{error}</div>}
         </form>
@@ -263,11 +263,11 @@ function FastkoreConnection({ request, installation, reload }: {
         </div>
 
         <div className="settings-actions">
-          <button type="button" className="secondary" disabled={busy} onClick={() => { setEditing(installation); setConfirmUrl(false); setError(''); }}>Настроить подключение</button>
+          <button type="button" className="secondary" disabled={busy} onClick={() => { setEditing(installation); setConfirmUrl(false); setError(''); }}><Settings2 size={15} aria-hidden="true" />Настроить подключение</button>
           <button type="button" className="secondary" disabled={busy} onClick={() => {
             setCheckingInstallation(true);
             void checkTls(installation.validateTicketUrl);
-          }}>Проверить сертификат TLS</button>
+          }}><ShieldCheck size={15} aria-hidden="true" />Проверить сертификат TLS</button>
         </div>
         <ConnectionChecks request={request} url={endpoint + '/' + installation.id + '/checks'} installation={installation} />
 
@@ -281,7 +281,7 @@ function FastkoreConnection({ request, installation, reload }: {
             value={code} onChange={e => setCode(e.target.value.trim())} required />
           <div className="button-pair">
             <button className="primary" disabled={busy || code.length !== 43}><Link2 size={15} />{busy ? 'Подключаем…' : rotating ? 'Заменить ключ' : installation.pairingStatus === 'pending' ? 'Повторить подключение' : 'Подключить'}</button>
-            {(rotate || reconnect) && installation.pairingStatus !== 'pending' && <button type="button" className="secondary" disabled={busy} onClick={() => { setRotate(false); setReconnect(false); setCode(''); setNotice(''); }}>Отмена</button>}
+            {(rotate || reconnect) && installation.pairingStatus !== 'pending' && <button type="button" className="secondary" disabled={busy} onClick={() => { setRotate(false); setReconnect(false); setCode(''); setNotice(''); }}><X size={15} aria-hidden="true" />Отмена</button>}
           </div>
         </form>}
 
@@ -292,13 +292,13 @@ function FastkoreConnection({ request, installation, reload }: {
             {(installation.enabled || installation.pairingStatus === 'paired' || installation.pairingStatus === 'manual') && <button className="secondary" disabled={busy} onClick={() => {
               if (installation.enabled) { setError(''); setConfirmPause(true); }
               else void run(() => setEnabled(installation, true));
-            }}>{installation.enabled ? 'Приостановить вход' : 'Разрешить вход'}</button>}
+            }}>{installation.enabled ? <Pause size={15} aria-hidden="true" /> : <Play size={15} aria-hidden="true" />}{installation.enabled ? 'Приостановить вход' : 'Разрешить вход'}</button>}
             {installation.pairingStatus === 'paired' && <button className="secondary" disabled={busy || reconnect || rotating} onClick={() => {
               setReconnect(true); setCode(''); setNotice('');
-            }}>Подключить заново</button>}
+            }}><RefreshCw size={15} aria-hidden="true" />Подключить заново</button>}
             {(installation.pairedAt || installation.pairingStatus === 'manual') && <button className="secondary" disabled={busy || rotating} onClick={() => {
               setRotate(true); setCode(''); setNotice('');
-            }}>Ротация ключа</button>}
+            }}><KeyRound size={15} aria-hidden="true" />Ротация ключа</button>}
           </div>
         </details>
       </article>}
@@ -331,8 +331,8 @@ function FastkoreConnection({ request, installation, reload }: {
           <label className="check-setting"><input type="checkbox" checked={editing.cliEnabled !== false}
             onChange={e => setEditing({ ...editing, cliEnabled: e.target.checked })} />Разрешить Fastkore CLI</label>
           <div className="settings-dialog-actions">
-            <button type="button" className="secondary" disabled={busy} onClick={() => { setEditing(null); setError(''); }}>Отмена</button>
-            <button className="primary" disabled={busy || (urlChanged && !confirmUrl)}>Сохранить</button>
+            <button type="button" className="secondary" disabled={busy} onClick={() => { setEditing(null); setError(''); }}><X size={16} aria-hidden="true" />Отмена</button>
+            <button className="primary" disabled={busy || (urlChanged && !confirmUrl)}><Save size={16} aria-hidden="true" />Сохранить</button>
           </div>
           {error && <div className="inline-error" role="alert">{error}</div>}
         </form>
@@ -343,13 +343,13 @@ function FastkoreConnection({ request, installation, reload }: {
           {certificate ? <TlsFingerprint certificate={certificate} previous={installation.tlsFingerprint} /> : busy && <SettingsSpinner inline label="Проверяем TLS…" />}
           {error && <div className="inline-error" role="alert">{error}</div>}
           <div className="settings-dialog-actions">
-            <button type="button" className="secondary" disabled={busy} onClick={closeTlsCheck}>Отмена</button>
-            {error && <button type="button" className="secondary" disabled={busy} onClick={() => void checkTls(installation.validateTicketUrl)}>Проверить заново</button>}
+            <button type="button" className="secondary" disabled={busy} onClick={closeTlsCheck}><X size={16} aria-hidden="true" />Отмена</button>
+            {error && <button type="button" className="secondary" disabled={busy} onClick={() => void checkTls(installation.validateTicketUrl)}><RefreshCw size={16} aria-hidden="true" />Проверить заново</button>}
             {certificate && <button type="button" className="primary" disabled={busy} onClick={() => void run(async () => {
               await request<FastkoreInstallation>(endpoint + '/' + installation.id + '/tls', json('POST', { fingerprint: certificate.fingerprint }));
               closeTlsCheck();
               setNotice('TLS-соединение с ERP проверено.');
-            })}>Отпечаток совпадает</button>}
+            })}><Check size={16} aria-hidden="true" />Отпечаток совпадает</button>}
           </div>
         </div>
       </SettingsAction>}
@@ -358,8 +358,8 @@ function FastkoreConnection({ request, installation, reload }: {
         <div>
           <p>Сеансы установки «{installation.name}» будут отозваны.</p>
           <div className="settings-dialog-actions">
-            <button type="button" className="secondary" data-settings-focus disabled={busy} onClick={closeConfirmation}>Отмена</button>
-            <button type="button" className="primary" disabled={busy} onClick={() => void run(() => setEnabled(installation, false))}>Приостановить вход</button>
+            <button type="button" className="secondary" data-settings-focus disabled={busy} onClick={closeConfirmation}><X size={16} aria-hidden="true" />Отмена</button>
+            <button type="button" className="primary" disabled={busy} onClick={() => void run(() => setEnabled(installation, false))}><Pause size={16} aria-hidden="true" />Приостановить вход</button>
           </div>
           {error && <div className="inline-error" role="alert">{error}</div>}
         </div>

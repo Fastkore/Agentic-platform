@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { Save } from 'lucide-react';
 import { maxExecutionConcurrency } from '../shared/types';
 
 export function ExecutionConcurrencySettings({ value, pending, save }: {
@@ -20,7 +21,7 @@ export function ExecutionConcurrencySettings({ value, pending, save }: {
     <div className="settings-actions">
       <input id="execution-limit" type="number" min={1} max={maxExecutionConcurrency} step={1} required aria-describedby="execution-limit-help"
         disabled={pending} value={draft} onChange={event => setDraft(event.target.value)} />
-      <button type="submit" className="secondary" disabled={pending || !valid}>Сохранить лимит</button>
+      <button type="submit" className="secondary" disabled={pending || !valid}><Save size={15} aria-hidden="true" />Сохранить лимит</button>
     </div>
   </form>;
 }

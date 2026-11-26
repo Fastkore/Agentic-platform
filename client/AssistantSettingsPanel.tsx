@@ -1,5 +1,5 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
-import { FileText, Search, Settings2, ShieldCheck, Users } from 'lucide-react';
+import { FileText, Save, Search, Settings2, ShieldCheck, Users } from 'lucide-react';
 import { assistantAvatars, assistantAvatarSrc, assistantName, defaultAssistantAvatar, type AssistantSettings, type FastkoreRolePermissions, type FastkoreRoleSummary, type ReasoningEffort } from '../shared/types';
 import { hasAdjustableEffort } from '../shared/execution-accounts';
 import { Select } from './Select';
@@ -153,7 +153,7 @@ export function AssistantSettingsPanel({ request, models, onChanged }: {
             onChange={e => { setSaved(false); setInstructions(e.target.value); }} />
           <div className="settings-instructions-actions">
             {saved && <span role="status" className="help">Инструкция сохранена.</span>}
-            <button type="submit" className="primary" disabled={busy || !instructionsDirty}>Сохранить</button>
+            <button type="submit" className="primary" disabled={busy || !instructionsDirty}><Save size={16} aria-hidden="true" />Сохранить</button>
           </div>
         </section>
       </form>}

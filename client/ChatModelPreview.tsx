@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { RotateCcw } from 'lucide-react';
 import {
   Box3, Color, DirectionalLight, Group, HemisphereLight, LoadingManager, Mesh, MeshStandardMaterial,
   PerspectiveCamera, Scene, Sphere, Texture, WebGLRenderer, type BufferGeometry, type Material, type Object3D,
@@ -147,7 +148,7 @@ export function ChatModelPreview({ url, format, request }: {
     </div>
     {state === 'ready' && <div className="chat-model-controls">
       <span>Перетащите для вращения, прокрутите для приближения</span>
-      <button type="button" className="secondary" onClick={() => reset.current?.()}>Сбросить вид</button>
+      <button type="button" className="secondary" onClick={() => reset.current?.()}><RotateCcw size={15} aria-hidden="true" />Сбросить вид</button>
     </div>}
   </>;
 }

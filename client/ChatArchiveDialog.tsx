@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from 'react';
-import { ArrowLeft, ArchiveRestore, Trash2 } from 'lucide-react';
+import { ArrowLeft, ArchiveRestore, Trash2, X } from 'lucide-react';
 import type { ArchivedChatSummary, Chat } from '../shared/types';
 import { assistantProjectId } from '../shared/types';
 import { WorkspaceDialog } from './WorkspaceDialog';
@@ -82,8 +82,8 @@ export function ChatArchiveDialog({ request, close, renderChat, onRestore, onOpe
         {canRestoreSelected && (confirmDelete ? <div className="archive-confirm">
           <p>Удалить этот чат и его сообщения навсегда? Восстановить их будет нельзя.</p>
           <div className="archive-actions">
-            <button type="button" className="secondary" disabled={pending} onClick={() => setConfirmDelete(false)}>Отмена</button>
-            <button type="button" className="secondary archive-danger" disabled={pending} onClick={() => void update(true)}>Удалить навсегда</button>
+            <button type="button" className="secondary" disabled={pending} onClick={() => setConfirmDelete(false)}><X size={16} aria-hidden="true" />Отмена</button>
+            <button type="button" className="secondary archive-danger" disabled={pending} onClick={() => void update(true)}><Trash2 size={16} aria-hidden="true" />Удалить навсегда</button>
           </div>
         </div> : <div className="archive-actions">
           {selected.projectId === assistantProjectId && onOpenChat

@@ -151,7 +151,7 @@ export function ProjectSettingsDialog({ project, request, close, openSpecialist,
               <button type="button" className="secondary" disabled={pending || !settings.isolated}
                 title="Отключить агента в проекте" aria-label={'Отключить: ' + profile.name}
                 onClick={() => void save(connections.filter(connection => connection.profileId !== profile.id))}>
-                Отключить
+                <X size={15} aria-hidden="true" />Отключить
               </button>
             </span>
           </div>
@@ -173,8 +173,8 @@ export function ProjectSettingsDialog({ project, request, close, openSpecialist,
     <p>Проект «{name}» будет удалён. Чаты и вложения сохранятся в разделе «Без проекта». Общие чаты станут личными.</p>
     {deleteError && <p className="inline-error" role="alert">{deleteError}</p>}
     <div className="settings-dialog-actions">
-      <button type="button" className="secondary" data-dialog-focus disabled={pending} onClick={() => setConfirmDelete(false)}>Отмена</button>
-      <button type="button" className="secondary project-delete" disabled={pending} onClick={() => void deleteProject()}>Удалить проект</button>
+      <button type="button" className="secondary" data-dialog-focus disabled={pending} onClick={() => setConfirmDelete(false)}><X size={16} aria-hidden="true" />Отмена</button>
+      <button type="button" className="secondary project-delete" disabled={pending} onClick={() => void deleteProject()}><Trash2 size={16} aria-hidden="true" />Удалить проект</button>
     </div>
   </WorkspaceDialog>}
   {adding && <WorkspaceDialog title="Добавить агентов" className="project-agents-dialog project-specialist-picker"
@@ -197,7 +197,7 @@ export function ProjectSettingsDialog({ project, request, close, openSpecialist,
         </li>)}
       </ul>
       <div className="settings-dialog-actions">
-        <button type="submit" className="primary" disabled={pending || !newConnections.length}>Подключить</button>
+        <button type="submit" className="primary" disabled={pending || !newConnections.length}><Check size={16} aria-hidden="true" />Подключить</button>
       </div>
     </form> : <p className="help">Все доступные агенты уже подключены.</p>}
   </WorkspaceDialog>}

@@ -1,5 +1,5 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
-import { ArrowLeft, ArrowRight, ChevronDown, ChevronRight, Folder, FolderOpen, RefreshCw } from 'lucide-react';
+import { ArrowLeft, ArrowRight, Check, ChevronDown, ChevronRight, Copy, Folder, FolderOpen, KeyRound, LogIn, Plus, RefreshCw } from 'lucide-react';
 import { externalLabels, type DriveAccount, type ExternalFolder, type ExternalProvider, type ExternalSelection } from '../shared/library';
 import type { Request } from './library-upload';
 import { DriveProviderIcon, driveProviderIcons } from './DriveProviderIcon';
@@ -337,15 +337,15 @@ export function ExternalLibraryPicker({ provider, request, onSelect, checkSelect
   if (availability === 'failed') return <div className="library-form">
     {providerPicker}
     <p role="alert">Не удалось проверить, доступен ли {name}.</p>
-    <button className="secondary" type="button" onClick={() => setCheck(n => n + 1)}>Проверить ещё раз</button>
+    <button className="secondary" type="button" onClick={() => setCheck(n => n + 1)}><RefreshCw size={16} aria-hidden="true" />Проверить ещё раз</button>
   </div>;
   if ((availability === 'missing' || replacingDropbox) && !authUrl && !busy) return <div className="library-form">
     {step === 'start' && <>
       <p className="help">При первом подключении понадобятся два ключа из кабинета {provider === 'google' ? 'Google Cloud' : provider === 'yandex' ? 'Яндекс OAuth' : name}.
         {provider === 'dropbox' ? ' ' : <br />}Мастер покажет, где их взять.</p>
       <div className="settings-actions">
-        <button type="button" className="primary" onClick={() => setStep('register')}>Подключить {name}</button>
-        <button type="button" className="secondary" onClick={() => setStep('keys')}>У меня есть ключи</button>
+        <button type="button" className="primary" onClick={() => setStep('register')}><Plus size={16} aria-hidden="true" />Подключить {name}</button>
+        <button type="button" className="secondary" onClick={() => setStep('keys')}><KeyRound size={16} aria-hidden="true" />У меня есть ключи</button>
       </div>
     </>}
     {step === 'register' && <>
@@ -363,7 +363,7 @@ export function ExternalLibraryPicker({ provider, request, onSelect, checkSelect
         {!screenCode && <button type="button" className="secondary" onClick={async () => {
           try { await navigator.clipboard.writeText(redirect); setCopied(true); setError(''); }
           catch { setError('Выделите адрес в поле выше и скопируйте его.'); }
-        }}>{copied ? 'Адрес скопирован' : 'Скопировать адрес'}</button>}
+        }}>{copied ? <Check size={16} aria-hidden="true" /> : <Copy size={16} aria-hidden="true" />}{copied ? 'Адрес скопирован' : 'Скопировать адрес'}</button>}
         <button type="button" className="secondary library-action-button" onClick={() => { setError(''); setStep('keys'); }}>
           Далее — ввести ключи <ArrowRight size={16} aria-hidden="true" />
         </button>
@@ -383,7 +383,7 @@ export function ExternalLibraryPicker({ provider, request, onSelect, checkSelect
         ? 'Новые ключи сохранятся после успешного входа. Если с прежними ключами связаны библиотеки, их нужно сначала отключить.'
         : 'Подтвердите чтение файлов в окне сервиса. После входа ключи сохранятся для этой платформы.'}</p>
       <div className="settings-actions">
-        <button type="button" className="primary" disabled={!accountName.trim() || !clientId.trim() || !secret.trim()} onClick={() => void connect()}>{signIn}</button>
+        <button type="button" className="primary" disabled={!accountName.trim() || !clientId.trim() || !secret.trim()} onClick={() => void connect()}><LogIn size={16} aria-hidden="true" />{signIn}</button>
         <button type="button" className="secondary library-action-button" onClick={() => {
           setStep(replacingDropbox ? 'start' : 'register');
           if (replacingDropbox) { setReplacingDropbox(false); setSecret(''); }
@@ -401,8 +401,8 @@ export function ExternalLibraryPicker({ provider, request, onSelect, checkSelect
       {nameField}
       <p className="help">В отдельном окне войдите в аккаунт и разрешите чтение файлов.</p>
       <div className="settings-actions">
-        <button type="button" className="primary" disabled={!accountName.trim()} onClick={() => void connect()}>{signIn}</button>
-        {provider === 'dropbox' && <button type="button" className="secondary" onClick={replaceDropbox}>Настроить Dropbox заново</button>}
+        <button type="button" className="primary" disabled={!accountName.trim()} onClick={() => void connect()}><LogIn size={16} aria-hidden="true" />{signIn}</button>
+        {provider === 'dropbox' && <button type="button" className="secondary" onClick={replaceDropbox}><RefreshCw size={16} aria-hidden="true" />Настроить Dropbox заново</button>}
       </div>
     </> : accounts.length ? <>
       <div className="library-picker-field">
@@ -414,11 +414,11 @@ export function ExternalLibraryPicker({ provider, request, onSelect, checkSelect
       <div className="settings-actions">
         <button type="button" className="secondary library-action-button" disabled={busy || !selectedAccount} aria-busy={busy}
           onClick={() => { if (selectedAccount) void useSaved(selectedAccount); }}>Далее <ArrowRight size={16} aria-hidden="true" /></button>
-        {error && openAccounts && <button type="button" className="secondary" onClick={() => openAccounts(provider)}>Перейти в «Аккаунты»</button>}
+        {error && openAccounts && <button type="button" className="secondary" onClick={() => openAccounts(provider)}>Перейти в «Аккаунты»<ArrowRight size={16} aria-hidden="true" /></button>}
       </div>
     </> : <>
       <p className="help">Для {name} пока нет подключённых аккаунтов. Сначала подключите аккаунт в «Настройки → Библиотеки → Аккаунты», затем вернитесь к выбору папки.</p>
-      {openAccounts && <button type="button" className="secondary" onClick={() => openAccounts(provider)}>Перейти в «Аккаунты»</button>}
+      {openAccounts && <button type="button" className="secondary" onClick={() => openAccounts(provider)}>Перейти в «Аккаунты»<ArrowRight size={16} aria-hidden="true" /></button>}
     </>)}
     {authUrl && <>
       <strong role="status">Завершите вход в {name}</strong>
@@ -431,7 +431,7 @@ export function ExternalLibraryPicker({ provider, request, onSelect, checkSelect
       </> : <p className="help">Подтвердите доступ и вернитесь к списку аккаунтов.</p>}
       <div className="settings-actions">
         {screenCode && <button type="button" className="primary" disabled={!code.trim()}
-          onClick={() => void finishLogin.current?.(code.trim())}>Подтвердить код</button>}
+          onClick={() => void finishLogin.current?.(code.trim())}><Check size={16} aria-hidden="true" />Подтвердить код</button>}
         <a className="library-provider-link" href={authUrl} target="_blank" rel="noopener noreferrer">Открыть окно входа</a>
         <button type="button" className="secondary library-action-button" onClick={() => {
           controller.current?.abort(); setCode(''); setAuthUrl(''); setBusy(false);

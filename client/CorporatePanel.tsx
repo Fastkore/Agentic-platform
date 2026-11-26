@@ -1,3 +1,4 @@
+import { Plus, Save, Settings2, X } from 'lucide-react';
 import { Select } from './Select';
 import { SettingsAction } from './SettingsAction';
 import { SettingsSpinner } from './SettingsSpinner';
@@ -39,7 +40,7 @@ export function CorporatePanel({ request, section }: { request: Request; section
   return <>
     {!loaded && !error && <SettingsSpinner label="Загрузка…" />}
     {!editing && loaded && <>
-      <div className="settings-list-toolbar"><button className="primary" onClick={create}>{addLabel}</button></div>
+      <div className="settings-list-toolbar"><button className="primary" onClick={create}><Plus size={16} aria-hidden="true" />{addLabel}</button></div>
       {entries.length ? <ul className="settings-records">
         {entries.map(item => <li key={item.id}>
           <div>
@@ -47,7 +48,7 @@ export function CorporatePanel({ request, section }: { request: Request; section
             <small>{section === 'roles' && item.id === 'sso_pending' ? 'Служебная роль' : 'enabled' in item
               ? item.enabled ? 'Включено' : 'Выключено' : item.classification === 'restricted' ? 'Закрытый источник' : 'Общий источник'}</small>
           </div>
-          {(section !== 'roles' || item.id !== 'sso_pending') && <button className="secondary" onClick={() => { setEditing({ ...item }); setNotice(''); setError(''); }}>Настроить</button>}
+          {(section !== 'roles' || item.id !== 'sso_pending') && <button className="secondary" onClick={() => { setEditing({ ...item }); setNotice(''); setError(''); }}><Settings2 size={15} aria-hidden="true" />Настроить</button>}
         </li>)}
       </ul> : <p className="help">Источников пока нет.</p>}
     </>}
@@ -57,7 +58,7 @@ export function CorporatePanel({ request, section }: { request: Request; section
       {role && <label className="check-setting"><input type="checkbox" checked={role.enabled} onChange={e => change({ enabled: e.target.checked })} />Роль включена</label>}
       {role && <><label htmlFor="config-rules">Инструкции рабочей роли</label><textarea id="config-rules" rows={8} maxLength={20000} value={role.instructions} onChange={e => change({ instructions: e.target.value })} /><Checks label="Разрешённые операции" values={role.operationIds} options={Object.entries(operations).map(([id, name]) => ({ id, name }))} change={operationIds => change({ operationIds })} /><Checks label="Доступные агенты" values={role.profileIds} options={profiles} change={profileIds => change({ profileIds })} /><Checks label="Право чтения исходных библиотек" values={role.readDatasetIds} options={datasets} change={readDatasetIds => change({ readDatasetIds })} /></>}
       {dataset && <><label htmlFor="dataset-directory">Папка на сервере</label><input id="dataset-directory" required maxLength={2000} value={dataset.directory} onChange={e => change({ directory: e.target.value })} /><label htmlFor="dataset-class">Доступ к источнику</label><Select id="dataset-class" className="settings-select" value={dataset.classification} onChange={classification => change({ classification })} options={[{ value: 'restricted', label: 'Закрытый источник' }, { value: 'shared', label: 'Общий источник' }]} />{dataset.classification === 'restricted' && <p role="status" className="help">Закрытый источник приостановит запуски Codex.</p>}</>}
-      <div className="settings-dialog-actions"><button type="button" className="secondary" disabled={busy} onClick={() => { setEditing(null); setError(''); }}>Отмена</button><button className="primary" disabled={busy}>Сохранить</button></div>
+      <div className="settings-dialog-actions"><button type="button" className="secondary" disabled={busy} onClick={() => { setEditing(null); setError(''); }}><X size={16} aria-hidden="true" />Отмена</button><button className="primary" disabled={busy}><Save size={16} aria-hidden="true" />Сохранить</button></div>
     </form></SettingsAction>}
     {error && <div className="inline-error" role="alert">{error}</div>}{notice && <p role="status">{notice}</p>}</>;
 }

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { Download, FileText, Pencil, RefreshCw, Trash2, Upload } from 'lucide-react';
+import { ArrowLeft, Download, Eye, FileText, Pencil, RefreshCw, Save, Trash2, Upload, X } from 'lucide-react';
 import type { KnowledgeFile, KnowledgeOverview, KnowledgeSection } from '../shared/knowledge';
 import { SettingsSpinner } from './SettingsSpinner';
 import './knowledge.css';
@@ -71,11 +71,11 @@ export function KnowledgePanel({ section, request, download, dirtyChanged }: {
     {error && <p className="inline-error" role="alert">{error}</p>}
     {notice && <p role="status">{notice}</p>}
     {!data ? (!error && <SettingsSpinner label="Загрузка документов…" />) : editor ? <div className="knowledge-editor">
-      <div className="knowledge-toolbar"><h3>{editor.file.name}</h3><button className="secondary" disabled={busy} onClick={closeEditor}>К списку</button></div>
+      <div className="knowledge-toolbar"><h3>{editor.file.name}</h3><button className="secondary" disabled={busy} onClick={closeEditor}><ArrowLeft size={16} aria-hidden="true" />К списку</button></div>
       <div className="knowledge-toolbar">
-        <div className="button-pair"><button className="secondary" aria-pressed={!preview} onClick={() => setPreview(false)}>Текст</button>
-          <button className="secondary" aria-pressed={preview} onClick={() => setPreview(true)}>Просмотр</button></div>
-        <button className="secondary" onClick={() => downloadBlob(new Blob([editor.text], { type: 'text/plain;charset=utf-8' }), editor.file.name)}>Скачать текст</button>
+        <div className="button-pair"><button className="secondary" aria-pressed={!preview} onClick={() => setPreview(false)}><FileText size={15} aria-hidden="true" />Текст</button>
+          <button className="secondary" aria-pressed={preview} onClick={() => setPreview(true)}><Eye size={15} aria-hidden="true" />Просмотр</button></div>
+        <button className="secondary" onClick={() => downloadBlob(new Blob([editor.text], { type: 'text/plain;charset=utf-8' }), editor.file.name)}><Download size={15} aria-hidden="true" />Скачать текст</button>
       </div>
       {preview ? <div className="knowledge-preview"><ReactMarkdown remarkPlugins={[remarkGfm]}>{editor.text}</ReactMarkdown></div>
         : <textarea aria-label={'Текст ' + editor.file.name} spellCheck={false} value={editor.text} disabled={busy}
@@ -83,7 +83,7 @@ export function KnowledgePanel({ section, request, download, dirtyChanged }: {
       <div className="knowledge-toolbar"><button className="primary" disabled={busy || editor.text === editor.original} onClick={() => void action(async () => {
         await upload(new File([editor.text], editor.file.name, { type: 'text/plain' }), editor.file);
         setEditor(undefined); setNotice('Документ обновлён. Поиск и оглавление перестроены.');
-      })}>Сохранить</button></div>
+      })}><Save size={16} aria-hidden="true" />Сохранить</button></div>
     </div> : <>
       <form className="knowledge-summary" onSubmit={event => { event.preventDefault(); void action(async () => {
         const updated = await request<KnowledgeOverview>(route, { method: 'PUT', body: JSON.stringify({ summary, revision: data.revision }) });
@@ -92,7 +92,7 @@ export function KnowledgePanel({ section, request, download, dirtyChanged }: {
         <label htmlFor={'knowledge-summary-' + section}>Краткая памятка агенту</label>
         <p className="help" id="knowledge-summary-help">Что нужно знать о среде и какие материалы искать. Памятка и каталог передаются при открытии сессии и после обновлений. Подробности агент читает по запросу.</p>
         <textarea id={'knowledge-summary-' + section} aria-describedby="knowledge-summary-help" rows={5} maxLength={4000} value={summary} disabled={busy} onChange={event => setSummary(event.target.value)} />
-        <button className="secondary" disabled={busy || summary === data.summary}>Сохранить памятку</button>
+        <button className="secondary" disabled={busy || summary === data.summary}><Save size={16} aria-hidden="true" />Сохранить памятку</button>
       </form>
       <div className="knowledge-toolbar"><h3>Файлы</h3><button className="primary" disabled={busy} onClick={() => { replacement.current = undefined; picker.current?.click(); }}><Upload size={16} />Загрузить</button></div>
       <input type="file" ref={picker} hidden multiple onChange={event => {
@@ -117,10 +117,10 @@ export function KnowledgePanel({ section, request, download, dirtyChanged }: {
             <button className="workspace-icon" aria-label={'Скачать ' + file.name} title="Скачать" disabled={busy} onClick={() => void action(async () => downloadBlob(await download(fileRoute(file)), file.name))}><Download size={16} /></button>
             <button className="workspace-icon" aria-label={'Удалить ' + file.name} title="Удалить" disabled={busy} onClick={() => setRemoving(file.id)}><Trash2 size={16} /></button>
           </div>
-          {removing === file.id && <div className="knowledge-delete"><span>Удалить документ из базы знаний?</span><button className="secondary" disabled={busy} onClick={() => setRemoving(undefined)}>Отмена</button><button className="danger" disabled={busy} onClick={() => void action(async () => {
+          {removing === file.id && <div className="knowledge-delete"><span>Удалить документ из базы знаний?</span><button className="secondary" disabled={busy} onClick={() => setRemoving(undefined)}><X size={15} aria-hidden="true" />Отмена</button><button className="danger" disabled={busy} onClick={() => void action(async () => {
             await request(fileRoute(file), { method: 'DELETE', body: JSON.stringify({ revision: file.revision }) });
             setRemoving(undefined); await reload();
-          })}>Удалить</button></div>}
+          })}><Trash2 size={15} aria-hidden="true" />Удалить</button></div>}
         </li>)}
       </ul>
       <p className="help">До 20 МБ на файл. Текстовые файлы UTF-8 доступны агенту полностью по фрагментам. Из PDF и XLSX извлекается краткая выдержка. Оригиналы всех файлов можно скачать.</p>

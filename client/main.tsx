@@ -1,7 +1,7 @@
 import React, { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import type { ExternalProvider } from '../shared/library';
-import { Archive, ArrowUp, BarChart3, Bot, Box, Camera, Check, ChevronDown, ChevronRight, ClipboardList, Copy, Database, Download, EllipsisVertical, Eraser, FileText, Folder, History, Link2, LoaderCircle, LockKeyhole, LogOut, Menu, Moon, Network, PanelLeftClose, PanelLeftOpen, Pencil, Pin, Plus, RefreshCw, Search, Settings2, ShieldCheck, Square, SquarePen, Sun, Terminal, Trash2, Users, X } from 'lucide-react';
+import { Archive, ArrowUp, BarChart3, Bot, Box, Camera, Check, ChevronDown, ChevronRight, ClipboardList, Copy, Database, Download, EllipsisVertical, Eraser, FileText, Folder, History, Link2, LoaderCircle, LockKeyhole, LogOut, Menu, Moon, Network, PanelLeftClose, PanelLeftOpen, Pencil, Pin, Plus, RefreshCw, Save, Search, Settings2, ShieldCheck, Square, SquarePen, Sun, Terminal, Trash2, Users, X } from 'lucide-react';
 import { assistantAvatarSrc, assistantName, assistantProjectId, maxProjectInstructions, interfaceScales, sharedChatWaitMessage, unassignedChatsLabel, type AgentSummary, type Attachment, type Chat, type ChatView, type ChatSummary, type CodexLimits, type FastkoreAuthentication, type FastkoreNavigationTarget, type FileStorageStatus, type InterfaceScale, type ModelCatalog, type ProjectSummary, type RelatedChatSummary, type Run, type Settings, type Status, type UnassignedChatSummary, type User } from '../shared/types';
 import './style.css';
 import './workspace.css';
@@ -1902,9 +1902,9 @@ function App() {
       <p>Участники проекта смогут читать всю историю чата «{chat.title}» и отправлять в него сообщения.</p>
       {error && <p className="inline-error" role="alert">{error}</p>}
       <div className="settings-dialog-actions">
-        <button type="button" className="secondary" data-dialog-focus disabled={pending} onClick={dismissChatShare}>Отмена</button>
+        <button type="button" className="secondary" data-dialog-focus disabled={pending} onClick={dismissChatShare}><X size={16} aria-hidden="true" />Отмена</button>
         <button type="button" className="primary" disabled={pending || chatBusy || !canEditChatDetails || withoutProject}
-          onClick={() => void changeVisibility('project')}>Сделать общим</button>
+          onClick={() => void changeVisibility('project')}><Check size={16} aria-hidden="true" />Сделать общим</button>
       </div>
     </WorkspaceDialog>}
     {panel === 'rename-chat' && renameDraft && <WorkspaceDialog title="Редактировать чат" className="workspace-chat-rename" close={closePanel}>
@@ -1923,8 +1923,8 @@ function App() {
           ]} />
         {error && <div className="inline-error" role="alert">{error}</div>}
         <div className="settings-dialog-actions">
-          <button type="button" className="secondary" onClick={closePanel} disabled={pending}>Отмена</button>
-          <button type="submit" className="primary" disabled={pending || !renameDraft.title.trim()}>Сохранить</button>
+          <button type="button" className="secondary" onClick={closePanel} disabled={pending}><X size={16} aria-hidden="true" />Отмена</button>
+          <button type="submit" className="primary" disabled={pending || !renameDraft.title.trim()}><Save size={16} aria-hidden="true" />Сохранить</button>
         </div>
       </form>
     </WorkspaceDialog>}
@@ -1932,8 +1932,8 @@ function App() {
       <p>Текущий чат сохранится в архиве. Здесь откроется пустой чат.</p>
       {error && <p className="inline-error" role="alert">{error}</p>}
       <div className="settings-dialog-actions">
-        <button type="button" className="secondary" data-dialog-focus disabled={pending} onClick={closePanel}>Отмена</button>
-        <button type="button" className="primary" disabled={pending || chatBusy} onClick={() => void resetChat()}>Очистить чат</button>
+        <button type="button" className="secondary" data-dialog-focus disabled={pending} onClick={closePanel}><X size={16} aria-hidden="true" />Отмена</button>
+        <button type="button" className="primary" disabled={pending || chatBusy} onClick={() => void resetChat()}><Eraser size={16} aria-hidden="true" />Очистить чат</button>
       </div>
     </WorkspaceDialog>}
     {panel === 'archive' && (isAdmin || erpAuth) && <ChatArchiveDialog request={api} close={closePanel} renderChat={renderHistory} manage={isAdmin}
@@ -1986,8 +1986,8 @@ function App() {
         <textarea id="new-project-instructions" name="instructions" rows={3} maxLength={maxProjectInstructions} placeholder={projectInstructionsHint} />
         {error && <div className="inline-error" role="alert">{error}</div>}
         <div className="settings-dialog-actions">
-          <button type="button" className="secondary" disabled={pending} onClick={() => { setProjectName(''); closePanel(); }}>Отмена</button>
-          <button type="submit" className="primary" disabled={pending || !projectName.trim()}>Создать проект</button>
+          <button type="button" className="secondary" disabled={pending} onClick={() => { setProjectName(''); closePanel(); }}><X size={16} aria-hidden="true" />Отмена</button>
+          <button type="submit" className="primary" disabled={pending || !projectName.trim()}><Plus size={16} aria-hidden="true" />Создать проект</button>
         </div>
       </form>
     </WorkspaceDialog>}
@@ -2056,7 +2056,7 @@ function App() {
             <textarea id="agent-instructions" aria-labelledby="settings-section-title" aria-describedby="agent-instructions-help" maxLength={8000} required
               value={agentInstructions} onChange={e => setInstructionsDraft(e.target.value)} />
             <div className="settings-instructions-actions">
-              <button className="primary" disabled={pending || busy || !agentInstructions.trim() || agentInstructions.trim() === savedInstructions}>Сохранить</button>
+              <button className="primary" disabled={pending || busy || !agentInstructions.trim() || agentInstructions.trim() === savedInstructions}><Save size={16} aria-hidden="true" />Сохранить</button>
             </div>
           </form>}
           {settingsSection === 'server' && <ServerSettingsTabs general={<>
@@ -2099,9 +2099,9 @@ function App() {
               <label htmlFor="cli-path">Путь к Codex CLI</label>
               <input id="cli-path" value={cliPath} onChange={e => setCliPath(e.target.value)} placeholder="Автоопределение" disabled={busy} />
               <div className="settings-actions">
-                <button className="secondary" disabled={pending || busy} onClick={() => void saveSettings({ cliPath: cliPath.trim() })}>Сохранить</button>
-                <button className="secondary" disabled={pending || busy} onClick={() => void action(async () => { await post('/api/cli/check'); setStatus(await api('/api/status')); })}>Проверить</button>
-                <button className="secondary" disabled={pending || busy || !!codexNotice} onClick={() => void action(async () => { setSubscription(await post<Run>('/api/subscription/check')); })}>Проверить подписку</button>
+                <button className="secondary" disabled={pending || busy} onClick={() => void saveSettings({ cliPath: cliPath.trim() })}><Save size={15} aria-hidden="true" />Сохранить</button>
+                <button className="secondary" disabled={pending || busy} onClick={() => void action(async () => { await post('/api/cli/check'); setStatus(await api('/api/status')); })}><RefreshCw size={15} aria-hidden="true" />Проверить</button>
+                <button className="secondary" disabled={pending || busy || !!codexNotice} onClick={() => void action(async () => { setSubscription(await post<Run>('/api/subscription/check')); })}><ShieldCheck size={15} aria-hidden="true" />Проверить подписку</button>
               </div>
               {subscription && <p role="status">{subscription.error ?? subscription.response ?? subscription.progress}</p>}
             </section>}
@@ -2132,7 +2132,7 @@ function App() {
             </section>
             {canAttachProjectDirectory && !projects.length && <section className="setting-section"><h3>История настольной версии</h3><button className="secondary w-full" disabled={pending || busy} onClick={() => void action(async () => {
               await post('/api/migrations/desktop'); setProjects(await api('/api/projects')); setStatus(await api('/api/status')); closePanel();
-            })}>Перенести проекты и историю</button></section>}
+            })}><Folder size={16} aria-hidden="true" />Перенести проекты и историю</button></section>}
             {(diagnostics || status?.storageWarning) && <section className="setting-section"><h3>Диагностика</h3>{diagnostics && <pre className="diagnostics settings-log" tabIndex={0} aria-label="Журнал диагностики">{diagnostics}</pre>}{status?.storageWarning && <p role="status">{status.storageWarning}</p>}</section>}
           </>} />}
           </div>
@@ -2184,8 +2184,8 @@ function FastkoreBrowserSettingsButton() {
           <input readOnly aria-label="Одноразовая ссылка" value={link.url} onFocus={event => event.currentTarget.select()} data-dialog-focus /></>}
         {error && <p className="inline-error" role="alert">{error}</p>}
         <div className="settings-dialog-actions">
-          {link ? <button type="button" className="primary" onClick={() => void copy()}>{copied ? 'Скопировано' : 'Скопировать ссылку'}</button>
-            : <button type="button" className="primary" onClick={() => void open()}>Получить новую ссылку</button>}
+          {link ? <button type="button" className="primary" onClick={() => void copy()}>{copied ? <Check size={16} aria-hidden="true" /> : <Copy size={16} aria-hidden="true" />}{copied ? 'Скопировано' : 'Скопировать ссылку'}</button>
+            : <button type="button" className="primary" onClick={() => void open()}><RefreshCw size={16} aria-hidden="true" />Получить новую ссылку</button>}
         </div>
       </div>
     </WorkspaceDialog>}

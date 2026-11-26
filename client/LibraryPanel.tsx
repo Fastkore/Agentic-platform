@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, useId } from 'react';
-import { ArrowLeft, ChevronLeft, Cloud, Database, Folder, HardDrive, Users, UserPlus, Layers, Save, Trash2 } from 'lucide-react';
+import { ArrowLeft, ChevronLeft, Cloud, Database, Folder, FolderOpen, HardDrive, Users, UserPlus, Layers, Plus, RefreshCw, Save, Settings2, Trash2, X } from 'lucide-react';
 import type { LibraryFolderSummary, LibraryProfile, OutputPolicy } from '../shared/library';
 import { externalLabels, type DriveAccount, type ExternalProvider, type ExternalSelection } from '../shared/library';
 import { LibraryStorageSetup, type StorageStatus } from './LibraryStorageSetup';
@@ -56,8 +56,8 @@ export function LibraryRemovalDialog({ title, name, description, cancel, confirm
   return <WorkspaceDialog title={title + ' «' + name + '»?'} className="workspace-chat-rename" closeOnBackdrop={false} close={cancel}>
     <p>{description}</p>
     <div className="settings-dialog-actions">
-      <button type="button" className="secondary" data-dialog-focus onClick={cancel}>Отмена</button>
-      <button type="button" className="secondary project-delete" onClick={confirm}>{title}</button>
+      <button type="button" className="secondary" data-dialog-focus onClick={cancel}><X size={16} aria-hidden="true" />Отмена</button>
+      <button type="button" className="secondary project-delete" onClick={confirm}><Trash2 size={16} aria-hidden="true" />{title}</button>
     </div>
   </WorkspaceDialog>;
 }
@@ -143,7 +143,7 @@ export function CreateLibraryForm({ kind, request, pending, submit, cancel, proj
           }} />
       </> : storage?.configured ? <p className="help">Назовите библиотеку и нажмите «{project ? 'Создать и подключить' : 'Создать'}». Затем нажмите «Загрузить папку» и выберите файлы на компьютере.</p>
         : storage ? <LibraryStorageSetup request={request} onSaved={() => { setReloadStorage(n => n + 1); storageChanged?.(); }} />
-        : storageError ? <><p role="alert">{storageError}</p><button type="button" className="secondary" onClick={() => setReloadStorage(n => n + 1)}>Проверить ещё раз</button></>
+        : storageError ? <><p role="alert">{storageError}</p><button type="button" className="secondary" onClick={() => setReloadStorage(n => n + 1)}><RefreshCw size={16} aria-hidden="true" />Проверить ещё раз</button></>
         : <SettingsSpinner inline label="Проверяем хранилище…" />}
     </fieldset>
     {showDetails && <>
@@ -151,9 +151,9 @@ export function CreateLibraryForm({ kind, request, pending, submit, cancel, proj
     </>}
     {showDetails && project && <p className="help">Библиотека подключится к этому проекту. Доступ агентам можно назначить на вкладке прав.</p>}
     {kind === 'external' && selection && error && <p className="inline-error" role="alert">{error}</p>}
-    {(showDetails || kind === 's3') && <div className="settings-actions">{showDetails && <button type="submit" className="primary" disabled={pending || !ready}>{project ? 'Создать и подключить' : 'Создать'}</button>}
+    {(showDetails || kind === 's3') && <div className="settings-actions">{showDetails && <button type="submit" className="primary" disabled={pending || !ready}><Plus size={16} aria-hidden="true" />{project ? 'Создать и подключить' : 'Создать'}</button>}
       {kind === 's3'
-        ? <button type="button" className="secondary" disabled={pending} onClick={cancel}>Отмена</button>
+        ? <button type="button" className="secondary" disabled={pending} onClick={cancel}><X size={16} aria-hidden="true" />Отмена</button>
         : <button type="button" className="secondary library-action-button" disabled={pending} onClick={() => { setSelection(undefined); clearError(); }}>
           <ArrowLeft size={16} aria-hidden="true" /> Назад
         </button>}</div>}
@@ -278,7 +278,7 @@ export function LibraryPanel({ request, isAdmin, initialAccountsProvider }: { re
           <button type="submit" className="secondary library-action-button" disabled={pending || !editing || !editDraft.name.trim()}>
             <Save size={16} aria-hidden="true" /> Сохранить
           </button>
-          <button type="button" className="secondary" disabled={pending || !editing} onClick={() => setEditing(undefined)}>Отмена</button>
+          <button type="button" className="secondary" disabled={pending || !editing} onClick={() => setEditing(undefined)}><X size={16} aria-hidden="true" />Отмена</button>
           {folder.canDelete && <button type="button" className="secondary library-danger" disabled={pending}
             onClick={() => setConfirmRemoval(true)}><Trash2 size={16} aria-hidden="true" />{folder.external ? 'Отключить библиотеку' : 'Удалить папку'}</button>}
         </div>
@@ -326,7 +326,7 @@ export function LibraryPanel({ request, isAdmin, initialAccountsProvider }: { re
           {f.external?.accountName && <span className="library-account-label" title={'Аккаунт: ' + f.external.accountName}>
             <DriveProviderIcon provider={f.external.provider} /><span>Аккаунт: {f.external.accountName}</span>
           </span>}
-          <button type="button" className="secondary" onClick={() => { setNotice(''); setProjectSearch(''); setSelected(f.id); }}>Открыть</button>
+          <button type="button" className="secondary" onClick={() => { setNotice(''); setProjectSearch(''); setSelected(f.id); }}><FolderOpen size={15} aria-hidden="true" />Открыть</button>
         </div>
       </li>)}</ul> : folders && <p className="help">{folderSearch.trim() ? 'Папки не найдены.' : tab === 'external' ? 'Внешних библиотек пока нет.' : 'Обычных библиотек пока нет.'}</p>}
     </section>}
@@ -343,7 +343,7 @@ export function LibraryPanel({ request, isAdmin, initialAccountsProvider }: { re
           <div><strong>{a.name}</strong><small>{externalLabels[a.provider]} · Библиотек: {a.libraries}</small></div>
         </div>
         <button type="button" className="secondary" disabled={pending || a.libraries > 0} title={a.libraries ? 'Сначала отключите связанные библиотеки' : undefined}
-          onClick={() => setRemoveAccount(a)}>Отключить</button>
+          onClick={() => setRemoveAccount(a)}><Trash2 size={15} aria-hidden="true" />Отключить</button>
       </li>)}</ul> : <p className="help">Подключите первый аккаунт, чтобы выбирать его папки при создании библиотек.</p>)}
       {removeAccount && <LibraryRemovalDialog title="Отключить аккаунт" name={removeAccount.name} description="Чтобы снова выбирать папки этого аккаунта, потребуется войти в сервис."
         cancel={() => setRemoveAccount(undefined)} confirm={() => { setRemoveAccount(undefined); void act(async () => {
@@ -363,14 +363,14 @@ export function LibraryPanel({ request, isAdmin, initialAccountsProvider }: { re
       {processing && <p className="help">{processing}</p>}
       <div className="library-storage-row">
         <strong><HardDrive size={15} aria-hidden="true" /> {storage.configured ? (storage.kind === 's3' ? 'Хранилище MinIO / S3' : 'Локальное хранилище') : 'Хранилище не настроено'}</strong>
-        <div className="settings-actions"><button type="button" className="secondary" aria-expanded={storageSetup} disabled={pending} onClick={() => { setStorageSetup(!storageSetup); setStorageCheck(undefined); }}>{storage.configured ? 'Настроить' : 'Подключить хранилище'}</button>
-        {storage.configured && <button type="button" className="secondary" disabled={pending} onClick={() => void checkStorage()}>Проверить</button>}</div>
+        <div className="settings-actions"><button type="button" className="secondary" aria-expanded={storageSetup} disabled={pending} onClick={() => { setStorageSetup(!storageSetup); setStorageCheck(undefined); }}><Settings2 size={14} aria-hidden="true" />{storage.configured ? 'Настроить' : 'Подключить хранилище'}</button>
+        {storage.configured && <button type="button" className="secondary" disabled={pending} onClick={() => void checkStorage()}><RefreshCw size={14} aria-hidden="true" />Проверить</button>}</div>
       </div>
       {storageSetup && <LibraryStorageSetup request={request} location={storage.location} cancel={() => setStorageSetup(false)} onSaved={() => {
         setStorageSetup(false); setStorageCheck({ message: 'Хранилище подключено. Можно загружать файлы.' }); void loadStorage();
       }} />}
       {storageCheck && <p className={storageCheck.failed ? 'inline-error' : 'help'} role={storageCheck.failed ? 'alert' : 'status'}>{storageCheck.message}</p>}
-      </> : storageLoading ? <SettingsSpinner label="Загрузка данных хранилища…" /> : <p className="help">Данные о хранилище недоступны. <button type="button" className="secondary" onClick={reload}>Обновить</button></p>}
+      </> : storageLoading ? <SettingsSpinner label="Загрузка данных хранилища…" /> : <p className="help">Данные о хранилище недоступны. <button type="button" className="secondary" onClick={reload}><RefreshCw size={14} aria-hidden="true" />Обновить</button></p>}
     </section>}
   </div>;
 }

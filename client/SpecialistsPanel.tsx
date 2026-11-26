@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
-import { BarChart3, Bot, Calculator, ChevronLeft, Database, FileText, Folder, MessageCircle, Paperclip, Pencil, Plus, RefreshCw, Search, Settings2, X } from 'lucide-react';
+import { BarChart3, Bot, Calculator, ChevronLeft, Database, FileText, Folder, MessageCircle, Paperclip, Pencil, Plus, RefreshCw, Save, Search, Settings2, X } from 'lucide-react';
 import { specialistFileLimits, specialistIcons, type AgentProfile, type ModelCatalog, type SpecialistIcon } from '../shared/types';
 import { hasAdjustableEffort } from '../shared/execution-accounts';
 import { groupModelOptions, isAutomaticModel, modelEffort } from '../shared/model-selection';
@@ -291,8 +291,8 @@ export function SpecialistsPanel({ request, initialProfileId }: {
       </div>
 
       {error && <div className="inline-error" role="alert">{error}</div>}
-      <div className="settings-dialog-actions"><button type="button" className="secondary" onClick={() => edit()} disabled={busy}>Отмена</button>
-        <button type="submit" className="primary" disabled={busy}>Сохранить</button></div>
+      <div className="settings-dialog-actions"><button type="button" className="secondary" onClick={() => edit()} disabled={busy}><X size={16} aria-hidden="true" />Отмена</button>
+        <button type="submit" className="primary" disabled={busy}><Save size={16} aria-hidden="true" />Сохранить</button></div>
     </form>
   </div>;
 }

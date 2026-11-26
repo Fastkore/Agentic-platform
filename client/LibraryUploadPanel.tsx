@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react';
-import { FilePlus2, FolderOpen, LoaderCircle, Upload } from 'lucide-react';
+import { ArrowLeft, Check, FilePlus2, FolderOpen, LoaderCircle, RefreshCw, Upload, X } from 'lucide-react';
 import { libraryDefaults, profileExclusions, type LibraryFolderSummary, type OperationMode, type OperationSummary } from '../shared/library';
 import { cancelUpload, collect, completeUpload, directoryPickerSupported, formatBytes, hashFiles, pendingUpload, prepareUpload, transferUpload, type Request, type ScanResult } from './library-upload';
 
@@ -119,8 +119,8 @@ export function LibraryUploadPanel({ request, folder, mode: initialMode, canDeci
         <strong>Есть незавершённая загрузка</strong><small>Передано {formatBytes(open.bytes.transferred + open.bytes.reused)} из {formatBytes(open.bytes.total)}.
           Выберите ту же папку, чтобы продолжить с подтверждённых частей.</small></div>
         <span className="settings-actions">
-          <button type="button" className="secondary" onClick={() => { setMode(open.mode); setResumeId(open.id); setTimeout(() => input.current?.click()); }}>Продолжить загрузку</button>
-          <button type="button" className="secondary" onClick={() => void cancel()}>Отменить её</button>
+          <button type="button" className="secondary" onClick={() => { setMode(open.mode); setResumeId(open.id); setTimeout(() => input.current?.click()); }}><Upload size={15} aria-hidden="true" />Продолжить загрузку</button>
+          <button type="button" className="secondary" onClick={() => void cancel()}><X size={15} aria-hidden="true" />Отменить её</button>
         </span></li></ul>}
       {!folderPicker && <div className="library-field-row">
         <label htmlFor="library-prefix">Папка внутри библиотеки <span className="help">необязательно</span></label>
@@ -133,7 +133,7 @@ export function LibraryUploadPanel({ request, folder, mode: initialMode, canDeci
       <div className="settings-actions">
         <button type="button" className="primary" disabled={!supported || !!open} onClick={() => input.current?.click()}>
           {folderPicker ? <FolderOpen size={16} aria-hidden="true" /> : <FilePlus2 size={16} aria-hidden="true" />}{folderPicker ? 'Выбрать папку…' : 'Выбрать файлы…'}</button>
-        <button type="button" className="secondary" onClick={close}>Закрыть</button>
+        <button type="button" className="secondary" onClick={close}><X size={16} aria-hidden="true" />Закрыть</button>
       </div>
     </>}
 
@@ -163,8 +163,8 @@ export function LibraryUploadPanel({ request, folder, mode: initialMode, canDeci
         </label>)}
       </fieldset>}
       <div className="settings-actions">
-        <button type="button" className="primary" disabled={indexing || comparing || !scan.files.length} onClick={() => void prepare()}>Сравнить с библиотекой</button>
-        <button type="button" className="secondary" disabled={comparing} onClick={() => setStage('pick')}>Выбрать другое</button>
+        <button type="button" className="primary" disabled={indexing || comparing || !scan.files.length} onClick={() => void prepare()}><RefreshCw size={16} aria-hidden="true" />Сравнить с библиотекой</button>
+        <button type="button" className="secondary" disabled={comparing} onClick={() => setStage('pick')}><ArrowLeft size={16} aria-hidden="true" />Выбрать другое</button>
       </div>
     </>}
 
@@ -174,16 +174,16 @@ export function LibraryUploadPanel({ request, folder, mode: initialMode, canDeci
         ['Уже на сервере', prepared.files.reused.toLocaleString('ru') + ' файлов']]} />
       {projects.length > 0 && <p className="help">Изменения действуют во всех подключённых проектах: {projects.join(', ')}.</p>}
       <div className="settings-actions">
-        <button type="button" className="primary" onClick={() => void transfer(prepared.id)}>{prepared.files.pending ? 'Подтвердить и передать' : 'Подтвердить обновление'}</button>
-        <button type="button" className="secondary" onClick={() => void cancel()}>Отменить</button>
+        <button type="button" className="primary" onClick={() => void transfer(prepared.id)}><Check size={16} aria-hidden="true" />{prepared.files.pending ? 'Подтвердить и передать' : 'Подтвердить обновление'}</button>
+        <button type="button" className="secondary" onClick={() => void cancel()}><X size={16} aria-hidden="true" />Отменить</button>
       </div>
     </>}
 
     {stage === 'unchanged' && <>
       <p role="status"><strong>Библиотека актуальна.</strong> Выбранные файлы совпадают с текущим содержимым: обновление не требуется.</p>
       <div className="settings-actions">
-        {mode === 'add' && <button type="button" className="primary" onClick={addMore}>Добавить ещё файлы</button>}
-        <button type="button" className="secondary" onClick={close}>Закрыть</button>
+        {mode === 'add' && <button type="button" className="primary" onClick={addMore}><FilePlus2 size={16} aria-hidden="true" />Добавить ещё файлы</button>}
+        <button type="button" className="secondary" onClick={close}><X size={16} aria-hidden="true" />Закрыть</button>
       </div>
     </>}
 
@@ -194,9 +194,9 @@ export function LibraryUploadPanel({ request, folder, mode: initialMode, canDeci
       </div>
       {stage === 'done' && <p className="help"><strong>Файлы приняты.</strong> Идёт подготовка к поиску; до её окончания агент использует прежнее содержимое папки.</p>}
       <div className="settings-actions">
-        {stage === 'transfer' ? <button type="button" className="secondary" onClick={() => void cancel()}>Отменить загрузку</button> : <>
-          <button type="button" className="primary" onClick={addMore}>Добавить ещё файлы</button>
-          <button type="button" className="secondary" onClick={close}>Закрыть</button>
+        {stage === 'transfer' ? <button type="button" className="secondary" onClick={() => void cancel()}><X size={16} aria-hidden="true" />Отменить загрузку</button> : <>
+          <button type="button" className="primary" onClick={addMore}><FilePlus2 size={16} aria-hidden="true" />Добавить ещё файлы</button>
+          <button type="button" className="secondary" onClick={close}><X size={16} aria-hidden="true" />Закрыть</button>
         </>}
       </div>
     </>}
@@ -206,7 +206,7 @@ export function LibraryUploadPanel({ request, folder, mode: initialMode, canDeci
         {folderPicker ? <FolderOpen size={16} aria-hidden="true" /> : <FilePlus2 size={16} aria-hidden="true" />}
         {resumeId ? 'Выбрать и продолжить' : folderPicker ? 'Выбрать папку снова' : 'Выбрать файлы снова'}
       </button>
-      <button type="button" className="secondary" onClick={() => void cancel()}>Отменить загрузку</button>
+      <button type="button" className="secondary" onClick={() => void cancel()}><X size={16} aria-hidden="true" />Отменить загрузку</button>
     </div>}
   </section>;
 }

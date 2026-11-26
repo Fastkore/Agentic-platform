@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { KeyRound, LogIn, Plus, RefreshCw, Trash2 } from 'lucide-react';
+import { ArrowRight, Check, KeyRound, LogIn, Plus, RefreshCw, Save, Trash2, X } from 'lucide-react';
 import { type ExecutionAccount, type ExecutionAccounts, type ExecutionProvider, type GigaChatScope } from '../shared/execution-accounts';
 import { Select } from './Select';
 import { SettingsSpinner } from './SettingsSpinner';
@@ -87,7 +87,7 @@ export function ExecutionAccountsPanel({ request, busy, changed }: { request: Re
         onClick={() => void action(async () => {
           await request('/api/admin/execution/proxy', { method: 'POST', body: JSON.stringify({ proxyUrl: proxyDraft?.trim() ?? '' }) });
           setProxyDraft(undefined);
-        })}>Сохранить прокси</button></div>
+        })}><Save size={15} aria-hidden="true" />Сохранить прокси</button></div>
     </div>}
     <ul className="settings-records">{data?.accounts.map(account => <li key={account.id}>
       <div><strong>{accountName(account)}</strong><small>{providerLabel(account.provider)} · {account.email ?? (account.signedIn ? 'Вход выполнен' : 'Требуется вход')}</small>
@@ -132,8 +132,8 @@ export function ExecutionAccountsPanel({ request, busy, changed }: { request: Re
             setData(current => ({ ...current, accounts: [...(current?.accounts ?? []), { ...account, active: false, signedIn: false }] }));
             setWizard(current => current && { id: account.id, provider: account.provider, name: account.name });
             if (account.provider === 'codex') await startLogin(account.id);
-          })}>{wizard.provider === 'codex' ? 'Получить код' : 'Далее'}</button>
-          <button type="button" className="secondary" onClick={() => setWizard(null)}>Отмена</button>
+          })}>{wizard.provider === 'codex' ? <><LogIn size={16} aria-hidden="true" />Получить код</> : <>Далее<ArrowRight size={16} aria-hidden="true" /></>}</button>
+          <button type="button" className="secondary" onClick={() => setWizard(null)}><X size={16} aria-hidden="true" />Отмена</button>
         </div>
       </div>}
       {wizard.id && wizardAccount && <div className="setting-section">
@@ -153,8 +153,8 @@ export function ExecutionAccountsPanel({ request, busy, changed }: { request: Re
                     scope: wizardAccount.provider === 'gigachat' ? scope : undefined }) });
                   setAccountKey('');
                   setWizard(current => current?.id === wizardAccount.id ? { ...current, submitted: true } : current);
-                })}>Сохранить и подключить</button>
-                <button type="button" className="secondary" onClick={() => { setAccountKey(''); setWizard(null); }} disabled={working}>Закрыть</button>
+                })}><Save size={16} aria-hidden="true" />Сохранить и подключить</button>
+                <button type="button" className="secondary" onClick={() => { setAccountKey(''); setWizard(null); }} disabled={working}><X size={16} aria-hidden="true" />Закрыть</button>
               </div>
             </div>
           : <>
@@ -169,13 +169,13 @@ export function ExecutionAccountsPanel({ request, busy, changed }: { request: Re
                         <button type="button" className="primary" disabled={working || !authorizationCodes[wizardAccount.id]?.trim()} onClick={() => void action(async () => {
                           await request(endpoint + '/' + wizardAccount.id + '/code', { method: 'POST', body: JSON.stringify({ code: authorizationCodes[wizardAccount.id] }) });
                           setAuthorizationCodes(old => ({ ...old, [wizardAccount.id]: '' }));
-                        })}>Подтвердить вход</button>
+                        })}><Check size={16} aria-hidden="true" />Подтвердить вход</button>
                       </div>
                     </div>}
                   </div>
                 : <div className="settings-actions">
-                    <button type="button" className="primary" disabled={working} onClick={() => void action(() => startLogin(wizardAccount.id))}>{wizardAccount.provider === 'codex' ? (wizardAccount.login?.state === 'error' ? 'Запросить новый код' : 'Получить код') : wizardAccount.signedIn ? 'Войти заново' : 'Начать вход'}</button>
-                    <button type="button" className="secondary" onClick={() => setWizard(null)} disabled={working}>Закрыть</button>
+                    <button type="button" className="primary" disabled={working} onClick={() => void action(() => startLogin(wizardAccount.id))}><LogIn size={16} aria-hidden="true" />{wizardAccount.provider === 'codex' ? (wizardAccount.login?.state === 'error' ? 'Запросить новый код' : 'Получить код') : wizardAccount.signedIn ? 'Войти заново' : 'Начать вход'}</button>
+                    <button type="button" className="secondary" onClick={() => setWizard(null)} disabled={working}><X size={16} aria-hidden="true" />Закрыть</button>
                   </div>}
               {wizardAccount.login?.state !== 'error' && (wizardAccount.provider === 'codex'
                 ? <p className="help" role="status">{wizardAccount.login?.state === 'complete' && wizard.submitted ? 'Вход подтверждён. Обновляем аккаунт…' : working && !wizard.submitted ? 'Запрашиваем одноразовый код у OpenAI…' : wizardAccount.login?.state === 'waiting' ? 'Ожидаем подтверждения входа.' : 'Одноразовый код появится в этом окне.'}</p>

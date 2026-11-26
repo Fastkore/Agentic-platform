@@ -1,4 +1,5 @@
 import { useId, useState } from 'react';
+import { Save } from 'lucide-react';
 import { Select } from './Select';
 import type { ProjectChatDefaults } from '../shared/types';
 
@@ -34,7 +35,7 @@ export function ChatDefaultsEditor({ value, save }: {
           options={['low', 'medium', 'high', 'xhigh'].map(level => ({ value: level, label: level }))}
           onChange={value => setDraft({ ...draft, reasoningEffort: value as ProjectChatDefaults['reasoningEffort'] })} />
       </div>}
-      <div className="settings-dialog-actions"><button className="primary" disabled={pending}>Сохранить настройки чата</button></div>
+      <div className="settings-dialog-actions"><button className="primary" disabled={pending}><Save size={16} aria-hidden="true" />Сохранить настройки чата</button></div>
       {message && <p role="status">{message}</p>}
     </form>
   </details>;

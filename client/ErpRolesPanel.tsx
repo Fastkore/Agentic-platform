@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Bot, Clock3, FilePenLine, FolderPlus, Globe, LockKeyhole, Network, Search, Send, ShieldCheck, Terminal, Trash2, Users } from 'lucide-react';
+import { Bot, Clock3, FilePenLine, FolderPlus, Globe, LockKeyhole, Network, Search, Send, ShieldCheck, Terminal, Trash2, Users, X } from 'lucide-react';
 import type { FastkoreRoleSummary, FastkoreRolePermissions } from '../shared/types';
 import { SettingsAction } from './SettingsAction';
 import { SettingsSpinner } from './SettingsSpinner';
@@ -55,8 +55,8 @@ export function ErpRolesPanel({ request }: { request: Request }) {
     {removing ? <SettingsAction title="Удалить роль из списка">
       <p>Удалить «{removing.name}»? При следующем входе сотрудника Fastkore сможет передать эту роль снова.</p>
       <div className="settings-dialog-actions">
-        <button className="secondary" disabled={busy} onClick={() => { setRemoving(null); setError(''); }}>Отмена</button>
-        <button className="primary" disabled={busy} onClick={() => void remove()}>Удалить</button>
+        <button className="secondary" disabled={busy} onClick={() => { setRemoving(null); setError(''); }}><X size={16} aria-hidden="true" />Отмена</button>
+        <button className="primary" disabled={busy} onClick={() => void remove()}><Trash2 size={16} aria-hidden="true" />Удалить</button>
       </div>
     </SettingsAction> : <>
       <p className="roles-intro">Роли поступают из Fastkore при входе сотрудников.</p>

@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { Save } from 'lucide-react';
 import { maxProjectInstructions, type ProjectSummary } from '../shared/types';
 
 export const projectInstructionsHint = 'Цель проекта, границы работы и требования к ответам агентов';
@@ -29,6 +30,6 @@ export function ProjectInstructions({ project, save }: {
       onChange={event => { setDraft(event.target.value); setFeedback(''); setError(''); }} />
     {error && <p className="inline-error" role="alert">{error}</p>}
     {feedback && <p className="help" role="status">{feedback}</p>}
-    <div className="settings-dialog-actions"><button type="submit" className="primary" disabled={pending || saved === draft.trim()}>Сохранить</button></div>
+    <div className="settings-dialog-actions"><button type="submit" className="primary" disabled={pending || saved === draft.trim()}><Save size={16} aria-hidden="true" />Сохранить</button></div>
   </form>;
 }

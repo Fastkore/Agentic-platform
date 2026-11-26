@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { Save } from 'lucide-react';
 import type { ProjectRole, ProjectRoleLabel, ProjectRolePolicy, ProjectRoleSettings } from '../shared/types';
 import type { Request } from './library-upload';
 import { SettingsSpinner } from './SettingsSpinner';
@@ -74,7 +75,7 @@ export function ProjectRolesPanel({ projectId, request, onSaved, pendingChanged 
       </ul> : <p className="help">Роли появятся после входа сотрудников из Fastkore.</p>}
       <div className="settings-dialog-actions project-role-actions">
         {saved && <span role="status">Роли проекта сохранены.</span>}
-        <button type="submit" className="primary" disabled={!changed || pending}>Сохранить роли</button>
+        <button type="submit" className="primary" disabled={!changed || pending}><Save size={16} aria-hidden="true" />Сохранить роли</button>
       </div>
     </form>}
   </>;

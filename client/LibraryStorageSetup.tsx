@@ -1,4 +1,5 @@
 import { useId, useState } from 'react';
+import { ArrowLeft, ArrowRight, Save, X } from 'lucide-react';
 import { Select } from './Select';
 import type { Request } from './library-upload';
 
@@ -38,8 +39,8 @@ export function LibraryStorageSetup({ request, location, onSaved, cancel }: {
       <label>Ключ доступа (Access key ID)<input autoComplete="off" spellCheck={false} value={accessKeyId} onChange={e => setKey(e.target.value)} /></label>
       <label>Секретный ключ (Secret access key)<input type="password" autoComplete="new-password" value={secretAccessKey} onChange={e => setSecret(e.target.value)} /></label>
       <div className="settings-actions">
-        <button type="button" className="primary" disabled={!accessKeyId.trim() || !secretAccessKey.trim()} onClick={() => void save()}>{busy ? 'Проверяем бакет…' : 'Проверить и сохранить'}</button>
-        <button type="button" className="secondary" onClick={() => { setCredentials(false); setError(''); }}>Назад</button>
+        <button type="button" className="primary" disabled={!accessKeyId.trim() || !secretAccessKey.trim()} onClick={() => void save()}><Save size={16} aria-hidden="true" />{busy ? 'Проверяем бакет…' : 'Проверить и сохранить'}</button>
+        <button type="button" className="secondary" onClick={() => { setCredentials(false); setError(''); }}><ArrowLeft size={16} aria-hidden="true" />Назад</button>
       </div>
     </> : <>
       <strong>Шаг 1. Укажите хранилище для файлов</strong>
@@ -56,8 +57,8 @@ export function LibraryStorageSetup({ request, location, onSaved, cancel }: {
           <label><input type="checkbox" checked={pathStyle} onChange={e => setPathStyle(e.target.checked)} /> Имя бакета в пути запроса (MinIO)</label>
         </details>}
       <div className="settings-actions">
-        <button type="button" className="primary" disabled={!bucket.trim() || !region.trim() || (!aws && !endpoint.trim())} onClick={() => setCredentials(true)}>Далее — ключи доступа</button>
-        {cancel && <button type="button" className="secondary" onClick={cancel}>Отмена</button>}
+        <button type="button" className="primary" disabled={!bucket.trim() || !region.trim() || (!aws && !endpoint.trim())} onClick={() => setCredentials(true)}>Далее — ключи доступа<ArrowRight size={16} aria-hidden="true" /></button>
+        {cancel && <button type="button" className="secondary" onClick={cancel}><X size={16} aria-hidden="true" />Отмена</button>}
       </div>
     </>}
     {error && <p role="alert" className="inline-error">{error}</p>}

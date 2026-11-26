@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { ArrowDown, ArrowUp, CalendarDays, Layers, LockKeyhole, LogIn, Search, Settings2, UserRound } from 'lucide-react';
+import { ArrowDown, ArrowUp, CalendarDays, Layers, LockKeyhole, LogIn, RefreshCw, Search, Settings2, UserRound } from 'lucide-react';
 import type { AuditEvent, ProjectSummary, User } from '../shared/types';
 import { Select } from './Select';
 import { ProgressRing, SettingsSpinner } from './SettingsSpinner';
@@ -161,7 +161,7 @@ export function AuditPanel({ request }: { request: Request }) {
     <p className="audit-count" role="status">Показано {rows.length} из {data.events.length}</p>
     {pageError && <p className="inline-error" role="alert">{pageError}</p>}
     {hasOlder && <button type="button" className="secondary" disabled={loadingOlder} onClick={() => void loadOlder()}>
-      {loadingOlder ? <><ProgressRing size={15} />Загрузка…</> : 'Загрузить предыдущие события'}
+      {loadingOlder ? <><ProgressRing size={15} />Загрузка…</> : <><RefreshCw size={15} aria-hidden="true" />Загрузить предыдущие события</>}
     </button>}
   </div>;
 }

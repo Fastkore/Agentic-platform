@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { Check, Download } from 'lucide-react';
 import type { DictationModelId, DictationModels } from '../shared/types';
 import { SettingsSpinner } from './SettingsSpinner';
 
@@ -55,7 +56,7 @@ export function DictationModelSettings({ request }: { request: <T>(url: string, 
               : <button type="button" className="secondary" disabled={busy || working}
                 aria-label={`${model.installed ? 'Выбрать' : 'Загрузить'} ${model.name}`}
                 onClick={() => void change(model.id, model.installed ? 'select' : 'download')}>
-                {model.installed ? 'Выбрать' : 'Загрузить'}
+                {model.installed ? <Check size={15} aria-hidden="true" /> : <Download size={15} aria-hidden="true" />}{model.installed ? 'Выбрать' : 'Загрузить'}
               </button>}
       </div>)}
     </div>}

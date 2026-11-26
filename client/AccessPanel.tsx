@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Folder, Trash2 } from 'lucide-react';
+import { Folder, KeyRound, Save, Trash2, X } from 'lucide-react';
 import { ActiveStatusChip } from './ActiveStatusChip';
 import { SettingsAction } from './SettingsAction';
 import { SettingsSpinner } from './SettingsSpinner';
@@ -40,7 +40,7 @@ export function AccountPanel({ request, renewed, fastkore }: { request: Request;
   if (fastkore) return <p>Пароль и вход управляются в Fastkore ERP.</p>;
 
   return <>
-    {!open && <button type="button" className="secondary" onClick={() => { setNotice(''); setOpen(true); }}>Сменить пароль</button>}
+    {!open && <button type="button" className="secondary" onClick={() => { setNotice(''); setOpen(true); }}><KeyRound size={16} aria-hidden="true" />Сменить пароль</button>}
     {notice && <p role="status">{notice}</p>}
     {open && <SettingsAction title="Сменить пароль">
       <form onSubmit={e => { e.preventDefault(); void changePassword(); }}>
@@ -49,8 +49,8 @@ export function AccountPanel({ request, renewed, fastkore }: { request: Request;
         <label htmlFor="new-password">Новый пароль · минимум 12 символов</label>
         <input id="new-password" type="password" autoComplete="new-password" minLength={12} maxLength={200} value={password} onChange={e => setPassword(e.target.value)} required />
         <div className="settings-dialog-actions">
-          <button type="button" className="secondary" disabled={busy} onClick={closeDialog}>Отмена</button>
-          <button className="primary" disabled={busy}>Сменить пароль</button>
+          <button type="button" className="secondary" disabled={busy} onClick={closeDialog}><X size={16} aria-hidden="true" />Отмена</button>
+          <button className="primary" disabled={busy}><Save size={16} aria-hidden="true" />Сменить пароль</button>
         </div>
         {error && <div className="inline-error" role="alert">{error}</div>}
       </form>
@@ -89,12 +89,12 @@ export function TeamPanel({ request, self, manageAdministrators }: { request: Re
       <p>Удалить учётную запись «{removing.name}» из команды? Сеансы завершатся. История чатов сохранится.</p>
       {!!removing.erpRoles?.length && <p>При следующем входе из Fastkore будет создана новая учётная запись.</p>}
       <div className="settings-dialog-actions">
-        <button type="button" className="secondary" disabled={busy} onClick={() => { setRemoving(undefined); setError(''); }}>Отмена</button>
+        <button type="button" className="secondary" disabled={busy} onClick={() => { setRemoving(undefined); setError(''); }}><X size={16} aria-hidden="true" />Отмена</button>
         <button type="button" className="danger" disabled={busy} onClick={() => void run(async () => {
           await request(`/api/users/${removing.id}`, { method: 'DELETE' });
           setUsers(items => items?.filter(item => item.id !== removing.id));
           setRemoving(undefined);
-        })}>Удалить</button>
+        })}><Trash2 size={16} aria-hidden="true" />Удалить</button>
       </div>
     </SettingsAction> : <section className="setting-section">
       <div className="settings-section-heading">

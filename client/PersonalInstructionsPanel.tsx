@@ -1,6 +1,6 @@
 import { Select } from './Select';
 import { useEffect, useId, useRef, useState } from 'react';
-import { ArrowLeft, Check, ChevronRight, Download, FileText, Folder, Layers, Menu, Plus, Search, Trash2, Undo2, Upload, Users } from 'lucide-react';
+import { ArrowLeft, Check, ChevronRight, Download, FileText, Folder, Layers, Menu, Plus, RefreshCw, Search, Trash2, Undo2, Upload, Users } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { instructionTile, personalInstructionLimits as limits, type PersonalInstructions, type PersonalInstructionsEdit, type PersonalInstructionsView, type SharedWorkNote, type WorkNote } from '../shared/personal-instructions';
@@ -297,9 +297,9 @@ export function PersonalInstructionsPanel({ request, project, erp, context, admi
       {error && <p role="alert" className="inline-error">{error}</p>}
       {conflict && <button type="button" className="secondary personal-reload" onClick={() => {
         if (window.confirm('Загрузить актуальную версию и сбросить черновик?')) void load();
-      }}>Загрузить актуальную версию</button>}
+      }}><RefreshCw size={15} aria-hidden="true" />Загрузить актуальную версию</button>}
       {!draft && (busy ? <SettingsSpinner label="Загрузка инструкций…" /> : error && endpoint ?
-        <button type="button" className="secondary personal-reload" onClick={() => void load()}>Повторить</button> :
+        <button type="button" className="secondary personal-reload" onClick={() => void load()}><RefreshCw size={15} aria-hidden="true" />Повторить</button> :
         !error && <p className="help">Сохранённых инструкций пока нет.</p>)}
       {draft && administration && note && <label className="personal-publish">
         <PermissionSwitch name="Доступен всем ролям" checked={!!note.common} disabled={busy}

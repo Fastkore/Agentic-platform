@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useId, useState } from 'react';
-import { ChevronDown, ChevronRight, RefreshCw } from 'lucide-react';
+import { ChevronDown, ChevronRight, FolderOpen, RefreshCw, X } from 'lucide-react';
 import { InfoHint } from './InfoHint';
 import type { ProjectSummary } from '../shared/types';
 import type { ExternalProvider, LibraryConnection, LibraryFolderSummary, OutputPolicy, ProjectLibraryView } from '../shared/library';
@@ -107,7 +107,7 @@ export function ProjectLibraryPanel({ project, request, section, isAdmin, initia
             {c.canManage && <div className="settings-actions library-card-actions">
               <Select className="settings-select" label="Режим выдачи" value={c.outputPolicy} options={options(outputModes)} disabled={pending} fitContent
                 onChange={outputPolicy => void update(c, { outputPolicy })} />
-              <button type="button" className="secondary" disabled={pending} onClick={() => setRemoving(c)}>Убрать из проекта</button>
+              <button type="button" className="secondary" disabled={pending} onClick={() => setRemoving(c)}><X size={15} aria-hidden="true" />Убрать из проекта</button>
             </div>}
             </div>}
           </li>;
@@ -138,7 +138,7 @@ export function ProjectLibraryPanel({ project, request, section, isAdmin, initia
                     {cell.files !== undefined && ' Разрешено материалов: ' + formatFileCount(cell.files) + '.'}
                   </InfoHint>
                   {cell.files !== undefined && c.canManage && <button type="button" className="secondary" disabled={pending}
-                    onClick={() => void grant(c, p.id, true, { allFiles: true })}>Открыть всю папку</button>}
+                    onClick={() => void grant(c, p.id, true, { allFiles: true })}><FolderOpen size={15} aria-hidden="true" />Открыть всю папку</button>}
                 </span>
               </td>;
             })}
