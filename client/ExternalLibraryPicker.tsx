@@ -222,7 +222,7 @@ export function ExternalLibraryPicker({ provider, request, onSelect, selectionCo
     {connection && <>
       <div className="library-drive-heading">
         <strong>{chosen ? 'Папка для библиотеки выбрана' : 'Откройте папку для библиотеки'}</strong>
-        {provider === 'dropbox' && !chosen && <button type="button" className="workspace-icon" disabled={busy}
+        {!chosen && <button type="button" className="workspace-icon" disabled={busy}
           aria-label="Обновить список папок" title="Обновить список папок"
           onClick={() => void browse(connection, trail, controller.current?.signal)}><RefreshCw size={16} aria-hidden="true" /></button>}
       </div>
@@ -248,8 +248,6 @@ export function ExternalLibraryPicker({ provider, request, onSelect, selectionCo
             <button type="button" className="secondary" disabled={busy}
               onClick={() => void browse(connection, trail.slice(0, -1), controller.current?.signal)}>На уровень выше</button>
           </>}
-          {provider !== 'dropbox' && (error || (!busy && !folders.length && !current)) && <button type="button" className="secondary" disabled={busy}
-            onClick={() => void browse(connection, trail, controller.current?.signal)}>Обновить список папок</button>}
           <button type="button" className="secondary" disabled={busy} onClick={() => void connect()}>Сменить аккаунт</button>
         </div>
       </>}
