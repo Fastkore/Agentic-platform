@@ -149,7 +149,7 @@ export function CreateLibraryForm({ kind, request, pending, submit, cancel, proj
     {(showDetails || kind === 's3') && <div className="settings-actions">{showDetails && <button type="submit" className="primary" disabled={pending || !ready}>{project ? 'Создать и подключить' : 'Создать'}</button>}
       {kind === 's3'
         ? <button type="button" className="secondary" disabled={pending} onClick={cancel}>Отмена</button>
-        : <button type="button" className="secondary" disabled={pending} onClick={() => setSelection(undefined)}>Изменить папку</button>}</div>}
+        : <button type="button" className="secondary" disabled={pending} onClick={() => setSelection(undefined)}>Назад</button>}</div>}
   </form>;
   return kind === 'external'
     ? <WorkspaceDialog title={folderStep ? 'Выберите папку' : 'Внешняя библиотека'} className="external-library-dialog" closeOnBackdrop={false} close={() => { if (!pending) cancel(); }}>{form}</WorkspaceDialog>

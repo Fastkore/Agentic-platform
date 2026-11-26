@@ -126,9 +126,9 @@ export function ExternalLibraryPicker({ provider, request, onSelect, selectionCo
       await browse(state, [], flow.signal);
     } catch (e) { if (!flow.signal.aborted) { setError((e as Error).message); setBusy(false); } }
   }
-  function chooseAccount() {
+  function backToAccount() {
     controller.current?.abort(); setConnection(''); setTrail([]); setLevels([]); setChosen(false); onSelect(undefined);
-    setSelectedAccountId(undefined); setAccountName(''); setError(''); setCheck(n => n + 1);
+    setAccountName(''); setError('');
   }
   const nameField = <label>Название аккаунта<input value={accountName} maxLength={100} onChange={e => setAccountName(e.target.value)}
     placeholder="Например, Рабочий диск" /></label>;
@@ -329,8 +329,7 @@ export function ExternalLibraryPicker({ provider, request, onSelect, selectionCo
         </div>
         <p className="help">Агенты с доступом смогут читать файлы в этой папке и её подпапках.</p>
         {selectionConfirmed === undefined && <div className="settings-actions">
-          <button type="button" className="secondary" onClick={() => { setChosen(false); onSelect(undefined); }}>Изменить выбор</button>
-          <button type="button" className="secondary" onClick={chooseAccount}>Сменить аккаунт</button>
+          <button type="button" className="secondary" onClick={() => { setChosen(false); onSelect(undefined); }}>Назад</button>
         </div>}
       </> : <>
         {!onFolderStepChange && <strong>Выберите папку</strong>}
@@ -354,7 +353,7 @@ export function ExternalLibraryPicker({ provider, request, onSelect, selectionCo
           <span className="library-account-label library-folder-account" title={name}>
             <DriveProviderIcon provider={provider} /><span>Аккаунт: <strong>{accountName}</strong></span>
           </span>
-          <button type="button" className="secondary" disabled={busy} onClick={chooseAccount}>Сменить аккаунт</button>
+          <button type="button" className="secondary" disabled={busy} onClick={backToAccount}>Назад</button>
         </div>
       </>}
     </>}
