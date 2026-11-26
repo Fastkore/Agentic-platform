@@ -148,7 +148,7 @@
 .library-drive-permissions :is(p, ul) { margin: 0; }
 .library-drive-permissions ul { padding-inline-start: 1.4em; }
 .library-drive-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-.library-drive-heading .workspace-icon { background: #173e76; color: #fff; }
+.library-drive-heading .workspace-icon { flex: none; background: #173e76; color: #fff; }
 .library-drive-heading .workspace-icon:hover:not(:disabled) { background: #214e8c; color: #fff; }
 .library-drive-select {
   width: 100%; min-height: 40px; padding: 8px 12px; border: 1px solid var(--control-border);
@@ -157,6 +157,12 @@
 .library-account-control { position: relative; min-width: 0; }
 .library-account-control .drive-provider-icon { position: absolute; inset-inline-start: 12px; top: 50%; transform: translateY(-50%); pointer-events: none; }
 .library-account-control .library-drive-select { padding-inline-start: 38px; }
+.external-library-dialog .library-folder-actions { flex-wrap: wrap; }
+.library-folder-account {
+  max-width: 100%; min-height: 38px; padding: 6px 10px; border: 1px solid var(--control-border);
+  border-radius: 9px; color: var(--text-muted); overflow-wrap: anywhere;
+}
+.library-folder-account strong { color: var(--text); }
 
 .workspace-dialog.external-library-dialog { width: min(620px, calc(100vw - 24px)); }
 .external-library-dialog .settings-actions { display: flex; flex-flow: row nowrap; align-items: center; gap: 8px; }

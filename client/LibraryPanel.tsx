@@ -104,6 +104,7 @@ export function CreateLibraryForm({ kind, request, pending, submit, cancel, proj
     return () => abort.abort();
   }, [kind, request, reloadStorage]);
   const [selection, setSelection] = useState<ExternalSelection>();
+  const [folderStep, setFolderStep] = useState(false);
   const [attempt, setAttempt] = useState(0);
   const suggestedName = useRef('');
   const showDetails = kind === 's3' ? !!storage?.configured : !!selection;
@@ -120,7 +121,8 @@ export function CreateLibraryForm({ kind, request, pending, submit, cancel, proj
     {kind === 's3' && <strong>Обычная библиотека</strong>}
     <fieldset disabled={pending} className="library-source-fields">
       {kind === 'external' ? <>
-        <ExternalLibraryPicker key={provider + attempt} selectionConfirmed={!!selection} openAccounts={openAccounts} provider={provider} request={request}
+        <ExternalLibraryPicker key={provider + attempt} selectionConfirmed={!!selection} onFolderStepChange={setFolderStep}
+          openAccounts={openAccounts} provider={provider} request={request}
           providerPicker={<>
             <label htmlFor="library-provider">Внешний диск</label>
             <select id="library-provider" className="library-drive-select" value={provider}
@@ -152,7 +154,7 @@ export function CreateLibraryForm({ kind, request, pending, submit, cancel, proj
         : <button type="button" className="secondary" disabled={pending} onClick={() => setSelection(undefined)}>Изменить папку</button>}</div>}
   </form>;
   return kind === 'external'
-    ? <WorkspaceDialog title="Внешняя библиотека" className="external-library-dialog" closeOnBackdrop={false} close={() => { if (!pending) cancel(); }}>{form}</WorkspaceDialog>
+    ? <WorkspaceDialog title={folderStep ? 'Выберите папку' : 'Внешняя библиотека'} className="external-library-dialog" closeOnBackdrop={false} close={() => { if (!pending) cancel(); }}>{form}</WorkspaceDialog>
     : form;
 }
 

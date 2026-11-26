@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { ChevronDown, ChevronRight, Folder, FolderOpen, RefreshCw } from 'lucide-react';
 import { externalLabels, type DriveAccount, type ExternalFolder, type ExternalProvider, type ExternalSelection } from '../shared/library';
 import type { Request } from './library-upload';
@@ -45,8 +45,9 @@ export function driveSessionExpired(error: unknown) {
   return typeof error === 'object' && error !== null && 'status' in error && error.status === 410;
 }
 
-export function ExternalLibraryPicker({ provider, request, onSelect, selectionConfirmed, accountSaved, openAccounts, providerPicker }: {
+export function ExternalLibraryPicker({ provider, request, onSelect, selectionConfirmed, accountSaved, openAccounts, providerPicker, onFolderStepChange }: {
   providerPicker?: ReactNode;
+  onFolderStepChange?: (visible: boolean) => void;
   accountSaved?: () => void; openAccounts?: (provider: ExternalProvider) => void; selectionConfirmed?: boolean; provider: ExternalProvider; request: Request; onSelect: (selection?: ExternalSelection, folderName?: string) => void;
 }) {
   const [busy, setBusy] = useState(false), [error, setError] = useState('');
@@ -56,6 +57,8 @@ export function ExternalLibraryPicker({ provider, request, onSelect, selectionCo
   const [check, setCheck] = useState(0);
   const [localChoice, setChosen] = useState(false);
   const chosen = selectionConfirmed ?? localChoice;
+  const folderStep = !!connection && !chosen && availability === 'ready';
+  useLayoutEffect(() => { onFolderStepChange?.(folderStep); }, [folderStep, onFolderStepChange]);
   const [step, setStep] = useState<'start' | 'register' | 'keys'>('start');
   const [replacingDropbox, setReplacingDropbox] = useState(false);
   const [redirect, setRedirect] = useState('');
@@ -334,24 +337,27 @@ export function ExternalLibraryPicker({ provider, request, onSelect, selectionCo
           <button type="button" className="secondary" onClick={chooseAccount}>Сменить аккаунт</button>
         </div>}
       </> : <>
-        <div className="library-drive-heading"><strong>Выберите папку</strong>
+        {!onFolderStepChange && <strong>Выберите папку</strong>}
+        <div className="library-drive-heading">
+          <nav className="library-path" aria-label="Путь к папке">
+            {[{ id: '', name: levels[0]?.find(f => !f.id)?.name ?? name }, ...trail].map((f, i) => <span key={f.id}>
+              {i > 0 && <ChevronRight size={13} aria-hidden="true" />}
+              {i === trail.length ? <strong aria-current="location">{f.name}</strong> :
+                <button type="button" disabled={busy} onClick={() => navigate(trail.slice(0, i))}>{f.name}</button>}
+            </span>)}
+          </nav>
           <button type="button" className="workspace-icon" disabled={busy} aria-busy={busy} aria-label="Обновить список папок" title="Обновить список папок"
             onClick={() => navigate(trail)}>{busy ? <ProgressRing size={16} /> : <RefreshCw size={16} aria-hidden="true" />}</button>
         </div>
-        <small className="help library-account-label"><DriveProviderIcon provider={provider} />{name} · {accountName}</small>
-        <nav className="library-path" aria-label="Путь к папке">
-          {[{ id: '', name: levels[0]?.find(f => !f.id)?.name ?? name }, ...trail].map((f, i) => <span key={f.id}>
-            {i > 0 && <ChevronRight size={13} aria-hidden="true" />}
-            {i === trail.length ? <strong aria-current="location">{f.name}</strong> :
-              <button type="button" disabled={busy} onClick={() => navigate(trail.slice(0, i))}>{f.name}</button>}
-          </span>)}
-        </nav>
         {levels[0]?.some(f => f.id) && <div className="library-folder-tree">{branch(0)}</div>}
         {!error && !subfolders.length && <p className="help">{selectedFolder ? 'Вложенных папок нет.' : 'Нет доступных папок. Создайте папку на диске и обновите список.'}</p>}
-        <div className="settings-actions">
+        <div className="settings-actions library-folder-actions">
           {current && <button type="button" className="primary" disabled={busy} onClick={() => chooseFolder(current)}>Далее</button>}
           {appFolder && <button type="button" className="primary" disabled={busy}
             onClick={() => chooseFolder(appFolder)}>Выбрать папку приложения</button>}
+          <span className="library-account-label library-folder-account" title={name}>
+            <DriveProviderIcon provider={provider} /><span>Аккаунт: <strong>{accountName}</strong></span>
+          </span>
           <button type="button" className="secondary" disabled={busy} onClick={chooseAccount}>Сменить аккаунт</button>
         </div>
       </>}
