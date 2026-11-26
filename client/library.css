@@ -160,6 +160,11 @@
 .library-drive-folders button svg { flex: none; color: var(--text-muted); }
 .library-drive-folders button:enabled:is(:hover, :focus-visible) { background: var(--selected); color: var(--accent-strong); }
 .library-drive-folders button:focus-visible { outline: 2px solid var(--accent-strong); outline-offset: -2px; }
+.library-account-option { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 36px; margin: 0; padding: 6px 10px; cursor: pointer; overflow-wrap: anywhere; }
+.library-account-option:hover { background: var(--hover); }
+.library-account-option:has(input:checked) { background: var(--selected); }
+.library-account-option:has(input:focus-visible) { outline: 2px solid var(--accent-strong); outline-offset: -2px; }
+.library-account-option input { flex: none; margin: 0; accent-color: var(--accent); }
 
 .workspace-dialog.external-library-dialog { width: min(620px, calc(100vw - 24px)); }
 .external-library-dialog .settings-actions { display: flex; flex-flow: row nowrap; align-items: center; gap: 8px; }

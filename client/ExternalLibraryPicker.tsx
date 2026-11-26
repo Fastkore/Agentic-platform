@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
 import { ChevronDown, ChevronRight, Folder, FolderOpen, RefreshCw } from 'lucide-react';
 import { externalLabels, type DriveAccount, type ExternalFolder, type ExternalProvider, type ExternalSelection } from '../shared/library';
 import type { Request } from './library-upload';
@@ -65,6 +65,9 @@ export function ExternalLibraryPicker({ provider, request, onSelect, selectionCo
   const finishLogin = useRef<((code?: string) => Promise<void>) | null>(null);
   const screenCode = provider === 'yandex' && redirect === 'https://oauth.yandex.ru/verification_code';
   const [accounts, setAccounts] = useState<DriveAccount[]>([]);
+  const accountGroup = useId();
+  const [selectedAccountId, setSelectedAccountId] = useState<string>();
+  const selectedAccount = accounts.find(account => account.id === selectedAccountId);
   const [accountName, setAccountName] = useState('');
   const guide = guides[provider];
   const configuring = !!accountSaved;
@@ -120,7 +123,7 @@ export function ExternalLibraryPicker({ provider, request, onSelect, selectionCo
   }
   function chooseAccount() {
     controller.current?.abort(); setConnection(''); setTrail([]); setLevels([]); setChosen(false); onSelect(undefined);
-    setAccountName(''); setError(''); setCheck(n => n + 1);
+    setSelectedAccountId(undefined); setAccountName(''); setError(''); setCheck(n => n + 1);
   }
   const nameField = <label>Название аккаунта<input value={accountName} maxLength={100} onChange={e => setAccountName(e.target.value)}
     placeholder="Например, Рабочий диск" /></label>;
@@ -272,11 +275,21 @@ export function ExternalLibraryPicker({ provider, request, onSelect, selectionCo
         {provider === 'dropbox' && <button type="button" className="secondary" onClick={replaceDropbox}>Настроить Dropbox заново</button>}
       </div>
     </> : accounts.length ? <>
-      <strong>Выберите аккаунт {name}</strong>
-      <ul className="settings-records library-drive-folders">{accounts.map(account => <li key={account.id}>
-        <button type="button" onClick={() => void useSaved(account)}><span className="library-account-label"><DriveProviderIcon provider={account.provider} />{account.name}</span><ChevronRight size={15} aria-hidden="true" /></button>
-      </li>)}</ul>
-      {error && openAccounts && <button type="button" className="secondary" onClick={() => openAccounts(provider)}>Перейти в «Аккаунты»</button>}
+      <strong id={accountGroup}>Выберите аккаунт {name}</strong>
+      <div role="radiogroup" aria-labelledby={accountGroup}>
+        <ul className="settings-records library-drive-folders">{accounts.map(account => <li key={account.id}>
+          <label className="library-account-option">
+            <span className="library-account-label"><DriveProviderIcon provider={account.provider} />{account.name}</span>
+            <input type="radio" name={accountGroup} checked={selectedAccountId === account.id}
+              onChange={() => { setSelectedAccountId(account.id); setError(''); }} />
+          </label>
+        </li>)}</ul>
+      </div>
+      <div className="settings-actions">
+        <button type="button" className="primary" disabled={!selectedAccount}
+          onClick={() => { if (selectedAccount) void useSaved(selectedAccount); }}>Далее</button>
+        {error && openAccounts && <button type="button" className="secondary" onClick={() => openAccounts(provider)}>Перейти в «Аккаунты»</button>}
+      </div>
     </> : <>
       <p className="help">Для {name} пока нет подключённых аккаунтов. Сначала подключите аккаунт в «Настройки → Библиотеки → Аккаунты», затем вернитесь к выбору папки.</p>
       {openAccounts && <button type="button" className="secondary" onClick={() => openAccounts(provider)}>Перейти в «Аккаунты»</button>}
