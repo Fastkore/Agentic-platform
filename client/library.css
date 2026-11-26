@@ -198,9 +198,9 @@
 .library-folder-tree button { width: 100%; display: flex; align-items: center; gap: 7px; padding: 5px 7px; min-height: 32px; border-radius: 5px; text-align: start; overflow-wrap: anywhere; }
 .library-folder-tree button > span { min-width: 0; }
 .library-folder-status {
-  flex: none; padding: 2px 7px; border-radius: var(--settings-badge-radius);
+  flex: none; padding: 1px 5px; border-radius: var(--settings-badge-radius);
   background: color-mix(in srgb, var(--success) 24%, var(--surface)); color: var(--text);
-  font-size: 13px; font-weight: 600; line-height: 1.2; white-space: nowrap;
+  font-size: 12px; font-weight: 400; line-height: 1.2; white-space: nowrap;
 }
 .library-folder-tree svg { flex: none; color: var(--accent-strong); }
 .library-folder-tree button:enabled:hover { background: var(--hover); }
