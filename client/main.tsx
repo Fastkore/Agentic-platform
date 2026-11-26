@@ -1312,7 +1312,6 @@ function App() {
         ? 'Файлы сохраняются в папке задания.'
         : 'Файлы сохраняются в папке проекта.' },
       erpRow('cli'), erpRow('mcp'),
-      ...(isAssistant ? [{ name: 'Проектные библиотеки', enabled: false, label: 'Отключены', description: 'Финист работает вне проектов и не читает закрытые или проектные библиотеки.' }] : []),
       { name: 'Веб-поиск', enabled: canUseChatTools && status.toolPermissions?.webSearch,
         description: 'Поиск в интернете.' },
       { name: 'Чтение страниц', enabled: canUseChatTools && status.toolPermissions?.webRead,
