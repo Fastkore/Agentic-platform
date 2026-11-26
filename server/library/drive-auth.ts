@@ -7,7 +7,8 @@ import { CloudDrive, providers } from './cloud-drive.js';
 interface Tokens { access: string; refresh?: string; expires: number }
 export interface DriveKeys { id: string; secret: string }
 type AppKeys = DriveKeys & { screenCode?: boolean };
-interface Draft { redirect: string; setup?: AppKeys; owner: string; provider: ExternalProvider; expires: number; verifier?: string; tokens?: Tokens; folders: Map<string, { name: string; identity: string }> }
+interface Draft { redirect: string; keys: AppKeys; setup?: AppKeys; replacing?: AppKeys; owner: string; provider: ExternalProvider; expires: number; verifier?: string; tokens?: Tokens; folders: Map<string, { name: string; identity: string }> }
+const sameKeys = (a: DriveKeys, b: DriveKeys) => a.id === b.id && a.secret === b.secret;
 const draftLifetime = 15 * 60_000;
 const expiredDraft = () => new BridgeError('Сеанс подключения завершён. Войдите в диск ещё раз, чтобы выбрать папку.', 410);
 const expired = () => new BridgeError('Подключение истекло. Нажмите «Подключить» ещё раз.', 409);
@@ -34,7 +35,10 @@ async function exchange(provider: ExternalProvider, { id, secret }: DriveKeys, b
 }
 export class DriveAuth {
   private drafts = new Map<string, Draft>();
-  constructor(private settings: LibrarySettings) {}
+  constructor(private settings: LibrarySettings, private hasDropboxLibraries = () => false) {}
+  private requireReplaceableDropbox() {
+    if (this.hasDropboxLibraries()) throw new BridgeError('К текущим ключам Dropbox ещё привязаны библиотеки. Сначала отключите эти библиотеки или войдите в другой аккаунт с текущими ключами.', 409);
+  }
   private keys(provider: ExternalProvider) {
     return this.settings.read<AppKeys>(provider) ?? environmentKeys(provider);
   }
@@ -57,18 +61,23 @@ export class DriveAuth {
     const keys = this.keys(provider);
     return { configured: !!keys, redirectUri: redirectUri(provider, keys) };
   }
-  begin(owner: string, provider: ExternalProvider, setup?: DriveKeys) {
+  begin(owner: string, provider: ExternalProvider, setup?: DriveKeys, options?: { replaceDropbox?: boolean; switchAccount?: boolean }) {
     const existing = this.keys(provider);
-    if (existing && setup) throw new BridgeError('Сервис уже настроен. Обновите форму, чтобы войти.', 409);
+    const replacing = provider === 'dropbox' && options?.replaceDropbox && setup && existing;
+    if (existing && setup && !replacing) throw new BridgeError('Сервис уже настроен. Обновите форму, чтобы войти.', 409);
+    if (replacing && setup && !sameKeys(replacing, setup)) this.requireReplaceableDropbox();
     const newKeys = setup && (provider === 'yandex' ? { ...setup, screenCode: true } : setup);
-    const keys = existing ?? newKeys ?? this.requireKeys(provider);
+    const keys = newKeys ?? existing ?? this.requireKeys(provider);
     const redirect = redirectUri(provider, keys);
     for (const [key, draft] of this.drafts) if (draft.expires <= Date.now()) this.drafts.delete(key);
     const state = randomUUID(), verifier = randomBytes(48).toString('base64url');
-    this.drafts.set(state, { provider, owner, setup: newKeys, redirect, verifier, expires: Date.now() + draftLifetime, folders: new Map() });
+    this.drafts.set(state, { provider, owner, keys, setup: newKeys, replacing: replacing || undefined, redirect, verifier, expires: Date.now() + draftLifetime, folders: new Map() });
     const params = new URLSearchParams({ client_id: keys.id, redirect_uri: redirect, state, response_type: 'code', scope: providers[provider].scope,
       code_challenge_method: 'S256', code_challenge: createHash('sha256').update(verifier).digest('base64url') });
-    if (provider === 'dropbox') params.set('token_access_type', 'offline');
+    if (provider === 'dropbox') {
+      params.set('token_access_type', 'offline');
+      if (options?.switchAccount || options?.replaceDropbox) params.set('force_reauthentication', 'true');
+    }
     if (provider === 'google') { params.set('access_type', 'offline'); params.set('prompt', 'consent select_account'); }
     return { state, url: providers[provider].authorize + '?' + params };
   }
@@ -83,11 +92,18 @@ export class DriveAuth {
     delete draft.verifier;
     const setup = draft.setup;
     delete draft.setup;
-    const tokens = await exchange(draft.provider, setup ?? this.requireKeys(draft.provider), { grant_type: 'authorization_code', code, code_verifier: verifier, redirect_uri: draft.redirect });
+    const tokens = await exchange(draft.provider, draft.keys, { grant_type: 'authorization_code', code, code_verifier: verifier, redirect_uri: draft.redirect });
+    this.draft(owner, state);
     if (setup) {
       const current = this.keys(draft.provider);
-      if (current && (current.id !== setup.id || current.secret !== setup.secret)) throw new BridgeError('Другой администратор уже подключил сервис. Войдите ещё раз.', 409);
-      if (!current) this.settings.write(draft.provider, setup);
+      if (current && !sameKeys(current, setup)) {
+        if (!draft.replacing || !sameKeys(current, draft.replacing)) throw new BridgeError('Другой администратор уже подключил сервис. Войдите ещё раз.', 409);
+        this.requireReplaceableDropbox();
+        this.settings.write(draft.provider, setup);
+        for (const [id, entry] of this.drafts) {
+          if (id !== state && entry.provider === 'dropbox') this.drafts.delete(id);
+        }
+      } else if (!current) this.settings.write(draft.provider, setup);
     }
     draft.tokens = tokens;
     draft.expires = Math.min(tokens.expires, Date.now() + draftLifetime);

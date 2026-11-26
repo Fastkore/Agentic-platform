@@ -27,7 +27,9 @@ export class ExternalLibraries {
     this.lifetimes.delete(id);
     return this.running.get(id);
   }
-  constructor(private registry: LibraryRegistry) { this.auth = new DriveAuth(registry.settings); }
+  constructor(private registry: LibraryRegistry) {
+    this.auth = new DriveAuth(registry.settings, () => !!this.db.prepare("SELECT 1 FROM external_sources WHERE provider='dropbox' LIMIT 1").get());
+  }
   private get db() { return this.registry.db; }
   has(id: string) { return !!this.db.prepare('SELECT 1 FROM external_sources WHERE folder_id=?').get(id); }
   private source(id: string) { return this.db.prepare('SELECT * FROM external_sources WHERE folder_id=?').get(id) as Source | undefined; }

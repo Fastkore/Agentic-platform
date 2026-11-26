@@ -55,6 +55,7 @@ export function ExternalLibraryPicker({ provider, request, onSelect, selectionCo
   const [localChoice, setChosen] = useState(false);
   const chosen = selectionConfirmed ?? localChoice;
   const [step, setStep] = useState<'start' | 'register' | 'keys'>('start');
+  const [replacingDropbox, setReplacingDropbox] = useState(false);
   const [redirect, setRedirect] = useState('');
   const [clientId, setClientId] = useState('');
   const [secret, setSecret] = useState('');
@@ -96,7 +97,14 @@ export function ExternalLibraryPicker({ provider, request, onSelect, selectionCo
     }
     finally { if (!signal?.aborted) setBusy(false); }
   }
-  async function connect() {
+  function replaceDropbox() {
+    controller.current?.abort();
+    setConnection(''); setFolders([]); setTrail([]);
+    setChosen(false); onSelect(undefined);
+    setClientId(''); setSecret(''); setError('');
+    setStep('keys'); setReplacingDropbox(true);
+  }
+  async function connect(switchAccount = false) {
     controller.current?.abort();
     const flow = new AbortController(); controller.current = flow;
     const popup = window.open('about:blank', '_blank');
@@ -106,8 +114,8 @@ export function ExternalLibraryPicker({ provider, request, onSelect, selectionCo
     }
     setCode(''); setChosen(false); setBusy(true); setAuthUrl(''); setConnection(''); setTrail([]); setFolders([]); setError(''); onSelect(undefined);
     try {
-      const setup = availability === 'missing' ? { id: clientId.trim(), secret: secret.trim() } : undefined;
-      const { state, url } = await post<{state: string; url: string}>('authorize', { provider, setup });
+      const setup = availability === 'missing' || replacingDropbox ? { id: clientId.trim(), secret: secret.trim() } : undefined;
+      const { state, url } = await post<{state: string; url: string}>('authorize', { provider, setup, replaceDropbox: replacingDropbox, switchAccount });
       if (flow.signal.aborted) { popup?.close(); return; }
       const channel = screenCode ? undefined : new BroadcastChannel('library-oauth-' + state);
       const timeout = window.setTimeout(() => {
@@ -121,7 +129,7 @@ export function ExternalLibraryPicker({ provider, request, onSelect, selectionCo
           if (!confirmation) throw new Error('Вход отменён. Можно повторить подключение.');
           await post('authorize/finish', { state, code: confirmation });
           if (flow.signal.aborted) return;
-          setSecret(''); setAvailability('ready'); setStep('start');
+          setSecret(''); setAvailability('ready'); setStep('start'); setReplacingDropbox(false);
           setConnection(state);
           await browse(state, [], flow.signal);
         } catch (e) { if (!flow.signal.aborted) { setError((e as Error).message); setBusy(false); } }
@@ -145,7 +153,7 @@ export function ExternalLibraryPicker({ provider, request, onSelect, selectionCo
     <p role="alert">Не удалось проверить, доступен ли {name}.</p>
     <button className="secondary" type="button" onClick={() => setCheck(n => n + 1)}>Проверить ещё раз</button>
   </div>;
-  if (availability === 'missing' && !authUrl && !busy) return <div className="library-form">
+  if ((availability === 'missing' || replacingDropbox) && !authUrl && !busy) return <div className="library-form">
     {step === 'start' && <>
       <p className="help">При первом подключении понадобятся два ключа из кабинета {provider === 'google' ? 'Google Cloud' : provider === 'yandex' ? 'Яндекс OAuth' : name}.
         {provider === 'dropbox' ? ' ' : <br />}Мастер покажет, где их взять.</p>
@@ -174,16 +182,24 @@ export function ExternalLibraryPicker({ provider, request, onSelect, selectionCo
       </div>
     </>}
     {step === 'keys' && <>
-      <strong>Шаг 2. Введите ключи и войдите</strong>
+      <strong>{replacingDropbox ? 'Введите новые ключи Dropbox' : 'Шаг 2. Введите ключи и войдите'}</strong>
       {provider === 'dropbox' && <DropboxPermissions />}
       {provider === 'google' && <GoogleTestUsers />}
+      {replacingDropbox && <label>Адрес возврата для нового приложения<input readOnly value={redirect}
+        onFocus={event => event.currentTarget.select()} /></label>}
       <p className="help">В кабинете {name} откройте «{guide.location}». Скопируйте два значения из карточки приложения.</p>
       <label>{guide.id}<input autoComplete="off" spellCheck={false} value={clientId} onChange={e => setClientId(e.target.value)} maxLength={2048} /></label>
       <label>{guide.secret}<input autoComplete="new-password" type="password" value={secret} onChange={e => setSecret(e.target.value)} maxLength={2048} /></label>
-      <p className="help">Подтвердите чтение файлов в окне сервиса. После входа ключи сохранятся для этой платформы.</p>
+      <p className="help">{replacingDropbox
+        ? 'Новые ключи сохранятся после успешного входа. Если с прежними ключами связаны библиотеки, их нужно сначала отключить.'
+        : 'Подтвердите чтение файлов в окне сервиса. После входа ключи сохранятся для этой платформы.'}</p>
       <div className="settings-actions">
         <button type="button" className="primary" disabled={!clientId.trim() || !secret.trim()} onClick={() => void connect()}>{signIn}</button>
-        <button type="button" className="secondary" onClick={() => { setStep('register'); setError(''); }}>Назад</button>
+        <button type="button" className="secondary" onClick={() => {
+          setStep(replacingDropbox ? 'start' : 'register');
+          if (replacingDropbox) { setReplacingDropbox(false); setSecret(''); }
+          setError('');
+        }}>Назад</button>
       </div>
     </>}
     {error && <p role="alert" className="inline-error">{error}</p>}
@@ -193,7 +209,13 @@ export function ExternalLibraryPicker({ provider, request, onSelect, selectionCo
     {!connection && !authUrl && !busy && <>
       <strong>Подключите аккаунт</strong>
       <p className="help">В отдельном окне разрешите чтение файлов. После входа вы выберете папку для библиотеки.</p>
-      <button type="button" className="primary" disabled={busy} onClick={() => void connect()}>{signIn}</button>
+      <div className="settings-actions">
+        <button type="button" className="primary" disabled={busy} onClick={() => void connect()}>{signIn}</button>
+        {provider === 'dropbox' && <>
+          <button type="button" className="secondary" onClick={() => void connect(true)}>Сменить аккаунт</button>
+          <button type="button" className="secondary" onClick={replaceDropbox}>Настроить Dropbox заново</button>
+        </>}
+      </div>
     </>}
     {authUrl && <>
       <strong role="status">Завершите вход в {name}</strong>
@@ -231,7 +253,7 @@ export function ExternalLibraryPicker({ provider, request, onSelect, selectionCo
         <p className="help" role="status">Агенты с доступом к библиотеке смогут искать и читать файлы в папке «{current?.name}» и её подпапках.</p>
         {selectionConfirmed === undefined && <div className="settings-actions">
           <button type="button" className="secondary" onClick={() => { setChosen(false); onSelect(undefined); }}>Изменить выбор</button>
-          <button type="button" className="secondary" onClick={() => void connect()}>Сменить аккаунт</button>
+          <button type="button" className="secondary" onClick={() => void connect(true)}>Сменить аккаунт</button>
         </div>}
       </> : <>
         {folders.length > 0 && <ul className="settings-records library-drive-folders">{folders.map(folder => <li key={folder.id}>
@@ -248,7 +270,8 @@ export function ExternalLibraryPicker({ provider, request, onSelect, selectionCo
             <button type="button" className="secondary" disabled={busy}
               onClick={() => void browse(connection, trail.slice(0, -1), controller.current?.signal)}>На уровень выше</button>
           </>}
-          <button type="button" className="secondary" disabled={busy} onClick={() => void connect()}>Сменить аккаунт</button>
+          <button type="button" className="secondary" disabled={busy} onClick={() => void connect(true)}>Сменить аккаунт</button>
+          {provider === 'dropbox' && <button type="button" className="secondary" disabled={busy} onClick={replaceDropbox}>Настроить Dropbox заново</button>}
         </div>
       </>}
     </>}

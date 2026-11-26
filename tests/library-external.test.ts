@@ -11,6 +11,42 @@ import { LibraryReader } from '../server/library/reader.js';
 import { CloudDrive, providers } from '../server/library/cloud-drive.js';
 import { admin, startOperation } from './library-helpers.js';
 
+test('Dropbox account switching and replacing application keys are separate flows', async t => {
+  const root = await mkdtemp(path.join(tmpdir(), 'dropbox-replace-'));
+  const registry = new LibraryRegistry(root, {});
+  t.after(async () => { await registry.external.stop(); registry.close(); await rm(root, { recursive: true, force: true }); });
+  t.mock.method(globalThis, 'fetch', async (url: string, init: RequestInit) => {
+    if (url.endsWith('/files/list_folder')) return Response.json({ entries: [{ '.tag': 'folder', id: 'id:docs', name: 'Docs', path_display: '/Docs' }], has_more: false });
+    assert.equal(url, providers.dropbox.token);
+    const body = init.body as URLSearchParams;
+    if (body.get('code') === 'invalid') return Response.json({}, { status: 400 });
+    return Response.json({ access_token: 'test-token', refresh_token: 'test-refresh', expires_in: 3600 });
+  });
+  const previous = { id: 'old-client', secret: 'old-secret' };
+  const replacement = { id: 'new-client', secret: 'new-secret' };
+  registry.settings.write('dropbox', previous);
+  process.env.BRIDGE_PUBLIC_ORIGIN = 'https://platform.example';
+  const auth = registry.external.auth;
+  const switchAccount = auth.begin(admin.id, 'dropbox', undefined, { switchAccount: true });
+  assert.equal(new URL(switchAccount.url).searchParams.get('force_reauthentication'), 'true');
+  await auth.finish(admin.id, switchAccount.state, 'valid');
+  await auth.folders(admin.id, switchAccount.state);
+  const failed = auth.begin(admin.id, 'dropbox', replacement, { replaceDropbox: true });
+  assert.equal(new URL(failed.url).searchParams.get('client_id'), replacement.id);
+  await assert.rejects(auth.finish(admin.id, failed.state, 'invalid'), /отклонил авторизацию/);
+  assert.deepEqual(registry.settings.read('dropbox'), previous);
+  const started = auth.begin(admin.id, 'dropbox', replacement, { replaceDropbox: true });
+  const folder = registry.createFolder(admin, { name: 'Connected', external: { connection: switchAccount.state, folder: 'id:docs' } });
+  assert.throws(() => auth.begin(admin.id, 'dropbox', replacement, { replaceDropbox: true }), /ещё привязаны библиотеки/);
+  await assert.rejects(auth.finish(admin.id, started.state, 'valid'), /ещё привязаны библиотеки/);
+  registry.deleteFolder(admin, folder.id, folder.revision);
+  const confirmed = auth.begin(admin.id, 'dropbox', replacement, { replaceDropbox: true });
+  await auth.finish(admin.id, confirmed.state, 'valid');
+  assert.deepEqual(registry.settings.read('dropbox'), replacement);
+  await assert.rejects(auth.folders(admin.id, switchAccount.state), /Сеанс подключения завершён/);
+  assert.deepEqual(await auth.folders(admin.id, confirmed.state), [{ id: 'id:docs', name: 'Docs' }]);
+});
+
 test('Yandex API apps use the verification page and exchange the displayed code with PKCE', async t => {
   const root = await mkdtemp(path.join(tmpdir(), 'yandex-library-'));
   t.after(() => rm(root, { recursive: true, force: true }));

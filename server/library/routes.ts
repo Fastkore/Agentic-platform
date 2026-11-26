@@ -56,9 +56,10 @@ export function libraryRoutes(app: FastifyInstance, deps: LibraryRouteDeps) {
     admin(request);
     return registry.external.auth.status(request.params.provider);
   });
-  app.post<{ Body: { provider: ExternalProvider; setup?: DriveKeys } }>(base + '/external/authorize', { schema: { body: obj({
+  app.post<{ Body: { provider: ExternalProvider; setup?: DriveKeys; replaceDropbox?: boolean; switchAccount?: boolean } }>(base + '/external/authorize', { schema: { body: obj({
     provider: { enum: externalProviders }, setup: obj({ id: credential, secret: credential }, ['id', 'secret']),
-  }, ['provider']) } }, async request => registry.external.auth.begin(admin(request).id, request.body.provider, request.body.setup));
+    replaceDropbox: { type: 'boolean' }, switchAccount: { type: 'boolean' },
+  }, ['provider']) } }, async request => registry.external.auth.begin(admin(request).id, request.body.provider, request.body.setup, request.body));
   app.post<{ Body: { state: string; code: string } }>(base + '/external/authorize/finish', { schema: { body: obj({ state: anyId, code: { type: 'string', minLength: 1, maxLength: 4096 } }, ['state','code']) } },
     async request => registry.external.auth.finish(admin(request).id, request.body.state, request.body.code));
   app.post<{ Body: { connection: string; parent?: string } }>(base + '/external/folders', { schema: { body: obj({ connection: anyId, parent: { type: 'string', maxLength: 4096 } }, ['connection']) } },
