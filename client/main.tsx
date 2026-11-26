@@ -1910,12 +1910,14 @@ function App() {
         <input id="chat-title" data-dialog-focus required maxLength={120} value={renameDraft.title}
           onFocus={e => e.currentTarget.select()} onChange={e => setRenameDraft({ ...renameDraft, title: e.target.value })} />
         <label htmlFor="chat-project">Проект</label>
-        <select id="chat-project" value={renameDraft.destinationId ?? renameDraft.projectId} disabled={pending}
-          onChange={e => setRenameDraft({ ...renameDraft, destinationId: e.target.value })}>
-          {renameDraft.projectId === assistantProjectId && <option value={assistantProjectId}>{assistantName}</option>}
-          {renameDraft.projectId !== assistantProjectId && !projects.some(project => project.id === renameDraft.projectId) && <option value={renameDraft.projectId}>{unassignedChatsLabel}</option>}
-          {projects.map(project => <option key={project.id} value={project.id}>{project.name}</option>)}
-        </select>
+        <Select id="chat-project" className="settings-select" label="Проект"
+          value={renameDraft.destinationId ?? renameDraft.projectId} disabled={pending}
+          onChange={destinationId => setRenameDraft({ ...renameDraft, destinationId })}
+          options={[
+            ...(renameDraft.projectId === assistantProjectId ? [{ value: assistantProjectId, label: assistantName, image: assistantIconSrc }] : []),
+            ...(renameDraft.projectId !== assistantProjectId && !projects.some(project => project.id === renameDraft.projectId) ? [{ value: renameDraft.projectId, label: unassignedChatsLabel, icon: Folder }] : []),
+            ...projects.map(project => ({ value: project.id, label: project.name, icon: Folder })),
+          ]} />
         {error && <div className="inline-error" role="alert">{error}</div>}
         <div className="settings-dialog-actions">
           <button type="button" className="secondary" onClick={closePanel} disabled={pending}>Отмена</button>

@@ -1181,9 +1181,10 @@
 .workspace-chat-rename > header > .workspace-icon { width: 30px; height: 30px; }
 .workspace-chat-rename > form { padding-top: 6px; }
 .workspace-chat-rename form > label { margin: 0 0 8px; line-height: 16px; }
-.workspace-chat-rename form > :is(input, select) + label { margin-top: 12px; }
-.workspace-chat-rename form > input:not([type="checkbox"]) { margin: 0; min-height: 36px; padding: 6px 10px; }
-.workspace-chat-rename .settings-dialog-actions { margin-top: 10px; }
+.workspace-chat-rename form > :is(input, select, .workspace-select) + label { margin-top: 12px; }
+.workspace-chat-rename form > input:not([type="checkbox"]),
+.workspace-chat-rename form > .workspace-select.settings-select { margin: 0; min-height: 36px; padding: 6px 10px; }
+.workspace-chat-rename .settings-dialog-actions { margin-top: 14px; }
 .workspace-project-form form > input:focus { box-shadow: none; }
 .workspace-chat-rename .settings-dialog-actions > :is(.primary, .secondary) {
   min-height: 34px; padding: 5px 12px; font-size: 13px; font-weight: 550;
