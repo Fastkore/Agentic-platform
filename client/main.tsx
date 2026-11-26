@@ -197,6 +197,8 @@ function App() {
   const contextNavigation = useRef(0);
   const [contextVersion, setContextVersion] = useState(0);
   const autoOpenRelated = useRef<string | undefined>(undefined);
+  const homeAutoOpenedAssistant = useRef(false);
+  const pendingHomeAssistant = useRef(false);
   const preferredRelatedChat = useRef('');
   const [erpChatKey, setErpChatKey] = useState<string>();
   const [relatedChats, setRelatedChats] = useState<{ key: string; list: RelatedChatSummary[] }>();
@@ -258,6 +260,9 @@ function App() {
   const assistantAvailable = status?.assistantAvailable === true;
   const assistantIconSrc = assistantAvatarSrc(status?.assistantAvatar);
   const assistantChats = chatLists[assistantProjectId] ?? [];
+  const assistantAvailableRef = useRef(false); assistantAvailableRef.current = assistantAvailable;
+  const assistantChatsRef = useRef<ChatSummary[]>([]); assistantChatsRef.current = assistantChats;
+  const statusLoadedRef = useRef(false); statusLoadedRef.current = status !== null;
   const relatedDraftKey = !isAssistant && currentErpContext.current.active && erpChatKey ? 'erp:' + erpChatKey : '';
   const draftSlot = chatId || (isAssistant ? 'assistant:new' : relatedDraftKey);
   const selectedProject = isAssistant ? undefined : projects.find(p => p.id === projectId), draft = drafts[draftSlot] ?? '', attachments = files[draftSlot] ?? [];
@@ -446,7 +451,7 @@ function App() {
   useEffect(() => () => { if (screenshotRequest.current) clearTimeout(screenshotRequest.current.timer); }, []);
   function clearLogin() {
     finishScreenshotRequest(); setReadySession(null); setScreenshotPreview(undefined); setUnassignedChats([]);
-    authEpoch++; browserSession = false; csrfToken = ''; sessionUserId = ''; sendAttempt.current = null; setErpAuth(null); currentErpContext.current = {}; autoOpenRelated.current = undefined; setErpChatKey(undefined); setRelatedChats(undefined); setContextProblem(undefined); setAgentCatalog(undefined); setCatalog(null); setModelError(''); accessKey = ''; sessionStorage.removeItem('bridge-key'); localStorage.removeItem('bridge-project'); localStorage.removeItem('bridge-chat'); setLoggedIn(false); setUser(null); setStatus(null); setProjects([]); setChatLists({}); setOpenProjects({}); setShowAll({}); setSidebarOpen(false); setChat(null); setModelPreview(undefined); setDrafts({}); setFiles({}); setSpecialists({}); setSubscription(null); setPanel(null); setProjectId(''); setChatId(''); setDiagnostics(''); setPasswordInput('');
+    authEpoch++; browserSession = false; csrfToken = ''; sessionUserId = ''; sendAttempt.current = null; setErpAuth(null); currentErpContext.current = {}; autoOpenRelated.current = undefined; homeAutoOpenedAssistant.current = false; pendingHomeAssistant.current = false; setErpChatKey(undefined); setRelatedChats(undefined); setContextProblem(undefined); setAgentCatalog(undefined); setCatalog(null); setModelError(''); accessKey = ''; sessionStorage.removeItem('bridge-key'); localStorage.removeItem('bridge-project'); localStorage.removeItem('bridge-chat'); setLoggedIn(false); setUser(null); setStatus(null); setProjects([]); setChatLists({}); setOpenProjects({}); setShowAll({}); setSidebarOpen(false); setChat(null); setModelPreview(undefined); setDrafts({}); setFiles({}); setSpecialists({}); setSubscription(null); setPanel(null); setProjectId(''); setChatId(''); setDiagnostics(''); setPasswordInput('');
   }
   function logout() { void action(async () => { await post('/api/auth/logout'); clearLogin(); }); }
   useEffect(() => {
@@ -506,10 +511,33 @@ function App() {
         const snapshot = parseFastkoreContext(event.data) ?? undefined;
         const problem = snapshot ? fastkoreContextProblem(snapshot) : 'Fastkore передал некорректный или неподдерживаемый снимок.';
         const key = snapshot && fastkoreChatContextKey(snapshot);
+        const isHome = snapshot?.view === 'none';
         const previous = currentErpContext.current;
         const unbound = !key && (snapshot?.chat_key === null || snapshot?.view === 'card' || !snapshot);
         const changed = unbound || key !== previous.key || (!key && snapshot?.view !== previous.snapshot?.view);
-        const inAssistantMode = selected.current.projectId === assistantProjectId;
+        const autoReturnFromHome = !isHome && changed && selected.current.projectId === assistantProjectId && homeAutoOpenedAssistant.current;
+        if (autoReturnFromHome) homeAutoOpenedAssistant.current = false;
+        const inAssistantMode = selected.current.projectId === assistantProjectId && !autoReturnFromHome;
+        if (isHome && changed && assistantAvailableRef.current) {
+          currentErpContext.current = { snapshot, problem, key, active: false };
+          contextNavigation.current++;
+          setContextVersion(contextNavigation.current);
+          setErpChatKey(undefined);
+          setRelatedChats(undefined);
+          autoOpenRelated.current = undefined;
+          pendingHomeAssistant.current = false;
+          homeAutoOpenedAssistant.current = !inAssistantMode || homeAutoOpenedAssistant.current;
+          if (!inAssistantMode) {
+            const latest = assistantChatsRef.current[0]?.id ?? '';
+            if (latest) setAssistantExpanded(true);
+            navigateTo(assistantProjectId, latest);
+          }
+          setPanel(panel => panel === 'reset-chat' || panel === 'related' ? null : panel);
+          setContextProblem(problem);
+          setErpFilter(undefined);
+          return;
+        }
+        if (changed) pendingHomeAssistant.current = isHome && !statusLoadedRef.current;
         currentErpContext.current = { snapshot, problem, key, active: inAssistantMode ? false : (changed ? Boolean(key || unbound) : previous.active) };
         if (changed) {
           contextNavigation.current++;
@@ -570,11 +598,15 @@ function App() {
   function navigateWorkspace(project: string, conversation = '') {
     currentErpContext.current.active = false;
     autoOpenRelated.current = undefined;
+    homeAutoOpenedAssistant.current = false;
+    pendingHomeAssistant.current = false;
     navigateTo(project, conversation);
   }
   function navigateToRelated(item: RelatedChatSummary) {
     currentErpContext.current.active = true;
     autoOpenRelated.current = undefined;
+    homeAutoOpenedAssistant.current = false;
+    pendingHomeAssistant.current = false;
     navigateTo(item.projectId, item.id);
   }
   useEffect(() => {
@@ -628,6 +660,8 @@ function App() {
     if (!assistantAvailable) return;
     currentErpContext.current.active = false;
     autoOpenRelated.current = undefined;
+    homeAutoOpenedAssistant.current = false;
+    pendingHomeAssistant.current = false;
     if (conversation !== undefined) {
       setAssistantExpanded(true);
       navigateTo(assistantProjectId, conversation);
@@ -645,10 +679,32 @@ function App() {
     if (!assistantAvailable) return;
     currentErpContext.current.active = false;
     autoOpenRelated.current = undefined;
+    homeAutoOpenedAssistant.current = false;
+    pendingHomeAssistant.current = false;
     setAttachScreenContext(false);
     navigateTo(assistantProjectId, '');
     requestAnimationFrame(() => input.current?.focus());
   }
+  useEffect(() => {
+    if (pendingHomeAssistant.current && status !== null) {
+      pendingHomeAssistant.current = false;
+      if (assistantAvailable && currentErpContext.current.snapshot?.view === 'none' && selected.current.projectId !== assistantProjectId) {
+        currentErpContext.current.active = false;
+        autoOpenRelated.current = undefined;
+        setErpChatKey(undefined);
+        setRelatedChats(undefined);
+        homeAutoOpenedAssistant.current = true;
+        const latest = assistantChats[0]?.id ?? '';
+        if (latest) setAssistantExpanded(true);
+        navigateTo(assistantProjectId, latest);
+        return;
+      }
+    }
+    if (homeAutoOpenedAssistant.current && assistantAvailable && selected.current.projectId === assistantProjectId && !selected.current.chatId && assistantChats.length && !(drafts['assistant:new'] ?? '').trim()) {
+      setAssistantExpanded(true);
+      navigateTo(assistantProjectId, assistantChats[0].id);
+    }
+  }, [status, assistantAvailable, chatLists[assistantProjectId]]);
   function toggleProject(project: string) {
     if (project === unassignedGroupId) {
       setOpenProjects(old => ({ ...old, [project]: !(old[project] ?? true) }));
