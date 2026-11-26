@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, useId } from 'react';
-import { ChevronLeft, Cloud, Database, Folder, HardDrive, Users, Layers, Trash2 } from 'lucide-react';
+import { ChevronLeft, Cloud, Database, Folder, HardDrive, Users, UserPlus, Layers, Trash2 } from 'lucide-react';
 import type { LibraryFolderSummary, LibraryProfile, OutputPolicy } from '../shared/library';
 import { externalLabels, type DriveAccount, type ExternalProvider, type ExternalSelection } from '../shared/library';
 import { LibraryStorageSetup, type StorageStatus } from './LibraryStorageSetup';
@@ -85,7 +85,7 @@ export function LibraryToolbar({ kind, search, setSearch, creating, toggleCreate
       <input type="search" aria-label="Поиск библиотеки" placeholder="Поиск библиотеки" value={search}
         onChange={event => setSearch(event.target.value)} />
     </div>
-    {toggleCreate && <button type="button" className="secondary" disabled={pending} aria-expanded={creating} onClick={toggleCreate}>
+    {toggleCreate && <button type="button" className="secondary library-action-button" disabled={pending} aria-expanded={creating} onClick={toggleCreate}>
       <LibraryKindIcon external={kind === 'external'} />Создать библиотеку
     </button>}
   </div>;
@@ -325,7 +325,11 @@ export function LibraryPanel({ request, isAdmin, initialAccountsProvider }: { re
       </li>)}</ul> : folders && <p className="help">{folderSearch.trim() ? 'Папки не найдены.' : tab === 'external' ? 'Внешних библиотек пока нет.' : 'Обычных библиотек пока нет.'}</p>}
     </section>}
     {tab === 'accounts' && isAdmin && <section className="library-panel" role="tabpanel" id={tabId + tab + '-panel'} aria-labelledby={tabId + tab}>
-      <div className="settings-actions"><button type="button" className="primary" onClick={() => setAddAccount(true)}>Подключить аккаунт</button></div>
+      <div className="settings-actions">
+        <button type="button" className="secondary library-action-button" aria-haspopup="dialog" onClick={() => setAddAccount(true)}>
+          <span className="library-icon-external"><UserPlus size={16} aria-hidden="true" /></span>Подключить аккаунт
+        </button>
+      </div>
       {!accounts && !error && <SettingsSpinner label="Загрузка аккаунтов…" />}
       {accounts && (accounts.length ? <ul className="settings-records">{accounts.map(a => <li key={a.id}>
         <div className="library-account-identity">

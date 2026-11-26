@@ -133,7 +133,7 @@
 .library-toolbar .library-search { flex: 1; min-width: 0; }
 .library-toolbar:has(> .secondary) .library-search { display: flex; align-self: stretch; }
 .workspace-dialog .library-toolbar:has(> .secondary) input[type="search"] { min-height: 0; padding-block: 0; }
-.library-toolbar > .secondary { display: inline-flex; align-items: center; gap: 6px; }
+.library-action-button { display: inline-flex; align-items: center; gap: 6px; }
 .library-folders > .library-toolbar + .library-form { margin-block-start: 10px; }
 .library-toolbar > [aria-expanded="true"] { border-color: var(--accent); }
 .library-source-fields label:has(input:not([type="checkbox"])) { display: grid; gap: 4px; }
