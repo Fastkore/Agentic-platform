@@ -1,5 +1,5 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
-import { ChevronDown, ChevronRight, Folder, FolderOpen, RefreshCw } from 'lucide-react';
+import { ChevronDown, ChevronLeft, ChevronRight, Folder, FolderOpen, RefreshCw } from 'lucide-react';
 import { externalLabels, type DriveAccount, type ExternalFolder, type ExternalProvider, type ExternalSelection } from '../shared/library';
 import type { Request } from './library-upload';
 import { DriveProviderIcon, driveProviderIcons } from './DriveProviderIcon';
@@ -46,6 +46,9 @@ export function driveSessionExpired(error: unknown) {
   return typeof error === 'object' && error !== null && 'status' in error && error.status === 410;
 }
 
+const preloadBatchSize = 4;
+const preloadFolderLimit = 48;
+
 export function ExternalLibraryPicker({ provider, request, onSelect, checkSelection, selectionConfirmed, accountSaved, openAccounts, providerPicker, onFolderStepChange }: {
   providerPicker?: ReactNode;
   onFolderStepChange?: (visible: boolean) => void;
@@ -57,7 +60,9 @@ export function ExternalLibraryPicker({ provider, request, onSelect, checkSelect
   const [nameConflict, setNameConflict] = useState<{ folder: string; name: string }>();
   const replacementNameId = useId();
   const [connection, setConnection] = useState(''), [authUrl, setAuthUrl] = useState('');
-  const [levels, setLevels] = useState<ExternalFolder[][]>([]), [trail, setTrail] = useState<ExternalFolder[]>([]);
+  const [childrenByFolder, setChildrenByFolder] = useState(() => new Map<string, ExternalFolder[]>());
+  const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(() => new Set());
+  const [trail, setTrail] = useState<ExternalFolder[]>([]);
   const [connectedFolders, setConnectedFolders] = useState<ReadonlySet<string>>(() => new Set());
   const [availability, setAvailability] = useState<'checking' | 'ready' | 'missing' | 'failed'>('checking');
   const [check, setCheck] = useState(0);
@@ -101,23 +106,61 @@ export function ExternalLibraryPicker({ provider, request, onSelect, checkSelect
   }, [provider, request, check, configuring]);
 
   const controller = useRef<AbortController | null>(null);
-  useEffect(() => () => controller.current?.abort(), []);
-  const post = <T,>(url: string, body: unknown) => request<T>('/api/library/external/' + url, { method: 'POST', body: JSON.stringify(body) });
-  async function browse(id: string, path: ExternalFolder[], signal?: AbortSignal) {
+  const preload = useRef<AbortController | null>(null);
+  useEffect(() => () => { controller.current?.abort(); preload.current?.abort(); }, []);
+  const post = <T,>(url: string, body: unknown, signal?: AbortSignal) => request<T>('/api/library/external/' + url, { method: 'POST', body: JSON.stringify(body), signal });
+  async function listChildren(connection: string, parent: string | undefined, signal?: AbortSignal) {
+    const options = { connection, parent, includeAppFolder: provider === 'dropbox' };
+    return checkSelection
+      ? post<{ folders: ExternalFolder[]; connected: string[] }>('folders', { ...options, includeConnected: true }, signal)
+      : { folders: await post<ExternalFolder[]>('folders', options, signal), connected: [] };
+  }
+  async function preloadChildren(connection: string, roots: ExternalFolder[]) {
+    const task = new AbortController();
+    preload.current = task;
+    const queued = new Set(['']);
+    let parents = roots;
+    // The root listing is the first level. Prefetch child listings for the next two levels.
+    for (let level = 2; level <= 3; level++) {
+      const next: ExternalFolder[] = [];
+      for (let offset = 0; offset < parents.length && !task.signal.aborted && queued.size <= preloadFolderLimit; offset += preloadBatchSize) {
+        const batch = parents.slice(offset, offset + preloadBatchSize);
+        const results = await Promise.all(batch.map(async ({ id }) => {
+          if (queued.has(id) || queued.size > preloadFolderLimit) return;
+          queued.add(id);
+          try { return { id, ...await listChildren(connection, id, task.signal) }; }
+          catch { /* Leave this branch available to open manually. */ }
+        }));
+        if (task.signal.aborted) return;
+        for (const result of results) {
+          if (!result) continue;
+          next.push(...result.folders);
+          setChildrenByFolder(previous => previous.has(result.id) ? previous : new Map(previous).set(result.id, result.folders));
+          setConnectedFolders(previous => new Set([...previous, ...result.connected]));
+        }
+      }
+      parents = next;
+    }
+  }
+  async function browse(id: string, path: ExternalFolder[], signal?: AbortSignal, select = true) {
     setBusy(true); setError(''); setChosen(false); onSelect(undefined);
+    const parent = path.at(-1)?.id;
+    if (parent === undefined) preload.current?.abort();
     try {
-      const current = path.at(-1);
-      const options = { connection: id, parent: current?.id, includeAppFolder: provider === 'dropbox' };
-      const result = checkSelection
-        ? await post<{ folders: ExternalFolder[]; connected: string[] }>('folders', { ...options, includeConnected: true })
-        : { folders: await post<ExternalFolder[]>('folders', options), connected: [] };
+      const result = await listChildren(id, parent, signal);
       if (signal?.aborted) return;
-      setLevels(previous => [...previous.slice(0, path.length), result.folders]); setTrail(path); setConnection(id);
+      setChildrenByFolder(previous => new Map(parent === undefined ? [] : previous).set(parent ?? '', result.folders));
+      if (select) setTrail(path);
+      setConnection(id);
       setConnectedFolders(new Set(result.connected));
+      if (parent === undefined) {
+        setCollapsed(new Set());
+        void preloadChildren(id, result.folders);
+      }
     } catch (e) {
       if (signal?.aborted) return;
       if (driveSessionExpired(e)) {
-        setConnection(''); setLevels([]); setTrail([]);
+        backToAccount();
         setCheck(n => n + 1);
       }
       setError((e as Error).message);
@@ -136,27 +179,30 @@ export function ExternalLibraryPicker({ provider, request, onSelect, checkSelect
     } catch (e) { if (!flow.signal.aborted) { setError((e as Error).message); setBusy(false); } }
   }
   function backToAccount() {
-    controller.current?.abort(); setConnection(''); setTrail([]); setLevels([]); setChosen(false); onSelect(undefined);
+    controller.current?.abort(); preload.current?.abort();
+    setConnection(''); setTrail([]); setChildrenByFolder(new Map()); setChosen(false); onSelect(undefined);
     setAccountName(''); setError(''); setNameConflict(undefined); setConnectedFolders(new Set()); setBusy(false);
   }
   const nameField = <label>Название аккаунта<input value={accountName} maxLength={100} onChange={e => setAccountName(e.target.value)}
     placeholder="Например, Рабочий диск" /></label>;
   function replaceDropbox() {
     controller.current?.abort();
-    setConnection(''); setLevels([]); setTrail([]);
+    preload.current?.abort();
+    setConnection(''); setChildrenByFolder(new Map()); setTrail([]);
     setChosen(false); onSelect(undefined);
     setClientId(''); setSecret(''); setError('');
     setStep('keys'); setReplacingDropbox(true);
   }
   async function connect() {
     controller.current?.abort();
+    preload.current?.abort();
     const flow = new AbortController(); controller.current = flow;
     const popup = window.open('about:blank', '_blank');
     if (popup) {
       popup.opener = null;
       flow.signal.addEventListener('abort', () => popup.close(), { once: true });
     }
-    setCode(''); setChosen(false); setBusy(true); setAuthUrl(''); setConnection(''); setTrail([]); setLevels([]); setError(''); onSelect(undefined);
+    setCode(''); setChosen(false); setBusy(true); setAuthUrl(''); setConnection(''); setTrail([]); setChildrenByFolder(new Map()); setError(''); onSelect(undefined);
     try {
       const setup = availability === 'missing' || replacingDropbox ? { id: clientId.trim(), secret: secret.trim() } : undefined;
       const { state, url } = await post<{state: string; url: string}>('authorize', { provider, setup, replaceDropbox: replacingDropbox, switchAccount: true, accountName: accountName.trim() });
@@ -185,9 +231,9 @@ export function ExternalLibraryPicker({ provider, request, onSelect, checkSelect
   const name = externalLabels[provider];
   const signIn = { google: 'Войти через Google', dropbox: 'Войти в Dropbox', yandex: 'Войти через Яндекс ID' }[provider];
   const current = trail.at(-1);
-  const folders = levels[trail.length] ?? [];
-  const appFolder = provider === 'dropbox' ? folders.find(folder => folder.id === '') : undefined;
-  const subfolders = folders.filter(folder => folder.id !== '');
+  const root = childrenByFolder.get('') ?? [];
+  const folders = current ? childrenByFolder.get(current.id) ?? [] : root;
+  const appFolder = provider === 'dropbox' && !current ? root.find(folder => folder.id === '') : undefined;
   const selectedFolder = current ?? appFolder;
   const appFolderConnected = !!appFolder && connectedFolders.has(appFolder.id);
   function folderChoiceDisabled(folder: ExternalFolder) {
@@ -229,33 +275,61 @@ export function ExternalLibraryPicker({ provider, request, onSelect, checkSelect
     setChosen(true);
   }
 
+  function expandFolder(id: string) {
+    setCollapsed(previous => {
+      if (!previous.has(id)) return previous;
+      const updated = new Set(previous);
+      updated.delete(id);
+      return updated;
+    });
+  }
   function navigate(path: ExternalFolder[]) {
     setNameConflict(undefined);
-    if (path.length < trail.length && path.every((folder, depth) => folder.id === trail[depth].id)) {
+    const folder = path.at(-1);
+    if (folder) expandFolder(folder.id);
+    if (childrenByFolder.has(folder?.id ?? '')) {
       setTrail(path);
-      setLevels(previous => previous.slice(0, path.length + 1));
       setError('');
       return;
     }
     void browse(connection, path, controller.current?.signal);
   }
-  function branch(depth: number): ReactNode {
-    const children = levels[depth]?.filter(f => f.id !== '');
+  function toggleFolder(path: ExternalFolder[], id: string, open: boolean) {
+    if (open) {
+      setCollapsed(previous => new Set([...previous, id]));
+      if (trail.length > path.length && path.every((folder, index) => folder.id === trail[index]?.id)) {
+        setTrail(path);
+        setNameConflict(undefined);
+      }
+    } else {
+      expandFolder(id);
+      if (!childrenByFolder.has(id)) void browse(connection, path, controller.current?.signal, false);
+    }
+  }
+  function branch(path: ExternalFolder[]): ReactNode {
+    const children = childrenByFolder.get(path.at(-1)?.id ?? '')?.filter(f => f.id !== '' && !path.some(parent => parent.id === f.id));
     if (!children?.length) return null;
     return <ul>{children.map(folder => {
-      const open = trail[depth]?.id === folder.id;
-      const active = open && depth === trail.length - 1;
+      const pathToFolder = [...path, folder];
+      const descendants = childrenByFolder.get(folder.id);
+      const open = !!descendants?.length && !collapsed.has(folder.id);
+      const active = pathToFolder.length === trail.length && pathToFolder.every((item, index) => item.id === trail[index]?.id);
       const connected = connectedFolders.has(folder.id);
       const Icon = open ? FolderOpen : Folder;
       const Chevron = open ? ChevronDown : ChevronRight;
       return <li key={folder.id}>
-        <button type="button" disabled={busy} aria-expanded={open} aria-current={active || undefined}
-          aria-label={(open ? 'Свернуть папку «' : 'Открыть папку «') + folder.name + '»' + (connected ? ' · Подключена' : '')}
-          onClick={() => navigate(open ? trail.slice(0, depth) : [...trail.slice(0, depth), folder])}>
-          <Chevron size={14} aria-hidden="true" /><Icon size={17} aria-hidden="true" /><span>{folder.name}</span>
-          {connected && <small className="library-folder-status">Подключена</small>}
-        </button>
-        {open && branch(depth + 1)}
+        <div className="library-folder-row">
+          {descendants?.length === 0 ? <span className="library-folder-toggle" /> :
+            <button type="button" className="library-folder-toggle" disabled={busy} aria-expanded={open}
+              aria-label={(open ? 'Свернуть папку «' : 'Раскрыть папку «') + folder.name + '»'}
+              onClick={() => toggleFolder(pathToFolder, folder.id, open)}><Chevron size={14} aria-hidden="true" /></button>}
+          <button type="button" className="library-folder-name" disabled={busy} aria-current={active || undefined}
+            onClick={() => navigate(pathToFolder)}>
+            <Icon size={17} aria-hidden="true" /><span>{folder.name}</span>
+            {connected && <small className="library-folder-status">Подключена</small>}
+          </button>
+        </div>
+        {open && branch(pathToFolder)}
       </li>;
     })}</ul>;
   }
@@ -290,7 +364,9 @@ export function ExternalLibraryPicker({ provider, request, onSelect, checkSelect
           try { await navigator.clipboard.writeText(redirect); setCopied(true); setError(''); }
           catch { setError('Выделите адрес в поле выше и скопируйте его.'); }
         }}>{copied ? 'Адрес скопирован' : 'Скопировать адрес'}</button>}
-        <button type="button" className="primary" onClick={() => { setError(''); setStep('keys'); }}>Далее — ввести ключи</button>
+        <button type="button" className="primary library-action-button" onClick={() => { setError(''); setStep('keys'); }}>
+          Далее — ввести ключи <ChevronRight size={16} aria-hidden="true" />
+        </button>
       </div>
     </>}
     {step === 'keys' && <>
@@ -308,11 +384,11 @@ export function ExternalLibraryPicker({ provider, request, onSelect, checkSelect
         : 'Подтвердите чтение файлов в окне сервиса. После входа ключи сохранятся для этой платформы.'}</p>
       <div className="settings-actions">
         <button type="button" className="primary" disabled={!accountName.trim() || !clientId.trim() || !secret.trim()} onClick={() => void connect()}>{signIn}</button>
-        <button type="button" className="secondary" onClick={() => {
+        <button type="button" className="secondary library-action-button" onClick={() => {
           setStep(replacingDropbox ? 'start' : 'register');
           if (replacingDropbox) { setReplacingDropbox(false); setSecret(''); }
           setError('');
-        }}>Назад</button>
+        }}><ChevronLeft size={16} aria-hidden="true" /> Назад</button>
       </div>
     </>}
     {error && <p role="alert" className="inline-error">{error}</p>}
@@ -329,13 +405,15 @@ export function ExternalLibraryPicker({ provider, request, onSelect, checkSelect
         {provider === 'dropbox' && <button type="button" className="secondary" onClick={replaceDropbox}>Настроить Dropbox заново</button>}
       </div>
     </> : accounts.length ? <>
-      <label htmlFor={accountFieldId}>Аккаунт {name}</label>
-      <Select id={accountFieldId} className="settings-select" placeholder="Выберите аккаунт" disabled={busy}
-        options={accounts.map(account => ({ value: account.id, label: account.name, image: driveProviderIcons[account.provider] }))}
-        value={selectedAccount?.id ?? ''} onChange={id => { setSelectedAccountId(id); setError(''); }} />
+      <div className="library-picker-field">
+        <label htmlFor={accountFieldId}>Аккаунт {name}</label>
+        <Select id={accountFieldId} className="settings-select" placeholder="Выберите аккаунт" disabled={busy}
+          options={accounts.map(account => ({ value: account.id, label: account.name, image: driveProviderIcons[account.provider] }))}
+          value={selectedAccount?.id ?? ''} onChange={id => { setSelectedAccountId(id); setError(''); }} />
+      </div>
       <div className="settings-actions">
-        <button type="button" className="primary" disabled={busy || !selectedAccount} aria-busy={busy}
-          onClick={() => { if (selectedAccount) void useSaved(selectedAccount); }}>Далее</button>
+        <button type="button" className="primary library-action-button" disabled={busy || !selectedAccount} aria-busy={busy}
+          onClick={() => { if (selectedAccount) void useSaved(selectedAccount); }}>Далее <ChevronRight size={16} aria-hidden="true" /></button>
         {error && openAccounts && <button type="button" className="secondary" onClick={() => openAccounts(provider)}>Перейти в «Аккаунты»</button>}
       </div>
     </> : <>
@@ -355,9 +433,9 @@ export function ExternalLibraryPicker({ provider, request, onSelect, checkSelect
         {screenCode && <button type="button" className="primary" disabled={!code.trim()}
           onClick={() => void finishLogin.current?.(code.trim())}>Подтвердить код</button>}
         <a className="library-provider-link" href={authUrl} target="_blank" rel="noopener noreferrer">Открыть окно входа</a>
-        <button type="button" className="secondary" onClick={() => {
+        <button type="button" className="secondary library-action-button" onClick={() => {
           controller.current?.abort(); setCode(''); setAuthUrl(''); setBusy(false);
-        }}>Назад</button>
+        }}><ChevronLeft size={16} aria-hidden="true" /> Назад</button>
       </div>
     </>}
     {authUrl && provider === 'google' && <details>
@@ -376,23 +454,28 @@ export function ExternalLibraryPicker({ provider, request, onSelect, checkSelect
         </div>
         <p className="help">Агенты с доступом смогут читать файлы в этой папке и её подпапках.</p>
         {selectionConfirmed === undefined && <div className="settings-actions">
-          <button type="button" className="secondary" onClick={() => { setChosen(false); onSelect(undefined); }}>Назад</button>
+          <button type="button" className="secondary library-action-button" onClick={() => { setChosen(false); onSelect(undefined); }}>
+            <ChevronLeft size={16} aria-hidden="true" /> Назад
+          </button>
         </div>}
       </> : <>
         {!onFolderStepChange && <strong>Выберите папку</strong>}
         <div className="library-drive-heading">
           <nav className="library-path" aria-label="Путь к папке">
-            {[{ id: '', name: levels[0]?.find(f => !f.id)?.name ?? name }, ...trail].map((f, i) => <span key={f.id}>
+            {[{ id: '', name: root.find(f => !f.id)?.name ?? name }, ...trail].map((f, i) => <span key={f.id}>
               {i > 0 && <ChevronRight size={13} aria-hidden="true" />}
               {i === trail.length ? <strong aria-current="location">{f.name}</strong> :
                 <button type="button" disabled={busy} onClick={() => navigate(trail.slice(0, i))}>{f.name}</button>}
             </span>)}
           </nav>
           <button type="button" className="workspace-icon" disabled={busy} aria-busy={busy} aria-label="Обновить список папок" title="Обновить список папок"
-            onClick={() => navigate(trail)}>{busy ? <ProgressRing size={16} /> : <RefreshCw size={16} aria-hidden="true" />}</button>
+            onClick={() => { setNameConflict(undefined); preload.current?.abort(); void browse(connection, trail, controller.current?.signal); }}
+          >{busy ? <ProgressRing size={16} /> : <RefreshCw size={16} aria-hidden="true" />}</button>
         </div>
-        {levels[0]?.some(f => f.id) && <div className="library-folder-tree">{branch(0)}</div>}
-        {!error && !subfolders.length && <p className="help">{selectedFolder ? 'Вложенных папок нет.' : 'Нет доступных папок. Создайте папку на диске и обновите список.'}</p>}
+        <div className="library-folder-tree" aria-busy={busy}>
+          {branch([])}
+          {!error && !folders.some(folder => folder.id) && <p className="help">{selectedFolder ? 'Вложенных папок нет.' : 'Нет доступных папок. Создайте папку на диске и обновите список.'}</p>}
+        </div>
         {nameConflict && <div className="library-field-row">
           <p className="inline-error" role="alert">Библиотека с таким названием уже есть. Укажите другое название.</p>
           <label htmlFor={replacementNameId}>Название библиотеки</label>
@@ -400,15 +483,17 @@ export function ExternalLibraryPicker({ provider, request, onSelect, checkSelect
             onChange={event => setNameConflict({ ...nameConflict, name: event.target.value })} />
         </div>}
         <div className="settings-actions library-folder-actions">
-          {current && <button type="button" className="primary" disabled={folderChoiceDisabled(current)}
-            onClick={() => void chooseFolder(current)}>Далее</button>}
+          {current && <button type="button" className="primary library-action-button" disabled={folderChoiceDisabled(current)}
+            onClick={() => void chooseFolder(current)}>Далее <ChevronRight size={16} aria-hidden="true" /></button>}
           {appFolder && <button type="button" className="primary" disabled={folderChoiceDisabled(appFolder)}
             onClick={() => void chooseFolder(appFolder)}>Выбрать папку приложения</button>}
           {appFolderConnected && <small className="library-folder-status">Подключена</small>}
           <span className="library-account-label library-folder-account" title={name}>
             <DriveProviderIcon provider={provider} /><span>Аккаунт: <strong>{accountName}</strong></span>
           </span>
-          <button type="button" className="secondary" disabled={busy} onClick={backToAccount}>Назад</button>
+          <button type="button" className="secondary library-action-button" disabled={busy} onClick={backToAccount}>
+            <ChevronLeft size={16} aria-hidden="true" /> Назад
+          </button>
         </div>
       </>}
     </>}
