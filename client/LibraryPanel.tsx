@@ -87,8 +87,8 @@ export function LibraryToolbar({ kind, search, setSearch, creating, toggleCreate
     </button>}
   </div>;
 }
-export function CreateLibraryForm({ kind, request, pending, submit, cancel, project, storageChanged, error }: {
-  kind: LibraryKind; request: Request; pending: boolean; submit: (create: () => Promise<LibraryFolderSummary>) => void; cancel: () => void; project?: boolean; storageChanged?: () => void; error?: string;
+export function CreateLibraryForm({ kind, request, pending, submit, cancel, project, storageChanged, error, openAccounts }: {
+  kind: LibraryKind; request: Request; pending: boolean; submit: (create: () => Promise<LibraryFolderSummary>) => void; cancel: () => void; project?: boolean; storageChanged?: () => void; error?: string; openAccounts?: (provider: ExternalProvider) => void;
 }) {
   const [draft, setDraft] = useState(emptyFolderDraft);
   const [provider, setProvider] = useState<ExternalProvider>('dropbox');
@@ -125,7 +125,7 @@ export function CreateLibraryForm({ kind, request, pending, submit, cancel, proj
           <Select id="library-provider" className="settings-select" options={options(externalLabels)} value={provider}
             onChange={value => setProvider(value as ExternalProvider)} />
         </>}
-        <ExternalLibraryPicker key={provider + attempt} selectionConfirmed={!!selection} provider={provider} request={request} onSelect={(next, name) => {
+        <ExternalLibraryPicker key={provider + attempt} selectionConfirmed={!!selection} openAccounts={openAccounts} provider={provider} request={request} onSelect={(next, name) => {
           setSelection(next);
           if (name) {
             const previous = suggestedName.current, suggestion = name.slice(0,120);
@@ -154,7 +154,7 @@ export function CreateLibraryForm({ kind, request, pending, submit, cancel, proj
 }
 
 /** Settings → Library: all folders the user may manage, storage status and the projects each folder is connected to. */
-export function LibraryPanel({ request, isAdmin }: { request: Request; isAdmin: boolean }) {
+export function LibraryPanel({ request, isAdmin, initialAccountsProvider }: { request: Request; isAdmin: boolean; initialAccountsProvider?: ExternalProvider }) {
   const [folders, setFolders] = useState<LibraryFolderSummary[]>();
   const [storage, setStorage] = useState<StorageStatus>();
   const [storageLoading, setStorageLoading] = useState(false);
@@ -163,11 +163,11 @@ export function LibraryPanel({ request, isAdmin }: { request: Request; isAdmin: 
   const [folderSearch, setFolderSearch] = useState('');
   const [projectSearch, setProjectSearch] = useState('');
   const tabId = useId();
-  const [tab, setTab] = useState<LibraryKind | 'accounts' | 'storage'>('s3');
+  const [tab, setTab] = useState<LibraryKind | 'accounts' | 'storage'>(initialAccountsProvider ? 'accounts' : 's3');
   const [creating, setCreating] = useState<LibraryKind>();
   const [accounts, setAccounts] = useState<DriveAccount[]>();
   const [addAccount, setAddAccount] = useState(false);
-  const [accountProvider, setAccountProvider] = useState<ExternalProvider>('dropbox');
+  const [accountProvider, setAccountProvider] = useState<ExternalProvider>(initialAccountsProvider ?? 'dropbox');
   const [removeAccount, setRemoveAccount] = useState<DriveAccount>();
   const [storageSetup, setStorageSetup] = useState(false);
   const [editing, setEditing] = useState<{ draft: FolderDraft; revision: number }>();
@@ -210,6 +210,10 @@ export function LibraryPanel({ request, isAdmin }: { request: Request; isAdmin: 
       setStorageCheck({ message: (e as Error).message, failed: true });
     } finally { setPending(false); }
   }
+  function openAccounts(provider: ExternalProvider) {
+    setCreating(undefined); setSelected(undefined); setEditing(undefined);
+    setAccountProvider(provider); setError(''); setNotice(''); setTab('accounts');
+  }
   const folder = folders?.find(f => f.id === selected);
   const currentDraft: FolderDraft | undefined = folder && {
     name: folder.name, description: folder.description, profile: folder.profile, outputPolicy: folder.outputPolicy, active: folder.active,
@@ -237,7 +241,7 @@ export function LibraryPanel({ request, isAdmin }: { request: Request; isAdmin: 
       <p className="help">{folderLine(folder)} · {statusLabel(folder.active)} · {profileLabels[folder.profile]} · {outputModes[folder.outputPolicy]}
         {' · '}занято {formatBytes(folder.usedBytes)} из {formatBytes(folder.quotaBytes)}</p>
       {folder.description && <p className="help">{folder.description}</p>}
-      <LibraryFolderCard request={request} folder={folder} isAdmin={isAdmin} reload={reload} />
+      <LibraryFolderCard request={request} folder={folder} isAdmin={isAdmin} reload={reload} openAccounts={openAccounts} />
     </section>
     <section className="specialist-card">
       <h3><Layers size={18} aria-hidden="true" />Где используется</h3>
@@ -293,7 +297,7 @@ export function LibraryPanel({ request, isAdmin }: { request: Request; isAdmin: 
     {(tab === 's3' || tab === 'external') && <section className="library-folders" role="tabpanel" aria-labelledby={tabId + tab} id={tabId + tab + '-panel'}>
       <LibraryToolbar kind={tab} search={folderSearch} setSearch={setFolderSearch} creating={!!creating} pending={pending}
         toggleCreate={isAdmin ? () => { setError(''); setCreating(creating ? undefined : tab); } : undefined} />
-      {creating && <CreateLibraryForm key={creating} kind={creating} error={error} storageChanged={reload} request={request} pending={pending} cancel={() => setCreating(undefined)} submit={create => void act(async () => {
+      {creating && <CreateLibraryForm key={creating} kind={creating} error={error} openAccounts={openAccounts} storageChanged={reload} request={request} pending={pending} cancel={() => setCreating(undefined)} submit={create => void act(async () => {
         const created = await create();
         setCreating(undefined);
         if (created.external) { setTab('external'); setFolderSearch(''); }

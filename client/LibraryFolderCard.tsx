@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { FilePlus2, FileText, Folder, FolderOpen, ListX, RefreshCw, Trash2, Upload } from 'lucide-react';
 import type { LibraryFolderSummary, OperationMode } from '../shared/library';
-import { externalLabels, type ExternalSelection } from '../shared/library';
+import { externalLabels, type ExternalProvider, type ExternalSelection } from '../shared/library';
 import { ExternalLibraryPicker, driveSessionExpired } from './ExternalLibraryPicker';
 import { formatBytes, formatFileCount, type Request } from './library-upload';
 import { LibraryUploadPanel } from './LibraryUploadPanel';
@@ -56,7 +56,7 @@ export function useLibraryRefresh(folders: LibraryFolderSummary[] | undefined, l
 }
 
 /** Folder card shared by platform and project settings: upload, update, files and errors. */
-export function LibraryFolderCard({ request, folder, isAdmin, reload }: { request: Request; folder: LibraryFolderSummary; isAdmin: boolean; reload: () => void }) {
+export function LibraryFolderCard({ request, folder, isAdmin, reload, openAccounts }: { request: Request; folder: LibraryFolderSummary; isAdmin: boolean; reload: () => void; openAccounts?: (provider: ExternalProvider) => void }) {
   const base = '/api/library/' + encodeURIComponent(folder.id);
   const [upload, setUpload] = useState<OperationMode>();
   const [view, setView] = useState<FileView>();
@@ -108,7 +108,7 @@ export function LibraryFolderCard({ request, folder, isAdmin, reload }: { reques
         {canManage && <button type="button" className="secondary" disabled={pending || preparing} onClick={() => void act(() => post(base + '/external/sync'))}>Синхронизировать</button>}
         {isAdmin && <button type="button" className="secondary" onClick={() => { setReconnecting(!reconnecting); setSelection(undefined); }}> {reconnecting ? 'Отмена' : 'Восстановить связь'}</button>}
       </div>
-      {reconnecting && <><ExternalLibraryPicker key={attempt} provider={folder.external.provider} request={request} onSelect={setSelection} />
+      {reconnecting && <><ExternalLibraryPicker key={attempt} provider={folder.external.provider} openAccounts={openAccounts} request={request} onSelect={setSelection} />
         <button type="button" className="secondary" disabled={pending || !selection} onClick={() => void act(async () => { await post(base + '/external/reconnect', selection); setReconnecting(false); }, 'Связь восстановлена.')}>Подключить исходную папку</button></>}
     </div>}
     {upload && !folder.external ? <LibraryUploadPanel request={request} folder={folder} mode={upload} canDecideSecrets={canManage} close={() => setUpload(undefined)} done={reload} /> : <>

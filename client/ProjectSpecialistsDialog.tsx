@@ -1,6 +1,7 @@
 import { lazy, Suspense, useEffect, useId, useState, type ReactNode } from 'react';
 import { Bot, Check, Database, FileText, MessageSquare, Pencil, Plus, Settings2, ShieldCheck, Trash2, Users, X } from 'lucide-react';
 import type { ChatView, ProjectAgentConnection, ProjectAgentPolicy, ProjectAgentSettings, ProjectRoleLabel, ProjectSummary } from '../shared/types';
+import type { ExternalProvider } from '../shared/library';
 import { WorkspaceDialog } from './WorkspaceDialog';
 import { ProjectRolesPanel } from './ProjectRolesPanel';
 import { ChatDefaultsEditor } from './ChatDefaultsEditor';
@@ -13,7 +14,7 @@ const ProjectLibraryPanel = lazy(() => import('./ProjectLibraryDialog').then(mod
 const sections = [['instructions', 'Инструкция', FileText], ['specialists', 'Агенты', Bot], ['library', 'Библиотеки', Database], ['access', 'Доступ к материалам', ShieldCheck], ['roles', 'Роли', Users], ['chats', 'Чаты', MessageSquare]] as const;
 type Section = typeof sections[number][0];
 
-export function ProjectSettingsDialog({ project, request, close, openSpecialist, rename, saveInstructions, remove, isAdmin, rolesChanged, renderChat, chatError }: {
+export function ProjectSettingsDialog({ project, request, close, openSpecialist, rename, saveInstructions, remove, isAdmin, rolesChanged, renderChat, chatError, openAccounts }: {
   project: ProjectSummary;
   request: <T>(url: string, init?: RequestInit) => Promise<T>;
   close: () => void;
@@ -25,6 +26,7 @@ export function ProjectSettingsDialog({ project, request, close, openSpecialist,
   rolesChanged: (roles: ProjectRoleLabel[]) => void;
   renderChat: (chat: ChatView, projectId: string) => ReactNode;
   chatError: string;
+  openAccounts?: (provider: ExternalProvider) => void;
 }) {
   const route = '/api/projects/' + encodeURIComponent(project.id) + '/agent-settings';
   const [settings, setSettings] = useState<ProjectAgentSettings>();
@@ -159,7 +161,7 @@ export function ProjectSettingsDialog({ project, request, close, openSpecialist,
     </> : section === 'chats' ? <ProjectChatsPanel projectId={project.id} request={request} renderChat={renderChat} />
       : section !== 'roles' ? <Suspense fallback={<SettingsSpinner label="Загрузка…" />}>
       <ProjectLibraryPanel key={libraryProfile ?? ''} project={project} request={request} section={section === 'library' ? 'folders' : 'access'}
-        isAdmin={isAdmin} initialProfileId={libraryProfile} pendingChanged={setLibraryPending} />
+        isAdmin={isAdmin} initialProfileId={libraryProfile} pendingChanged={setLibraryPending} openAccounts={openAccounts} />
     </Suspense> : null}
     {rolesOpened && <div hidden={section !== 'roles'}>
       <ProjectRolesPanel projectId={project.id} request={request} onSaved={rolesChanged} pendingChanged={setRolesPending} />

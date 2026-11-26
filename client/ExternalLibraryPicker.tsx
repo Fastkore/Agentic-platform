@@ -45,8 +45,8 @@ export function driveSessionExpired(error: unknown) {
   return typeof error === 'object' && error !== null && 'status' in error && error.status === 410;
 }
 
-export function ExternalLibraryPicker({ provider, request, onSelect, selectionConfirmed, accountSaved }: {
-  accountSaved?: () => void; selectionConfirmed?: boolean; provider: ExternalProvider; request: Request; onSelect: (selection?: ExternalSelection, folderName?: string) => void;
+export function ExternalLibraryPicker({ provider, request, onSelect, selectionConfirmed, accountSaved, openAccounts }: {
+  accountSaved?: () => void; openAccounts?: (provider: ExternalProvider) => void; selectionConfirmed?: boolean; provider: ExternalProvider; request: Request; onSelect: (selection?: ExternalSelection, folderName?: string) => void;
 }) {
   const [busy, setBusy] = useState(false), [error, setError] = useState('');
   const [connection, setConnection] = useState(''), [authUrl, setAuthUrl] = useState('');
@@ -65,23 +65,27 @@ export function ExternalLibraryPicker({ provider, request, onSelect, selectionCo
   const finishLogin = useRef<((code?: string) => Promise<void>) | null>(null);
   const screenCode = provider === 'yandex' && redirect === 'https://oauth.yandex.ru/verification_code';
   const [accounts, setAccounts] = useState<DriveAccount[]>([]);
-  const [adding, setAdding] = useState(false);
   const [accountName, setAccountName] = useState('');
   const guide = guides[provider];
+  const configuring = !!accountSaved;
   useEffect(() => {
     const abort = new AbortController();
     setAvailability('checking');
-    Promise.all([
-      request<{ configured: boolean; redirectUri: string }>('/api/library/external/status/' + provider, { signal: abort.signal }),
-      request<DriveAccount[]>('/api/library/external/accounts', { signal: abort.signal }),
-    ]).then(([result, list]) => {
+    const options = { signal: abort.signal };
+    const load = configuring
+      ? request<{ configured: boolean; redirectUri: string }>('/api/library/external/status/' + provider, options).then(result => {
         if (abort.signal.aborted) return;
         setAvailability(result.configured ? 'ready' : 'missing');
-        setRedirect(result.redirectUri); setAccounts(list.filter(a => a.provider === provider));
+        setRedirect(result.redirectUri);
       })
-      .catch(() => { if (!abort.signal.aborted) setAvailability('failed'); });
+      : request<DriveAccount[]>('/api/library/external/accounts', options).then(list => {
+        if (abort.signal.aborted) return;
+        setAccounts(list.filter(account => account.provider === provider));
+        setAvailability('ready');
+      });
+    void load.catch(() => { if (!abort.signal.aborted) setAvailability('failed'); });
     return () => abort.abort();
-  }, [provider, request, check]);
+  }, [provider, request, check, configuring]);
 
   const controller = useRef<AbortController | null>(null);
   useEffect(() => () => controller.current?.abort(), []);
@@ -116,7 +120,7 @@ export function ExternalLibraryPicker({ provider, request, onSelect, selectionCo
   }
   function chooseAccount() {
     controller.current?.abort(); setConnection(''); setTrail([]); setLevels([]); setChosen(false); onSelect(undefined);
-    setAdding(false); setAccountName(''); setError(''); setCheck(n => n + 1);
+    setAccountName(''); setError(''); setCheck(n => n + 1);
   }
   const nameField = <label>Название аккаунта<input value={accountName} maxLength={100} onChange={e => setAccountName(e.target.value)}
     placeholder="Например, Рабочий диск" /></label>;
@@ -153,9 +157,7 @@ export function ExternalLibraryPicker({ provider, request, onSelect, selectionCo
           await post('authorize/finish', { state, code: confirmation });
           if (flow.signal.aborted) return;
           setSecret(''); setAvailability('ready'); setStep('start'); setReplacingDropbox(false);
-          if (accountSaved) { accountSaved(); return; }
-          setConnection(state);
-          await browse(state, [], flow.signal);
+          accountSaved?.();
         } catch (e) { if (!flow.signal.aborted) { setError((e as Error).message); setBusy(false); } }
       };
       if (channel) channel.onmessage = ({ data }) => { if (!flow.signal.aborted) void finishLogin.current?.(data?.code); };
@@ -261,25 +263,24 @@ export function ExternalLibraryPicker({ provider, request, onSelect, selectionCo
   </div>;
 
   return <div className="library-form">
-    {!connection && !authUrl && !busy && !adding && !accountSaved && accounts.length > 0 ? <>
+    {!connection && !authUrl && !busy && (accountSaved ? <>
+      <strong>Подключите аккаунт</strong>
+      {nameField}
+      <p className="help">В отдельном окне войдите в аккаунт и разрешите чтение файлов.</p>
+      <div className="settings-actions">
+        <button type="button" className="primary" disabled={!accountName.trim()} onClick={() => void connect()}>{signIn}</button>
+        {provider === 'dropbox' && <button type="button" className="secondary" onClick={replaceDropbox}>Настроить Dropbox заново</button>}
+      </div>
+    </> : accounts.length ? <>
       <strong>Выберите аккаунт {name}</strong>
       <ul className="settings-records library-drive-folders">{accounts.map(account => <li key={account.id}>
         <button type="button" onClick={() => void useSaved(account)}><span className="library-account-label"><DriveProviderIcon provider={account.provider} />{account.name}</span><ChevronRight size={15} aria-hidden="true" /></button>
       </li>)}</ul>
-      <button type="button" className="secondary" onClick={() => { setAccountName(''); setAdding(true); setError(''); }}>Подключить новый аккаунт</button>
-    </> : !connection && !authUrl && !busy && <>
-      <strong>Подключите аккаунт</strong>
-      {!accountSaved && !accounts.length && <p className="help">Сохранённых аккаунтов {name} пока нет. Дайте аккаунту название и войдите в сервис. Затем выберите папку.</p>}
-      {nameField}
-      <p className="help">В отдельном окне разрешите чтение файлов. После входа вы выберете папку для библиотеки.</p>
-      <div className="settings-actions">
-        <button type="button" className="primary" disabled={busy || !accountName.trim()} onClick={() => void connect()}>{signIn}</button>
-        {adding && <button type="button" className="secondary" onClick={chooseAccount}>К списку аккаунтов</button>}
-        {provider === 'dropbox' && <>
-          <button type="button" className="secondary" onClick={replaceDropbox}>Настроить Dropbox заново</button>
-        </>}
-      </div>
-    </>}
+      {error && openAccounts && <button type="button" className="secondary" onClick={() => openAccounts(provider)}>Перейти в «Аккаунты»</button>}
+    </> : <>
+      <p className="help">Для {name} пока нет подключённых аккаунтов. Сначала подключите аккаунт в «Настройки → Библиотеки → Аккаунты», затем вернитесь к выбору папки.</p>
+      {openAccounts && <button type="button" className="secondary" onClick={() => openAccounts(provider)}>Перейти в «Аккаунты»</button>}
+    </>)}
     {authUrl && <>
       <strong role="status">Завершите вход в {name}</strong>
       {screenCode ? <>
@@ -288,7 +289,7 @@ export function ExternalLibraryPicker({ provider, request, onSelect, selectionCo
           maxLength={32} onChange={event => setCode(event.target.value)} onKeyDown={event => {
             if (event.key === 'Enter') { event.preventDefault(); if (code.trim()) void finishLogin.current?.(code.trim()); }
           }} /></label>
-      </> : <p className="help">Подтвердите доступ и вернитесь сюда для выбора папки.</p>}
+      </> : <p className="help">Подтвердите доступ и вернитесь к списку аккаунтов.</p>}
       <div className="settings-actions">
         {screenCode && <button type="button" className="primary" disabled={!code.trim()}
           onClick={() => void finishLogin.current?.(code.trim())}>Подтвердить код</button>}
@@ -302,7 +303,7 @@ export function ExternalLibraryPicker({ provider, request, onSelect, selectionCo
       <summary>Google показал ошибку 403 о тестировщиках?</summary>
       <GoogleTestUsers />
     </details>}
-    {busy && !authUrl && <SettingsSpinner label={connection ? 'Загружаем папки…' : 'Подключаем аккаунт…'} />}
+    {busy && !authUrl && <SettingsSpinner label={accountSaved ? 'Подключаем аккаунт…' : 'Загружаем папки…'} />}
     {error && <p className="inline-error" role="alert">{error}</p>}
     {connection && <>
       {chosen ? <>
@@ -337,7 +338,6 @@ export function ExternalLibraryPicker({ provider, request, onSelect, selectionCo
           {appFolder && <button type="button" className="primary" disabled={busy}
             onClick={() => chooseFolder(appFolder)}>Выбрать папку приложения</button>}
           <button type="button" className="secondary" disabled={busy} onClick={chooseAccount}>Сменить аккаунт</button>
-          {provider === 'dropbox' && <button type="button" className="secondary" disabled={busy} onClick={replaceDropbox}>Настроить Dropbox заново</button>}
         </div>
       </>}
     </>}

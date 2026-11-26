@@ -2,7 +2,7 @@ import { useCallback, useEffect, useId, useState } from 'react';
 import { ChevronDown, ChevronRight, RefreshCw } from 'lucide-react';
 import { InfoHint } from './InfoHint';
 import type { ProjectSummary } from '../shared/types';
-import type { LibraryConnection, LibraryFolderSummary, OutputPolicy, ProjectLibraryView } from '../shared/library';
+import type { ExternalProvider, LibraryConnection, LibraryFolderSummary, OutputPolicy, ProjectLibraryView } from '../shared/library';
 import { SettingsTabStrip } from './SettingsTabs';
 import { SettingsSpinner } from './SettingsSpinner';
 import { Select } from './Select';
@@ -16,8 +16,8 @@ import './library.css';
 const options = (record: Record<string, string>) => Object.entries(record).map(([value, label]) => ({ value, label }));
 
 /** Project → Library: the project's folders, their state and access of specialists; the same server rule decides for the agent. */
-export function ProjectLibraryPanel({ project, request, section, isAdmin, initialProfileId, pendingChanged }: {
-  project: ProjectSummary; request: Request; section: 'folders' | 'access'; isAdmin: boolean; initialProfileId?: string; pendingChanged: (pending: boolean) => void;
+export function ProjectLibraryPanel({ project, request, section, isAdmin, initialProfileId, pendingChanged, openAccounts }: {
+  project: ProjectSummary; request: Request; section: 'folders' | 'access'; isAdmin: boolean; initialProfileId?: string; pendingChanged: (pending: boolean) => void; openAccounts?: (provider: ExternalProvider) => void;
 }) {
   const base = '/api/projects/' + encodeURIComponent(project.id) + '/library';
   const [view, setView] = useState<ProjectLibraryView>();
@@ -74,7 +74,7 @@ export function ProjectLibraryPanel({ project, request, section, isAdmin, initia
       {section === 'folders' && <div className="library-panel" role="tabpanel" id={tabId + tab + '-panel'} aria-labelledby={tabId + tab}>
         <LibraryToolbar kind={tab} search={search} setSearch={setSearch} creating={!!creating} pending={pending}
           toggleCreate={isAdmin ? () => { setError(''); setCreating(creating ? undefined : tab); } : undefined} />
-        {creating && <CreateLibraryForm key={creating} kind={creating} error={error} request={request} pending={pending} project cancel={() => setCreating(undefined)} submit={create => void act(async () => {
+        {creating && <CreateLibraryForm key={creating} kind={creating} error={error} openAccounts={openAccounts} request={request} pending={pending} project cancel={() => setCreating(undefined)} submit={create => void act(async () => {
           const created = await create();
           setCreating(undefined);
           await request(base, { method: 'POST', body: JSON.stringify({ folderId: created.id }) });
@@ -103,7 +103,7 @@ export function ProjectLibraryPanel({ project, request, section, isAdmin, initia
               {c.folderActive && c.classification === 'restricted' && <p className="library-warning">Для этой папки также действуют правила закрытого анализа.</p>}
               <p className="help">Агенты: {assigned.length ? assigned.join(', ') : 'не назначены — агент папку не использует'}</p>
             </div>
-            {open && folder && <LibraryFolderCard request={request} folder={folder} isAdmin={isAdmin} reload={reload} />}
+            {open && folder && <LibraryFolderCard request={request} folder={folder} isAdmin={isAdmin} reload={reload} openAccounts={openAccounts} />}
             {c.canManage && <div className="settings-actions library-card-actions">
               <Select className="settings-select" label="Режим выдачи" value={c.outputPolicy} options={options(outputModes)} disabled={pending} fitContent
                 onChange={outputPolicy => void update(c, { outputPolicy })} />

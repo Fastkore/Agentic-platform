@@ -1,5 +1,6 @@
 import React, { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
+import type { ExternalProvider } from '../shared/library';
 import { Archive, ArrowUp, BarChart3, Bot, Box, Camera, Check, ChevronDown, ChevronRight, ClipboardList, Copy, Database, Download, EllipsisVertical, Eraser, FileText, Folder, History, Link2, LoaderCircle, LockKeyhole, LogOut, Menu, Moon, Network, PanelLeftClose, PanelLeftOpen, Pencil, Pin, Plus, RefreshCw, Search, Settings2, ShieldCheck, Square, SquarePen, Sun, Terminal, Trash2, Users, X } from 'lucide-react';
 import { assistantAvatarSrc, assistantName, assistantProjectId, maxProjectInstructions, interfaceScales, sharedChatWaitMessage, unassignedChatsLabel, type AgentSummary, type Attachment, type Chat, type ChatView, type ChatSummary, type CodexLimits, type FastkoreAuthentication, type FastkoreNavigationTarget, type FileStorageStatus, type InterfaceScale, type ModelCatalog, type ProjectSummary, type RelatedChatSummary, type Run, type Settings, type Status, type UnassignedChatSummary, type User } from '../shared/types';
 import './style.css';
@@ -232,6 +233,7 @@ function App() {
   const [settingsProjectSearch, setSettingsProjectSearch] = useState('');
   const projectActionFromSettings = useRef(false);
   const [initialSpecialistId, setInitialSpecialistId] = useState<string>();
+  const [initialAccountsProvider, setInitialAccountsProvider] = useState<ExternalProvider>();
   const [settingsSection, setSettingsSection] = useState<SettingsSection>('team');
   const [instructionsDraft, setInstructionsDraft] = useState<string>();
   const [knowledgeDirty, setKnowledgeDirty] = useState(false);
@@ -1204,6 +1206,7 @@ function App() {
     return () => window.clearTimeout(timer);
   }, [loggedIn, user, setupRequired]);
   function showSettings() {
+    setInitialAccountsProvider(undefined);
     preloadSettingsPanels();
     setInitialSpecialistId(undefined);
     if (accountMenu.current) accountMenu.current.open = false;
@@ -1221,6 +1224,7 @@ function App() {
     if (section === settingsSection) return;
     if ((knowledgeDirty || personalDirty) && !window.confirm('Перейти в другой раздел и удалить несохранённые изменения?')) return;
     setInitialSpecialistId(undefined);
+    setInitialAccountsProvider(undefined);
     if (section === 'server') void showServerSettings();
     else setSettingsSection(section);
   }
@@ -1995,6 +1999,7 @@ function App() {
     {panel === 'project-settings' && projectActionTarget && canManageProjects &&
       <ProjectSettingsDialog key={projectActionTarget.id} project={projectActionTarget} request={api} close={closeProjectPanel} isAdmin={isAdmin}
         renderChat={renderHistory} chatError={error}
+        openAccounts={isAdmin ? provider => { showSettings(); setInitialAccountsProvider(provider); setSettingsSection('library'); } : undefined}
         rename={name => saveProjectName(projectActionTarget.id, name)}
         saveInstructions={(previous, text) => saveProjectInstructions(projectActionTarget.id, previous, text)}
         remove={() => deleteProject(projectActionTarget)}
@@ -2039,7 +2044,7 @@ function App() {
           {settingsSection === 'roles' && <ErpRolesPanel request={api} />}
           {settingsSection === 'assistant' && <AssistantSettingsPanel request={api} models={serverModels}
             onChanged={() => { void api<Status>('/api/status').then(setStatus).catch(() => {}); }} />}
-          {settingsSection === 'library' && <LibraryPanel request={api} isAdmin={isAdmin} />}
+          {settingsSection === 'library' && <LibraryPanel request={api} isAdmin={isAdmin} initialAccountsProvider={initialAccountsProvider} />}
           {settingsSection === 'profiles' && <SpecialistsPanel request={api} initialProfileId={initialSpecialistId} />}
           {settingsSection === 'audit' && <AuditPanel request={api} />}
           {settingsSection === 'usage' && <UsagePanel request={api} />}
