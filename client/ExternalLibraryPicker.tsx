@@ -66,9 +66,9 @@ export function ExternalLibraryPicker({ provider, request, onSelect, selectionCo
   const finishLogin = useRef<((code?: string) => Promise<void>) | null>(null);
   const screenCode = provider === 'yandex' && redirect === 'https://oauth.yandex.ru/verification_code';
   const [accounts, setAccounts] = useState<DriveAccount[]>([]);
-  const accountGroup = useId();
+  const accountFieldId = useId();
   const [selectedAccountId, setSelectedAccountId] = useState<string>();
-  const selectedAccount = accounts.find(account => account.id === selectedAccountId);
+  const selectedAccount = accounts.length === 1 ? accounts[0] : accounts.find(account => account.id === selectedAccountId);
   const [accountName, setAccountName] = useState('');
   const guide = guides[provider];
   const configuring = !!accountSaved;
@@ -278,15 +278,14 @@ export function ExternalLibraryPicker({ provider, request, onSelect, selectionCo
         {provider === 'dropbox' && <button type="button" className="secondary" onClick={replaceDropbox}>Настроить Dropbox заново</button>}
       </div>
     </> : accounts.length ? <>
-      <strong id={accountGroup}>Выберите аккаунт {name}</strong>
-      <div role="radiogroup" aria-labelledby={accountGroup} aria-busy={busy}>
-        <ul className="settings-records library-drive-folders">{accounts.map(account => <li key={account.id}>
-          <label className="library-account-option">
-            <span className="library-account-label"><DriveProviderIcon provider={account.provider} />{account.name}</span>
-            <input type="radio" name={accountGroup} checked={selectedAccountId === account.id} disabled={busy}
-              onChange={() => { setSelectedAccountId(account.id); setError(''); }} />
-          </label>
-        </li>)}</ul>
+      <label htmlFor={accountFieldId}>Аккаунт {name}</label>
+      <div className="library-account-control">
+        <DriveProviderIcon provider={provider} />
+        <select id={accountFieldId} className="library-drive-select" disabled={busy}
+          value={selectedAccount?.id ?? ''} onChange={event => { setSelectedAccountId(event.target.value); setError(''); }}>
+          {accounts.length > 1 && <option value="" disabled>Выберите аккаунт</option>}
+          {accounts.map(account => <option key={account.id} value={account.id}>{account.name}</option>)}
+        </select>
       </div>
       <div className="settings-actions">
         <button type="button" className="primary" disabled={busy || !selectedAccount} aria-busy={busy}
